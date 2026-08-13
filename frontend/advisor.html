@@ -1,0 +1,1526 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>销售顾问工作台</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* 页面切换：默认隐藏，active时显示 */
+    .page { display: none; }
+    .page.active { display: flex; flex-direction: column; }
+
+    /* 状态Tab激活样式 */
+    .status-tab-active {
+      color: #4f46e5;
+      border-bottom: 2px solid #4f46e5;
+      font-weight: 600;
+    }
+
+    /* AI文案开关样式 */
+    .toggle-switch { position: relative; width: 40px; height: 22px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #cbd5e1; border-radius: 22px; transition: 0.3s;
+    }
+    .toggle-slider:before {
+      position: absolute; content: ""; height: 16px; width: 16px;
+      left: 3px; bottom: 3px; background-color: white;
+      border-radius: 50%; transition: 0.3s;
+    }
+    .toggle-switch input:checked + .toggle-slider { background-color: #6366f1; }
+    .toggle-switch input:checked + .toggle-slider:before { transform: translateX(18px); }
+
+    /* 聊天记录区隐藏滚动条 */
+    .chat-scroll::-webkit-scrollbar { display: none; }
+    .chat-scroll { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* 模态框遮罩 */
+    .modal-overlay { background: rgba(0,0,0,0.5); }
+
+    /* 底部Tab固定屏幕底部：修改原因-要求底部tab固定不随内容滚动 */
+    .bottom-tab-bar {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 50;
+    }
+
+    /* 主内容区留出底部tab空间：修改原因-底部tab固定后内容会被遮挡 */
+    .main-content {
+      padding-bottom: 64px;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+  <!-- 试驾预约弹窗 -->
+  <div id="testDriveModal" class="fixed inset-0 z-[90] flex items-center justify-center hidden">
+    <div class="absolute inset-0 bg-black/40" onclick="closeTestDriveModal()"></div>
+    <div class="relative bg-white rounded-xl shadow-xl max-w-sm w-full mx-4 p-6">
+      <h3 class="text-base font-semibold text-gray-800 mb-4">预约试驾</h3>
+      <div class="space-y-3">
+        <div><label class="text-xs text-gray-400">联系人</label><input id="tdCustomerName" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400"/></div>
+        <div><label class="text-xs text-gray-400">联系电话</label><input id="tdCustomerPhone" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400"/></div>
+        <div><label class="text-xs text-gray-400">试驾车型</label><input id="tdModelName" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400"/></div>
+        <div><label class="text-xs text-gray-400">预约时间 <span class="text-red-400">*</span></label><input id="tdScheduledAt" type="datetime-local" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400"/></div>
+        <div><label class="text-xs text-gray-400">试驾地点</label><input id="tdLocation" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400"/></div>
+        <div><label class="text-xs text-gray-400">备注</label><textarea id="tdNote" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-green-400" rows="2"></textarea></div>
+      </div>
+      <div class="flex space-x-3 mt-4">
+        <button onclick="closeTestDriveModal()" class="flex-1 py-2 border border-gray-200 text-gray-600 rounded-lg text-sm">取消</button>
+        <button onclick="createTestDrive()" class="flex-1 py-2 bg-green-500 text-white rounded-lg text-sm font-medium hover:bg-green-600">确认预约</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 登录遮罩：支持 tenant_code 入口，按权限层级显示/隐藏功能 -->
+  <div id="loginGate" class="fixed inset-0 z-[100] bg-gray-50 flex items-center justify-center hidden">
+    <div class="w-full max-w-xs bg-white rounded-xl shadow-lg p-6">
+      <h1 class="text-lg font-semibold text-gray-800 mb-4" id="loginGateTitle">顾问端登录</h1>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs text-gray-500" id="loginMode">已切换到登录模式</span>
+        <button onclick="toggleLoginMode()" class="text-indigo-600 text-sm hover:underline">切换到注册</button>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs text-gray-500 block mb-1">租户码</label>
+        <input id="loginTenantCode" type="text" placeholder="输入租户码 (如: rox-sales)"
+          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      </div>
+      <input id="loginUsername" type="text" placeholder="用户名" autocomplete="username"
+        class="w-full mb-3 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter') doLogin()"
+        class="w-full mb-3 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      <input id="loginConfirmPassword" type="password" placeholder="确认密码"
+        class="w-full mb-3 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400 hidden"/>
+      <div id="loginError" class="text-xs text-red-500 mb-2 hidden"></div>
+      <button onclick="doLogin()" class="w-full py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-sm font-medium">
+        <span id="loginBtnText">登录</span>
+      </button>
+    </div>
+  </div>
+
+
+  <!-- ============================== -->
+  <!-- 页面容器（3个主页面+1个详情页） -->
+  <!-- 修改原因：删除page-chat和page-customers，首页合并客户列表 -->
+  <!-- ============================== -->
+
+  <!-- ========== 1. 首页（=客户列表） ========== -->
+  <div id="page-home" class="page active flex-1 overflow-y-auto main-content">
+
+    <!-- 顶部：用户信息栏（头像+姓名+"销售顾问"） -->
+    <div class="bg-white px-4 py-4 border-b border-gray-100">
+      <div class="flex items-center justify-between">
+        <div class="flex items-center space-x-3 cursor-pointer" onclick="showLoginGate('请使用新账号登录以切换身份')" id="advisorSwitchArea">
+          <div class="w-12 h-12 bg-indigo-100 rounded-full flex items-center justify-center">
+            <span class="text-indigo-600 font-bold text-lg" id="userAvatar">张</span>
+          </div>
+          <div>
+            <h2 class="text-base font-semibold text-gray-800" id="userName">张伟</h2>
+            <p class="text-xs text-gray-400">点击切换账号</p>
+          </div>
+        </div>
+        <!-- AI文案开关 -->
+        <div class="flex items-center space-x-2">
+          <span class="text-xs text-gray-500">AI文案</span>
+          <label class="toggle-switch">
+            <input type="checkbox" checked id="aiCopySwitch" onchange="toggleAICopy()">
+            <span class="toggle-slider"></span>
+          </label>
+          <span class="text-xs text-indigo-600 font-medium" id="aiCopyLabel">已开启</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 统计卡片：3列网格 + 手动刷新按钮 -->
+    <div class="px-4 py-4">
+      <div class="flex items-center justify-between mb-1">
+        <div class="grid grid-cols-3 gap-3 flex-1" id="statsGrid">
+          <!-- JS动态渲染 -->
+        </div>
+        <button onclick="refreshHome()" class="ml-2 w-8 h-8 flex items-center justify-center text-gray-400 hover:text-indigo-600 rounded-full hover:bg-indigo-50 transition" title="刷新数据">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 9H11m2-3h2m-2 3v-3"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- 状态Tab栏：全部 | 待跟进 | 跟进中 | 已到店 | 已试驾 -->
+    <!-- 修改原因：Tab映射状态机，替代原来的客户列表页筛选 -->
+    <div class="bg-white px-4 pt-2 pb-0 border-b border-gray-100">
+      <div class="flex space-x-4 overflow-x-auto text-sm" id="statusTabs">
+        <button class="status-tab-active pb-2 whitespace-nowrap border-b-2" data-status="all" onclick="filterByStatus(this)">全部</button>
+        <button class="text-gray-400 pb-2 whitespace-nowrap border-b-2 border-transparent" data-status="pending" onclick="filterByStatus(this)">待跟进</button>
+        <button class="text-gray-400 pb-2 whitespace-nowrap border-b-2 border-transparent" data-status="following" onclick="filterByStatus(this)">跟进中</button>
+        <button class="text-gray-400 pb-2 whitespace-nowrap border-b-2 border-transparent" data-status="arrived" onclick="filterByStatus(this)">已到店</button>
+        <button class="text-gray-400 pb-2 whitespace-nowrap border-b-2 border-transparent" data-status="test_drive" onclick="filterByStatus(this)">已试驾</button>
+      </div>
+    </div>
+
+    <!-- 客户列表 -->
+    <div id="customerList" class="divide-y divide-gray-100">
+      <!-- JS动态渲染 -->
+    </div>
+  </div>
+
+  <!-- ========== 2. 跟进提醒页 ========== -->
+  <div id="page-followup" class="page flex-1 overflow-y-auto main-content">
+    <div class="bg-white px-4 py-3 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-800">跟进提醒</h2>
+    </div>
+    <div class="px-4 py-3">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="text-sm font-medium text-gray-700">🟢 今日待跟进</h3>
+        <span class="text-xs text-gray-400" id="followupDate"></span>
+      </div>
+      <div id="todayFollowups" class="space-y-2">
+        <!-- JS动态渲染 -->
+      </div>
+    </div>
+    <div class="px-4 py-3">
+      <h3 class="text-sm font-medium text-red-600 mb-3">🔴 逾期未跟进</h3>
+      <div id="overdueFollowups" class="space-y-2">
+        <!-- JS动态渲染 -->
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 3. 我的页面 ========== -->
+  <div id="page-mine" class="page flex-1 overflow-y-auto main-content">
+    <div class="bg-white px-4 py-6 border-b border-gray-100">
+      <div class="flex items-center space-x-4">
+        <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center">
+          <span class="text-indigo-600 font-bold text-2xl" id="myAvatar">张</span>
+        </div>
+        <div>
+<h2 class="text-lg font-semibold text-gray-800" id="myName">张伟</h2>
+        <div class="flex items-center text-sm text-gray-500">
+          <span id="feature-indicator" class="ml-2">*</span>
+        </div>
+        <p class="text-sm text-gray-400">销售顾问 · 销售部</p>
+        </div>
+      </div>
+    </div>
+    <div class="px-4 py-4 space-y-3">
+      <div class="bg-white rounded-lg border border-gray-200 divide-y divide-gray-100">
+        <button class="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50"
+          onclick="switchTab('home')">
+          <span class="text-sm text-gray-700">📋 客户管理</span>
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+          <span id="customer-management" class="text-xs font-medium text-indigo-600">管理</span>
+        </button>
+        <button class="w-full px-4 py-3 flex items-center justify-between text-left hover:bg-gray-50"
+          onclick="switchTab('followup')">
+          <span class="text-sm text-gray-700">⏰ 跟进提醒</span>
+          <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========== 4. 客户详情页 ========== -->
+  <!-- 修改原因：增加只读聊天记录区+底部操作栏（发消息/打电话），删除独立对话页 -->
+  <div id="page-detail" class="page flex-1 overflow-y-auto main-content">
+    <!-- 顶部返回栏 -->
+    <div class="bg-white px-4 py-3 border-b border-gray-100 flex items-center space-x-3">
+      <button onclick="goBackFromDetail()" class="text-gray-500">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+        </svg>
+      </button>
+      <h2 class="text-base font-semibold text-gray-800" id="detailTitle">客户详情</h2>
+    </div>
+
+    <div id="detailContent" class="px-4 py-4 space-y-4">
+      <!-- JS动态渲染：客户信息+统计+标签+跟进记录+聊天记录 -->
+    </div>
+
+    <!-- 发消息输入框：点击"发消息"后展开，修改原因-不需要独立对话页 -->
+    <div id="msgInputArea" class="bg-white border-t border-gray-200 px-4 py-3 hidden">
+      <div class="flex items-center space-x-2">
+        <input id="detailMsgInput" type="text"
+          class="flex-1 px-4 py-2 bg-gray-50 border border-gray-200 rounded-full text-sm outline-none
+                 focus:ring-2 focus:ring-indigo-400 focus:border-indigo-400"
+          placeholder="输入消息..."
+          onkeydown="if(event.key==='Enter')sendDetailMessage()">
+        <button onclick="sendDetailMessage()"
+          class="w-9 h-9 bg-indigo-600 text-white rounded-full flex items-center justify-center hover:bg-indigo-700 transition">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+          </svg>
+        </button>
+        <button onclick="toggleMsgInput(false)"
+          class="text-gray-400 hover:text-gray-600 text-sm ml-1">收起</button>
+      </div>
+    </div>
+
+    <!-- 底部固定操作栏：发消息 + 拨打电话 + AI回复开关 -->
+    <div id="detailActionBar" class="bg-white border-t border-gray-200 px-4 py-3 flex space-x-3">
+      <button onclick="toggleMsgInput(true)" class="flex-1 bg-green-500 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-green-600 transition">
+        💬 发消息
+      </button>
+      <button onclick="callCustomer()" class="flex-1 bg-blue-500 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-blue-600 transition">
+        📞 拨打电话
+      </button>
+      <button id="aiToggleBtn" onclick="toggleAiReply()"
+        class="flex-none px-3 py-2.5 rounded-lg text-sm font-medium transition border"
+        style="min-width:72px">
+        🤖 AI
+      </button>
+    </div>
+  </div>
+
+  <!-- ============================== -->
+  <!-- 模态框 -->
+  <!-- ============================== -->
+
+  <!-- ========== 编辑客户信息模态框 ========== -->
+  <div id="editModal" class="fixed inset-0 z-50 hidden">
+    <div class="modal-overlay absolute inset-0" onclick="closeEditModal()"></div>
+    <div class="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl max-h-[80vh] overflow-y-auto p-6 z-10">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-semibold text-gray-800">编辑客户信息</h3>
+        <button onclick="closeEditModal()" class="text-gray-400">✕</button>
+      </div>
+      <div id="editFormContent" class="space-y-4">
+        <!-- JS动态渲染 -->
+      </div>
+      <button onclick="saveCustomerEdit()"
+        class="w-full mt-4 bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition">
+        保存
+      </button>
+    </div>
+  </div>
+
+  <!-- ========== 设置跟进提醒模态框 ========== -->
+  <div id="followupModal" class="fixed inset-0 z-50 hidden">
+    <div class="modal-overlay absolute inset-0" onclick="closeFollowupModal()"></div>
+    <div class="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl p-6 z-10">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-semibold text-gray-800">设置跟进提醒</h3>
+        <button onclick="closeFollowupModal()" class="text-gray-400">✕</button>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="text-sm text-gray-600 mb-1 block">跟进方式</label>
+          <select id="followupMethod" class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+            <option value="wechat">微信</option>
+            <option value="phone">电话</option>
+            <option value="store">到店</option>
+            <option value="email">邮件</option>
+          </select>
+        </div>
+        <div>
+          <label class="text-sm text-gray-600 mb-1 block">跟进内容</label>
+          <textarea id="followupContent" rows="3"
+            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"
+            placeholder="输入跟进内容或提醒事项..."></textarea>
+        </div>
+        <div>
+          <label class="text-sm text-gray-600 mb-1 block">下次跟进时间</label>
+          <input id="followupTime" type="datetime-local"
+            class="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm">
+        </div>
+      </div>
+      <button onclick="saveFollowup()"
+        class="w-full mt-4 bg-orange-500 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-orange-600 transition">
+        确认设置
+      </button>
+    </div>
+  </div>
+
+  <!-- ========== 编辑标签模态框 ========== -->
+  <div id="tagModal" class="fixed inset-0 z-50 hidden">
+    <div class="modal-overlay absolute inset-0" onclick="closeTagModal()"></div>
+    <div class="absolute bottom-0 left-0 right-0 bg-white rounded-t-2xl p-6 z-10">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="text-base font-semibold text-gray-800">编辑标签</h3>
+        <button onclick="closeTagModal()" class="text-gray-400">✕</button>
+      </div>
+      <div id="tagEditContent" class="space-y-3">
+        <!-- JS动态渲染 -->
+      </div>
+      <div class="flex items-center space-x-2 mt-3">
+        <input id="newTagInput" type="text" class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"
+          placeholder="输入新标签名">
+        <button onclick="addNewTag()" class="px-3 py-2 bg-indigo-600 text-white text-sm rounded-lg">添加</button>
+      </div>
+      <button onclick="saveTags()"
+        class="w-full mt-4 bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-medium hover:bg-indigo-700 transition">
+        保存标签
+      </button>
+    </div>
+  </div>
+
+  <!-- ============================== -->
+  <!-- 底部Tab导航（固定屏幕底部） -->
+  <!-- 修改原因：3个tab（首页/跟进/我的），删除"客户"tab，固定底部 -->
+  <!-- ============================== -->
+  <div class="bottom-tab-bar bg-white border-t border-gray-200">
+    <div class="grid grid-cols-3 py-2">
+      <button class="tab-nav flex flex-col items-center text-indigo-600" data-page="home" onclick="switchTab('home')">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0h4"/>
+        </svg>
+        <span class="text-xs mt-0.5">首页</span>
+      </button>
+      <button class="tab-nav flex flex-col items-center text-gray-400" data-page="followup" onclick="switchTab('followup')">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+        </svg>
+        <span class="text-xs mt-0.5">跟进</span>
+      </button>
+      <button class="tab-nav flex flex-col items-center text-gray-400" data-page="mine" onclick="switchTab('mine')">
+        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
+        </svg>
+        <span class="text-xs mt-0.5">我的</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast提示 -->
+  <div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-lg text-sm text-white shadow-lg transition-all duration-300 opacity-0 -translate-y-4"></div>
+
+  <script>
+    // ============================================================
+    // 全局状态
+    // ============================================================
+    const API = window.location.origin + '/api/v1';
+
+    // ============================================================
+    // 登录鉴权（修复：原来所有接口免登录，任何人访问这个页面都能看/改全部客户数据）
+    // ============================================================
+    let authToken = localStorage.getItem('scrm_auth_token') || '';
+    let authRole = localStorage.getItem('scrm_auth_role') || '';
+
+    // ---- 显示名称辅助函数（硬编码：临时访客名不暴露给顾问） ----
+    // 访客名（"访客_xxxx"）在顾问端统一显示为"客户"，避免"访客3479"这种暴露临时ID
+    function displayName(name) {
+      if (!name || name.startsWith('访客_')) return '客户';
+      return name;
+    }
+    function displayInitial(name) {
+      if (!name || name.startsWith('访客_')) return '客';
+      return name[0] || '?';
+    }
+    // -----------------------------------------------------------
+
+    // 所有对/api/v1的请求都要经过这里，自动带上Authorization头；
+    // 收到401说明没登录或token过期，弹登录框，不再往下走原来的逻辑。
+    async function apiFetch(url, options = {}) {
+      options.headers = Object.assign({}, options.headers, authToken ? { 'Authorization': 'Bearer ' + authToken } : {});
+      const res = await fetch(url, options);
+      if (res.status === 401) {
+        localStorage.removeItem('scrm_auth_token');
+        authToken = '';
+        showLoginGate('登录已过期，请重新登录');
+        throw new Error('未登录或登录已过期');
+      }
+      return res;
+    }
+
+    function showLoginGate(errMsg) {
+      document.getElementById('loginGate').classList.remove('hidden');
+      const errEl = document.getElementById('loginError');
+      if (errMsg) {
+        errEl.textContent = errMsg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.classList.add('hidden');
+      }
+    }
+
+    async function doLogin() {
+      const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const tenantCode = document.getElementById('loginTenantCode').value.trim() || 'default';
+      if (!username || !password) {
+        showLoginGate('请输入用户名和密码');
+        return;
+      }
+      try {
+        const res = await fetch(API + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, tenant_code: tenantCode })
+        });
+        const data = await res.json();
+        if (data.code !== 0) {
+          showLoginGate(data.message || '登录失败');
+          return;
+        }
+        authToken = data.data.token;
+        authRole = data.data.user.role;
+        // 存储租户码，用于前端权限控制和功能入口显示
+        localStorage.setItem('scrm_auth_token', authToken);
+        localStorage.setItem('scrm_auth_role', authRole);
+        localStorage.setItem('scrm_tenant_code', tenantCode);
+        // 用真实登录身份覆盖顾问身份显示（后端也会强制用JWT里的身份，前端这里只是同步显示）
+        userId = data.data.user.id;
+        const realName = data.data.user.real_name || data.data.user.username;
+        localStorage.setItem('scrm_advisor_user_id', String(userId));
+        localStorage.setItem('scrm_advisor_name', realName);
+        // 根据角色和租户码显示/隐藏功能入口
+        toggleFeatureVisibility();
+        document.getElementById('loginGate').classList.add('hidden');
+        location.reload(); // 简单可靠：登录成功后整页刷新，走一遍正常初始化流程
+      } catch (e) {
+        showLoginGate('登录请求失败，请检查网络');
+      }
+    }
+
+    if (!authToken) {
+      showLoginGate();
+    }
+
+    let userId = 2;                  // 当前销售ID
+    let currentPage = 'home';        // 当前页面
+    let currentCustomerId = null;    // 当前查看的客户ID
+    let customerDetail = null;       // 当前客户详情缓存
+    let lastViewedMap = {};          // 客户最后查看时间戳映射 {customerId: lastMessageAt}
+    let customerTags = [];           // 当前客户标签缓存（编辑用）
+    let allAvailableTags = [];       // 所有可选标签
+    let previousPage = 'home';       // 从详情页返回的页面
+    let currentStatusFilter = 'all'; // 当前状态Tab筛选值
+    let chatMessages = [];           // 当前客户聊天记录缓存
+    let currentConversationId = null;// 当前客户的会话ID
+    let currentConversationAiEnabled = true; // 当前会话AI回复开关状态
+    // 修复问题3：客户详情内消息轮询+标签轮询的interval ID
+    let chatPollInterval = null;     // 消息轮询定时器
+    let tagPollInterval = null;      // 标签轮询定时器
+    let lastChatMsgCount = 0;        // 上次消息数量，用于检测新消息
+
+    // 状态标签映射
+    const stageLabels = {
+      ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资',
+      arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败'
+    };
+    const stageColors = {
+      ai_connected: 'bg-gray-100 text-gray-500', human_connected: 'bg-blue-100 text-blue-600',
+      lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600',
+      ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600',
+      lost: 'bg-gray-200 text-gray-600'
+    };
+
+    // ============================================================
+    // 手动刷新首页数据
+    // 修复问题3：每次进入后更新 + 给一个手动刷新按钮
+    // ============================================================
+    async function refreshHome() {
+      showToast('刷新中...', 'info');
+      await Promise.all([loadStats(), loadCustomers()]);
+      showToast('已刷新', 'success');
+    }
+
+    // ============================================================
+    // 根据角色和租户码显示/隐藏功能入口
+    // ============================================================
+    function toggleFeatureVisibility() {
+      const tenantCode = localStorage.getItem('scrm_tenant_code') || 'default';
+      const isAdmin = authRole === 'admin';
+      const isTrialTenant = tenantCode === 'trial' || tenantCode === 'default-trial';
+
+      // 根据权限显示对应功能卡片
+      const featureElements = {
+        'customer-management': !isTrialTenant,
+        'tag-management': isAdmin,
+        'system-config': isAdmin,
+        'analytics-dashboard': isAdmin,
+        'customer-import': !isTrialTenant,
+      };
+
+      Object.keys(featureElements).forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.style.display = featureElements[id] ? 'block' : 'none';
+        }
+      });
+
+      // 根据租户类型显示欢迎信息
+      const tenantTip = isTrialTenant
+        ? '当前为试用版，部分功能受限，联系管理员获取完整权限'
+        : '欢迎使用 AI-SCRM SaaS 版';
+      showToast(tenantTip, 'info');
+    }
+
+    // ============================================================
+    // 初始化
+    // ============================================================
+    async function init() {
+      const params = new URLSearchParams(window.location.search);
+      if (params.get('user_id')) userId = parseInt(params.get('user_id'));
+
+      try {
+        await Promise.all([loadStats(), loadFollowups(), loadCustomers()]);
+        loadAllTags();
+      } catch (e) {
+        console.error('初始化失败，3秒后重试:', e);
+        // 修复：后端可能还在启动中，自动重试
+        if (!window._initRetryCount) window._initRetryCount = 0;
+        window._initRetryCount++;
+        if (window._initRetryCount < 10) {
+          setTimeout(init, 3000);
+          return;
+        }
+      }
+
+      // 日期显示
+      const today = new Date();
+      const dateStr = (today.getMonth() + 1) + '月' + today.getDate() + '日';
+      const el = document.getElementById('followupDate');
+      if (el) el.textContent = dateStr;
+    }
+
+    // ============================================================
+    // Tab切换（3个底部tab：首页/跟进/我的）
+    // 修改原因：删除"客户"tab和"对话"tab，首页已合并客户列表
+    // ============================================================
+    function switchTab(page) {
+      previousPage = currentPage;
+      currentPage = page;
+
+      // 隐藏所有页面
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      // 显示目标页面
+      const target = document.getElementById('page-' + page);
+      if (target) target.classList.add('active');
+
+      // 更新底部Tab样式
+      document.querySelectorAll('.tab-nav').forEach(btn => {
+        btn.classList.remove('text-indigo-600');
+        btn.classList.add('text-gray-400');
+        if (btn.dataset.page === page) {
+          btn.classList.add('text-indigo-600');
+          btn.classList.remove('text-gray-400');
+        }
+      });
+
+      // 刷新数据
+      if (page === 'home') { loadStats(); loadCustomers(); }
+      if (page === 'followup') loadFollowups();
+    }
+
+    // ============================================================
+    // 首页：统计卡片（3列：跟进中/已到店/今日待跟进）
+    // ============================================================
+    async function loadStats() {
+      try {
+        // 修复：不再传user_id，后端JWT中间件自动识别顾问身份，防止前端伪造user_id
+        const res = await apiFetch(API + '/advisor/stats');
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          const grid = document.getElementById('statsGrid');
+          if (!data.data || data.data.length === 0) {
+            grid.innerHTML = '<div class="col-span-3 text-center text-gray-400 py-6 text-sm">暂无待处理客户</div>';
+            return;
+          }
+          const colors = {
+            blue: 'bg-blue-50 text-blue-600', green: 'bg-green-50 text-green-600',
+            purple: 'bg-purple-50 text-purple-600', orange: 'bg-orange-50 text-orange-600', red: 'bg-red-50 text-red-600'
+          };
+          grid.innerHTML = data.data.map(s => `
+            <div class="bg-white rounded-lg border border-gray-100 p-3 text-center">
+              <p class="text-2xl font-bold ${colors[s.color] || 'text-gray-600'}">${s.value}</p>
+              <p class="text-xs text-gray-500 mt-1">${s.label}</p>
+            </div>
+          `).join('');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    // ============================================================
+    // 首页：状态Tab筛选 + 客户列表
+    // 修改原因：状态Tab映射后端status参数，首页=客户列表
+    // 映射关系：
+    //   全部 → status=all
+    //   待跟进 → status=pending
+    //   跟进中 → status=following
+    //   已到店 → status=arrived
+    //   已试驾 → status=test_drive
+    // ============================================================
+    function filterByStatus(btn) {
+      // 更新Tab样式
+      document.querySelectorAll('#statusTabs button').forEach(b => {
+        b.classList.remove('status-tab-active');
+        b.classList.add('text-gray-400', 'border-transparent');
+      });
+      btn.classList.add('status-tab-active');
+      btn.classList.remove('text-gray-400', 'border-transparent');
+
+      currentStatusFilter = btn.dataset.status;
+      loadCustomers();
+    }
+
+    async function loadCustomers() {
+      try {
+        // 修复：不再传user_id，后端JWT中间件自动识别顾问身份
+        const res = await apiFetch(API + '/advisor/customers?status=' + currentStatusFilter + '&page_size=50');
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          const list = data.data.list || [];
+          const container = document.getElementById('customerList');
+          if (list.length === 0) {
+            container.innerHTML = '<div class="text-center text-gray-400 py-10">暂无客户</div>';
+            return;
+          }
+          container.innerHTML = list.map(c => `
+              <div class="bg-white px-4 py-3 flex items-center space-x-3 cursor-pointer hover:bg-gray-50 transition"
+                onclick="openCustomerDetail(${c.id})">
+                <div class="relative w-10 h-10 flex-shrink-0">
+                  <div class="w-10 h-10 bg-gray-100 rounded-full flex items-center justify-center">
+                    <span class="text-gray-500 font-medium text-sm">${displayInitial(c.name)}</span>
+                  </div>
+                  ${hasNewMessage(c) ? '<span class="absolute -top-0.5 -right-0.5 w-3 h-3 bg-red-500 rounded-full border-2 border-white"></span>' : ''}
+                </div>
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-center space-x-2">
+                    <span class="text-sm font-medium text-gray-800">${displayName(c.name)}</span>
+                    <span class="text-[10px] px-1.5 py-0.5 rounded-full ${stageColors[c.journey_stage] || 'bg-gray-100 text-gray-500'}">${stageLabels[c.journey_stage] || c.journey_stage}</span>
+                    ${c.conv_mode === 'human' ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-blue-100 text-blue-600">人工</span>' : ''}
+                    ${c.assigned_user_name ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">' + c.assigned_user_name + '</span>' : ''}
+                  </div>
+                  <p class="text-xs text-gray-400 mt-0.5 truncate">${c.last_message || '暂无消息'}</p>
+                </div>
+                <span class="text-xs text-gray-300 flex-shrink-0">${formatShortTime(c.updated_at)}</span>
+              </div>
+          `).join('');
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    // ============================================================
+    // 客户详情页
+    // 修改原因：增加只读聊天记录区，底部操作栏（发消息/打电话），
+    //         发消息展开输入框直接调接口，不需要跳转对话页
+    // ============================================================
+    // 判断客户是否有新消息
+    function hasNewMessage(c) {
+      if (!c.last_message_at) return false;
+      const lastViewed = lastViewedMap[c.id];
+      return !lastViewed || c.last_message_at > lastViewed;
+    }
+
+    // 记录客户最后查看时间
+    function markCustomerViewed(id, lastMessageAt) {
+      if (lastMessageAt) {
+        lastViewedMap[id] = lastMessageAt;
+      }
+    }
+
+    async function openCustomerDetail(id) {
+      // 修复问题3：切换客户前先停掉旧的轮询
+      stopDetailPolling();
+
+      currentCustomerId = id;
+      // 收起消息输入框
+      toggleMsgInput(false);
+
+      try {
+        // 修复问题3：每次进入后更新客户信息、标签和需求
+        const res = await apiFetch(API + '/advisor/customer/' + id);
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          customerDetail = data.data;
+          customerTags = (data.data.tags || []).map(t => t.tag_name);
+          renderCustomerDetail(data.data);
+
+          // 显示详情页（不走switchTab，详情页不在底部tab中）
+          document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+          document.getElementById('page-detail').classList.add('active');
+
+          // 加载聊天记录
+          loadChatHistory();
+
+          // 加载试驾单
+          loadTestDrives(id);
+
+          // 修复问题3：启动消息轮询（每5秒）和标签轮询（每10秒）
+          startDetailPolling(id);
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    // 修复问题3：启动客户详情的消息+标签轮询
+    function startDetailPolling(customerId) {
+      stopDetailPolling(); // 安全起见先清理
+      lastChatMsgCount = chatMessages.length;
+
+      // 消息轮询：每5秒检测新消息
+      chatPollInterval = setInterval(async () => {
+        if (!currentCustomerId || currentCustomerId !== customerId) return;
+        try {
+          const res = await apiFetch(API.replace('/advisor', '') + '/chat/history?customer_id=' + customerId + '&limit=50');
+          const data = await res.json();
+          if (data.code === 0 && data.data && data.data.length > 0) {
+            // 只在有新消息时更新
+            if (data.data.length > lastChatMsgCount) {
+              chatMessages = data.data;
+              lastChatMsgCount = data.data.length;
+              renderChatInDetail();
+            }
+          }
+        } catch (e) { /* 静默忽略轮询错误 */ }
+      }, 5000);
+
+      // 标签轮询：每10秒刷新标签显示
+      tagPollInterval = setInterval(async () => {
+        if (!currentCustomerId || currentCustomerId !== customerId) return;
+        try {
+          const res = await apiFetch(API + '/advisor/customer/' + customerId);
+          const data = await res.json();
+          if (data.code === 0 && data.data) {
+            customerDetail = data.data;
+            customerTags = (data.data.tags || []).map(t => t.tag_name);
+            // 只更新标签区域，不重新渲染整个详情页
+            const tagsContainer = document.getElementById('detailTags');
+            if (tagsContainer) {
+              tagsContainer.innerHTML = (data.data.tags || []).map(t =>
+                `<span class="inline-block text-xs px-2 py-1 bg-indigo-50 text-indigo-600 rounded-full mr-1 mb-1">${t.tag_name}</span>`
+              ).join('');
+            }
+            // 同步更新AI回复开关状态
+            if (data.data.conversations && data.data.conversations.length > 0) {
+              const activeConv = data.data.conversations.find(c => c.id === currentConversationId) || data.data.conversations[0];
+              if (currentConversationAiEnabled !== (activeConv.is_ai_reply_enabled !== false)) {
+                currentConversationAiEnabled = activeConv.is_ai_reply_enabled !== false;
+                updateAiToggleButton();
+              }
+            }
+          }
+        } catch (e) { /* 静默忽略轮询错误 */ }
+      }, 10000);
+    }
+
+    // 修复问题3：停止客户详情的消息+标签轮询
+    function stopDetailPolling() {
+      if (chatPollInterval) { clearInterval(chatPollInterval); chatPollInterval = null; }
+      if (tagPollInterval) { clearInterval(tagPollInterval); tagPollInterval = null; }
+    }
+
+    function renderCustomerDetail(detail) {
+      const c = detail.customer;
+
+      // 更新标题
+      document.getElementById('detailTitle').textContent = displayName(c.name) || '客户详情';
+
+      // 标签
+      const tags = (detail.tags || []).map(t =>
+        `<span class="inline-block text-xs px-2 py-1 bg-indigo-50 text-indigo-600 rounded-full mr-1 mb-1">${t.tag_name}</span>`
+      ).join('');
+
+      // 跟进记录
+      const followups = (detail.followups || []).slice(0, 5).map(f => `
+        <div class="flex items-start space-x-2 py-2 border-b border-gray-50 last:border-0">
+          <div class="w-6 h-6 bg-gray-100 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+            <span class="text-xs">${f.method === 'phone' ? '📞' : f.method === 'wechat' ? '💬' : f.method === 'store' ? '🏪' : '✉️'}</span>
+          </div>
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-gray-600">${f.content || '无内容'}</p>
+            <p class="text-[10px] text-gray-300 mt-0.5">${formatTime(f.created_at)}</p>
+          </div>
+        </div>
+      `).join('');
+
+      // 对话模式标签：根据conv_mode判断，修改原因-在详情页聊天记录区顶部显示
+      const convModeTag = c.conv_mode === 'human'
+        ? '<span class="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full">人工对话</span>'
+        : '<span class="px-2 py-0.5 bg-green-100 text-green-700 text-xs rounded-full">AI对话中</span>';
+
+      document.getElementById('detailContent').innerHTML = `
+        <!-- 客户信息区：头像+姓名+状态标签+手机号+兴趣车型 -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4">
+          <div class="flex items-center space-x-3 mb-3">
+            <div class="w-14 h-14 bg-gray-100 rounded-full flex items-center justify-center">
+              <span class="text-gray-500 font-bold text-xl">${displayInitial(c.name)}</span>
+            </div>
+            <div class="flex-1">
+              <div class="flex items-center space-x-2">
+                <h3 class="text-base font-semibold text-gray-800">${displayName(c.name)}</h3>
+                <span class="text-xs px-2 py-0.5 rounded-full ${stageColors[c.journey_stage] || 'bg-gray-100 text-gray-500'}">${stageLabels[c.journey_stage] || c.journey_stage}</span>
+              </div>
+              <p class="text-xs text-gray-400 mt-0.5">${c.phone || ''} ${c.interest_model ? '· ' + c.interest_model : ''}</p>
+            </div>
+            <button onclick="openEditModal()" class="text-gray-400 hover:text-indigo-600">
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+              </svg>
+            </button>
+          </div>
+          <!-- 3列统计：意向分/已到店/预算 + 分配顾问 -->
+          <div class="grid grid-cols-3 gap-2 text-center">
+            <div class="bg-gray-50 rounded py-1.5">
+              <p class="text-sm font-semibold text-gray-700">${(c.intent_score * 100).toFixed(0)}%</p>
+              <p class="text-[10px] text-gray-400">意向分</p>
+            </div>
+            <div class="bg-gray-50 rounded py-1.5">
+              <p class="text-sm font-semibold text-gray-700">${c.store_visited > 0 ? '是' : '否'}</p>
+              <p class="text-[10px] text-gray-400">已到店</p>
+            </div>
+            <div class="bg-gray-50 rounded py-1.5">
+              <p class="text-sm font-semibold text-gray-700">${c.budget > 0 ? c.budget + '万' : '-'}</p>
+              <p class="text-[10px] text-gray-400">预算</p>
+            </div>
+          </div>
+          <!-- 修复问题3：显示分配给哪个顾问 -->
+          ${c.assigned_user_id > 0 ? `<div class="mt-2 flex items-center justify-center text-xs text-indigo-600 bg-indigo-50 rounded py-1">
+            <span>分配顾问：${customerDetail.assigned_user_name || '顾问' + c.assigned_user_id}</span>
+          </div>` : ''}
+          <!-- CDP客户画像展示 -->
+          ${c.intent_score !== undefined ? `
+          <div class="mt-4 bg-white rounded-lg border border-gray-200 p-4">
+            <h4 class="text-sm font-medium text-gray-700 mb-3">客户画像</h4>
+            <div class="grid grid-cols-2 gap-2 text-sm">
+              <div>
+                <p class="text-xs text-gray-500 mb-1">访问次数</p>
+                <p class="text-lg font-semibold" id="cdp_visit_count">${c.store_visited > 0 ? '是' : '否'}</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 mb-1">试驾次数</p>
+                <p class="text-lg font-semibold" id="cdp_test_drive">${c.test_drive_count}</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 mb-1">消息计数</p>
+                <p class="text-lg font-semibold" id="cdp_message">${c.MessageCount || 0}</p>
+              </div>
+              <div>
+                <p class="text-xs text-gray-500 mb-1">意向分</p>
+                <p class="text-lg font-semibold" style="color: ${c.intent_score > 0.5 ? 'green' : c.intent_score < 0 ? 'red' : 'orange'}">
+                  ${(c.intent_score * 100).toFixed(0)}%
+                </p>
+              </div>
+            </div>
+          </div>` : ''}
+        </div>
+
+        <!-- 标签区（可编辑） -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-sm font-medium text-gray-700">标签</h4>
+            <button onclick="openTagModal()" class="text-xs text-indigo-500 hover:text-indigo-600">编辑</button>
+          </div>
+          <div id="detailTags" class="flex flex-wrap">${tags || '<span class="text-xs text-gray-300">暂无标签</span>'}</div>
+        </div>
+
+        <!-- 跟进记录区 -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-sm font-medium text-gray-700">跟进记录</h4>
+            <button onclick="openFollowupModal()" class="text-xs text-orange-500 hover:text-orange-600">+ 设置提醒</button>
+          </div>
+          ${followups || '<p class="text-xs text-gray-300">暂无跟进记录</p>'}
+        </div>
+
+        <!-- 试驾单区 -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-sm font-medium text-gray-700">试驾单</h4>
+            <button onclick="openTestDriveModal()" class="text-xs text-green-500 hover:text-green-600">+ 预约试驾</button>
+          </div>
+          <div id="detailTestDrives" class="space-y-2">
+            <p class="text-xs text-gray-300">加载中...</p>
+          </div>
+        </div>
+
+        <!-- 聊天记录区（只读，展示最近消息，滚动查看） -->
+        <!-- 修改原因：替代独立对话页，在详情页内只读展示聊天记录 -->
+        <div class="bg-white rounded-lg border border-gray-200 p-4">
+          <div class="flex items-center justify-between mb-2">
+            <div class="flex items-center space-x-2">
+              <h4 class="text-sm font-medium text-gray-700">聊天记录</h4>
+              ${convModeTag}
+            </div>
+          </div>
+          <div id="detailChatHistory" class="chat-scroll max-h-64 overflow-y-auto space-y-2">
+            <p class="text-xs text-gray-300 text-center py-4">加载中...</p>
+          </div>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // 聊天记录加载（只读）
+    // 修改原因：在详情页内展示，不需要跳转对话页
+    // ============================================================
+    async function loadChatHistory() {
+      if (!currentCustomerId) return;
+      try {
+        const res = await apiFetch(API + '/chat/history?customer_id=' + currentCustomerId + '&limit=100');
+        const data = await res.json();
+        if (data.code === 0 && data.data && data.data.length > 0) {
+          chatMessages = data.data;
+          currentConversationId = data.data[0].conversation_id;
+          lastChatMsgCount = data.data.length; // 修复问题3：记录初始消息数量
+          renderDetailChatHistory(data.data);
+          // 标记已查看
+          const lastMsg = data.data[data.data.length - 1];
+          markCustomerViewed(currentCustomerId, lastMsg.created_at);
+        } else {
+          chatMessages = [];
+          currentConversationId = null;
+          const container = document.getElementById('detailChatHistory');
+          if (container) container.innerHTML = '<p class="text-xs text-gray-300 text-center py-4">暂无对话记录</p>';
+        }
+        // 从详情数据中读取AI回复开关状态
+        if (customerDetail && customerDetail.conversations && customerDetail.conversations.length > 0) {
+          const activeConv = customerDetail.conversations.find(c => c.id === currentConversationId) || customerDetail.conversations[0];
+          currentConversationAiEnabled = activeConv.is_ai_reply_enabled !== false;
+        }
+        updateAiToggleButton();
+      } catch (e) {
+        console.error(e);
+        const container = document.getElementById('detailChatHistory');
+        if (container) container.innerHTML = '<p class="text-xs text-gray-300 text-center py-4">加载失败</p>';
+      }
+    }
+
+    // 修复问题3：轮询检测到新消息后调用此函数刷新聊天区域
+    function renderChatInDetail() {
+      renderDetailChatHistory(chatMessages);
+    }
+
+    function renderDetailChatHistory(msgs) {
+      const container = document.getElementById('detailChatHistory');
+      if (!container) return;
+
+      if (!msgs || msgs.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-300 text-center py-4">暂无对话记录</p>';
+        return;
+      }
+
+      container.innerHTML = msgs.map(msg => {
+        const isCustomer = msg.sender_type === 'customer';
+        if (isCustomer) {
+          return `<div class="flex items-start space-x-2">
+            <div class="w-5 h-5 bg-gray-200 rounded-full flex items-center justify-center flex-shrink-0 mt-0.5">
+              <span class="text-[9px] text-gray-500">${(customerDetail?.customer?.name || '?')[0]}</span>
+            </div>
+            <div class="bg-gray-100 rounded-lg px-3 py-1.5 max-w-[75%]">
+              <p class="text-xs text-gray-700">${esc(msg.content)}</p>
+            </div>
+            <span class="text-[9px] text-gray-300 mt-1 flex-shrink-0">${formatTime(msg.created_at)}</span>
+          </div>`;
+        } else {
+          // 顾问/AI发出的消息，右对齐
+          const isHuman = msg.sender_type === 'human';
+          const senderLabel = isHuman ? '我' : 'AI';
+          const bgColor = isHuman ? 'bg-blue-500' : 'bg-green-500';
+          const labelBg = isHuman ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600';
+          return `<div class="flex items-start space-x-2 justify-end">
+            <span class="text-[9px] text-gray-300 mt-1 flex-shrink-0">${formatTime(msg.created_at)}</span>
+            <div class="flex flex-col items-end">
+              <span class="text-[9px] ${labelBg} px-1.5 py-0.5 rounded mb-0.5">${senderLabel}</span>
+              <div class="${bgColor} rounded-lg px-3 py-1.5 max-w-[75%]">
+                <p class="text-xs text-white">${esc(msg.content)}</p>
+              </div>
+            </div>
+          </div>`;
+        }
+      }).join('');
+
+      // 滚动到底部
+      setTimeout(() => { container.scrollTop = container.scrollHeight; }, 100);
+    }
+
+    // ============================================================
+    // 试驾单功能
+    // ============================================================
+    async function loadTestDrives(customerId) {
+      try {
+        const res = await apiFetch(API + '/advisor/test-drives?customer_id=' + customerId);
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          renderTestDrives(data.data);
+        }
+      } catch (e) { console.error('加载试驾单失败:', e); }
+    }
+
+    function renderTestDrives(list) {
+      const container = document.getElementById('detailTestDrives');
+      if (!container) return;
+      if (!list || list.length === 0) {
+        container.innerHTML = '<p class="text-xs text-gray-300">暂无试驾记录</p>';
+        return;
+      }
+      container.innerHTML = list.map(td => {
+        const statusMap = { pending: '待试驾', completed: '已完成', cancelled: '已取消' };
+        const colorMap = { pending: 'text-yellow-600 bg-yellow-50', completed: 'text-green-600 bg-green-50', cancelled: 'text-gray-400 bg-gray-50' };
+        const statusText = statusMap[td.status] || td.status;
+        const statusColor = colorMap[td.status] || 'text-gray-500 bg-gray-50';
+        const time = td.scheduled_at ? new Date(td.scheduled_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+        return `<div class="flex items-center justify-between py-2 border-b border-gray-50 last:border-0">
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center space-x-2">
+              <span class="text-sm font-medium text-gray-700">${td.model_name || '试驾'}</span>
+              <span class="text-[10px] px-1.5 py-0.5 rounded-full ${statusColor}">${statusText}</span>
+            </div>
+            <p class="text-xs text-gray-400 mt-0.5">${time} ${td.location ? '· ' + td.location : ''}</p>
+            ${td.note ? '<p class="text-xs text-gray-400 mt-0.5">备注: ' + esc(td.note) + '</p>' : ''}
+            ${td.result ? '<p class="text-xs text-gray-400 mt-0.5">反馈: ' + esc(td.result) + '</p>' : ''}
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    function openTestDriveModal() {
+      const c = customerDetail?.customer;
+      document.getElementById('tdCustomerName').value = c ? displayName(c.name) : '';
+      document.getElementById('tdCustomerPhone').value = c ? (c.phone || '') : '';
+      document.getElementById('tdModelName').value = c ? (c.interest_model || '') : '';
+      document.getElementById('tdScheduledAt').value = '';
+      document.getElementById('tdLocation').value = '';
+      document.getElementById('tdNote').value = '';
+      document.getElementById('testDriveModal').classList.remove('hidden');
+    }
+
+    function closeTestDriveModal() {
+      document.getElementById('testDriveModal').classList.add('hidden');
+    }
+
+    async function createTestDrive() {
+      const c = customerDetail?.customer;
+      if (!c || !currentCustomerId) { showToast('请先选择客户', 'error'); return; }
+      const scheduledAt = document.getElementById('tdScheduledAt').value;
+      if (!scheduledAt) { showToast('请选择试驾时间', 'error'); return; }
+      const body = {
+        customer_id: currentCustomerId,
+        scheduled_at: new Date(scheduledAt).toISOString(),
+        model_name: document.getElementById('tdModelName').value.trim(),
+        contact_name: document.getElementById('tdCustomerName').value.trim(),
+        contact_phone: document.getElementById('tdCustomerPhone').value.trim(),
+        location: document.getElementById('tdLocation').value.trim(),
+        note: document.getElementById('tdNote').value.trim()
+      };
+      try {
+        const res = await apiFetch(API + '/advisor/test-drive', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('试驾预约成功', 'success');
+          closeTestDriveModal();
+          loadTestDrives(currentCustomerId);
+        } else {
+          showToast(data.message || '创建失败', 'error');
+        }
+      } catch (e) { showToast('创建失败', 'error'); }
+    }
+
+    // ============================================================
+    // 详情页底部操作：发消息 + 拨打电话
+    // 修改原因：发消息在详情页实现，不需要跳转对话页
+    // ============================================================
+
+    // 切换消息输入框展开/收起
+    function toggleMsgInput(show) {
+      const inputArea = document.getElementById('msgInputArea');
+      const actionBar = document.getElementById('detailActionBar');
+      if (show) {
+        inputArea.classList.remove('hidden');
+        actionBar.classList.add('hidden');
+        document.getElementById('detailMsgInput').focus();
+      } else {
+        inputArea.classList.add('hidden');
+        actionBar.classList.remove('hidden');
+        document.getElementById('detailMsgInput').value = '';
+      }
+    }
+
+    // 发送消息：直接调 /advisor/chat/send 接口
+    // 修改原因：不需要打开对话窗口，在详情页直接发送
+    async function sendDetailMessage() {
+      const input = document.getElementById('detailMsgInput');
+      const content = input.value.trim();
+      if (!content) return;
+      input.value = '';
+
+      try {
+        const res = await apiFetch(API + '/advisor/chat/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            conversation_id: currentConversationId,
+            customer_id: currentCustomerId,
+            content: content
+          })
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('消息已发送', 'success');
+          // 追加消息到聊天记录区域（不跳转对话页）
+          // 修改原因：发送后直接在详情页聊天记录区追加显示
+          const newMsg = {
+            sender_type: 'human',
+            content: content,
+            created_at: new Date().toISOString()
+          };
+          chatMessages.push(newMsg);
+          // 如果是第一条消息，可能需要更新conversationId
+          if (data.data && data.data.conversation_id) {
+            currentConversationId = data.data.conversation_id;
+          }
+          renderDetailChatHistory(chatMessages);
+        } else {
+          showToast('发送失败', 'error');
+        }
+      } catch (e) {
+        showToast('发送失败', 'error');
+      }
+    }
+
+    // 拨打电话
+    function callCustomer() {
+      if (!customerDetail || !customerDetail.customer) return;
+      const phone = customerDetail.customer.phone;
+      if (phone) {
+        // 尝试触发拨号，移动端会调起电话应用
+        window.location.href = 'tel:' + phone;
+      } else {
+        showToast('客户未留电话号码', 'info');
+      }
+    }
+
+    // ============================================================
+    // AI回复开关
+    // ============================================================
+    function updateAiToggleButton() {
+      const btn = document.getElementById('aiToggleBtn');
+      if (!btn) return;
+      if (currentConversationAiEnabled) {
+        btn.className = 'flex-none px-3 py-2.5 rounded-lg text-sm font-medium transition bg-green-100 text-green-700 border-green-300 hover:bg-green-200';
+        btn.innerHTML = '🤖 AI开';
+        btn.title = '点击关闭AI自动回复';
+      } else {
+        btn.className = 'flex-none px-3 py-2.5 rounded-lg text-sm font-medium transition bg-gray-100 text-gray-500 border-gray-300 hover:bg-gray-200';
+        btn.innerHTML = '🤖 AI关';
+        btn.title = '点击开启AI自动回复';
+      }
+    }
+
+    async function toggleAiReply() {
+      if (!currentConversationId) {
+        showToast('暂无活跃会话', 'info');
+        return;
+      }
+      try {
+        const res = await apiFetch(API + '/advisor/chat/toggle-ai-reply', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversation_id: currentConversationId })
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          currentConversationAiEnabled = data.data.is_ai_reply_enabled;
+          updateAiToggleButton();
+          showToast(data.message || '已切换AI回复状态', 'success');
+        } else {
+          showToast(data.message || '操作失败', 'error');
+        }
+      } catch (e) {
+        showToast('网络错误', 'error');
+      }
+    }
+
+    // 修复问题2：删掉clearDelay函数，秒回功能改为后台配置reply_delay_mode=instant
+    // 原clearDelay已删除，不再需要
+
+    // 详情页返回
+    function goBackFromDetail() {
+      // 修复问题3：退出详情页时停止轮询
+      stopDetailPolling();
+      // 返回之前的页面（首页/跟进/我的）
+      switchTab(previousPage || 'home');
+    }
+
+    // ============================================================
+    // 跟进提醒
+    // ============================================================
+    async function loadFollowups() {
+      try {
+        // 修复：不再传user_id，后端JWT中间件自动识别顾问身份
+        const res = await apiFetch(API + '/advisor/followups');
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          const now = new Date();
+          const today = data.data.filter(f => f.next_follow_at && new Date(f.next_follow_at) >= now);
+          const overdue = data.data.filter(f => f.next_follow_at && new Date(f.next_follow_at) < now);
+
+          document.getElementById('todayFollowups').innerHTML = today.length > 0 ?
+            today.map(renderFollowupItem).join('') :
+            '<p class="text-xs text-gray-300">暂无待处理客户</p>';
+
+          document.getElementById('overdueFollowups').innerHTML = overdue.length > 0 ?
+            overdue.map(renderFollowupItem).join('') :
+            '<p class="text-xs text-gray-300">无逾期跟进</p>';
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    function renderFollowupItem(f) {
+      return `<div class="bg-white rounded-lg border border-gray-100 p-3 flex items-center space-x-3 cursor-pointer"
+        onclick="openCustomerDetail(${f.customer_id})">
+        <div class="w-8 h-8 bg-gray-100 rounded-full flex items-center justify-center flex-shrink-0">
+          <span class="text-xs">${displayInitial(f.customer_name)}</span>
+        </div>
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-medium text-gray-700">${displayName(f.customer_name)}</p>
+          <p class="text-xs text-gray-400 truncate">${f.content || '跟进提醒'}</p>
+        </div>
+        <span class="text-xs text-gray-300">${formatShortTime(f.next_follow_at)}</span>
+      </div>`;
+    }
+
+    // ============================================================
+    // 模态框：编辑客户信息
+    // ============================================================
+    function openEditModal() {
+      if (!customerDetail) return;
+      const c = customerDetail.customer;
+      document.getElementById('editFormContent').innerHTML = `
+        <div><label class="text-xs text-gray-500">姓名</label>
+          <input id="editName" value="${c.name || ''}" class="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"></div>
+        <div><label class="text-xs text-gray-500">手机号</label>
+          <input id="editPhone" value="${c.phone || ''}" class="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"></div>
+        <div><label class="text-xs text-gray-500">兴趣车型</label>
+          <input id="editModel" value="${c.interest_model || ''}" class="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"></div>
+        <div><label class="text-xs text-gray-500">预算(万)</label>
+          <input id="editBudget" type="number" value="${c.budget || ''}" class="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm"></div>
+        <div><label class="text-xs text-gray-500">备注</label>
+          <textarea id="editRemark" class="w-full mt-1 px-3 py-2 border border-gray-300 rounded-lg text-sm" rows="2">${c.remark || ''}</textarea></div>
+      `;
+      document.getElementById('editModal').classList.remove('hidden');
+    }
+    function closeEditModal() { document.getElementById('editModal').classList.add('hidden'); }
+
+    async function saveCustomerEdit() {
+      if (!currentCustomerId) return;
+      const body = {};
+      const name = document.getElementById('editName').value.trim();
+      const phone = document.getElementById('editPhone').value.trim();
+      const model = document.getElementById('editModel').value.trim();
+      const budget = parseFloat(document.getElementById('editBudget').value);
+      const remark = document.getElementById('editRemark').value.trim();
+      if (name) body.name = name;
+      if (phone) body.phone = phone;
+      if (model) body.interest_model = model;
+      if (budget > 0) body.budget = budget;
+      if (remark) body.remark = remark;
+
+      try {
+        const res = await apiFetch(API + '/advisor/customer/' + currentCustomerId + '/info', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('保存成功', 'success');
+          closeEditModal();
+          openCustomerDetail(currentCustomerId);
+        } else { showToast('保存失败', 'error'); }
+      } catch (e) { showToast('保存失败', 'error'); }
+    }
+
+    // ============================================================
+    // 模态框：设置跟进提醒
+    // ============================================================
+    function openFollowupModal() {
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      tomorrow.setHours(10, 0, 0, 0);
+      document.getElementById('followupTime').value = tomorrow.toISOString().slice(0, 16);
+      document.getElementById('followupModal').classList.remove('hidden');
+    }
+    function closeFollowupModal() { document.getElementById('followupModal').classList.add('hidden'); }
+
+    async function saveFollowup() {
+      if (!currentCustomerId) return;
+      const method = document.getElementById('followupMethod').value;
+      const content = document.getElementById('followupContent').value.trim();
+      const time = document.getElementById('followupTime').value;
+      if (!content) { showToast('请输入跟进内容', 'error'); return; }
+
+      try {
+        const res = await apiFetch(API + '/advisor/customer/' + currentCustomerId + '/followup', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            customer_id: currentCustomerId,
+            method: method,
+            content: content,
+            next_follow_at: time ? new Date(time).toISOString() : ''
+          })
+        });
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('跟进提醒已设置', 'success');
+          closeFollowupModal();
+          openCustomerDetail(currentCustomerId);
+        } else { showToast('设置失败', 'error'); }
+      } catch (e) { showToast('设置失败', 'error'); }
+    }
+
+    // ============================================================
+    // 模态框：编辑标签
+    // 修改原因：loadAllTags调用免鉴权接口，不需要token
+    // ============================================================
+    async function loadAllTags() {
+      try {
+        // 修改原因：所有接口免鉴权，不需要Authorization头
+        const res = await apiFetch(API + '/admin/tags');
+        const data = await res.json();
+        if (data.code === 0) allAvailableTags = data.data.list || data.data || [];
+      } catch (e) { console.error(e); }
+    }
+
+    function openTagModal() {
+      const tagNames = allAvailableTags.map(t => t.name);
+      const container = document.getElementById('tagEditContent');
+      container.innerHTML = tagNames.map(name => {
+        const checked = customerTags.includes(name);
+        return `<label class="flex items-center space-x-2 cursor-pointer">
+          <input type="checkbox" value="${name}" ${checked ? 'checked' : ''}
+            class="tag-checkbox w-4 h-4 text-indigo-600 rounded border-gray-300">
+          <span class="text-sm text-gray-700">${name}</span>
+        </label>`;
+      }).join('');
+      document.getElementById('newTagInput').value = '';
+      document.getElementById('tagModal').classList.remove('hidden');
+    }
+    function closeTagModal() { document.getElementById('tagModal').classList.add('hidden'); }
+
+    function addNewTag() {
+      const input = document.getElementById('newTagInput');
+      const name = input.value.trim();
+      if (!name) return;
+      customerTags.push(name);
+      const container = document.getElementById('tagEditContent');
+      container.innerHTML += `<label class="flex items-center space-x-2 cursor-pointer">
+        <input type="checkbox" value="${name}" checked
+          class="tag-checkbox w-4 h-4 text-indigo-600 rounded border-gray-300">
+        <span class="text-sm text-gray-700">${name}</span>
+      </label>`;
+      input.value = '';
+    }
+
+async function saveTags() {
+      if (!currentCustomerId) return;
+      const checked = Array.from(document.querySelectorAll('.tag-checkbox:checked')).map(cb => cb.value);
+      try {
+        const res = await apiFetch(API + '/advisor/customer/' + currentCustomerId + '/tags', {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tags: checked })
+        });
+
+        if (res.code === 0) {
+          customerTags = checked;
+          showToast('标签已更新', 'success');
+          closeTagModal();
+          openCustomerDetail(currentCustomerId);
+          // 记录标签权重变化反馈
+          recordTagWeightFeedback(customerTags, checked);
+        } else {
+          showToast('更新失败: ' + res.message, 'error');
+        }
+      } catch (e) { showToast('更新失败', 'error'); }
+    }
+
+    // ============================================================
+    // 记录标签权重反馈
+    // ============================================================
+    function recordTagWeightFeedback(previousTags, newTags) {
+      // 计算新增、移除和保持不变的标签
+      const added = newTags.filter(t => !previousTags.includes(t));
+      const removed = previousTags.filter(t => !newTags.includes(t));
+      const kept = newTags.filter(t => previousTags.includes(t));
+
+      // 显示反馈消息
+      const feedbackParts = [];
+      if (added.length > 0) feedbackParts.push(`新增 ${added.length} 个标签`);
+      if (removed.length > 0) feedbackParts.push(`移除 ${removed.length} 个标签`);
+      if (kept.length > 0) feedbackParts.push(`保持 ${kept.length} 个标签不变`);
+
+      if (feedbackParts.length > 0) {
+        showToast(feedbackParts.join('，') + '，系统将根据反馈调整权重', 'info');
+      }
+    }
+      } catch (e) { showToast('更新失败', 'error'); }
+    }
+
+    // ============================================================
+    // AI文案开关
+    // ============================================================
+    function toggleAICopy() {
+      const on = document.getElementById('aiCopySwitch').checked;
+      document.getElementById('aiCopyLabel').textContent = on ? '已开启' : '已关闭';
+      document.getElementById('aiCopyLabel').className = on ? 'text-xs text-indigo-600 font-medium' : 'text-xs text-gray-400';
+    }
+
+    // ============================================================
+    // 辅助函数
+    // ============================================================
+    function formatTime(t) {
+      if (!t) return '';
+      const d = new Date(t);
+      return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+    }
+
+    function formatShortTime(t) {
+      if (!t) return '';
+      const d = new Date(t);
+      const now = new Date();
+      if (d.toDateString() === now.toDateString()) {
+        return formatTime(t);
+      }
+      return (d.getMonth() + 1) + '/' + d.getDate();
+    }
+
+    function esc(str) {
+      if (!str) return '';
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML.replace(/\n/g, '<br>');
+    }
+
+    function showToast(msg, type) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 rounded-lg text-sm text-white shadow-lg transition-all duration-300 ' +
+        (type === 'error' ? 'bg-red-500' : type === 'success' ? 'bg-green-500' : 'bg-blue-500');
+      t.style.opacity = '1';
+      t.style.transform = 'translateX(-50%) translateY(0)';
+      setTimeout(() => {
+        t.style.opacity = '0';
+        t.style.transform = 'translateX(-50%) translateY(-16px)';
+      }, 3000);
+    }
+
+    // 初始化
+    // 未登录时不跑初始化逻辑，避免刚打开页面就对着还没鉴权的接口一顿401报错；
+    // 登录成功后 doLogin() 里会整页reload，会重新执行到这里、这时authToken已经有值了
+    if (authToken) {
+      init();
+    }
+
+    // 恢复登录身份到UI（doLogin已存到localStorage，无需每次都重输密码）
+    (function restoreIdentity() {
+      const savedName = localStorage.getItem('scrm_advisor_name');
+      const savedId = localStorage.getItem('scrm_advisor_user_id');
+      if (savedName) {
+        document.getElementById('userName').textContent = savedName;
+        document.getElementById('userAvatar').textContent = savedName[0];
+        document.getElementById('myName').textContent = savedName;
+        document.getElementById('myAvatar').textContent = savedName[0];
+      }
+      if (savedId) userId = parseInt(savedId);
+    })();
+  </script>
+</body>
+</html>

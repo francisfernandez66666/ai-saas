@@ -1,0 +1,2025 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI自动化SCRM - 后台管理</title>
+  <!-- Tailwind CSS CDN，零构建 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- SortableJS CDN，用于模型优先级拖拽排序 -->
+  <script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.0/Sortable.min.js"></script>
+  <style>
+    /* 拖拽排序的视觉反馈 */
+    .sortable-ghost { opacity: 0.4; background: #e0e7ff; }
+    .sortable-chosen { box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+    /* 开关组件样式 */
+    .toggle-switch { position: relative; width: 44px; height: 24px; }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; }
+    .toggle-slider {
+      position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0;
+      background-color: #cbd5e1; border-radius: 24px; transition: 0.3s;
+    }
+    .toggle-slider:before {
+      position: absolute; content: ""; height: 18px; width: 18px;
+      left: 3px; bottom: 3px; background-color: white;
+      border-radius: 50%; transition: 0.3s;
+    }
+    .toggle-switch input:checked + .toggle-slider { background-color: #6366f1; }
+    .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); }
+    /* Tab 下划线动画 */
+    .tab-btn { position: relative; transition: color 0.2s; }
+    .tab-btn.active { color: #4f46e5; }
+    .tab-btn.active::after {
+      content: ''; position: absolute; bottom: -2px; left: 0; right: 0;
+      height: 2px; background: #4f46e5; border-radius: 2px;
+    }
+    /* 保存按钮动画 */
+    .btn-save:disabled { opacity: 0.6; cursor: not-allowed; }
+    /* Toast 通知 */
+    .toast {
+      position: fixed; top: 20px; right: 20px; z-index: 9999;
+      padding: 12px 20px; border-radius: 8px; color: white;
+      font-size: 14px; transform: translateX(120%); transition: transform 0.3s;
+    }
+    .toast.show { transform: translateX(0); }
+    .toast-success { background: #059669; }
+    .toast-error { background: #dc2626; }
+    .toast-info { background: #4f46e5; }
+
+    /* ======== 流程引擎可视化样式 ======== */
+    /* 流程节点通用样式 */
+    .flow-node {
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      font-weight: 600;
+      text-align: center;
+      min-width: 90px;
+      position: relative;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    .flow-node:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+    }
+    /* 节点颜色方案 */
+    .flow-node-stage-1 { background: linear-gradient(135deg, #e0e7ff, #c7d2fe); color: #3730a3; border: 1px solid #a5b4fc; }
+    .flow-node-stage-2 { background: linear-gradient(135deg, #dbeafe, #bfdbfe); color: #1e40af; border: 1px solid #93c5fd; }
+    .flow-node-stage-3 { background: linear-gradient(135deg, #cffafe, #a5f3fc); color: #155e75; border: 1px solid #67e8f9; }
+    .flow-node-stage-4 { background: linear-gradient(135deg, #d1fae5, #a7f3d0); color: #065f46; border: 1px solid #6ee7b7; }
+    .flow-node-stage-5 { background: linear-gradient(135deg, #ffedd5, #fed7aa); color: #9a3412; border: 1px solid #fdba74; }
+    .flow-node-stage-6 { background: linear-gradient(135deg, #fee2e2, #fecaca); color: #991b1b; border: 1px solid #fca5a5; }
+    .flow-node-lost { background: linear-gradient(135deg, #f3f4f6, #e5e7eb); color: #6b7280; border: 1px solid #d1d5db; }
+    /* 流程箭头（水平方向） */
+    .flow-arrow-h {
+      display: flex;
+      align-items: center;
+      color: #9ca3af;
+      font-size: 20px;
+      padding: 0 4px;
+    }
+    /* 流程箭头（垂直方向） */
+    .flow-arrow-v {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      color: #9ca3af;
+      font-size: 20px;
+      padding: 4px 0;
+    }
+    /* 决策流程步骤样式 */
+    .decision-step {
+      background: #fff;
+      border: 2px solid #e0e7ff;
+      border-radius: 12px;
+      padding: 12px 18px;
+      min-width: 120px;
+      text-align: center;
+      position: relative;
+      transition: border-color 0.2s, box-shadow 0.2s;
+    }
+    .decision-step:hover {
+      border-color: #818cf8;
+      box-shadow: 0 2px 12px rgba(99,102,241,0.15);
+    }
+    .decision-step .step-num {
+      position: absolute;
+      top: -10px;
+      left: -10px;
+      width: 22px;
+      height: 22px;
+      background: #6366f1;
+      color: #fff;
+      border-radius: 50%;
+      font-size: 11px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .decision-step.step-lock {
+      border-color: #f59e0b;
+      background: #fffbeb;
+    }
+    .decision-step.step-lock .step-num {
+      background: #f59e0b;
+    }
+    /* 配置摘要参数卡片 */
+    .param-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 12px;
+      background: #f1f5f9;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #475569;
+      margin: 3px;
+    }
+    .param-chip .param-key {
+      color: #6366f1;
+      font-weight: 600;
+      margin-right: 4px;
+    }
+    /* ======== 标签体系样式 ======== */
+    .tag-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      margin: 2px;
+      transition: all 0.15s;
+    }
+    .tag-badge:hover {
+      opacity: 0.85;
+    }
+    .tag-badge .tag-remove {
+      margin-left: 5px;
+      cursor: pointer;
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    }
+    .tag-badge .tag-remove:hover {
+      opacity: 1;
+    }
+    /* 标签分类颜色 */
+    .tag-cat-intent { background: #ede9fe; color: #6d28d9; border: 1px solid #c4b5fd; }
+    .tag-cat-source { background: #dbeafe; color: #1d4ed8; border: 1px solid #93c5fd; }
+    .tag-cat-car { background: #d1fae5; color: #047857; border: 1px solid #6ee7b7; }
+    .tag-cat-type { background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; }
+    .tag-cat-status { background: #fce7f3; color: #be185d; border: 1px solid #f9a8d4; }
+    /* 初始化失败提示横幅 */
+    .init-error-banner {
+      background: #fef2f2;
+      border: 1px solid #fca5a5;
+      border-radius: 10px;
+      padding: 16px 20px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+  <!-- 登录遮罩：支持 tenant_code 入口，按权限层级显示功能 -->
+  <div id="loginGate" class="fixed inset-0 z-[100] bg-gray-50 flex items-center justify-center hidden">
+    <div class="w-full max-w-xs bg-white rounded-xl shadow-lg p-6">
+      <h1 class="text-lg font-semibold text-gray-800 mb-4" id="loginGateTitle">后台管理员登录</h1>
+      <div class="flex items-center justify-between mb-4">
+        <span class="text-xs text-gray-500" id="loginMode">已切换到登录模式</span>
+        <button onclick="toggleLoginMode()" class="text-indigo-600 text-sm hover:underline">切换到注册</button>
+      </div>
+      <div class="mb-3">
+        <label class="text-xs text-gray-500 block mb-1">租户码</label>
+        <input id="loginTenantCode" type="text" placeholder="输入租户码 (如: rox-admin)"
+          class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      </div>
+      <input id="loginUsername" type="text" placeholder="用户名" autocomplete="username"
+        class="w-full mb-3 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      <input id="loginPassword" type="password" placeholder="密码" autocomplete="current-password"
+        onkeydown="if(event.key==='Enter') doLogin()"
+        class="w-full mb-3 px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-400"/>
+      <div id="loginError" class="text-xs text-red-500 mb-2 hidden"></div>
+      <button onclick="doLogin()" class="w-full py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-sm font-medium">
+        <span id="loginBtnText">登录</span>
+      </button>
+    </div>
+  </div>
+
+
+  <!-- ============================== -->
+  <!-- 顶部标题栏 -->
+  <!-- ============================== -->
+  <header class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+      <div class="flex items-center space-x-3">
+        <!-- 简单Logo图标 -->
+        <div class="w-9 h-9 bg-indigo-600 rounded-lg flex items-center justify-center">
+          <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.066 2.573c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.573 1.066c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.066-2.573c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+          </svg>
+        </div>
+        <h1 class="text-xl font-bold text-gray-800">AI自动化SCRM - 后台管理</h1>
+      </div>
+      <!-- 状态指示 -->
+      <div class="flex items-center space-x-4">
+        <span id="statusDot" class="flex items-center text-sm text-gray-500">
+          <span class="w-2 h-2 rounded-full bg-green-500 mr-2"></span>已连接
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================== -->
+  <!-- Tab 导航栏（7个Tab） -->
+  <!-- ============================== -->
+  <div class="bg-white border-b border-gray-200">
+    <div class="max-w-6xl mx-auto px-6">
+      <nav class="flex space-x-8 overflow-x-auto" id="tabNav">
+        <!-- 原有5个Tab -->
+        <button class="tab-btn active py-3 px-1 text-sm font-medium whitespace-nowrap" data-tab="reply_speed">
+          ⚡ 回复速度
+        </button>
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="strategy">
+          🎯 策略引擎
+        </button>
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="mental_stage">
+          🧠 心智阶段
+        </button>
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="ai_chain">
+          🤖 AI链路
+        </button>
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="customers">
+          👥 客户线索
+        </button>
+        <!-- 新增Tab：流程引擎 -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="flow_engine">
+          📋 流程引擎
+        </button>
+        <!-- 新增Tab：标签体系 -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="tags">
+          🏷️ 标签体系
+        </button>
+      </nav>
+    </div>
+  </div>
+
+  <!-- ============================== -->
+  <!-- 主内容区域 -->
+  <!-- ============================== -->
+  <div class="max-w-6xl mx-auto px-6 py-6">
+
+    <!-- 操作栏：保存 + 恢复默认 -->
+    <div id="actionBar" class="flex items-center justify-between mb-6">
+      <p class="text-sm text-gray-500">修改参数后点击"保存配置"，即时生效，无需重启服务</p>
+      <div class="flex items-center space-x-3">
+        <!-- 修复问题2：延迟归零按钮，一键将所有延迟参数清零+设instant秒回模式 -->
+        <button id="btnZeroDelay" onclick="zeroDelayAll()"
+          class="px-4 py-2 text-sm font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-lg hover:bg-amber-100 transition">
+          ⚡ 延迟归零
+        </button>
+        <button id="btnReset" onclick="resetAll()"
+          class="px-4 py-2 text-sm font-medium text-gray-600 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition">
+          ↩ 恢复默认
+        </button>
+        <button id="btnSave" onclick="saveAll()"
+          class="btn-save px-5 py-2 text-sm font-medium text-white bg-indigo-600 rounded-lg hover:bg-indigo-700 transition shadow-sm">
+          💾 保存配置
+        </button>
+      </div>
+    </div>
+
+    <!-- 初始化失败/配置为空提示横幅（默认隐藏） -->
+    <!-- 修复问题6：配置为空时不再自动初始化，改为显示提示横幅让用户手动点击 -->
+    <div id="initErrorBanner" class="init-error-banner hidden">
+      <div class="flex items-center space-x-3">
+        <span class="text-amber-500 text-lg">⚠️</span>
+        <div>
+          <p class="text-sm font-semibold text-amber-700">配置为空，请点击初始化按钮创建默认配置</p>
+          <p class="text-xs text-amber-500 mt-0.5">为防止覆盖已有配置，不再自动初始化，请手动点击按钮创建</p>
+        </div>
+      </div>
+      <button onclick="manualInit()" class="px-4 py-2 text-sm font-medium text-white bg-amber-500 rounded-lg hover:bg-amber-600 transition shadow-sm">
+        🔄 初始化配置
+      </button>
+    </div>
+
+    <!-- 配置面板容器（7个Tab对应7个面板） -->
+    <div id="panelContainer">
+      <div id="panel-reply_speed" class="config-panel"></div>
+      <div id="panel-strategy" class="config-panel hidden"></div>
+      <div id="panel-mental_stage" class="config-panel hidden"></div>
+      <div id="panel-ai_chain" class="config-panel hidden"></div>
+      <div id="panel-customers" class="config-panel hidden"></div>
+      <!-- 新增面板：流程引擎 -->
+      <div id="panel-flow_engine" class="config-panel hidden"></div>
+      <!-- 新增面板：标签体系 -->
+      <div id="panel-tags" class="config-panel hidden"></div>
+    </div>
+  </div>
+
+  <!-- Toast 通知容器 -->
+  <div id="toast" class="toast"></div>
+
+  <!-- ============================== -->
+  <!-- JavaScript 核心逻辑 -->
+  <!-- ============================== -->
+  <script>
+    // ============================================================
+    // 全局状态
+    // ============================================================
+
+    // 所有配置数据（从API获取后缓存）
+    let allConfigs = [];
+    // 当前激活的Tab分类
+    let activeTab = 'reply_speed';
+    // 可用模型列表（用于AI链路Tab的模型优先级排序）
+    let availableModels = [];
+    // 是否有未保存的修改
+    let hasChanges = false;
+    // 配置初始化是否失败标记
+    let initFailed = false;
+
+    // ============================================================
+    // 分类中文映射
+    // ============================================================
+    const categoryNames = {
+      'reply_speed': '回复速度',
+      'strategy': '策略引擎',
+      'mental_stage': '心智阶段',
+      'ai_chain': 'AI链路',
+      'customers': '客户线索',
+      'flow_engine': '流程引擎',
+      'tags': '标签体系'
+    };
+
+    // ============================================================
+    // 标签体系数据（前端写死，后续可扩展到后端）
+    // ============================================================
+    let tagSystemData = {
+      // 意向等级
+      '意向等级': {
+        catKey: 'intent',
+        tags: ['高意向', '中意向', '低意向', '无意向']
+      },
+      // 来源渠道
+      '来源渠道': {
+        catKey: 'source',
+        tags: ['线上广告', '朋友推荐', '到店咨询', 'IG', '小红书']
+      },
+      // 兴趣车型
+      '兴趣车型': {
+        catKey: 'car',
+        tags: ['ADAMAS', '01', '其他']
+      },
+      // 客户类型
+      '客户类型': {
+        catKey: 'type',
+        tags: ['首次咨询', '回头客', '转介绍']
+      },
+      // 跟进状态
+      '跟进状态': {
+        catKey: 'status',
+        tags: ['待跟进', '跟进中', '已试驾', '已到店', '已战败']
+      }
+    };
+
+    // 自动打标规则（只读）
+    const autoTagRules = [
+      { trigger: '消息中出现手机号', tag: '已留资', category: '跟进状态' },
+      { trigger: '消息中提到试驾', tag: '高意向', category: '意向等级' },
+      { trigger: '消息中提到价格/预算', tag: '中意向', category: '意向等级' },
+      { trigger: '消息中提到到店/看车', tag: '已到店', category: '跟进状态' },
+      { trigger: '客户3天未回复', tag: '低意向', category: '意向等级' },
+      { trigger: '客户明确拒绝/竞品成交', tag: '已战败', category: '跟进状态' },
+      { trigger: '消息中提到朋友推荐', tag: '转介绍', category: '客户类型' },
+      { trigger: '客户首次发送消息', tag: '首次咨询', category: '客户类型' },
+    ];
+
+    // ============================================================
+    // API 基础地址（自动获取当前host）
+    // ============================================================
+    const API_BASE = window.location.origin + '/api/v1/admin';
+
+    // ============================================================
+    // 登录鉴权（修复：原来所有接口免登录，任何人访问这个页面都能看/改全部配置和客户数据）
+    // ============================================================
+    let authToken = localStorage.getItem('scrm_auth_token') || '';
+
+    // ---- 显示名称辅助函数（硬编码：临时访客名不暴露） ----
+    function displayName(name) {
+      if (!name || name.startsWith('访客_')) return '客户';
+      return name;
+    }
+    function displayInitial(name) {
+      if (!name || name.startsWith('访客_')) return '客';
+      return name[0] || '?';
+    }
+    // ---------------------------------------------------------
+
+    async function apiFetch(url, options = {}) {
+      options.headers = Object.assign({}, options.headers, authToken ? { 'Authorization': 'Bearer ' + authToken } : {});
+      const res = await fetch(url, options);
+      if (res.status === 401 || res.status === 403) {
+        localStorage.removeItem('scrm_auth_token');
+        authToken = '';
+        showLoginGate(res.status === 403 ? '该账号不是管理员' : '登录已过期，请重新登录');
+        throw new Error('未登录/无权限');
+      }
+      return res;
+    }
+
+    function showLoginGate(errMsg) {
+      document.getElementById('loginGate').classList.remove('hidden');
+      const errEl = document.getElementById('loginError');
+      if (errMsg) {
+        errEl.textContent = errMsg;
+        errEl.classList.remove('hidden');
+      } else {
+        errEl.classList.add('hidden');
+      }
+    }
+
+    async function doLogin() {
+      const username = document.getElementById('loginUsername').value.trim();
+      const password = document.getElementById('loginPassword').value;
+      const tenantCode = document.getElementById('loginTenantCode').value.trim() || 'default';
+      if (!username || !password) {
+        showLoginGate('请输入用户名和密码');
+        return;
+      }
+      try {
+        const res = await fetch(API + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, tenant_code: tenantCode })
+        });
+        const data = await res.json();
+        if (data.code !== 0) {
+          showLoginGate(data.message || '登录失败');
+          return;
+        }
+        if (data.data.user.role !== 'admin') {
+          showLoginGate('该账号不是管理员，无法进入后台');
+          return;
+        }
+        authToken = data.data.token;
+        // 存储租户码，用于前端权限控制
+        localStorage.setItem('scrm_auth_token', authToken);
+        localStorage.setItem('scrm_tenant_code', tenantCode);
+        document.getElementById('loginGate').classList.add('hidden');
+        location.reload();
+      } catch (e) {
+        showLoginGate('登录请求失败，请检查网络');
+      }
+    }
+
+    if (!authToken) {
+      showLoginGate();
+    }
+
+
+    // ============================================================
+    // 初始化：页面加载时获取配置数据并渲染
+    // 【修复】更健壮地处理配置为空/初始化失败的情况
+    // ============================================================
+    // 根据角色和租户码显示/隐藏功能入口
+    function toggleFeatureVisibility() {
+      const tenantCode = localStorage.getItem('scrm_tenant_code') || 'default';
+      const isAdmin = true; // admin 页面永始显示管理功能
+      const isTrialTenant = tenantCode === 'trial' || tenantCode === 'default-trial';
+
+      // 根据租户类型显示欢迎信息
+      const tenantTip = isTrialTenant
+        ? '当前为试用版，部分功能受限，联系管理员获取完整权限'
+        : '欢迎使用 AI-SCRM SaaS 版管理后台';
+      showToast(tenantTip, 'info');
+    }
+
+    // ============================================================
+    // 初始化
+    // ============================================================
+    async function init() {
+      initFailed = false;
+      // 隐藏初始化失败横幅
+      document.getElementById('initErrorBanner').classList.add('hidden');
+
+      try {
+        // 先获取配置数据（核心，不能失败）
+        const configRes = await apiFetch(API_BASE + '/config');
+        const configData = await configRes.json();
+
+        if (configData.code === 0) {
+          allConfigs = configData.data || [];
+
+          // 修复问题6：配置为空时不再自动调tryInitConfig()
+          // 根因：init()在allConfigs.length===0时自动调tryInitConfig()，
+          // 而tryInitConfig会调ForceResetDefaults覆盖用户修改的配置
+          // 修复：改为显示提示横幅，用户主动点击才初始化
+          if (allConfigs.length === 0) {
+            console.warn('[后台配置] 配置为空，显示初始化提示横幅');
+            initFailed = true;
+            document.getElementById('initErrorBanner').classList.remove('hidden');
+          }
+        } else {
+          showToast('加载配置失败: ' + configData.message, 'error');
+          // 修复问题6：API返回非0也不再自动初始化，只显示提示横幅
+          initFailed = true;
+          document.getElementById('initErrorBanner').classList.remove('hidden');
+        }
+
+        // 【修复】Bug #4：models接口失败不影响配置渲染
+        try {
+          const modelsRes = await apiFetch(API_BASE + '/models');
+          const modelsData = await modelsRes.json();
+          if (modelsData.code === 0 && modelsData.data) {
+            availableModels = modelsData.data.models || [];
+          }
+        } catch (modelErr) {
+          console.warn('模型列表加载失败，不影响配置渲染:', modelErr);
+        }
+
+        // 渲染所有面板
+        renderAllPanels();
+
+        if (!initFailed) {
+          showToast('配置加载成功', 'success');
+        }
+      } catch (err) {
+        console.error('初始化失败:', err);
+        showToast('后端连接中，3秒后自动重试...', 'warning');
+        document.getElementById('statusDot').innerHTML =
+          '<span class="w-2 h-2 rounded-full bg-yellow-500 mr-2 animate-pulse"></span>连接中...';
+        // 连接失败也渲染面板（显示空状态提示）
+        renderAllPanels();
+        // 修复：后端可能还在启动中，自动3秒后重试，最多重试10次
+        if (!window._initRetryCount) window._initRetryCount = 0;
+        window._initRetryCount++;
+        if (window._initRetryCount < 10) {
+          setTimeout(initConfig, 3000);
+        } else {
+          showToast('连接服务失败，请检查后端是否启动', 'error');
+          document.getElementById('statusDot').innerHTML =
+            '<span class="w-2 h-2 rounded-full bg-red-500 mr-2"></span>连接失败';
+        }
+      }
+    }
+
+    // ============================================================
+    // 尝试初始化配置（抽取为独立函数，便于复用）
+    // 【修复】将初始化逻辑抽取，支持手动初始化按钮调用
+    // ============================================================
+    async function tryInitConfig() {
+      try {
+        const initRes = await apiFetch(API_BASE + '/config/init', { method: 'POST' });
+        const initData = await initRes.json();
+        if (initData.code === 0) {
+          // 重新获取配置
+          const reloadRes = await apiFetch(API_BASE + '/config');
+          const reloadData = await reloadRes.json();
+          if (reloadData.code === 0) {
+            allConfigs = reloadData.data || [];
+            showToast('默认配置已初始化', 'success');
+            return true;
+          }
+        }
+        console.error('[后台配置] 初始化返回错误:', initData.message);
+        return false;
+      } catch (initErr) {
+        console.error('[后台配置] 初始化失败:', initErr);
+        showToast('配置初始化失败，请检查后端日志', 'error');
+        return false;
+      }
+    }
+
+    // ============================================================
+    // 手动初始化按钮回调
+    // ============================================================
+    async function manualInit() {
+      const btn = document.querySelector('#initErrorBanner button');
+      btn.disabled = true;
+      btn.textContent = '⏳ 初始化中...';
+
+      const ok = await tryInitConfig();
+      if (ok) {
+        initFailed = false;
+        document.getElementById('initErrorBanner').classList.add('hidden');
+        renderAllPanels();
+      }
+
+      btn.disabled = false;
+      btn.textContent = '🔄 手动初始化';
+    }
+
+    // ============================================================
+    // Tab 切换逻辑
+    // ============================================================
+    document.getElementById('tabNav').addEventListener('click', function(e) {
+      const btn = e.target.closest('.tab-btn');
+      if (!btn) return;
+
+      const tab = btn.dataset.tab;
+      if (tab === activeTab) return;
+
+      // 切换Tab按钮样式
+      document.querySelectorAll('.tab-btn').forEach(b => {
+        b.classList.remove('active');
+        b.classList.add('text-gray-500');
+      });
+      btn.classList.add('active');
+      btn.classList.remove('text-gray-500');
+
+      // 切换面板显示
+      document.querySelectorAll('.config-panel').forEach(p => p.classList.add('hidden'));
+      document.getElementById('panel-' + tab).classList.remove('hidden');
+
+      activeTab = tab;
+
+      // 【优化】切换到流程引擎或标签体系时，隐藏操作栏（这两个Tab不需要保存按钮）
+      const actionBar = document.getElementById('actionBar');
+      if (tab === 'flow_engine' || tab === 'tags') {
+        actionBar.classList.add('hidden');
+      } else {
+        actionBar.classList.remove('hidden');
+      }
+    });
+
+    // ============================================================
+    // 渲染所有面板
+    // ============================================================
+    function renderAllPanels() {
+      ['reply_speed', 'strategy', 'mental_stage', 'ai_chain'].forEach(category => {
+        const configs = allConfigs.filter(c => c.category === category);
+        const panel = document.getElementById('panel-' + category);
+        panel.innerHTML = renderCategoryPanel(category, configs);
+      });
+
+      // 客户线索Tab：独立渲染，不走配置面板逻辑
+      renderCustomerLeadPanel();
+
+      // 【新增】流程引擎Tab
+      renderFlowEnginePanel();
+
+      // 【新增】标签体系Tab
+      renderTagSystemPanel();
+
+      // 初始化拖拽排序（AI链路-模型优先级）
+      initSortable();
+    }
+
+    // ============================================================
+    // 渲染单个分类面板
+    // 【修复】空配置时显示更有用的提示，引导用户初始化
+    // ============================================================
+    function renderCategoryPanel(category, configs) {
+      if (configs.length === 0) {
+        // 【修复】不再只显示"暂无配置项"，而是引导用户恢复默认
+        return `
+          <div class="text-center py-10">
+            <div class="text-gray-300 text-4xl mb-3">📭</div>
+            <p class="text-gray-400 text-sm mb-2">当前分类暂无配置项</p>
+            <p class="text-gray-400 text-xs mb-4">可能配置未正确初始化，点击右上角"恢复默认"按钮初始化配置</p>
+            <button onclick="resetAll()"
+              class="px-4 py-2 text-sm font-medium text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition">
+              ↩ 恢复默认配置
+            </button>
+          </div>
+        `;
+      }
+
+      // 特殊处理：ai_chain分类使用自定义布局
+      if (category === 'ai_chain') {
+        return renderAIChainPanel(configs);
+      }
+
+      // 通用分类面板：卡片式布局
+      let html = '<div class="grid grid-cols-1 md:grid-cols-2 gap-4">';
+
+      configs.forEach(cfg => {
+        html += renderConfigCard(cfg);
+      });
+
+      html += '</div>';
+      return html;
+    }
+
+    // ============================================================
+    // 渲染单个配置卡片
+    // 根据 value_type 选择不同的输入控件：
+    //   number → 数字输入框
+    //   bool   → 开关
+    //   json   → 可编辑列表（int数组或string数组）
+    //   string → 文本输入框
+    // ============================================================
+    function renderConfigCard(cfg) {
+      const valueTypeName = { 'number': '数字', 'bool': '布尔', 'string': '字符串', 'json': 'JSON' };
+      let controlHtml = '';
+
+      // 修复问题2：reply_delay_mode渲染为状态标签（顶部有"延迟归零"按钮一键切换）
+      if (cfg.key === 'reply_delay_mode') {
+        const isInstant = cfg.value === 'instant' || cfg.value === '"instant"';
+        controlHtml = `
+          <div class="flex items-center space-x-3">
+            <span class="px-3 py-1 rounded-full text-sm font-medium ${isInstant ? 'bg-amber-100 text-amber-700' : 'bg-green-100 text-green-700'}">
+              ${isInstant ? '⚡ 秒回模式' : '🕐 正常延迟'}
+            </span>
+            <span class="text-xs text-gray-400">使用顶部"⚡ 延迟归零"按钮切换</span>
+          </div>
+        `;
+      } else {
+        switch (cfg.value_type) {
+          case 'number':
+            controlHtml = renderNumberInput(cfg);
+            break;
+          case 'bool':
+            controlHtml = renderBoolSwitch(cfg);
+            break;
+          case 'string':
+            controlHtml = renderStringInput(cfg);
+            break;
+          case 'json':
+            controlHtml = renderJsonEditor(cfg);
+            break;
+          default:
+            controlHtml = renderStringInput(cfg);
+        }
+      }
+
+      return `
+        <div class="bg-white rounded-lg border border-gray-200 p-4 hover:shadow-sm transition"
+             data-key="${cfg.key}" data-value-type="${cfg.value_type}">
+          <div class="flex items-start justify-between mb-2">
+            <div>
+              <h3 class="text-sm font-semibold text-gray-800">${cfg.description}</h3>
+              <p class="text-xs text-gray-400 mt-0.5">
+                ${cfg.key}
+                <span class="ml-2 px-1.5 py-0.5 bg-gray-100 text-gray-500 rounded text-xs">${valueTypeName[cfg.value_type] || cfg.value_type}</span>
+              </p>
+            </div>
+          </div>
+          <div class="mt-3">
+            ${controlHtml}
+          </div>
+          ${cfg.default_value ? `<p class="text-xs text-gray-400 mt-2">默认值: ${cfg.default_value}</p>` : ''}
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // 数字输入框渲染
+    // 支持 step 精度控制（整数用1，浮点数用0.01/0.1）
+    // ============================================================
+    function renderNumberInput(cfg) {
+      const val = parseFloat(cfg.value);
+      // 根据默认值判断是否需要小数精度
+      const defaultVal = parseFloat(cfg.default_value);
+      const isFloat = String(cfg.default_value).includes('.');
+      const step = isFloat ? '0.01' : '1';
+
+      return `
+        <input type="number" step="${step}" value="${val}"
+          class="config-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm
+                 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+          data-key="${cfg.key}" data-value-type="number"
+          onchange="markChanged()" />
+      `;
+    }
+
+    // ============================================================
+    // 布尔开关渲染
+    // ============================================================
+    function renderBoolSwitch(cfg) {
+      const checked = cfg.value === 'true';
+      return `
+        <label class="toggle-switch">
+          <input type="checkbox" ${checked ? 'checked' : ''}
+            class="config-input" data-key="${cfg.key}" data-value-type="bool"
+            onchange="markChanged()" />
+          <span class="toggle-slider"></span>
+        </label>
+        <span class="ml-3 text-sm text-gray-600 config-bool-label" data-key="${cfg.key}">
+          ${checked ? '已开启' : '已关闭'}
+        </span>
+      `;
+    }
+
+    // ============================================================
+    // 字符串输入框渲染
+    // ============================================================
+    function renderStringInput(cfg) {
+      return `
+        <input type="text" value="${escapeHtml(cfg.value)}"
+          class="config-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm
+                 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+          data-key="${cfg.key}" data-value-type="string"
+          onchange="markChanged()" />
+      `;
+    }
+
+    // 修复问题2：回复延迟模式radio按钮渲染
+    // normal=正常模拟真人延迟，instant=秒回无延迟
+    function renderDelayModeRadio(cfg) {
+      const isNormal = cfg.value !== 'instant';
+      return `
+        <div class="flex items-center space-x-6">
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="radio" name="reply_delay_mode" value="normal" ${isNormal ? 'checked' : ''}
+              class="config-input w-4 h-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+              data-key="reply_delay_mode" data-value-type="string"
+              onchange="markChanged()" />
+            <span class="text-sm text-gray-700">正常延迟</span>
+            <span class="text-xs text-gray-400">模拟真人打字节奏</span>
+          </label>
+          <label class="flex items-center space-x-2 cursor-pointer">
+            <input type="radio" name="reply_delay_mode" value="instant" ${!isNormal ? 'checked' : ''}
+              class="config-input w-4 h-4 text-indigo-600 border-gray-300 focus:ring-indigo-500"
+              data-key="reply_delay_mode" data-value-type="string"
+              onchange="markChanged()" />
+            <span class="text-sm text-gray-700">秒回模式</span>
+            <span class="text-xs text-gray-400">所有延迟直接跳过</span>
+          </label>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // JSON编辑器渲染
+    // 自动识别数组类型，渲染为可编辑的标签列表
+    // ============================================================
+    function renderJsonEditor(cfg) {
+      let parsed;
+      try {
+        parsed = JSON.parse(cfg.value);
+      } catch (e) {
+        // JSON解析失败，回退到文本框
+        return `
+          <textarea class="config-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono
+            focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+            rows="3" data-key="${cfg.key}" data-value-type="json"
+            onchange="markChanged()">${escapeHtml(cfg.value)}</textarea>
+        `;
+      }
+
+      // 判断是int数组还是string数组
+      if (Array.isArray(parsed)) {
+        if (parsed.length > 0 && typeof parsed[0] === 'number') {
+          // int数组 → 渲染为数字标签列表
+          return renderNumberArrayEditor(cfg, parsed);
+        } else if (parsed.length > 0 && typeof parsed[0] === 'string') {
+          // string数组 → 渲染为文字标签列表
+          return renderStringArrayEditor(cfg, parsed);
+        } else if (parsed.length === 0) {
+          // 空数组 → 文本框
+          return `
+            <textarea class="config-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono
+              focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+              rows="2" data-key="${cfg.key}" data-value-type="json"
+              onchange="markChanged()">[]</textarea>
+          `;
+        }
+      }
+
+      // 其他JSON类型（对象等）→ 文本框
+      return `
+        <textarea class="config-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono
+          focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition"
+          rows="3" data-key="${cfg.key}" data-value-type="json"
+          onchange="markChanged()">${escapeHtml(cfg.value)}</textarea>
+      `;
+    }
+
+    // ============================================================
+    // 数字数组编辑器（如延迟区间 [3,8]）
+    // ============================================================
+    function renderNumberArrayEditor(cfg, arr) {
+      let tagsHtml = arr.map((val, idx) => `
+        <span class="inline-flex items-center bg-indigo-50 text-indigo-700 rounded-md text-sm mr-2 mb-2">
+          <input type="number" step="1" value="${val}"
+            class="w-14 px-2 py-1 bg-transparent text-center font-medium outline-none border-r border-indigo-200"
+            data-key="${cfg.key}" data-value-type="json" data-array-type="number" data-index="${idx}"
+            onchange="syncArrayValue(this)" />
+          <button onclick="removeArrayItem(this, '${cfg.key}', ${idx})"
+            class="px-1.5 py-1 hover:bg-indigo-100 rounded-r-md transition text-indigo-400 hover:text-indigo-700">✕</button>
+        </span>
+      `).join('');
+
+      return `
+        <div class="flex flex-wrap items-center" data-key="${cfg.key}" data-array-type="number" data-value-type="json">
+          ${tagsHtml}
+          <button onclick="addNumberArrayItem(this, '${cfg.key}')"
+            class="inline-flex items-center px-2 py-1 text-sm text-indigo-600 bg-indigo-50 rounded-md
+                   hover:bg-indigo-100 transition">+ 添加</button>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // 字符串数组编辑器
+    // ============================================================
+    function renderStringArrayEditor(cfg, arr) {
+      let tagsHtml = arr.map((val, idx) => `
+        <span class="inline-flex items-center bg-emerald-50 text-emerald-700 rounded-md text-sm mr-2 mb-2 px-2 py-1">
+          <span class="mr-1">${escapeHtml(val)}</span>
+          <button onclick="removeArrayItem(this, '${cfg.key}', ${idx})"
+            class="text-emerald-400 hover:text-emerald-700 transition">✕</button>
+        </span>
+      `).join('');
+
+      return `
+        <div class="flex flex-wrap items-center" data-key="${cfg.key}" data-array-type="string" data-value-type="json">
+          ${tagsHtml}
+          <button onclick="addStringArrayItem(this, '${cfg.key}')"
+            class="inline-flex items-center px-2 py-1 text-sm text-emerald-600 bg-emerald-50 rounded-md
+                   hover:bg-emerald-100 transition">+ 添加</button>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // AI链路面板 - 特殊布局
+    // ============================================================
+    function renderAIChainPanel(configs) {
+      let html = '<div class="space-y-6">';
+
+      // 模型优先级区域
+      const modelPriorityCfg = configs.find(c => c.key === 'model_priority');
+      if (modelPriorityCfg) {
+        html += renderModelPrioritySection(modelPriorityCfg);
+      }
+
+      // Mock模式
+      const mockModeCfg = configs.find(c => c.key === 'mock_mode');
+      if (mockModeCfg) {
+        html += `
+          <div class="bg-white rounded-lg border border-gray-200 p-4">
+            <div class="flex items-center justify-between">
+              <div>
+                <h3 class="text-sm font-semibold text-gray-800">${mockModeCfg.description}</h3>
+                <p class="text-xs text-gray-400 mt-0.5">${mockModeCfg.key}</p>
+              </div>
+              <div class="flex items-center">
+                <label class="toggle-switch">
+                  <input type="checkbox" ${mockModeCfg.value === 'true' ? 'checked' : ''}
+                    class="config-input" data-key="mock_mode" data-value-type="bool"
+                    onchange="markChanged(); updateBoolLabel(this)" />
+                  <span class="toggle-slider"></span>
+                </label>
+                <span class="ml-3 text-sm text-gray-600 config-bool-label" data-key="mock_mode">
+                  ${mockModeCfg.value === 'true' ? '已开启' : '已关闭'}
+                </span>
+              </div>
+            </div>
+            <p class="text-xs text-orange-500 mt-2">⚠️ Mock模式开启后AI不会真实调用模型，仅返回模拟回复</p>
+          </div>
+        `;
+      }
+
+      html += '</div>';
+      return html;
+    }
+
+    // ============================================================
+    // 模型优先级拖拽排序区域
+    // ============================================================
+    function renderModelPrioritySection(cfg) {
+      let models;
+      try {
+        models = JSON.parse(cfg.value);
+      } catch (e) {
+        models = [];
+      }
+
+      const identifierNames = {};
+      availableModels.forEach(m => {
+        identifierNames[m.identifier] = m.display_name || m.identifier;
+      });
+      const fallbackNames = {
+        'siliconflow_deepseek_v4_flash': 'DeepSeek V4 Flash (硅基流动)',
+        'siliconflow_glm4_9b': 'GLM-4-9B (硅基流动免费)',
+        'zhipu_glm4_flash': 'GLM-4-Flash (智谱)',
+        'template_fallback': '模板兜底（不调用AI）'
+      };
+
+      let itemsHtml = models.map((id, idx) => {
+        const displayName = identifierNames[id] || fallbackNames[id] || id;
+        return `
+          <li class="flex items-center bg-white border border-gray-200 rounded-lg px-4 py-3 mb-2 cursor-grab hover:shadow-sm transition"
+              data-identifier="${escapeHtml(id)}">
+            <span class="text-gray-400 mr-3 select-none font-mono text-xs">${idx + 1}</span>
+            <span class="text-gray-600 mr-2 cursor-grab">☰</span>
+            <span class="text-sm font-medium text-gray-800 flex-1">${escapeHtml(displayName)}</span>
+            <span class="text-xs text-gray-400 font-mono">${escapeHtml(id)}</span>
+          </li>
+        `;
+      }).join('');
+
+      return `
+        <div class="bg-white rounded-lg border border-gray-200 p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-gray-800">模型降级优先级</h3>
+              <p class="text-xs text-gray-400 mt-0.5">拖拽调整顺序，排在前面的模型优先使用</p>
+            </div>
+          </div>
+          <ul id="modelPriorityList" data-key="model_priority" data-value-type="json">
+            ${itemsHtml}
+          </ul>
+        </div>
+      `;
+    }
+
+    // ============================================================
+    // 拖拽排序初始化（SortableJS）
+    // ============================================================
+    function initSortable() {
+      const list = document.getElementById('modelPriorityList');
+      if (list && typeof Sortable !== 'undefined') {
+        Sortable.create(list, {
+          animation: 150,
+          handle: 'li',
+          ghostClass: 'sortable-ghost',
+          chosenClass: 'sortable-chosen',
+          onEnd: function() {
+            updateSortNumbers();
+            markChanged();
+          }
+        });
+      }
+    }
+
+    // 更新拖拽后的序号显示
+    function updateSortNumbers() {
+      const list = document.getElementById('modelPriorityList');
+      if (!list) return;
+      const items = list.querySelectorAll('li');
+      items.forEach((li, idx) => {
+        li.querySelector('.font-mono').textContent = idx + 1;
+      });
+    }
+
+    // ============================================================
+    // 数组操作：添加/删除元素
+    // ============================================================
+
+    function addNumberArrayItem(btn, key) {
+      const container = btn.parentElement;
+      const inputs = container.querySelectorAll('input[type="number"]');
+      const arr = Array.from(inputs).map(inp => parseInt(inp.value));
+      arr.push(0);
+
+      const cfg = allConfigs.find(c => c.key === key);
+      if (cfg) {
+        cfg.value = JSON.stringify(arr);
+        const card = btn.closest('.bg-white');
+        if (card) {
+          const newCfg = { ...cfg };
+          const newHtml = renderNumberArrayEditor(newCfg, arr);
+          container.outerHTML = newHtml;
+        }
+      }
+      markChanged();
+    }
+
+    function addStringArrayItem(btn, key) {
+      const text = prompt('请输入新标签:');
+      if (!text || !text.trim()) return;
+
+      const cfg = allConfigs.find(c => c.key === key);
+      if (cfg) {
+        let arr;
+        try { arr = JSON.parse(cfg.value); } catch(e) { arr = []; }
+        arr.push(text.trim());
+        cfg.value = JSON.stringify(arr);
+
+        const container = btn.parentElement;
+        const newHtml = renderStringArrayEditor(cfg, arr);
+        container.outerHTML = newHtml;
+      }
+      markChanged();
+    }
+
+    function removeArrayItem(btn, key, index) {
+      const cfg = allConfigs.find(c => c.key === key);
+      if (!cfg) return;
+
+      let arr;
+      try { arr = JSON.parse(cfg.value); } catch(e) { arr = []; }
+
+      if (arr.length <= 1) {
+        showToast('至少保留一个元素', 'error');
+        return;
+      }
+
+      arr.splice(index, 1);
+      cfg.value = JSON.stringify(arr);
+
+      const card = btn.closest('[data-key]');
+      if (card) {
+        const panel = card.closest('.config-panel');
+        if (panel) {
+          const category = cfg.category;
+          const configs = allConfigs.filter(c => c.category === category);
+          panel.innerHTML = renderCategoryPanel(category, configs);
+          if (category === 'ai_chain') initSortable();
+        }
+      }
+      markChanged();
+    }
+
+    function syncArrayValue(input) {
+      const key = input.dataset.key;
+      const idx = parseInt(input.dataset.index);
+      const cfg = allConfigs.find(c => c.key === key);
+      if (!cfg) return;
+
+      let arr;
+      try { arr = JSON.parse(cfg.value); } catch(e) { arr = []; }
+      arr[idx] = parseInt(input.value);
+      cfg.value = JSON.stringify(arr);
+      markChanged();
+    }
+
+    // ============================================================
+    // 收集当前所有配置值
+    // ============================================================
+    function collectValues() {
+      const updates = [];
+
+      document.querySelectorAll('.config-input').forEach(input => {
+        const key = input.dataset.key;
+        const valueType = input.dataset.valueType;
+        if (!key) return;
+
+        // 修复问题2：radio按钮只取checked的那个
+        if (input.type === 'radio' && !input.checked) return;
+
+        let value;
+        switch (valueType) {
+          case 'number':
+            value = parseFloat(input.value);
+            if (isNaN(value)) return;
+            const cfg = allConfigs.find(c => c.key === key);
+            if (cfg && String(cfg.default_value).includes('.')) {
+              value = String(value);
+            } else {
+              value = String(value);
+            }
+            break;
+          case 'bool':
+            value = input.checked ? 'true' : 'false';
+            break;
+          case 'string':
+            value = JSON.stringify(input.value);
+            break;
+          case 'json':
+            value = input.value;
+            break;
+          default:
+            value = input.value;
+        }
+
+        updates.push({ key, value });
+      });
+
+      document.querySelectorAll('[data-array-type]').forEach(container => {
+        const key = container.dataset.key;
+        const cfg = allConfigs.find(c => c.key === key);
+        if (cfg) {
+          const exists = updates.find(u => u.key === key);
+          if (!exists) {
+            updates.push({ key, value: cfg.value });
+          }
+        }
+      });
+
+      const modelList = document.getElementById('modelPriorityList');
+      if (modelList) {
+        const items = modelList.querySelectorAll('li');
+        const identifiers = Array.from(items).map(li => li.dataset.identifier);
+        const existing = updates.findIndex(u => u.key === 'model_priority');
+        if (existing >= 0) {
+          updates[existing].value = JSON.stringify(identifiers);
+        } else {
+          updates.push({ key: 'model_priority', value: JSON.stringify(identifiers) });
+        }
+      }
+
+      return updates;
+    }
+
+    // ============================================================
+    // 保存配置
+    // ============================================================
+    async function saveAll() {
+      const btn = document.getElementById('btnSave');
+      btn.disabled = true;
+      btn.textContent = '⏳ 保存中...';
+
+      try {
+        const updates = collectValues();
+
+        const res = await apiFetch(API_BASE + '/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates)
+        });
+
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('配置已保存并热加载到内存', 'success');
+          hasChanges = false;
+          await init();
+        } else {
+          showToast('保存失败: ' + data.message, 'error');
+        }
+      } catch (err) {
+        console.error('保存失败:', err);
+        showToast('保存失败: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '💾 保存配置';
+      }
+    }
+
+    // ============================================================
+    // 恢复默认值
+    // ============================================================
+    async function resetAll() {
+      if (!confirm('确定要恢复所有配置为默认值吗？此操作不可撤销。')) return;
+
+      try {
+        const res = await apiFetch(API_BASE + '/config/reset', { method: 'POST' });
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('已恢复所有默认值', 'success');
+          hasChanges = false;
+          await init();
+        } else {
+          showToast('恢复失败: ' + data.message, 'error');
+        }
+      } catch (err) {
+        showToast('恢复失败: ' + err.message, 'error');
+      }
+    }
+
+    // ============================================================
+    // 修复问题2：延迟归零——一键清零所有延迟参数 + 设instant秒回模式
+    // 逻辑：把所有延迟相关的数字参数设为0，reply_delay_mode设为instant，
+    // 然后保存到DB并热加载，实现"配置重置+延迟归零"的效果
+    // ============================================================
+    async function zeroDelayAll() {
+      if (!confirm('确定要将所有延迟参数清零并切换为秒回模式吗？\n（合并窗口、快速回复、AI回复延迟、线下偏移等全部归零）')) return;
+
+      const btn = document.getElementById('btnZeroDelay');
+      btn.disabled = true;
+      btn.textContent = '⏳ 归零中...';
+
+      try {
+        // 需要归零的延迟参数key列表（与实际config key对应）
+        const delayKeys = [
+          'merge_window_seconds',         // 合并窗口
+          'simple_msg_delay',             // 简单消息(快速回复)延迟
+          'reply_min_delay',              // AI回复最低延迟
+          'max_reply_delay',              // AI回复最大延迟
+          'offline_offset_work_simple',   // 线下偏移-工作/简单
+          'offline_offset_work_medium',   // 线下偏移-工作/中等
+          'offline_offset_work_complex',  // 线下偏移-工作/复杂
+          'offline_offset_offwork_simple', // 线下偏移-非工作/简单
+          'offline_offset_offwork_medium', // 线下偏移-非工作/中等
+          'offline_offset_offwork_complex', // 线下偏移-非工作/复杂
+        ];
+
+        const updates = [];
+        // 纯数字延迟全部归零
+        delayKeys.forEach(key => {
+          updates.push({ key, value: '0' });
+        });
+        // JSON区间类型延迟归零（设为[0,0]保持JSON格式）
+        const intervalKeys = [
+          'store_visit_first_delay',   // 到店第一段延迟区间
+          'store_visit_second_delay',  // 到店第二段延迟区间
+        ];
+        intervalKeys.forEach(key => {
+          updates.push({ key, value: '[0,0]' });
+        });
+        // 秒回模式
+        updates.push({ key: 'reply_delay_mode', value: '"instant"' });
+
+        const res = await apiFetch(API_BASE + '/config', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(updates)
+        });
+
+        const data = await res.json();
+        if (data.code === 0) {
+          showToast('⚡ 所有延迟已归零，秒回模式已开启', 'success');
+          hasChanges = false;
+          await init();
+        } else {
+          showToast('归零失败: ' + data.message, 'error');
+        }
+      } catch (err) {
+        showToast('归零失败: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '⚡ 延迟归零';
+      }
+    }
+
+    // ============================================================
+    // 标记有修改
+    // ============================================================
+    function markChanged() {
+      hasChanges = true;
+    }
+
+    // 更新布尔标签文字
+    function updateBoolLabel(checkbox) {
+      const label = document.querySelector(`.config-bool-label[data-key="${checkbox.dataset.key}"]`);
+      if (label) {
+        label.textContent = checkbox.checked ? '已开启' : '已关闭';
+      }
+    }
+
+    // ============================================================
+    // Toast 通知
+    // ============================================================
+    function showToast(message, type) {
+      const toast = document.getElementById('toast');
+      toast.className = 'toast toast-' + (type || 'info');
+      toast.textContent = message;
+      toast.classList.add('show');
+
+      clearTimeout(toast._timer);
+      toast._timer = setTimeout(() => {
+        toast.classList.remove('show');
+      }, 3000);
+    }
+
+    // ============================================================
+    // HTML转义（防XSS）
+    // ============================================================
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    // ============================================================
+    // 页面离开前提醒（有未保存修改时）
+    // ============================================================
+    window.addEventListener('beforeunload', function(e) {
+      if (hasChanges) {
+        e.preventDefault();
+        e.returnValue = '有未保存的修改，确定要离开吗？';
+      }
+    });
+
+    // ============================================================
+    // 客户线索管理面板（后台管理Tab）
+    // ============================================================
+    let customerLeads = [];
+    let customerLeadPage = 1;
+    let customerLeadFilter = 'all';
+
+    async function renderCustomerLeadPanel() {
+      const panel = document.getElementById('panel-customers');
+      panel.innerHTML = `
+        <div class="bg-white rounded-lg border border-gray-200 p-5">
+          <div class="flex items-center justify-between mb-4">
+            <div>
+              <h3 class="text-sm font-semibold text-gray-800">客户线索列表</h3>
+              <p class="text-xs text-gray-400 mt-0.5">已分配给顾问的客户，包含聊天记录、标签和身份信息</p>
+            </div>
+            <button onclick="loadCustomerLeads()" class="px-3 py-1.5 text-xs text-indigo-600 bg-indigo-50 rounded-lg hover:bg-indigo-100 transition">
+              🔄 刷新
+            </button>
+          </div>
+          <div class="flex space-x-3 mb-4">
+            <select id="leadFilter" onchange="customerLeadFilter=this.value;customerLeadPage=1;loadCustomerLeads()"
+              class="px-3 py-1.5 border border-gray-300 rounded-lg text-sm">
+              <option value="all">全部</option>
+              <option value="following">跟进中</option>
+              <option value="pending">待跟进</option>
+              <option value="lead_captured">已留资</option>
+              <option value="arrived">已到店</option>
+              <option value="test_drive">已试驾</option>
+            </select>
+          </div>
+          <div id="customerLeadList" class="space-y-2">
+            <div class="text-center text-gray-400 py-6">加载中...</div>
+          </div>
+        </div>
+      `;
+      await loadCustomerLeads();
+    }
+
+    async function loadCustomerLeads() {
+      const listEl = document.getElementById('customerLeadList');
+      if (!listEl) return;
+      try {
+        const res = await apiFetch(API_BASE.replace('/admin','') + '/advisor/customers?status=' + customerLeadFilter + '&page=' + customerLeadPage + '&page_size=20&assigned=all');
+        const data = await res.json();
+        if (data.code === 0 && data.data) {
+          customerLeads = data.data.list || [];
+          if (customerLeads.length === 0) {
+            listEl.innerHTML = '<div class="text-center text-gray-400 py-6">暂无客户线索</div>';
+            return;
+          }
+          const stageLabels = { ai_connected:'AI建联', human_connected:'人工建联', lead_captured:'已留资',
+            arrived:'已到店', ordered:'已下单', delivered:'已交车', lost:'已战败' };
+          const stageColors = { ai_connected:'bg-gray-100 text-gray-600', human_connected:'bg-blue-100 text-blue-600',
+            lead_captured:'bg-cyan-100 text-cyan-600', arrived:'bg-green-100 text-green-600',
+            ordered:'bg-orange-100 text-orange-600', delivered:'bg-red-100 text-red-600', lost:'bg-gray-200 text-gray-600' };
+          listEl.innerHTML = customerLeads.map(c => `
+            <div class="border border-gray-100 rounded-lg p-3 hover:bg-gray-50 transition cursor-pointer" onclick="showLeadDetail(${c.id})">
+              <div class="flex items-center justify-between">
+                <div class="flex items-center space-x-3">
+                  <div class="w-9 h-9 bg-gray-100 rounded-full flex items-center justify-center">
+                    <span class="text-sm font-medium text-gray-500">${displayInitial(c.name)}</span>
+                  </div>
+                  <div>
+                    <div class="flex items-center space-x-2">
+                      <span class="text-sm font-medium text-gray-800">${displayName(c.name)}</span>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded-full ${stageColors[c.journey_stage]||'bg-gray-100 text-gray-500'}">${stageLabels[c.journey_stage]||c.journey_stage||'-'}</span>
+                      ${c.assigned_user_name ? '<span class="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">' + c.assigned_user_name + '</span>' : ''}
+                    </div>
+                    <p class="text-xs text-gray-400">${c.phone || ''} ${c.interest_model ? '· '+c.interest_model : ''}</p>
+                  </div>
+                </div>
+                <div class="text-right">
+                  <p class="text-xs text-gray-400">${c.last_message ? c.last_message.substring(0,30)+'...' : '暂无消息'}</p>
+                  <p class="text-[10px] text-gray-300">${formatShortTime(c.updated_at)}</p>
+                </div>
+              </div>
+            </div>
+          `).join('');
+        }
+      } catch (e) {
+        listEl.innerHTML = '<div class="text-center text-red-400 py-6">加载失败: '+e.message+'</div>';
+      }
+    }
+
+    async function showLeadDetail(customerId) {
+      try {
+        const res = await apiFetch(API_BASE.replace('/admin','') + '/advisor/customer/' + customerId);
+        const data = await res.json();
+        if (data.code !== 0 || !data.data) { showToast('获取详情失败','error'); return; }
+        const c = data.data.customer;
+        const tags = (data.data.tags||[]).map(t => `<span class="inline-block text-xs px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded-full mr-1">${t.tag_name}</span>`).join('');
+        const overlay = document.createElement('div');
+        overlay.className = 'fixed inset-0 z-50 flex items-center justify-center';
+        overlay.innerHTML = `
+          <div class="absolute inset-0 bg-black/40" onclick="this.parentElement.remove()"></div>
+          <div class="relative bg-white rounded-xl shadow-xl max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6">
+            <div class="flex items-center justify-between mb-4">
+              <h3 class="text-base font-semibold text-gray-800">客户线索详情</h3>
+              <button onclick="this.closest('.fixed').remove()" class="text-gray-400 hover:text-gray-600">✕</button>
+            </div>
+            <div class="space-y-3">
+              <div class="grid grid-cols-2 gap-3">
+                <div><span class="text-xs text-gray-400">姓名</span><p class="text-sm font-medium">${displayName(c.name)||'-'}</p></div>
+                <div><span class="text-xs text-gray-400">手机</span><p class="text-sm font-medium">${c.phone||'-'}</p></div>
+                <div><span class="text-xs text-gray-400">兴趣车型</span><p class="text-sm">${c.interest_model||'-'}</p></div>
+                <div><span class="text-xs text-gray-400">预算</span><p class="text-sm">${c.budget>0?c.budget+'万':'-'}</p></div>
+                <div><span class="text-xs text-gray-400">意向分</span><p class="text-sm">${(c.intent_score*100).toFixed(0)}%</p></div>
+                <div><span class="text-xs text-gray-400">城市</span><p class="text-sm">${c.city||'-'}</p></div>
+              </div>
+              <!-- 修复问题3：后台详情也显示分配顾问 -->
+              <div><span class="text-xs text-gray-400">分配顾问</span><p class="text-sm font-medium text-indigo-600">${data.data.assigned_user_name || (c.assigned_user_id > 0 ? '顾问'+c.assigned_user_id : '未分配')}</p></div>
+              <div><span class="text-xs text-gray-400">标签</span><div class="mt-1">${tags||'<span class="text-xs text-gray-300">暂无</span>'}</div></div>
+              <div><span class="text-xs text-gray-400">备注</span><p class="text-sm text-gray-600 mt-1">${c.remark||'-'}</p></div>
+              <div class="pt-2 border-t border-gray-100" id="adminTestDriveSection_${customerId}">
+                <button onclick="loadAdminTestDrives(${customerId},this)" class="text-xs text-green-600 hover:text-green-800">🚗 查看试驾单</button>
+                <div id="adminTestDriveList_${customerId}" class="mt-2 hidden space-y-2"></div>
+              </div>
+              <div class="pt-2 border-t border-gray-100">
+                <button onclick="loadLeadChat(${customerId},this)" class="text-xs text-indigo-600 hover:text-indigo-800">💬 查看聊天记录</button>
+                <!-- 修复问题2：删掉"立即回复"按钮，改为后台配置reply_delay_mode=instant -->
+                <div id="leadChat_${customerId}" class="mt-2 hidden max-h-48 overflow-y-auto bg-gray-50 rounded-lg p-3 text-xs space-y-1"></div>
+              </div>
+            </div>
+          </div>`;
+        document.body.appendChild(overlay);
+      } catch (e) { showToast('获取详情失败','error'); }
+    }
+
+    async function loadAdminTestDrives(customerId, btn) {
+      const container = document.getElementById('adminTestDriveList_' + customerId);
+      if (!container.classList.contains('hidden')) { container.classList.add('hidden'); btn.textContent = '🚗 查看试驾单'; return; }
+      btn.textContent = '🚗 隐藏试驾单';
+      container.classList.remove('hidden');
+      try {
+        const res = await apiFetch(API_BASE.replace('/admin', '') + '/advisor/test-drives?customer_id=' + customerId);
+        const data = await res.json();
+        if (data.code === 0 && data.data && data.data.length > 0) {
+          container.innerHTML = data.data.map(td => {
+            const statusMap = { pending: '待试驾', completed: '已完成', cancelled: '已取消' };
+            const colorMap = { pending: 'text-yellow-600', completed: 'text-green-600', cancelled: 'text-gray-400' };
+            const time = td.scheduled_at ? new Date(td.scheduled_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+            return `<div class="bg-gray-50 rounded-lg p-2 border border-gray-100">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-medium text-gray-700">${td.model_name || '试驾'}</span>
+                <span class="text-[10px] ${colorMap[td.status] || 'text-gray-400'}">${statusMap[td.status] || td.status}</span>
+              </div>
+              <p class="text-xs text-gray-400 mt-0.5">${time} ${td.location ? '· ' + td.location : ''}</p>
+              ${td.note ? '<p class="text-xs text-gray-400">备注: ' + esc(td.note) + '</p>' : ''}
+              ${td.result ? '<p class="text-xs text-gray-400">反馈: ' + esc(td.result) + '</p>' : ''}
+            </div>`;
+          }).join('');
+        } else {
+          container.innerHTML = '<div class="text-gray-400 text-xs">暂无试驾记录</div>';
+        }
+      } catch (e) { container.innerHTML = '<div class="text-red-400 text-xs">加载失败</div>'; }
+    }
+
+    async function loadLeadChat(customerId, btn) {
+      const chatEl = document.getElementById('leadChat_'+customerId);
+      if (!chatEl.classList.contains('hidden')) { chatEl.classList.add('hidden'); btn.textContent='💬 查看聊天记录'; return; }
+      btn.textContent = '💬 隐藏聊天记录';
+      chatEl.classList.remove('hidden');
+      try {
+        const res = await apiFetch(API_BASE.replace('/admin','') + '/chat/history?customer_id='+customerId+'&limit=30');
+        const data = await res.json();
+        if (data.code===0 && data.data && data.data.length>0) {
+          chatEl.innerHTML = data.data.map(m => {
+            const who = m.sender_type==='customer'?'客户':m.sender_type==='ai'?'AI':m.sender_type==='human'?'人工':'系统';
+            const color = m.sender_type==='customer'?'text-blue-600':m.sender_type==='ai'?'text-green-600':'text-orange-600';
+            return `<div><span class="${color} font-medium">[${who}]</span> ${esc(m.content)}</div>`;
+          }).join('');
+        } else {
+          chatEl.innerHTML = '<div class="text-gray-400">暂无聊天记录</div>';
+        }
+      } catch(e) { chatEl.innerHTML = '<div class="text-red-400">加载失败</div>'; }
+    }
+
+    function formatShortTime(t) {
+      if (!t) return '';
+      const d = new Date(t);
+      return (d.getMonth()+1)+'/'+d.getDate()+' '+d.getHours().toString().padStart(2,'0')+':'+d.getMinutes().toString().padStart(2,'0');
+    }
+
+    // 修复问题2：删掉clearDelayAdmin函数，秒回功能改为后台配置reply_delay_mode=instant
+
+    function esc(str) {
+      if (!str) return '';
+      const d = document.createElement('div');
+      d.textContent = str;
+      return d.innerHTML;
+    }
+
+    // ============================================================
+    // 【新增】流程引擎可视化面板
+    // 包含：客户旅程流程图、策略引擎决策流程图、当前配置参数摘要
+    // ============================================================
+    function renderFlowEnginePanel() {
+      const panel = document.getElementById('panel-flow_engine');
+      panel.innerHTML = `
+        <div class="space-y-8">
+
+          <!-- ====== 第一部分：客户旅程流程图 ====== -->
+          <div class="bg-white rounded-xl border border-gray-200 p-6">
+            <div class="flex items-center space-x-2 mb-5">
+              <span class="text-lg">🗺️</span>
+              <div>
+                <h3 class="text-base font-bold text-gray-800">客户旅程流程图</h3>
+                <p class="text-xs text-gray-400 mt-0.5">7+1状态机：6个主流程阶段 + 1个独立战败分支</p>
+              </div>
+            </div>
+
+            <!-- 主流程（水平滚动） -->
+            <div class="overflow-x-auto pb-4">
+              <div class="flex items-center min-w-max" style="gap: 0;">
+                <!-- 节点1：AI建联 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-1">
+                    <div class="font-bold text-sm">AI建联</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">AI自动首次触达</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 1</span>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h">→</div>
+                <!-- 节点2：人工建联 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-2">
+                    <div class="font-bold text-sm">人工建联</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">顾问接手跟进</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 2</span>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h">→</div>
+                <!-- 节点3：已留资 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-3">
+                    <div class="font-bold text-sm">已留资</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">客户留下联系方式</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 3</span>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h">→</div>
+                <!-- 节点4：已到店 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-4">
+                    <div class="font-bold text-sm">已到店</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">客户到店看车</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 4</span>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h">→</div>
+                <!-- 节点5：已下单 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-5">
+                    <div class="font-bold text-sm">已下单</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">客户支付定金</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 5</span>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h">→</div>
+                <!-- 节点6：已交车 -->
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-stage-6">
+                    <div class="font-bold text-sm">已交车</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">完成交付，成交闭环</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Stage 6</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 独立分支：已战败 -->
+            <div class="mt-4 pt-4 border-t border-dashed border-gray-200">
+              <div class="flex items-center space-x-2 mb-3">
+                <span class="text-xs text-gray-500 font-semibold">⚠️ 独立分支</span>
+                <span class="text-[10px] text-gray-400">任一阶段均可转入战败状态，且不可逆转</span>
+              </div>
+              <div class="flex items-center space-x-4">
+                <!-- 从各阶段分支出的示意 -->
+                <div class="flex items-center space-x-2 text-xs text-gray-400">
+                  <span>Stage 1~6 任意阶段</span>
+                  <span class="text-gray-300">—</span>
+                </div>
+                <div class="flow-arrow-h text-gray-300">→</div>
+                <div class="flex flex-col items-center">
+                  <div class="flow-node flow-node-lost">
+                    <div class="font-bold text-sm">已战败</div>
+                    <div class="text-[10px] opacity-75 mt-0.5">客户明确拒绝/竞品成交</div>
+                  </div>
+                  <span class="text-[10px] text-gray-400 mt-1">Lost</span>
+                </div>
+                <div class="flex items-center space-x-1 ml-2">
+                  <span class="text-[10px] px-2 py-0.5 bg-red-50 text-red-500 rounded">不可逆转</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ====== 第二部分：策略引擎决策流程图 ====== -->
+          <div class="bg-white rounded-xl border border-gray-200 p-6">
+            <div class="flex items-center space-x-2 mb-5">
+              <span class="text-lg">⚙️</span>
+              <div>
+                <h3 class="text-base font-bold text-gray-800">策略引擎决策流程图</h3>
+                <p class="text-xs text-gray-400 mt-0.5">从意图分析到回复生成的6步决策链路</p>
+              </div>
+            </div>
+
+            <!-- 决策流程步骤 -->
+            <div class="overflow-x-auto pb-4">
+              <div class="flex items-start min-w-max" style="gap: 12px;">
+                <!-- 步骤1：意图分析 -->
+                <div class="flex flex-col items-center" style="width: 140px;">
+                  <div class="decision-step w-full">
+                    <span class="step-num">1</span>
+                    <div class="font-bold text-sm text-indigo-700">意图分析</div>
+                    <div class="text-[10px] text-gray-500 mt-1">解析客户消息意图和关键词</div>
+                  </div>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h pt-4">→</div>
+                <!-- 步骤2：锚点选择 -->
+                <div class="flex flex-col items-center" style="width: 140px;">
+                  <div class="decision-step w-full">
+                    <span class="step-num">2</span>
+                    <div class="font-bold text-sm text-indigo-700">锚点选择</div>
+                    <div class="text-[10px] text-gray-500 mt-1">根据意图匹配话术锚点</div>
+                  </div>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h pt-4">→</div>
+                <!-- 步骤2.5：阶段锁 -->
+                <div class="flex flex-col items-center" style="width: 160px;">
+                  <div class="decision-step step-lock w-full">
+                    <span class="step-num">2.5</span>
+                    <div class="font-bold text-sm text-amber-700">阶段锁 🔒</div>
+                    <div class="text-[10px] text-amber-600 mt-1">aggressiveness ≤ 当前阶段上限</div>
+                  </div>
+                  <!-- 阶段锁规则说明 -->
+                  <div class="mt-2 text-[10px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 w-full">
+                    <div class="font-semibold mb-1">🔒 阶段锁规则</div>
+                    <div>aggressiveness 不得超过当前阶段上限</div>
+                    <div class="mt-1 font-mono text-[9px]">
+                      阶段锁 = [1, 2, 3, 4, 6, 6]
+                    </div>
+                    <div class="text-[9px] mt-0.5 text-amber-500">
+                      对应 AI建联→人工建联→已留资→已到店→已下单→已交车
+                    </div>
+                  </div>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h pt-4">→</div>
+                <!-- 步骤3：模板匹配 -->
+                <div class="flex flex-col items-center" style="width: 140px;">
+                  <div class="decision-step w-full">
+                    <span class="step-num">3</span>
+                    <div class="font-bold text-sm text-indigo-700">模板匹配</div>
+                    <div class="text-[10px] text-gray-500 mt-1">查找匹配的话术模板</div>
+                  </div>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h pt-4">→</div>
+                <!-- 步骤4：降级判断 -->
+                <div class="flex flex-col items-center" style="width: 140px;">
+                  <div class="decision-step w-full">
+                    <span class="step-num">4</span>
+                    <div class="font-bold text-sm text-indigo-700">降级判断</div>
+                    <div class="text-[10px] text-gray-500 mt-1">模板不匹配时降级处理</div>
+                  </div>
+                </div>
+                <!-- 箭头 -->
+                <div class="flow-arrow-h pt-4">→</div>
+                <!-- 步骤5：回复生成 -->
+                <div class="flex flex-col items-center" style="width: 140px;">
+                  <div class="decision-step w-full">
+                    <span class="step-num">5</span>
+                    <div class="font-bold text-sm text-indigo-700">回复生成</div>
+                    <div class="text-[10px] text-gray-500 mt-1">组装最终AI回复并发送</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 降级路径说明 -->
+            <div class="mt-4 pt-4 border-t border-gray-100">
+              <div class="flex items-start space-x-4">
+                <span class="text-xs text-gray-500 font-semibold mt-0.5">降级路径：</span>
+                <div class="flex items-center space-x-2 text-xs text-gray-500">
+                  <span class="px-2 py-0.5 bg-indigo-50 text-indigo-600 rounded">模板匹配成功</span>
+                  <span>→ 直接使用模板</span>
+                </div>
+                <div class="text-gray-300">|</div>
+                <div class="flex items-center space-x-2 text-xs text-gray-500">
+                  <span class="px-2 py-0.5 bg-amber-50 text-amber-600 rounded">模板匹配失败</span>
+                  <span>→ 调用LLM生成</span>
+                </div>
+                <div class="text-gray-300">|</div>
+                <div class="flex items-center space-x-2 text-xs text-gray-500">
+                  <span class="px-2 py-0.5 bg-red-50 text-red-600 rounded">LLM也失败</span>
+                  <span>→ 兜底回复</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ====== 第三部分：当前配置参数摘要 ====== -->
+          <div class="bg-white rounded-xl border border-gray-200 p-6">
+            <div class="flex items-center space-x-2 mb-4">
+              <span class="text-lg">📊</span>
+              <div>
+                <h3 class="text-base font-bold text-gray-800">当前配置参数摘要</h3>
+                <p class="text-xs text-gray-400 mt-0.5">从配置数据中提取的关键参数（实时读取）</p>
+              </div>
+            </div>
+            <div id="flowConfigSummary" class="flex flex-wrap">
+              <!-- 由JS动态填充 -->
+            </div>
+          </div>
+
+        </div>
+      `;
+
+      // 渲染配置参数摘要
+      renderFlowConfigSummary();
+    }
+
+    // ============================================================
+    // 渲染流程引擎配置参数摘要
+    // 从 allConfigs 中提取关键参数展示
+    // ============================================================
+    function renderFlowConfigSummary() {
+      const summaryEl = document.getElementById('flowConfigSummary');
+      if (!summaryEl) return;
+
+      // 需要展示的关键参数key列表
+      const importantKeys = [
+        'tau', 'merge_window', 'stage_lock', 'aggressiveness_default',
+        'max_delay', 'min_delay', 'delay_range', 'model_priority',
+        'mock_mode', 'reply_probability'
+      ];
+
+      // 构建参数chip列表
+      let html = '';
+      importantKeys.forEach(key => {
+        const cfg = allConfigs.find(c => c.key === key);
+        if (cfg) {
+          let displayVal = cfg.value;
+          // 截断过长的值
+          if (displayVal.length > 40) {
+            displayVal = displayVal.substring(0, 37) + '...';
+          }
+          html += `
+            <div class="param-chip">
+              <span class="param-key">${escapeHtml(key)}</span>
+              <span>= ${escapeHtml(displayVal)}</span>
+            </div>
+          `;
+        }
+      });
+
+      // 如果没有找到任何参数，显示提示
+      if (html === '') {
+        html = '<div class="text-sm text-gray-400 py-4">暂无配置数据，请先初始化配置</div>';
+      }
+
+      summaryEl.innerHTML = html;
+    }
+
+    // ============================================================
+    // 【新增】标签体系配置面板
+    // 包含：标签分类管理、预设标签列表、自动打标规则
+    // ============================================================
+    function renderTagSystemPanel() {
+      const panel = document.getElementById('panel-tags');
+      let html = '<div class="space-y-8">';
+
+      // ====== 第一部分：标签分类管理 ======
+      html += `
+        <div class="bg-white rounded-xl border border-gray-200 p-6">
+          <div class="flex items-center space-x-2 mb-5">
+            <span class="text-lg">📁</span>
+            <div>
+              <h3 class="text-base font-bold text-gray-800">标签分类管理</h3>
+              <p class="text-xs text-gray-400 mt-0.5">管理标签分类及分类下的标签值，支持添加/删除</p>
+            </div>
+          </div>
+          <div class="space-y-4">
+      `;
+
+      // 遍历每个标签分类
+      Object.keys(tagSystemData).forEach(catName => {
+        const cat = tagSystemData[catName];
+        const catKey = cat.catKey;
+
+        // 根据分类key选择CSS类
+        const catClassMap = {
+          'intent': 'tag-cat-intent',
+          'source': 'tag-cat-source',
+          'car': 'tag-cat-car',
+          'type': 'tag-cat-type',
+          'status': 'tag-cat-status'
+        };
+        const catClass = catClassMap[catKey] || 'tag-cat-intent';
+
+        html += `
+          <div class="border border-gray-100 rounded-lg p-4 hover:border-gray-200 transition">
+            <div class="flex items-center justify-between mb-3">
+              <div class="flex items-center space-x-2">
+                <span class="text-sm font-semibold text-gray-700">${escapeHtml(catName)}</span>
+                <span class="text-[10px] px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">${cat.tags.length} 个标签</span>
+              </div>
+              <button onclick="addTagToCategory('${escapeHtml(catName)}')"
+                class="text-xs text-indigo-600 hover:text-indigo-800 transition">
+                + 添加标签
+              </button>
+            </div>
+            <div class="flex flex-wrap" id="tagList_${catKey}">
+              ${cat.tags.map((tag, idx) => `
+                <span class="tag-badge ${catClass}">
+                  ${escapeHtml(tag)}
+                  <span class="tag-remove" onclick="removeTagFromCategory('${escapeHtml(catName)}', ${idx})">✕</span>
+                </span>
+              `).join('')}
+            </div>
+          </div>
+        `;
+      });
+
+      html += `
+          </div>
+        </div>
+      `;
+
+      // ====== 第二部分：自动打标规则（只读） ======
+      html += `
+        <div class="bg-white rounded-xl border border-gray-200 p-6">
+          <div class="flex items-center justify-between mb-5">
+            <div class="flex items-center space-x-2">
+              <span class="text-lg">🤖</span>
+              <div>
+                <h3 class="text-base font-bold text-gray-800">自动打标规则</h3>
+                <p class="text-xs text-gray-400 mt-0.5">系统根据消息内容自动为客户打标签（只读）</p>
+              </div>
+            </div>
+            <span class="text-[10px] px-2 py-1 bg-gray-100 text-gray-500 rounded-lg">
+              🔒 由AI策略引擎控制，暂不支持手动配置
+            </span>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-gray-200">
+                  <th class="text-left py-2 px-3 text-xs font-semibold text-gray-500 w-8">#</th>
+                  <th class="text-left py-2 px-3 text-xs font-semibold text-gray-500">触发条件</th>
+                  <th class="text-left py-2 px-3 text-xs font-semibold text-gray-500">自动打标</th>
+                  <th class="text-left py-2 px-3 text-xs font-semibold text-gray-500">所属分类</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${autoTagRules.map((rule, idx) => `
+                  <tr class="border-b border-gray-50 hover:bg-gray-50 transition">
+                    <td class="py-2.5 px-3 text-xs text-gray-400">${idx + 1}</td>
+                    <td class="py-2.5 px-3 text-gray-700">${escapeHtml(rule.trigger)}</td>
+                    <td class="py-2.5 px-3">
+                      <span class="tag-badge tag-cat-intent" style="font-size: 11px;">${escapeHtml(rule.tag)}</span>
+                    </td>
+                    <td class="py-2.5 px-3 text-xs text-gray-500">${escapeHtml(rule.category)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+          <div class="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+            <div class="flex items-start space-x-2">
+              <span class="text-amber-500 text-sm">💡</span>
+              <div class="text-xs text-amber-700">
+                <p class="font-semibold">自动打标说明</p>
+                <p class="mt-1">自动打标规则由AI策略引擎实时分析客户消息触发，规则随策略引擎版本迭代更新，当前暂不支持在后台手动配置。</p>
+                <p class="mt-1">如需调整自动打标行为，请修改策略引擎相关配置参数（见"策略引擎"Tab）。</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      html += '</div>';
+      panel.innerHTML = html;
+    }
+
+    // ============================================================
+    // 标签体系操作：添加标签到分类
+    // （仅修改前端状态，暂不同步到后端）
+    // ============================================================
+    function addTagToCategory(catName) {
+      const text = prompt('请输入新标签名称:');
+      if (!text || !text.trim()) return;
+
+      // 检查是否已存在
+      if (tagSystemData[catName] && tagSystemData[catName].tags.includes(text.trim())) {
+        showToast('标签"' + text.trim() + '"已存在', 'error');
+        return;
+      }
+
+      // 添加到前端数据
+      if (tagSystemData[catName]) {
+        tagSystemData[catName].tags.push(text.trim());
+        // 重新渲染标签体系面板
+        renderTagSystemPanel();
+        showToast('标签"' + text.trim() + '"已添加', 'success');
+      }
+    }
+
+    // ============================================================
+    // 标签体系操作：从分类中删除标签
+    // （仅修改前端状态，暂不同步到后端）
+    // ============================================================
+    function removeTagFromCategory(catName, index) {
+      if (!tagSystemData[catName]) return;
+
+      const tagName = tagSystemData[catName].tags[index];
+      if (!confirm('确定删除标签"' + tagName + '"吗？')) return;
+
+      tagSystemData[catName].tags.splice(index, 1);
+      // 重新渲染标签体系面板
+      renderTagSystemPanel();
+      showToast('标签"' + tagName + '"已删除', 'success');
+    }
+
+    // ============================================================
+    // 启动！
+    // ============================================================
+    if (authToken) {
+      init();
+    }
+  </script>
+</body>
+</html>
