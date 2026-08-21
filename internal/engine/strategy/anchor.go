@@ -4,6 +4,7 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/strategytypes"
 	"ai-scrm/pkg/utils"
 	"log"
 	"strings"
@@ -30,11 +31,11 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 	var scores [AnchorCount]float64
 
 	// 从T向量和S状态中提取特征值
-	intentScore := tVector[0]    // T[0] 意向分
-	trustLevel := tVector[6]     // T[6] 信任度
-	priceSens := tVector[1]      // T[1] 价格敏感度
+	intentScore := tVector[0]            // T[0] 意向分
+	trustLevel := tVector[6]             // T[6] 信任度
+	priceSens := tVector[1]              // T[1] 价格敏感度
 	stage := float64(state.CurrentStage) // 心智阶段
-	hookRate := state.HookRate   // 接钩率
+	hookRate := state.HookRate           // 接钩率
 
 	// 修复：锚权重从硬编码→后台可调
 	// 后台改权重→热加载→下次推理立即生效，不需要改代码发版
@@ -173,8 +174,8 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 func CalcAnchorScoresPromoteLocked(scores [AnchorCount]float64) [AnchorCount]float64 {
 	// 稀缺锚(aggressiveness=5)和代价自担锚(aggressiveness=6)大幅减分
 	// 同时压制条件交换的触发（条件交换通常与稀缺/代价自担锚绑定）
-	scores[AnchorScarcity] -= 5.0  // 稀缺锚：几乎不可能被选中
-	scores[AnchorSelfPay] -= 5.0   // 代价自担锚：几乎不可能被选中
+	scores[AnchorScarcity] -= 5.0 // 稀缺锚：几乎不可能被选中
+	scores[AnchorSelfPay] -= 5.0  // 代价自担锚：几乎不可能被选中
 	return scores
 }
 
@@ -187,20 +188,7 @@ func CalcAnchorScoresPromoteLocked(scores [AnchorCount]float64) [AnchorCount]flo
 
 // IsStoreVisitIntent 判断客户输入是否表达到店/体验/试驾意图
 func IsStoreVisitIntent(text string) bool {
-	text = strings.ToLower(text)
-
-	visitKeywords := []string{
-		"到店", "去店里", "来看看", "看实车", "体验", "试驾",
-		"去试驾", "去你们店", "到你们那", "上门", "预约看车",
-		"预约试驾", "想看看", "想体验", "线下", "现场",
-		"过来一趟", "过去看看", "过去试", "到展厅",
-	}
-	for _, kw := range visitKeywords {
-		if strings.Contains(text, kw) {
-			return true
-		}
-	}
-	return false
+	return strategytypes.IsStoreVisitIntent(text)
 }
 
 // GetAnchorName 获取锚类型名称
@@ -297,35 +285,35 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 
 // GetAnchorName 获取锚类型名称
 func GetAnchorName(anchorType int) string {
-	if anchorType >= 0 && anchorType < AnchorCount {
-		return AnchorNames[anchorType]
-	}
-	return "未知"
+	return strategytypes.GetAnchorName(anchorType)
 }
 
 // Step2_5_StageCeiling 心智阶段锁修锚（Step2.5）
 // 核心规则：锚的aggressiveness不能超过客户当前心智阶段的上限
 //
 // 为什么需要这一步？
-//   没有阶段锁时，softmax完全凭分数选锚，种子客户的品牌抗性能把对比锚
-//   分数推到最高，导致客户刚说"你好"就触发对比锚+条件交换+促单——
-//   完全违背PRD的5级策略链路（认知→懂我→兴趣→促转→沉淀）。
 //
-//   阶段锁强制执行：你在认知阶段，只能用温和锚（aggressiveness ≤ 1）；
-//   你在兴趣阶段，可以用拆解锚（≤ 2）；你在考虑阶段，可以用对比锚（≤ 3）；
-//   依此类推。不管T向量值多高、不管抗性加分多少，阶段锁是天花板。
+//	没有阶段锁时，softmax完全凭分数选锚，种子客户的品牌抗性能把对比锚
+//	分数推到最高，导致客户刚说"你好"就触发对比锚+条件交换+促单——
+//	完全违背PRD的5级策略链路（认知→懂我→兴趣→促转→沉淀）。
+//
+//	阶段锁强制执行：你在认知阶段，只能用温和锚（aggressiveness ≤ 1）；
+//	你在兴趣阶段，可以用拆解锚（≤ 2）；你在考虑阶段，可以用对比锚（≤ 3）；
+//	依此类推。不管T向量值多高、不管抗性加分多少，阶段锁是天花板。
 //
 // 降级逻辑：
-//   如果softmax选出的锚的aggressiveness超过了当前阶段上限，
-//   则降级到"当前阶段上限对应的锚类型"。
-//   降级方式：找到aggressiveness恰好等于上限的最常见锚类型。
-//   例如：stage=0，ceiling=1，softmax选了对比锚(aggressiveness=3) → 降级到同类锚(aggressiveness=1)
+//
+//	如果softmax选出的锚的aggressiveness超过了当前阶段上限，
+//	则降级到"当前阶段上限对应的锚类型"。
+//	降级方式：找到aggressiveness恰好等于上限的最常见锚类型。
+//	例如：stage=0，ceiling=1，softmax选了对比锚(aggressiveness=3) → 降级到同类锚(aggressiveness=1)
 //
 // 与Step3（软降级）的关系：
-//   Step2.5在Step3之前执行，两者都是降级但触发条件不同：
-//   - Step2.5：阶段锁——强制性的，基于客户心智阶段
-//   - Step3：软降级——基于接钩率/沉默时长/情绪等动态信号
-//   如果两步都触发，最终锚会更温和（双重降级）
+//
+//	Step2.5在Step3之前执行，两者都是降级但触发条件不同：
+//	- Step2.5：阶段锁——强制性的，基于客户心智阶段
+//	- Step3：软降级——基于接钩率/沉默时长/情绪等动态信号
+//	如果两步都触发，最终锚会更温和（双重降级）
 func Step2_5_StageCeiling(selectedAnchor int, currentStage int) (finalAnchor int, isDowngraded bool) {
 	finalAnchor = selectedAnchor
 	isDowngraded = false

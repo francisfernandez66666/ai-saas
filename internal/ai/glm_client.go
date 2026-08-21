@@ -23,21 +23,21 @@ import (
 
 // GLMClient 智谱GLM客户端
 type GLMClient struct {
-	APIKey      string        // API密钥
-	BaseURL     string        // API基础URL
-	ModelName   string        // 模型名称
-	MockMode    bool          // 模拟模式（不调用真实API）
-	MaxTokens   int           // 最大输出token数
-	Temperature float64       // 默认采样温度
-	MaxRetries  int           // 最大重试次数
-	httpClient  *http.Client  // HTTP客户端（复用连接）
+	APIKey      string       // API密钥
+	BaseURL     string       // API基础URL
+	ModelName   string       // 模型名称
+	MockMode    bool         // 模拟模式（不调用真实API）
+	MaxTokens   int          // 最大输出token数
+	Temperature float64      // 默认采样温度
+	MaxRetries  int          // 最大重试次数
+	httpClient  *http.Client // HTTP客户端（复用连接）
 }
 
 // ChatMessage 对话消息结构
 type ChatMessage struct {
-	Role             string `json:"role"`               // user/assistant/system
-	Content          string `json:"content"`            // 消息内容（最终回复）
-	ReasoningContent string `json:"reasoning_content"`  // 思考过程（思考模型专用）
+	Role             string `json:"role"`              // user/assistant/system
+	Content          string `json:"content"`           // 消息内容（最终回复）
+	ReasoningContent string `json:"reasoning_content"` // 思考过程（思考模型专用）
 }
 
 // ChatRequest 请求结构
@@ -131,8 +131,8 @@ func (c *GLMClient) GetModelName() string {
 // 注意：延迟前置（调用前等待），由调用方通过utils.GetReplyDelay控制
 // 好处：1. 用户体验一样（都是等一会儿才回复）
 //
-//	2. 自然摊平请求高峰，减少429限流
-//	3. 可以配合"正在输入中"状态做先接住再回复
+//  2. 自然摊平请求高峰，减少429限流
+//  3. 可以配合"正在输入中"状态做先接住再回复
 func (c *GLMClient) GenerateText(messages []ChatMessage, temperature float64) (string, error) {
 	var reply string
 	var err error
@@ -208,9 +208,9 @@ func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float6
 
 // calcTypingDelay 计算模拟打字延迟
 // 算法：
-//   1. 基础延迟 = 字数 / 打字速度
-//   2. clamp到 [MinDelay, MaxDelay] 之间
-//   3. 乘以 (1 ± jitter) 的随机因子（增加真实感）
+//  1. 基础延迟 = 字数 / 打字速度
+//  2. clamp到 [MinDelay, MaxDelay] 之间
+//  3. 乘以 (1 ± jitter) 的随机因子（增加真实感）
 func calcTypingDelay(text string, speed float64, minDelay float64, maxDelay float64, jitter float64) float64 {
 	// 计算回复字数（中文按字算，utf8.RuneCountInString处理多字节字符）
 	charCount := utf8.RuneCountInString(text)
@@ -405,9 +405,9 @@ func containsKeyword(text string, keywords ...string) bool {
 }
 
 func containsIgnoreCase(s, substr string) bool {
-	return len(s) >= len(substr) && 
-		(len(s) == 0 || len(substr) == 0 || 
-		 indexOfIgnoreCase(s, substr) >= 0)
+	return len(s) >= len(substr) &&
+		(len(s) == 0 || len(substr) == 0 ||
+			indexOfIgnoreCase(s, substr) >= 0)
 }
 
 func indexOfIgnoreCase(s, substr string) int {

@@ -2,9 +2,9 @@ package chatflow
 
 import (
 	"ai-scrm/config"
-	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/strategytypes"
 	"log"
 	"time"
 )
@@ -75,7 +75,7 @@ func getPendingHandoverMessage() string {
 // 根据本轮对话结果，更新会话状态S
 func UpdateConversationState(
 	conv *model.Conversation,
-	strategyOutput *strategy.StrategyOutput,
+	strategyOutput *strategytypes.StrategyOutput,
 	customer *model.Customer,
 	customerInput string,
 ) model.SessionState {
@@ -85,7 +85,7 @@ func UpdateConversationState(
 	state.Attempts++
 
 	// 接钩判断
-	if strategy.CheckHooked(customerInput) && state.Attempts > 1 {
+	if strategytypes.CheckHooked(customerInput) && state.Attempts > 1 {
 		state.HookCount++
 	}
 
@@ -98,7 +98,7 @@ func UpdateConversationState(
 	state.LastAnchorType = strategyOutput.FinalAnchor
 
 	// 情绪更新
-	state.Emotion = strategy.DetectEmotion(customerInput)
+	state.Emotion = strategytypes.DetectEmotion(customerInput)
 
 	// 高意向持续轮数
 	intentScore := customer.IntentScore + strategyOutput.IntentDelta

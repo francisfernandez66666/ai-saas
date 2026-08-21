@@ -26,25 +26,25 @@ import (
 type ModelProvider string
 
 const (
-	ProviderZhipu     ModelProvider = "zhipu"        // 智谱GLM
+	ProviderZhipu       ModelProvider = "zhipu"       // 智谱GLM
 	ProviderSiliconFlow ModelProvider = "siliconflow" // 硅基流动
-	ProviderFallback  ModelProvider = "fallback"     // 模板兜底
+	ProviderFallback    ModelProvider = "fallback"    // 模板兜底
 )
 
 // ModelState 单个模型的状态
 type ModelState struct {
-	Provider       ModelProvider // 提供方
-	ModelName      string        // 模型名
-	Available      bool          // 当前是否可用
-	LastFailTime   time.Time     // 最后一次失败时间
-	ConsecutiveFails int         // 连续失败次数
+	Provider         ModelProvider // 提供方
+	ModelName        string        // 模型名
+	Available        bool          // 当前是否可用
+	LastFailTime     time.Time     // 最后一次失败时间
+	ConsecutiveFails int           // 连续失败次数
 }
 
 // AIRouter AI路由器
 type AIRouter struct {
-	mu          sync.RWMutex    // 并发保护
-	models      []*ModelState   // 模型列表（按优先级排序）
-	coolDownSec int             // 失败后冷却时间（秒）
+	mu          sync.RWMutex  // 并发保护
+	models      []*ModelState // 模型列表（按优先级排序）
+	coolDownSec int           // 失败后冷却时间（秒）
 }
 
 // Router 默认路由器实例
@@ -83,9 +83,9 @@ func InitRouter() {
 	// 智谱已移除：频繁429限流，重试8-16秒也大概率继续429，浪费时间
 	if cfg.Zhipu.APIKey != "" {
 		models = append(models, &ModelState{
-			Provider:       ProviderZhipu,
-			ModelName:      cfg.Zhipu.ModelBackup, // 直接用4-flash（不用4.7）
-			Available:      true,
+			Provider:         ProviderZhipu,
+			ModelName:        cfg.Zhipu.ModelBackup, // 直接用4-flash（不用4.7）
+			Available:        true,
 			ConsecutiveFails: 0,
 		})
 	}

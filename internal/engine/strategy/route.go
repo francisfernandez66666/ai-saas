@@ -4,6 +4,7 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/strategytypes"
 	"strings"
 )
 
@@ -61,9 +62,9 @@ func IsPriceInquiry(text string) bool {
 // Step6_RouteDecision 路由决策（AI / 转人工 / 养鱼 / 询价引导到店）
 //
 // 三判据转人工：
-//   1. 信任度 < θ_trust
-//   2. attempts ≥ θ_rounds 且 hook_rate < θ_hookrate_crit
-//   3. 情绪负面
+//  1. 信任度 < θ_trust
+//  2. attempts ≥ θ_rounds 且 hook_rate < θ_hookrate_crit
+//  3. 情绪负面
 //
 // L3强制切人：
 //   - 意向分 ≥ θ_L3_intent 且 高意向持续 ≥ θ_L3_rounds
@@ -189,70 +190,12 @@ func Step7_UpdateIntent(
 	return newIntent
 }
 
-// DetectEmotion 简易情绪识别
-// 基于关键词的规则识别，后续可以替换为AI识别
-func DetectEmotion(text string) string {
-	// 负面关键词
-	negativeKeywords := []string{
-		"不喜欢", "不满意", "太贵了", "太贵", "不值", "不好", "不行",
-		"差评", "投诉", "垃圾", "骗", "坑", "套路", "忽悠",
-		"别了", "算了", "不用了", "不考虑",
-		"生气", "气死", "烦", "讨厌", "失望",
-	}
-
-	// 正面关键词
-	positiveKeywords := []string{
-		"喜欢", "满意", "不错", "好的", "棒", "赞",
-		"谢谢", "感谢", "厉害", "专业", "挺好",
-		"考虑一下", "有兴趣", "想了解", "怎么买", "多少钱",
-		"试驾", "到店", "预约", "下单", "定了",
-	}
-
-	negativeCount := countKeywords(text, negativeKeywords)
-	positiveCount := countKeywords(text, positiveKeywords)
-
-	if negativeCount > positiveCount && negativeCount > 0 {
-		return "negative"
-	}
-	if positiveCount > negativeCount && positiveCount > 0 {
-		return "positive"
-	}
-	return "neutral"
-}
-
-// countKeywords 统计关键词出现次数
-func countKeywords(text string, keywords []string) int {
-	count := 0
-	for _, kw := range keywords {
-		if len(kw) > 0 {
-			occurrences := 0
-			for i := 0; i <= len(text)-len(kw); i++ {
-				if text[i:i+len(kw)] == kw {
-					occurrences++
-				}
-			}
-			count += occurrences
-		}
-	}
-	return count
-}
-
-// CheckHooked 检查客户是否接钩
-// 简易规则：客户回复且回复有实际内容就算接钩
+// CheckHooked 接钩判定（P2-B 委托 strategytypes）
 func CheckHooked(customerInput string) bool {
-	// 空消息不算接钩
-	if len(strings.TrimSpace(customerInput)) == 0 {
-		return false
-	}
+	return strategytypes.CheckHooked(customerInput)
+}
 
-	// 纯语气词不算
-	shortNoHook := []string{"哦", "嗯", "啊", "好", "知道了", "呵呵", "哈哈", "嗯呢", "好哒"}
-	for _, s := range shortNoHook {
-		if customerInput == s {
-			return false
-		}
-	}
-
-	// 有实际内容就算接钩
-	return len([]rune(customerInput)) >= 3
+// DetectEmotion 情绪判定（P2-B 委托 strategytypes）
+func DetectEmotion(text string) string {
+	return strategytypes.DetectEmotion(text)
 }

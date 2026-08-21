@@ -23,8 +23,8 @@ import (
 // RecalledTemplate 召回的模板信息
 type RecalledTemplate struct {
 	Template   *model.Template // 模板对象
-	Similarity float64            // 相似度分数
-	MatchScore float64            // 综合匹配分
+	Similarity float64         // 相似度分数
+	MatchScore float64         // 综合匹配分
 }
 
 // Step4_RecallTemplate 话术模板召回
@@ -32,10 +32,10 @@ type RecalledTemplate struct {
 // 输出：最佳匹配的话术模板
 //
 // 召回逻辑：
-//   1. 先按锚类型过滤
-//   2. 再按标签匹配度排序
-//   3. 再按适用条件（意向分范围、车型等）过滤
-//   4. 取综合得分最高的
+//  1. 先按锚类型过滤
+//  2. 再按标签匹配度排序
+//  3. 再按适用条件（意向分范围、车型等）过滤
+//  4. 取综合得分最高的
 func Step4_RecallTemplate(
 	anchorType int,
 	customerTags []string,
@@ -150,10 +150,10 @@ func calcTagMatchScore(t *model.Template, customerTags []string) float64 {
 
 // FillTemplate 填充话术模板的占位符
 // 流程：
-//   1. 从模板的required_features中获取需要的卖点
-//   2. 根据T向量和客户标签从卖点库检索匹配的feature
-//   3. 将feature的内容填充到prompt_template的{{}}占位符中
-//   4. 同时填充客户相关的通用占位符（姓名、车型等）
+//  1. 从模板的required_features中获取需要的卖点
+//  2. 根据T向量和客户标签从卖点库检索匹配的feature
+//  3. 将feature的内容填充到prompt_template的{{}}占位符中
+//  4. 同时填充客户相关的通用占位符（姓名、车型等）
 func FillTemplate(
 	template *model.Template,
 	customer *model.Customer,
@@ -260,8 +260,8 @@ func fillPlaceholders(text string, customer *model.Customer, features []model.Fe
 	replaceMap := map[string]string{
 		"{{customer_name}}": customer.Name,
 		"{{model}}":         customer.InterestModel,
-		"{{budget}}":       fmt.Sprintf("%.0f万", customer.Budget),
-		"{{region}}":       customer.Region,
+		"{{budget}}":        fmt.Sprintf("%.0f万", customer.Budget),
+		"{{region}}":        customer.Region,
 	}
 
 	for placeholder, value := range replaceMap {

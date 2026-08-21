@@ -13,21 +13,21 @@ import (
 // Role 定义：super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
 // tenant_id 为 NULL 时表示超级管理员，非 NULL 时表示某租户下用户
 type TenantUser struct {
-	ID            uint           `gorm:"primaryKey" json:"id"`                                         // 主键
-	Username      string         `gorm:"size:50;uniqueIndex;not null" json:"username"`                 // 登录名
-	PasswordHash  string         `gorm:"size:255;not null" json:"-"`                                   // 密码哈希（不返回给前端）
-	RealName      string         `gorm:"size:50" json:"real_name"`                                     // 真实姓名
-	TenantID      *uint          `gorm:"index" json:"-"`                                                 // 租户ID，NULL=超级管理员，非NULL=某租户下用户
-	Role          string         `gorm:"size:20;not null;default:sales" json:"role"`                    // 角色：super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
-	Phone         string         `gorm:"size:20" json:"phone"`                                         // 手机号
-	Email         string         `gorm:"size:100" json:"email"`                                        // 邮箱
-	Avatar        string         `gorm:"size:255" json:"avatar"`                                       // 头像URL
-	Department    string         `gorm:"size:50" json:"department"`                                    // 部门
-	Status        int            `gorm:"default:1" json:"status"`                                      // 状态：1=正常 0=禁用
-	LastLoginAt   *time.Time     `json:"last_login_at"`                                                  // 最后登录时间
-	LastLoginIP   string         `gorm:"size:45" json:"last_login_ip"`                                 // 最后登录IP
-	CreatedAt     time.Time      `json:"created_at"`                                                    // 创建时间
-	UpdatedAt     time.Time      `json:"updated_at"`                                                    // 更新时间
+	ID           uint       `gorm:"primaryKey" json:"id"`                         // 主键
+	Username     string     `gorm:"size:50;uniqueIndex;not null" json:"username"` // 登录名
+	PasswordHash string     `gorm:"size:255;not null" json:"-"`                   // 密码哈希（不返回给前端）
+	RealName     string     `gorm:"size:50" json:"real_name"`                     // 真实姓名
+	TenantID     *uint      `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
+	Role         string     `gorm:"size:20;not null;default:sales" json:"role"`   // 角色：super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+	Phone        string     `gorm:"size:20" json:"phone"`                         // 手机号
+	Email        string     `gorm:"size:100" json:"email"`                        // 邮箱
+	Avatar       string     `gorm:"size:255" json:"avatar"`                       // 头像URL
+	Department   string     `gorm:"size:50" json:"department"`                    // 部门
+	Status       int        `gorm:"default:1" json:"status"`                      // 状态：1=正常 0=禁用
+	LastLoginAt  *time.Time `json:"last_login_at"`                                // 最后登录时间
+	LastLoginIP  string     `gorm:"size:45" json:"last_login_ip"`                 // 最后登录IP
+	CreatedAt    time.Time  `json:"created_at"`                                   // 创建时间
+	UpdatedAt    time.Time  `json:"updated_at"`                                   // 更新时间
 }
 
 // TableName 指定表名

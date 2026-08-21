@@ -6,9 +6,9 @@ import (
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
-	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/strategytypes"
 	"log"
 	"math/rand"
 	"strings"
@@ -25,7 +25,10 @@ import (
 // GenerateAIReply 生成AI回复
 // 完整流程：构建系统Prompt → 构建历史对话 → 构建策略Prompt → 调用GLM → 失败兜底用模板
 // 模拟真人延迟已外移到调用方（思考20-40s + 打字40字/分钟）
-func GenerateAIReply(customer *model.Customer, conversationID uint, userInput string, strategyOutput *strategy.StrategyOutput) string {
+// GenerateAIReply 生成AI回复（P2-B 起签名带 features：引擎特性集由调用方传入，
+// 本包不再反向依赖 engine/strategy，依赖方向收敛为 llm→strategytypes/ai/chatflow）
+func GenerateAIReply(customer *model.Customer, conversationID uint, userInput string,
+	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
 
 	// 加载会话，检查引导式反问状态
 	var genConv model.Conversation
@@ -134,9 +137,9 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 1. 系统Prompt（人设 + 卖点知识 + 价格管控 + 促单锁 + 到店转化策略）
 	hasArrived := customer.HasArrived() // 判断客户是否已到店，用于价格管控
 	// canPromote已在函数顶部声明，此处不再重复
-	isStoreVisit := strategy.IsStoreVisitIntent(userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
+	isStoreVisit := strategytypes.IsStoreVisitIntent(userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
 	modelID := getCustomerModelID(customer)
-	systemPrompt := ai.BuildSystemPrompt(strategy.DefaultEngine.Features(), modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
+	systemPrompt := ai.BuildSystemPrompt(features, modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
 
 	// 2. 策略指令（锚方向 + 话术参考 + 条件交换 + 知识库素材）
 	strategyPrompt := ai.BuildStrategyPrompt(strategyOutput, customer.GetTags(), modelID, hasArrived, canPromote, chatflow.IsLeadCaptured(customer))
@@ -213,7 +216,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 
 	// 7b. 硬拦截：引导式反问关闭条件触发时剥离反问句
 	if !chatflow.IsLeadCaptured(customer) {
-		closeGuided := (dialogRoundCount >= guidedDialogMaxRounds && strategyOutput.FinalAnchor == strategy.AnchorNoThrow) ||
+		closeGuided := (dialogRoundCount >= guidedDialogMaxRounds && strategyOutput.FinalAnchor == strategytypes.AnchorNoThrow) ||
 			(repeatCount >= repeatQuestionMaxTimes)
 		if closeGuided {
 			stripped := chatflow.StripGuidedQuestions(reply)

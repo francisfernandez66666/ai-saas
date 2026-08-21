@@ -2,9 +2,9 @@ package ai
 
 import (
 	"ai-scrm/internal/cache"
-	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/strategytypes"
 	"fmt"
 	"strings"
 )
@@ -28,7 +28,8 @@ import (
 // canPromote: 是否允许促单，false时禁止"专属优惠""限时优惠"等促单话术
 // isStoreVisit: 客户是否表达到店/体验意图，true时推留资转化策略
 // leadCaptured: 客户是否已留资（journey_stage>=lead_captured），硬规则：
-//   已留资及以后，禁止再输出"促到店/约试驾/问姓名电话"类话术，只管好好介绍产品
+//
+//	已留资及以后，禁止再输出"促到店/约试驾/问姓名电话"类话术，只管好好介绍产品
 func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, finalAnchor int, canPromote bool, isStoreVisit bool, leadCaptured bool) string {
 	var sb strings.Builder
 
@@ -55,7 +56,7 @@ func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, 
 	sb.WriteString("10. 【称呼铁律-硬编码】不知道客户真实姓名时，用「您好」开头。绝对禁止以「访客xxx」「访客_xxxx」等临时ID称呼客户，这会让客户觉得在被AI敷衍\n\n")
 
 	// 核心规则——根据锚类型和留资状态区分
-	if finalAnchor == strategy.AnchorNoThrow && !leadCaptured {
+	if finalAnchor == strategytypes.AnchorNoThrow && !leadCaptured {
 		// 不抛锚且未留资：倾听探索模式，以了解客户需求为主
 		// 除非客户表现出强烈的讨论车的欲望，否则不主动推车细节
 		sb.WriteString("【规则-倾听探索模式】\n")
@@ -141,7 +142,7 @@ func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, 
 	// ============================================================
 	// 品牌车型全览：不依赖抛锚条件，只要客户绑定了品牌就注入
 	// 修复问题1：客户问"有几款车"时策略引擎不抛锚，但AI需要知道品牌下所有车型
-	// 原因：车型全览在if finalAnchor != strategy.AnchorNoThrow块内，
+	// 原因：车型全览在if finalAnchor != strategytypes.AnchorNoThrow块内，
 	// 不抛锚时整个车型全览段被跳过，AI无法回答"有几款车"的问题
 	// 修复：把车型全览移到抛锚判断之前，车型核心参数和卖点仍在抛锚后注入
 	// ============================================================
@@ -205,7 +206,7 @@ func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, 
 	// 只有客户表现出兴趣（抛锚时）才注入产品信息
 	// 例外：已留资客户不受此限制——已表明购车意向，AI应能用知识库回答
 	// 注意：车型全览已在上方注入，不受抛锚条件限制
-	if finalAnchor != strategy.AnchorNoThrow || leadCaptured {
+	if finalAnchor != strategytypes.AnchorNoThrow || leadCaptured {
 		// 核心卖点（只列名称，控制长度）
 		sb.WriteString("【产品卖点】\n")
 		count := 0
@@ -262,7 +263,7 @@ func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, 
 // canPromote: 是否允许促单，false时禁止条件交换话术
 // leadCaptured: 是否已留资，已留资客户不注入倾听探索指令（直接回答，不反问）
 func BuildStrategyPrompt(
-	strategyOutput *strategy.StrategyOutput,
+	strategyOutput *strategytypes.StrategyOutput,
 	customerTags []string,
 	modelID uint,
 	hasArrived bool,
@@ -273,12 +274,12 @@ func BuildStrategyPrompt(
 
 	// 锚方向
 	sb.WriteString(fmt.Sprintf("【策略锚点】%s\n",
-		strategy.GetAnchorName(strategyOutput.FinalAnchor)))
+		strategytypes.GetAnchorName(strategyOutput.FinalAnchor)))
 
 	// 不抛锚时注入倾听探索指令，覆盖模板话术
 	// 不抛锚=客户还在初期，AI应该先了解需求，而不是引导了解产品
 	// 已留资客户跳过倾听探索——客户已表明意向，直接回答不开反问
-	if strategyOutput.FinalAnchor == strategy.AnchorNoThrow && !leadCaptured {
+	if strategyOutput.FinalAnchor == strategytypes.AnchorNoThrow && !leadCaptured {
 		sb.WriteString("【倾听探索指令】\n")
 		sb.WriteString("你现在处于倾听探索模式：\n")
 		sb.WriteString("· 先了解客户：购车用途（家用/商用/越野）、预算范围、关注点（安全/空间/动力/智能）、用车时间、家庭成员\n")
@@ -292,12 +293,12 @@ func BuildStrategyPrompt(
 	// AnchorCompare(对比锚=3)=促到店阶段：客户在对比，AI引导到店体验
 	// 其他非NoThrow锚：按模板走，均不反问客户
 	switch strategyOutput.FinalAnchor {
-	case strategy.AnchorDisassemble:
+	case strategytypes.AnchorDisassemble:
 		sb.WriteString("【兴趣爆发-拆解指令】\n客户已经透露了需求，这一轮你要：\n· 用已知的客户需求信息，介绍匹配的车型配置和卖点\n· 不要说「您觉得怎么样」「您感兴趣吗」等反问句\n· 用陈述句直接告诉客户这款车能怎么满足他的需求\n\n")
-	case strategy.AnchorCompare:
+	case strategytypes.AnchorCompare:
 		sb.WriteString("【促到店-对比指令】\n客户在对比不同车型，这一轮你要：\n· 用知识库素材客观介绍差异，突出本车优势\n· 话术自然引导到店看实车体验，但不要反问「您什么时候来」\n· 用陈述句表达「您可以到店来看看，实车感受更直观」\n\n")
 	default:
-		if strategyOutput.FinalAnchor != strategy.AnchorNoThrow {
+		if strategyOutput.FinalAnchor != strategytypes.AnchorNoThrow {
 			sb.WriteString("【销售推进指令】\n这一轮按策略锚点和话术模板走，用陈述句推进，不反问客户\n\n")
 		}
 	}
@@ -475,7 +476,7 @@ func BuildKnowledgePrompt(modelID uint, competitorBrand string, hasArrived bool)
 // BuildFallbackReply 构建兜底回复
 // AI调用失败时，直接用策略模板话术兜底
 // canPromote: 是否允许促单，false时禁止"专属优惠"等促单话术（与策略引擎硬锁一致）
-func BuildFallbackReply(strategyOutput *strategy.StrategyOutput, canPromote bool) string {
+func BuildFallbackReply(strategyOutput *strategytypes.StrategyOutput, canPromote bool) string {
 	reply := strategyOutput.PromptText
 
 	if strategyOutput.HookText != "" {

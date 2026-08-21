@@ -97,14 +97,14 @@ func (r *TagRule) SetMatchPatterns(patterns []string) {
 
 // TagWeightMapping 标签→T向量权重映射表
 type TagWeightMapping struct {
-	ID            uint      `gorm:"primaryKey" json:"id"`
-	TenantID      uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
-	TagID         uint      `gorm:"index;not null" json:"tag_id"`         // 标签ID
-	TagCode      string    `gorm:"size:50;index" json:"tag_code"`       // 标签编码（冗余）
-	TVectorIndex int       `gorm:"not null" json:"t_vector_index"`      // 对应T向量第几维(0-31)
-	WeightDelta  float64   `gorm:"default:0.1" json:"weight_delta"`     // 权重变化量
-	Direction    string    `gorm:"size:10;default:up" json:"direction"` // 变化方向: up(增加)/down(减少)
-	Status       int       `gorm:"default:1;index" json:"status"`       // 状态: 1启用 0禁用(软删除)
+	ID           uint      `gorm:"primaryKey" json:"id"`
+	TenantID     uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
+	TagID        uint      `gorm:"index;not null" json:"tag_id"`              // 标签ID
+	TagCode      string    `gorm:"size:50;index" json:"tag_code"`             // 标签编码（冗余）
+	TVectorIndex int       `gorm:"not null" json:"t_vector_index"`            // 对应T向量第几维(0-31)
+	WeightDelta  float64   `gorm:"default:0.1" json:"weight_delta"`           // 权重变化量
+	Direction    string    `gorm:"size:10;default:up" json:"direction"`       // 变化方向: up(增加)/down(减少)
+	Status       int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用(软删除)
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

@@ -7,7 +7,6 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
-	"ai-scrm/internal/llm"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
@@ -690,7 +689,7 @@ skipStoreVisitFast:
 					"pending_handoff":     false,
 				})
 				log.Printf("[Chat] 会话%d 顾问超时，自动重开AI回复", conversation.ID)
-				aiReply = llm.GenerateAIReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+				aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 			} else {
 				aiReply = ""
 				routeResult = "human_locked_no_ai"
@@ -698,7 +697,7 @@ skipStoreVisitFast:
 			}
 		} else {
 			conversation.Mode = "ai"
-			aiReply = llm.GenerateAIReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+			aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 		}
 
 	case strategy.RoutePendingHuman:
@@ -722,7 +721,7 @@ skipStoreVisitFast:
 		// 已留资客户：不重复问留资信息，直接引导到店试驾
 		conversation.Mode = "ai"
 		log.Printf("[对话] 会话%d 询价路由触发，引导到店试驾后出报价", conversation.ID)
-		aiReply = llm.GenerateAIReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+		aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 
 	case strategy.RouteHuman:
 		// 直接转人工（硬切，用户有感知）
@@ -1673,7 +1672,7 @@ skipStoreVisitFastTest:
 
 	// ---- 生成AI回复 ----
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
-	aiReply := llm.GenerateAIReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+	aiReply := strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应

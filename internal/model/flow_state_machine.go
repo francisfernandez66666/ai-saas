@@ -14,15 +14,15 @@ import (
 // FlowStateMachine 流程状态机表
 type FlowStateMachine struct {
 	ID             uint      `gorm:"primaryKey" json:"id"`
-	TenantID       uint      `gorm:"index;not null;default:0" json:"tenant_id"`     // 租户ID
-	OneID          string    `gorm:"size:64;index" json:"one_id"`                    // OneID（并发分片键）
-	FlowInstanceID uint      `gorm:"uniqueIndex;not null" json:"flow_instance_id"`   // 流程实例ID（一实例一行）
-	CurrentNode    string    `gorm:"size:50" json:"current_node"`                    // 当前节点
-	LastEventID    string    `gorm:"size:64" json:"last_event_id"`                   // 最近消费事件ID（幂等）
-	HeartbeatTS    time.Time `json:"heartbeat_ts"`                                   // 心跳时间（巡检用）
-	Status         string    `gorm:"size:20;default:running;index" json:"status"`    // running/paused/completed
-	Version        int64     `gorm:"not null;default:1" json:"version"`              // 乐观锁版本号
-	StateJSON      string    `gorm:"type:text" json:"state_json"`                    // 场景流状态快照
+	TenantID       uint      `gorm:"index;not null;default:0" json:"tenant_id"`    // 租户ID
+	OneID          string    `gorm:"size:64;index" json:"one_id"`                  // OneID（并发分片键）
+	FlowInstanceID uint      `gorm:"uniqueIndex;not null" json:"flow_instance_id"` // 流程实例ID（一实例一行）
+	CurrentNode    string    `gorm:"size:50" json:"current_node"`                  // 当前节点
+	LastEventID    string    `gorm:"size:64" json:"last_event_id"`                 // 最近消费事件ID（幂等）
+	HeartbeatTS    time.Time `json:"heartbeat_ts"`                                 // 心跳时间（巡检用）
+	Status         string    `gorm:"size:20;default:running;index" json:"status"`  // running/paused/completed
+	Version        int64     `gorm:"not null;default:1" json:"version"`            // 乐观锁版本号
+	StateJSON      string    `gorm:"type:text" json:"state_json"`                  // 场景流状态快照
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }

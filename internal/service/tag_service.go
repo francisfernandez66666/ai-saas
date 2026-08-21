@@ -193,8 +193,8 @@ func (s *TagService) AutoTagFromText(customerID uint, text string) ([]string, er
 	}
 
 	// 遍历规则，检查是否命中
-	var newTagNames []string   // 本轮新打的标签名（首次打上）
-	var hitTagIDs []uint       // 本轮命中的所有标签ID（含已有和新增）
+	var newTagNames []string // 本轮新打的标签名（首次打上）
+	var hitTagIDs []uint     // 本轮命中的所有标签ID（含已有和新增）
 
 	for _, rule := range rules {
 		patterns := rule.GetMatchPatterns()
@@ -307,10 +307,10 @@ func (s *TagService) applyHitTagsWithWeight(
 
 // ApplyTagWeightsToTVector 根据客户标签 + 权重映射，更新T向量
 // 流程：
-//   1. 获取客户所有标签
-//   2. 对每个标签，查找对应的权重映射
-//   3. 在传入的"基准向量baseVector"上按权重映射逐个更新T向量的对应维度
-//   4. 保存更新后的T向量到客户对象（内存中，不存DB）
+//  1. 获取客户所有标签
+//  2. 对每个标签，查找对应的权重映射
+//  3. 在传入的"基准向量baseVector"上按权重映射逐个更新T向量的对应维度
+//  4. 保存更新后的T向量到客户对象（内存中，不存DB）
 //
 // 注意：这个方法只修改传入的customer对象的T向量，不写入DB
 // 写入DB由调用方决定（策略引擎只需要内存中的T向量做推理）
@@ -400,11 +400,12 @@ func (s *TagService) ApplyTagWeightsToTVector(customer *model.Customer, baseVect
 
 // isZeroOneDimension 判断T向量某维是否是0-1范围的维度
 // T向量说明：
-//   T[0]=意向分(0-1), T[1]=价格敏感度(0-1), T[2]=品牌认知度(0-1)
-//   T[3]=车型编码(数值), T[4]=到店状态(0/1/2), T[5]=决策周期(天)
-//   T[6]=信任度(0-1), T[7]=流量来源编码(数值)
-//   T[8]=性别(0/1/2), T[9]=年龄段(数值), T[10]=地域编码(数值)...
-//   T[14]=抗性类型编码(数值), T[15]=客户身份编码(0/1)
+//
+//	T[0]=意向分(0-1), T[1]=价格敏感度(0-1), T[2]=品牌认知度(0-1)
+//	T[3]=车型编码(数值), T[4]=到店状态(0/1/2), T[5]=决策周期(天)
+//	T[6]=信任度(0-1), T[7]=流量来源编码(数值)
+//	T[8]=性别(0/1/2), T[9]=年龄段(数值), T[10]=地域编码(数值)...
+//	T[14]=抗性类型编码(数值), T[15]=客户身份编码(0/1)
 func isZeroOneDimension(idx int) bool {
 	zeroOneDims := map[int]bool{
 		0: true, // 意向分

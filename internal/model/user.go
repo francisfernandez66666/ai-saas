@@ -12,16 +12,16 @@ import (
 // SaaS 化改造：指向 tenant_users 表，sys_users 已废弃。
 type User struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
-	Username     string    `gorm:"size:50;uniqueIndex;not null" json:"username"`  // 用户名
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`                    // 密码哈希（不返回给前端）
-	RealName     string    `gorm:"size:50" json:"real_name"`                      // 真实姓名
-	Role         string    `gorm:"size:20;not null;default:sales" json:"role"`    // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
-	Phone        string    `gorm:"size:20" json:"phone"`                          // 手机号
-	Email        string    `gorm:"size:100" json:"email"`                         // 邮箱
-	Avatar       string    `gorm:"size:255" json:"avatar"`                        // 头像URL
-	Status       int       `gorm:"default:1" json:"status"`                       // 状态: 1-正常 0-禁用
-	Department   string    `gorm:"size:50" json:"department"`                     // 部门
-	TenantID     *uint     `gorm:"index" json:"-"`                                    // 租户ID，NULL=超级管理员，非NULL=某租户下用户
+	Username     string    `gorm:"size:50;uniqueIndex;not null" json:"username"` // 用户名
+	PasswordHash string    `gorm:"size:255;not null" json:"-"`                   // 密码哈希（不返回给前端）
+	RealName     string    `gorm:"size:50" json:"real_name"`                     // 真实姓名
+	Role         string    `gorm:"size:20;not null;default:sales" json:"role"`   // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+	Phone        string    `gorm:"size:20" json:"phone"`                         // 手机号
+	Email        string    `gorm:"size:100" json:"email"`                        // 邮箱
+	Avatar       string    `gorm:"size:255" json:"avatar"`                       // 头像URL
+	Status       int       `gorm:"default:1" json:"status"`                      // 状态: 1-正常 0-禁用
+	Department   string    `gorm:"size:50" json:"department"`                    // 部门
+	TenantID     *uint     `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

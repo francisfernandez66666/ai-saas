@@ -26,7 +26,7 @@ import (
 // SaaS 化改造：支持多租户下的数据隔离
 // TenantID=0 表示查询所有租户数据（启动时默认），>0 则严格隔离
 type Engine struct {
-	TenantID    uint                          // 当前租户ID
+	TenantID uint // 当前租户ID
 	// 可以在这里缓存模板、卖点等数据，避免每次都查库
 	templates []model.Template
 	features  []model.Feature
@@ -53,7 +53,7 @@ func (e *Engine) LoadData() {
 	if e.TenantID > 0 {
 		query = query.Scopes(db.TenantFilter(e.TenantID))
 	}
-	db.DB.Find(&templates)  // 注意：这里用 Find 而非 Scopes，因为已在 query 中
+	db.DB.Find(&templates) // 注意：这里用 Find 而非 Scopes，因为已在 query 中
 	e.templates = templates
 	log.Printf("已加载 %d 条话术模板 (tenant=%d)", len(templates), e.TenantID)
 
@@ -63,7 +63,7 @@ func (e *Engine) LoadData() {
 	if e.TenantID > 0 {
 		query2 = query2.Scopes(db.TenantFilter(e.TenantID))
 	}
-	db.DB.Find(&features)  // 同前
+	db.DB.Find(&features) // 同前
 	e.features = features
 	log.Printf("已加载 %d 条卖点数据 (tenant=%d)", len(features), e.TenantID)
 }
@@ -234,7 +234,7 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	// ============================================================
 	stageCeilingAnchor, isStageDowngraded = Step2_5_StageCeiling(bestAnchor, input.State.CurrentStage)
 	output.StageDowngraded = isStageDowngraded
-	output.StageBeforeLock = bestAnchor       // 阶段锁降级前的锚
+	output.StageBeforeLock = bestAnchor                                   // 阶段锁降级前的锚
 	output.StageCeilingAgg = StageAnchorCeiling[input.State.CurrentStage] // 当前阶段允许的上限
 
 	// 阶段锁降级后，用降级结果作为Step3的输入

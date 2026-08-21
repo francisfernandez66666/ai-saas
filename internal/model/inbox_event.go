@@ -11,7 +11,7 @@ import (
 // InboxEvent 收件箱幂等表：event_id 唯一，防重复消费
 // 消费侧先 EnsureProcessed 抢占，处理失败可标记重试
 type InboxEvent struct {
-	EventID     string    `gorm:"primaryKey;size:64" json:"event_id"`   // 事件唯一ID（来自 Header）
+	EventID     string    `gorm:"primaryKey;size:64" json:"event_id"` // 事件唯一ID（来自 Header）
 	TenantID    uint      `gorm:"index;not null;default:0" json:"tenant_id"`
 	OneID       string    `gorm:"size:64;index" json:"one_id"`
 	Topic       string    `gorm:"size:100;index" json:"topic"`

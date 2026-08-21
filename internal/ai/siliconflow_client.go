@@ -24,14 +24,14 @@ import (
 
 // SiliconFlowClient 硅基流动客户端
 type SiliconFlowClient struct {
-	APIKey      string        // API密钥
-	BaseURL     string        // API基础URL
-	ModelName   string        // 模型名称
-	MaxTokens   int           // 最大输出token数
-	Temperature float64       // 默认采样温度
-	MaxRetries  int           // 最大重试次数
-	Enabled     bool          // 是否启用（有API Key才启用）
-	httpClient  *http.Client  // HTTP客户端（复用连接）
+	APIKey      string       // API密钥
+	BaseURL     string       // API基础URL
+	ModelName   string       // 模型名称
+	MaxTokens   int          // 最大输出token数
+	Temperature float64      // 默认采样温度
+	MaxRetries  int          // 最大重试次数
+	Enabled     bool         // 是否启用（有API Key才启用）
+	httpClient  *http.Client // HTTP客户端（复用连接）
 }
 
 // SiliconFlowChatRequest 请求结构（OpenAI兼容）

@@ -3,7 +3,6 @@ package api
 import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/strategy"
-	"ai-scrm/internal/llm"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
@@ -1158,7 +1157,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
 	// 生成AI回复
-	aiReply := llm.GenerateAIReply(&customer, conversation.ID, userInput, &strategyOutput)
+	aiReply := strategy.GenerateReply(&customer, conversation.ID, userInput, &strategyOutput)
 
 	// 保存AI回复消息
 	now := time.Now()
