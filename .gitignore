@@ -1,0 +1,24 @@
+# Documentation files (excluded per user request)
+*.md
+*.log
+*.db
+*.env*
+*.env.example
+
+# Binary/Generated files
+ai-scrm
+tmp/
+/tmp/*
+
+# Go build artifacts
+*.exe
+*.test
+
+# OS files
+.DS_Store
+
+# 大型二进制与本地数据（不入库）
+server
+tessdata/
+CHANGES.diff
+*.part6

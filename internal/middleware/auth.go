@@ -43,7 +43,7 @@ func GenerateToken(userID uint, username string, role string, tenantID uint) (st
 		},
 	}
 
-token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(config.GlobalConfig.JWT.Secret))
 }
 

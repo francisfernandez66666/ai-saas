@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<!--
+  ============================================
+  AI-SCRM 客户聊天端（C 端）
+  功能：访客自动注册(/chat/guest) → 聊天(合并窗口/延迟回复) → 留资(OneID 合并切换客户ID)
+  接口：/api/v1/chat/* 系列；租户由访问域名自动识别（子域名/白标域名）
+  注意：前端不露 AI 痕迹（去 AI 味铁律）；轮询兜底取回复
+  ============================================
+-->
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>在线顾问</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    /* 核心布局：全屏固定，头尾不动中间滚 */
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    .app-layout { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+    .app-header { flex-shrink: 0; position: sticky; top: 0; z-index: 10; }
+    .app-footer { flex-shrink: 0; position: sticky; bottom: 0; z-index: 10; }
+    .app-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+    /* 气泡 */
+    .bubble-left { border-radius: 2px 16px 16px 16px; }
+    .bubble-right { border-radius: 16px 2px 16px 16px; }
+
+    /* "正在输入中"呼吸动画 */
+    @keyframes typingBreath {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+    .typing-text { animation: typingBreath 1.6s ease-in-out infinite; }
+
+    /* 隐藏滚动条但保留滚动功能 */
+    .app-body::-webkit-scrollbar { display: none; }
+    .app-body { -ms-overflow-style: none; scrollbar-width: none; }
+
+    /* 输入框自适应 */
+    #msgInput { resize: none; min-height: 40px; max-height: 120px; }
+
+    /* 消息淡入 */
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+    .msg-fade-in { animation: fadeIn 0.3s ease-out; }
+  </style>
+</head>
+<body class="bg-gray-100">
+
+<div class="app-layout">
+
+  <!-- ============================== -->
+  <!-- 顶部导航栏 - 固定不动 -->
+  <!-- ============================== -->
+  <header class="app-header bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-lg mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center space-x-2">
+        <div class="w-8 h-8 bg-green-500 rounded-full flex items-center justify-center">
+          <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+            <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="text-base font-semibold text-gray-800">在线顾问</h1>
+          <p class="text-xs text-green-500" id="onlineStatus">● 顾问在线</p>
+        </div>
+      </div>
+      <!-- 右上角：专门用于"正在输入中"指示器，不显示时间 -->
+      <div class="text-right min-w-[70px]" id="headerRight">
+        <!-- 空白，只在输入中时显示内容 -->
+      </div>
+      <div id="tenantBrand" class="hidden text-sm text-gray-600">
+        租户: <span id="tenantBrandName">--</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============================== -->
+  <!-- 聊天消息区域 - 中间滚动 -->
+  <!-- ============================== -->
+  <div class="app-body" id="chatArea">
+    <div class="max-w-lg mx-auto px-4 py-4 space-y-3" id="messageList">
+      <!-- 消息由JS动态渲染 -->
+    </div>
+  </div>
+
+  <!-- ============================== -->
+  <!-- 底部输入区域 - 固定不动 -->
+  <!-- ============================== -->
+  <footer class="app-footer bg-white border-t border-gray-200">
+    <div class="max-w-lg mx-auto px-4 py-3">
+      <div class="flex items-end space-x-2">
+        <button class="flex-shrink-0 w-9 h-9 flex items-center justify-center text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 transition"
+          onclick="insertEmoji()">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M14.828 14.828a4 4 0 01-5.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </button>
+        <textarea id="msgInput"
+          class="flex-1 px-4 py-2 bg-gray-50 border border-gray-200 rounded-full text-sm outline-none
+                 focus:ring-2 focus:ring-green-400 focus:border-green-400 transition"
+          placeholder="输入消息..."
+          rows="1"
+          onkeydown="handleKeyDown(event)"
+          oncompositionstart="isComposing = true"
+          oncompositionend="isComposing = false"
+          oninput="autoResize(this)"></textarea>
+        <button id="sendBtn" onclick="sendMessage()"
+          class="flex-shrink-0 w-9 h-9 bg-green-500 hover:bg-green-600 text-white rounded-full
+                 flex items-center justify-center transition shadow-sm">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/>
+          </svg>
+        </button>
+        <button class="flex-shrink-0 w-9 h-9 flex items-center justify-center text-gray-400 hover:text-gray-600 rounded-full hover:bg-gray-100 transition"
+          onclick="showToast('附件功能开发中', 'info')">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </footer>
+
+</div>
+
+<!-- Toast通知 -->
+<div id="toast" class="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg text-sm text-white shadow-lg transition-all duration-300 opacity-0 -translate-y-4"></div>
+
+<script>
+  // ============================================================
+  // 全局状态
+  // ============================================================
+  const API_BASE = window.location.origin + '/api/v1';
+  let customerId = 0; // 0=未初始化，init时自动创建访客
+  let conversationId = 0;
+  let messages = [];
+  let isTyping = false;       // 当前是否在"正在输入中"状态
+  let typingTimeout = null;   // 延迟显示typing的定时器
+  let lastSendTime = 0;       // 上次发送时间戳，请求级防抖（不阻塞连发，只防重复点击）
+  let isComposing = false;    // 修复：中文输入法组合输入中标记，避免候选词回车触发误发送
+  let lastPollCount = 0;      // 上次轮询时的消息总数，用于检测新消息
+  let pollTimer = null;       // 轮询定时器
+  let localIds = new Set();   // 修复：全局消息ID集合，sendMessage和poll共用去重
+
+  // ============================================================
+  // 初始化
+  // ============================================================
+  async function init() {
+    // ---- 访客自动注册：设备级持久化 ----
+    // 使用localStorage替代sessionStorage：同设备同浏览器永远复用同一客户ID
+    // 新开标签页不再创建新客户，避免同一用户分裂成多条线索
+    // 如需重置（如切换账号），在URL加 ?reset=1 或手动清除浏览器数据
+    const storedId = localStorage.getItem('scrm_customer_id');
+    if (storedId) {
+      customerId = parseInt(storedId);
+    } else {
+      // 调guest接口创建新访客
+      try {
+        const res = await fetch(API_BASE + '/chat/guest', { method: 'POST' });
+        const data = await res.json();
+        if (data.code === 0 && data.customer_id) {
+          customerId = data.customer_id;
+          localStorage.setItem('scrm_customer_id', String(customerId));
+          console.log('[访客注册] 新客户ID:', customerId, data.name);
+        } else {
+          console.error('[访客注册] 失败:', data.message);
+          customerId = 1; // 降级用默认客户
+        }
+      } catch (e) {
+        console.error('[访客注册] 异常:', e);
+        customerId = 1;
+      }
+    }
+
+    // URL参数覆盖（调试用：?customer_id=2 强制指定）
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('customer_id')) {
+      customerId = parseInt(params.get('customer_id'));
+    }
+
+    // 加载租户品牌配置
+    loadTenantBrand();
+
+    // 不再更新时间显示，右上角专门留给"正在输入中"
+
+    // 加载聊天历史
+    await loadChatHistory();
+
+    // 调用欢迎接口（如果是新会话）
+    if (conversationId === 0) {
+      await callWelcome();
+    }
+
+    scrollToBottom();
+
+    // 工作时间状态更新
+    updateOnlineStatus();
+    setInterval(updateOnlineStatus, 60000);
+
+    // 修复：启动消息轮询，每5秒检查新消息
+    // 兜底机制：到店倾向第二段等异步消息写入DB后，前端能及时拉取
+    // 跟follow_up快速展示互补：follow_up做即时展示，轮询做保底
+    lastPollCount = messages.length;
+    startPolling();
+  }
+
+  // ============================================================
+  // 加载聊天历史
+  // ============================================================
+  async function loadChatHistory() {
+    try {
+      const res = await fetch(API_BASE + '/chat/history?customer_id=' + customerId + '&limit=50');
+      const data = await res.json();
+      if (data.code === 0 && data.data) {
+        messages = data.data;
+        renderMessages();
+        if (messages.length > 0) {
+          conversationId = messages[messages.length - 1].conversation_id;
+        }
+      }
+    } catch (err) {
+      console.error('加载历史失败:', err);
+    }
+  }
+
+  // ============================================================
+  // 调用欢迎接口
+  // ============================================================
+  async function callWelcome() {
+    try {
+      const res = await fetch(API_BASE + '/chat/welcome', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ customer_id: customerId })
+      });
+      const data = await res.json();
+      if (data.code === 0 && data.data) {
+        conversationId = data.data.conversation_id;
+        const welcomeMsg = data.data.welcome_message;
+        if (welcomeMsg) {
+          messages.push(welcomeMsg);
+          renderMessages();
+          scrollToBottom();
+        }
+      }
+    } catch (err) {
+      console.error('欢迎接口失败:', err);
+      addMessageToList('system', '你好，欢迎咨询！我正在为你匹配专属顾问，请稍等~');
+    }
+  }
+
+  // ============================================================
+  // 判断当前是否工作时间（9:00-18:00）
+  // ============================================================
+  function isWorkTime() {
+    const h = new Date().getHours();
+    return h >= 9 && h < 18;
+  }
+
+  // ============================================================
+  // 获取typing延迟（工作时间3-5秒，非工作时间5-10秒）
+  // 模拟真人"看到消息→思考→打字"的过程
+  // ============================================================
+  function getTypingDelay() {
+    if (isWorkTime()) {
+      return 3000 + Math.random() * 2000;  // 3~5秒
+    } else {
+      return 5000 + Math.random() * 5000;  // 5~10秒
+    }
+  }
+
+  // ============================================================
+  // 消息轮询机制
+  // 修复：到店倾向第二段等异步消息写入DB后，前端需要及时拉取
+  // 机制：每5秒查一次chat/history，发现新消息则追加渲染
+  // 与follow_up快速展示互补：follow_up做即时，轮询做保底
+  // ============================================================
+  function startPolling() {
+    if (pollTimer) return;  // 防止重复启动
+    pollTimer = setInterval(pollNewMessages, 5000);
+  }
+
+  function stopPolling() {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  }
+
+  // 待确认的临时消息ID集：sendMessage先放temp ID，API返回后移除
+  // polling时遇到内容匹配的客户消息就跳过，避免重复显示
+  const pendingTempIds = new Set();
+
+  // 修复问题2：重写轮询逻辑，用DB消息ID差集判断新消息
+  // 根因：原逻辑用alreadyShown（内容+3秒时间窗口）去重不可靠，
+  // 人工回复的消息可能与AI消息内容接近而被误判为"已展示"，导致消息丢失
+  // 修复：直接用DB消息ID的差集判断新消息，简单可靠
+  async function pollNewMessages() {
+    // 修复：没有conversationId时用customer_id查询，确保人工回复也能被轮询到
+    let url;
+    if (conversationId && conversationId !== 0) {
+      url = API_BASE + '/chat/history?conversation_id=' + conversationId + '&limit=50';
+    } else if (customerId) {
+      url = API_BASE + '/chat/history?customer_id=' + customerId + '&limit=50';
+    } else {
+      return; // 两个ID都没有，无法查询
+    }
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.code === 0 && data.data && data.data.length > 0) {
+        const dbMessages = data.data;
+        // 修复：用共享的全局localIds做差集，sendMessage里新加的DB消息ID也已入集
+        // rebuild localIds from messages 数组（确保覆盖所有已渲染消息包括temp替换后的DB ID）
+        localIds = new Set();
+        messages.forEach(m => {
+          if (m.id != null) {
+            localIds.add(m.id);
+            localIds.add(String(m.id));
+          }
+        });
+        let hasNew = false;
+        for (const msg of dbMessages) {
+          // 跳过pending中的客户消息（API还没返回，temp ID还没换成DB ID）
+          if (msg.sender_type === 'customer') {
+            let isPending = false;
+            for (const m of messages) {
+              if (pendingTempIds.has(m.id) && m.content === msg.content) {
+                isPending = true;
+                break;
+              }
+            }
+            if (isPending) continue;
+          }
+          // 既检查数字ID也检查字符串ID，避免因类型不同而误判为新消息
+          if (!localIds.has(msg.id) && !localIds.has(String(msg.id))) {
+            messages.push(msg);
+            localIds.add(msg.id);
+            localIds.add(String(msg.id));
+            hasNew = true;
+          }
+          // 修复：轮询时顺便更新conversationId（首次用customer_id查询时可能还没拿到）
+          if (msg.conversation_id && (!conversationId || conversationId === 0)) {
+            conversationId = msg.conversation_id;
+          }
+        }
+        if (hasNew) {
+          hideTyping();  // 有新消息了，隐藏"正在输入中"
+          renderMessages();
+          scrollToBottom();
+        }
+      }
+    } catch (err) {
+      // 轮询失败静默忽略，不打扰用户
+    }
+  }
+
+  // ============================================================
+  // 发送消息
+  // ============================================================
+  async function sendMessage() {
+    const input = document.getElementById('msgInput');
+    const content = input.value.trim();
+    if (!content) return;
+    // 请求级防抖：500ms内防重复点击，但不阻塞连续发消息（后端合并队列处理连发）
+    if (Date.now() - lastSendTime < 500) return;
+    lastSendTime = Date.now();
+    input.value = '';
+    autoResize(input);
+
+    // 先显示客户消息
+    const tempMsg = {
+      id: 'temp_' + Date.now(),
+      conversation_id: conversationId,
+      customer_id: customerId,
+      sender_type: 'customer',
+      content: content,
+      message_type: 'text',
+      created_at: new Date().toISOString()
+    };
+    messages.push(tempMsg);
+    pendingTempIds.add(tempMsg.id);
+    renderMessages();
+    scrollToBottom();
+
+    // 延迟显示"正在输入中"——模拟真人看到消息后的反应时间
+    // 工作时间3-5秒后显示，非工作时间5-10秒后显示
+    const delay = getTypingDelay();
+    typingTimeout = setTimeout(() => {
+      showTyping();
+    }, delay);
+
+    // 超时保护：60秒（给合并窗口+AI调用留够时间）
+    const timeoutId = setTimeout(() => {
+      hideTyping();
+      addMessageToList('system', '顾问可能正在忙碌中，请稍候');
+    }, 60000);
+
+    try {
+      const res = await fetch(API_BASE + '/chat/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customer_id: customerId,
+          content: content
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.code === 0 && data.data) {
+        if (data.data.conversation_id) {
+          conversationId = data.data.conversation_id;
+        }
+
+        // ---- OneID合并：留资时手机号匹配到老客户，前端切换customer_id ----
+        // merged_customer_id > 0 表示后端已合并数据，前端需切换到老客户ID
+        const mergedId = data.data.merged_customer_id || data.data.mergedCustomerId;
+        if (mergedId && mergedId > 0 && customerId !== mergedId) {
+          console.log('[OneID合并] 切换customer_id:', customerId, '→', mergedId);
+          customerId = mergedId;
+          sessionStorage.setItem('scrm_customer_id', String(customerId));
+        }
+
+        // ---- 修复问题1：用服务器返回的DB ID替换本地temp ID ----
+        // 根因：sendMessage先用本地temp ID添加消息到界面，轮询pollNewMessages时
+        // 又拿到DB中的同一条消息，因为ID不同所以重复显示
+        // 修复：fetch成功后从response中获取真实DB ID，替换temp ID
+        const dbMsgId = data.data.customer_msg_id;
+        if (dbMsgId && tempMsg.id) {
+          const idx = messages.findIndex(m => m.id === tempMsg.id);
+          if (idx !== -1) {
+            messages[idx].id = dbMsgId;
+            // 同步更新DOM中对应消息元素的data-id属性
+            const msgEl = document.querySelector(`[data-id="${tempMsg.id}"]`);
+            if (msgEl) msgEl.setAttribute('data-id', String(dbMsgId));
+          }
+        }
+
+        if (data.data.merged) {
+          hideTyping();
+          return;
+        }
+
+        // 修复：优先使用 assistant_messages（带真实DB ID），禁止用Date.now()伪ID
+        // 根因：之前用Date.now()生成伪ID，polling时DB里的同一条消息ID不同，出现重复显示
+        let replyMsgs = [];
+        if (data.data.assistant_messages && data.data.assistant_messages.length > 0) {
+          replyMsgs = data.data.assistant_messages;
+        } else if (data.data.message && data.data.message.content) {
+          replyMsgs = [data.data.message];
+        } else if (data.data.ai_reply) {
+          // 向后兼容：极少数旧路径没返回assistant_messages时用ai_reply兜底
+          replyMsgs = [{
+            id: Date.now(),
+            conversation_id: conversationId,
+            sender_type: 'ai',
+            content: data.data.ai_reply,
+            message_type: 'text',
+            created_at: new Date().toISOString()
+          }];
+        }
+
+        replyMsgs.forEach(msg => {
+          messages.push(msg);
+          // 同步localIds给后续polling去重用
+          if (msg.id != null) {
+            localIds.add(msg.id);
+            localIds.add(String(msg.id));
+          }
+        });
+        if (replyMsgs.length > 0) {
+          renderMessages();
+          scrollToBottom();
+        }
+
+        // 到店倾向两段式：第二段内容完全由后端决定是否发送（客户已留资/被顾问
+        // 接管锁定时后端会取消），前端不再本地伪造第二条消息气泡，只做"正在输入"
+        // 的等待动效，真实内容交给轮询按DB真实ID展示，避免"没发但界面显示了"
+        // 或者"轮询到真实记录后又重复出现一遍"的问题。
+        if (data.data.follow_up) {
+          const followUp = data.data.follow_up;
+          const delayMs = followUp.delay_seconds * 1000;
+          setTimeout(() => {
+            showTyping();
+            // 轮询（pollNewMessages）会在真实消息落库后自然把它加进来并隐藏"正在输入"，
+            // 这里只兜底：如果轮询迟迟没收到（比如后端判断已留资取消了发送），
+            // 别让"正在输入"一直挂着。
+            setTimeout(() => { hideTyping(); }, 15000);
+          }, delayMs - 2000 > 0 ? delayMs - 2000 : 0);
+        }
+      }
+    } catch (err) {
+      console.error('发送失败:', err);
+      addMessageToList('system', '消息发送失败，请重试~');
+    } finally {
+      pendingTempIds.delete(tempMsg.id);
+      clearTimeout(timeoutId);
+      hideTyping();
+    }
+  }
+
+  // ============================================================
+  // 渲染消息列表
+  // ============================================================
+  function renderMessages() {
+    const container = document.getElementById('messageList');
+    container.innerHTML = '';
+
+    messages.forEach((msg) => {
+      const isCustomer = msg.sender_type === 'customer';
+      const isAI = msg.sender_type === 'ai';
+      const isSystem = msg.sender_type === 'system';
+      const isHuman = msg.sender_type === 'human';
+
+      if (isCustomer) {
+        // 修复：客户是"自己"，消息在右边（微信风格：自己在右，对方在左）
+        container.innerHTML += `
+          <div class="flex items-end space-x-2 justify-end msg-fade-in">
+            <div class="bg-green-500 bubble-right px-4 py-2.5 shadow-sm max-w-[75%]">
+              <p class="text-sm text-white leading-relaxed">${escapeHtml(msg.content)}</p>
+              <p class="text-xs text-green-200 mt-1 text-right">${formatTime(msg.created_at)}</p>
+            </div>
+            <div class="w-7 h-7 bg-gray-300 rounded-full flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+              </svg>
+            </div>
+          </div>
+        `;
+      } else if (isAI || isHuman) {
+        // 顾问是"对方"，消息在左边
+        container.innerHTML += `
+          <div class="flex items-end space-x-2 msg-fade-in">
+            <div class="w-7 h-7 bg-green-500 rounded-full flex items-center justify-center flex-shrink-0">
+              <svg class="w-4 h-4 text-white" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/>
+              </svg>
+            </div>
+            <div class="bg-white bubble-left px-4 py-2.5 shadow-sm border border-gray-100 max-w-[75%]">
+              <p class="text-sm text-gray-800 leading-relaxed">${escapeHtml(msg.content)}</p>
+              <p class="text-xs text-gray-300 mt-1">${formatTime(msg.created_at)}</p>
+            </div>
+          </div>
+        `;
+      } else if (isSystem) {
+        container.innerHTML += `
+          <div class="text-center msg-fade-in">
+            <span class="inline-block bg-gray-200 text-gray-500 text-xs px-3 py-1 rounded-full">
+              ${escapeHtml(msg.content)}
+            </span>
+          </div>
+        `;
+      }
+    });
+  }
+
+  // ============================================================
+  // "正在输入中"显示/隐藏
+  // 修复：右上角只显示"正在输入中"，不显示时间
+  // 不在输入时，右上角为空白；输入中时显示呼吸动画文字
+  // ============================================================
+  function showTyping() {
+    isTyping = true;
+    const headerRight = document.getElementById('headerRight');
+    headerRight.innerHTML = '<span class="typing-text text-xs text-green-500">正在输入中...</span>';
+  }
+
+  function hideTyping() {
+    isTyping = false;
+    // 清掉延迟显示的定时器（如果还没触发的话）
+    if (typingTimeout) {
+      clearTimeout(typingTimeout);
+      typingTimeout = null;
+    }
+    // 恢复右上角为空白（不再显示时间）
+    const headerRight = document.getElementById('headerRight');
+    headerRight.innerHTML = '';
+  }
+
+  // 工作时间状态更新（只更新在线状态，不更新时间）
+  function updateOnlineStatus() {
+    const hour = new Date().getHours();
+    const statusEl = document.getElementById('onlineStatus');
+    if (hour < 9 || hour >= 18) {
+      statusEl.innerHTML = '<span class="text-orange-500">● 非工作时间</span>';
+    } else {
+      statusEl.innerHTML = '<span class="text-green-500">● 顾问在线</span>';
+    }
+  }
+
+  // ============================================================
+  // 辅助函数
+  // ============================================================
+
+  function addMessageToList(senderType, content) {
+    messages.push({
+      id: Date.now(),
+      sender_type: senderType,
+      content: content,
+      created_at: new Date().toISOString()
+    });
+    renderMessages();
+    scrollToBottom();
+  }
+
+  function scrollToBottom() {
+    const area = document.getElementById('chatArea');
+    setTimeout(() => { area.scrollTop = area.scrollHeight; }, 100);
+  }
+
+  function handleKeyDown(e) {
+    // 修复：中文拼音输入法在"上屏"候选词时也会触发一次keydown Enter，
+    // 如果这里不判断isComposing/e.isComposing，会导致sendMessage()被多触发一次——
+    // 一条消息被发送两次，界面显示两条、AI也回复两条。
+    if (e.key === 'Enter' && !e.shiftKey && !isComposing && !e.isComposing) {
+      e.preventDefault();
+      sendMessage();
+    }
+  }
+
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 120) + 'px';
+  }
+
+  function insertEmoji() {
+    const input = document.getElementById('msgInput');
+    input.value += '😊';
+    input.focus();
+  }
+
+  function formatTime(t) {
+    if (!t) return '';
+    const d = new Date(t);
+    return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
+  }
+
+  // （updateTime函数已移除，右上角不再显示时间，只显示"正在输入中"）
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML.replace(/\n/g, '<br>');
+  }
+
+  function showToast(msg, type) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-lg text-sm text-white shadow-lg transition-all duration-300';
+    if (type === 'error') toast.classList.add('bg-red-500');
+    else if (type === 'success') toast.classList.add('bg-green-500');
+    else toast.classList.add('bg-blue-500');
+    toast.style.opacity = '1';
+    toast.style.transform = 'translateX(-50%) translateY(0)';
+    setTimeout(() => {
+      toast.style.opacity = '0';
+      toast.style.transform = 'translateX(-50%) translateY(-16px)';
+    }, 3000);
+  }
+
+// 加载租户品牌配置
+function loadTenantBrand() {
+  fetch(API_BASE + '/knowledge/brands')
+    .then(res => res.json())
+    .then(data => {
+      if (data.code === 0 && data.data) {
+        const brands = data.data;
+        const tenantCode = localStorage.getItem('scrm_tenant_code') || 'default';
+        const brandName = brands.find(b => b.code === tenantCode) || brands[0] || { name: '默认品牌' };
+        document.getElementById('tenantBrand').classList.remove('hidden');
+        document.getElementById('tenantBrandName').textContent = brandName.name;
+      }
+    })
+    .catch(err => {
+      console.error('加载租户品牌失败:', err);
+    });
+}
+
+// 启动
+init();
+</script>
+</body>
+</html>

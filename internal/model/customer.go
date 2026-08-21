@@ -13,39 +13,39 @@ import (
 
 // Customer 客户表
 type Customer struct {
-	ID              uint           `gorm:"primaryKey" json:"id"`
-	Name            string         `gorm:"size:50" json:"name"`                      // 客户姓名
-	Phone           string         `gorm:"size:20;index" json:"phone"`               // 手机号
-	WechatID        string         `gorm:"size:50;index" json:"wechat_id"`           // 微信号
-	Gender          int            `gorm:"default:0" json:"gender"`                  // 性别: 0-未知 1-男 2-女
-	Age             int            `json:"age"`                                                       // 年龄
-	Region          string         `gorm:"size:50" json:"region"`                     // 地域
-	City            string         `gorm:"size:50" json:"city"`                       // 城市
-	Career          string         `gorm:"size:50" json:"career"`                     // 职业
-	CustomerType    string         `gorm:"size:20;default:potential" json:"customer_type"` // 客户身份: potential(潜客)/owner(车主)
-	InterestModel   string         `gorm:"size:50" json:"interest_model"`            // 兴趣车型
-	CurrentCar      string         `gorm:"size:50" json:"current_car"`               // 现有车型
-	CarAge          float64        `json:"car_age"`                                   // 现车年限
-	Source          string         `gorm:"size:30" json:"source"`                     // 流量来源
-	Budget          float64        `json:"budget"`                                    // 预算（万元）
-	DecisionCycle   int            `json:"decision_cycle"`                            // 决策周期（天）
-	StoreVisited    int            `gorm:"default:0" json:"store_visited"`           // 到店状态: 0-未到店 1-已到店 2-多次到店
-	TrustLevel      float64      `gorm:"default:0.3" json:"trust_level"`             // 信任度 0-1
-	IntentScore     float64      `gorm:"default:0.2" json:"intent_score"`            // 意向分 0-1
-	PriceSensitivity float64     `gorm:"default:0.5" json:"price_sensitivity"`       // 价格敏感度 0-1
-	BrandAwareness  float64      `gorm:"default:0.3" json:"brand_awareness"`         // 品牌认知度 0-1
-	ResistanceType  string       `gorm:"size:20;default:none" json:"resistance_type"` // 抗性类型: none/price/spec/service/brand
-	JourneyStage    string       `gorm:"size:20;default:ai_connected" json:"journey_stage"`   // 客户旅程阶段: ai_connected/human_connected/lead_captured/arrived/ordered/delivered/lost
-	JourneySubStage string       `gorm:"size:20;default:''" json:"journey_sub_stage"`          // 到店子状态: 空/test_driven/quoted（只有quoted后才允许促单）
-	Tags            string       `gorm:"type:text" json:"tags"`                      // 标签列表(JSON数组)
-	TVectorJSON     string       `gorm:"column:t_vector;type:text" json:"t_vector_json"` // T向量原始JSON(32维)
-	Remark          string       `gorm:"type:text" json:"remark"`                    // 备注
-	AssignedUserID  uint         `json:"assigned_user_id"`                            // 归属销售ID
-	TenantID        uint         `gorm:"default:0;index" json:"-"` // 租户ID，0=超级管理员全局可见，非0=某租户隔离
-	AssignmentReason string     `gorm:"size:20;default:''" json:"assignment_reason"` // 分配原因: lead_captured/ai_handover
-	Status          int          `gorm:"default:1" json:"status"`                    // 状态: 1-正常 0-无效
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
+	ID               uint      `gorm:"primaryKey" json:"id"`
+	Name             string    `gorm:"size:50" json:"name"`                               // 客户姓名
+	Phone            string    `gorm:"size:20;index" json:"phone"`                        // 手机号
+	WechatID         string    `gorm:"size:50;index" json:"wechat_id"`                    // 微信号
+	Gender           int       `gorm:"default:0" json:"gender"`                           // 性别: 0-未知 1-男 2-女
+	Age              int       `json:"age"`                                               // 年龄
+	Region           string    `gorm:"size:50" json:"region"`                             // 地域
+	City             string    `gorm:"size:50" json:"city"`                               // 城市
+	Career           string    `gorm:"size:50" json:"career"`                             // 职业
+	CustomerType     string    `gorm:"size:20;default:potential" json:"customer_type"`    // 客户身份: potential(潜客)/owner(车主)
+	InterestModel    string    `gorm:"size:50" json:"interest_model"`                     // 兴趣车型
+	CurrentCar       string    `gorm:"size:50" json:"current_car"`                        // 现有车型
+	CarAge           float64   `json:"car_age"`                                           // 现车年限
+	Source           string    `gorm:"size:30" json:"source"`                             // 流量来源
+	Budget           float64   `json:"budget"`                                            // 预算（万元）
+	DecisionCycle    int       `json:"decision_cycle"`                                    // 决策周期（天）
+	StoreVisited     int       `gorm:"default:0" json:"store_visited"`                    // 到店状态: 0-未到店 1-已到店 2-多次到店
+	TrustLevel       float64   `gorm:"default:0.3" json:"trust_level"`                    // 信任度 0-1
+	IntentScore      float64   `gorm:"default:0.2" json:"intent_score"`                   // 意向分 0-1
+	PriceSensitivity float64   `gorm:"default:0.5" json:"price_sensitivity"`              // 价格敏感度 0-1
+	BrandAwareness   float64   `gorm:"default:0.3" json:"brand_awareness"`                // 品牌认知度 0-1
+	ResistanceType   string    `gorm:"size:20;default:none" json:"resistance_type"`       // 抗性类型: none/price/spec/service/brand
+	JourneyStage     string    `gorm:"size:20;default:ai_connected" json:"journey_stage"` // 客户旅程阶段: ai_connected/human_connected/lead_captured/arrived/ordered/delivered/lost
+	JourneySubStage  string    `gorm:"size:20;default:''" json:"journey_sub_stage"`       // 到店子状态: 空/test_driven/quoted（只有quoted后才允许促单）
+	Tags             string    `gorm:"type:text" json:"tags"`                             // 标签列表(JSON数组)
+	TVectorJSON      string    `gorm:"column:t_vector;type:text" json:"t_vector_json"`    // T向量原始JSON(32维)
+	Remark           string    `gorm:"type:text" json:"remark"`                           // 备注
+	AssignedUserID   uint      `json:"assigned_user_id"`                                  // 归属销售ID
+	TenantID         uint      `gorm:"default:0;index" json:"-"`                          // 租户ID，0=超级管理员全局可见，非0=某租户隔离
+	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
+	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效
+	CreatedAt        time.Time `json:"created_at"`
+	UpdatedAt        time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名
@@ -108,23 +108,23 @@ func (c *Customer) GetTVector() [32]float64 {
 // 现在打标计算一律以这个"基准值"为起点重新算，保证结果可重复、不越滚越偏。
 func (c *Customer) BuildBaseTVector() [32]float64 {
 	var t [32]float64
-	t[0] = c.IntentScore           // 意向分
-	t[1] = c.PriceSensitivity      // 价格敏感度
-	t[2] = c.BrandAwareness        // 品牌认知度
-	t[3] = modelCode(c.InterestModel) // 兴趣车型编码
-	t[4] = float64(c.StoreVisited) // 到店状态
-	t[5] = float64(c.DecisionCycle) // 决策周期
-	t[6] = c.TrustLevel            // 信任度
-	t[7] = sourceCode(c.Source)    // 流量来源编码
-	t[8] = float64(c.Gender)       // 性别
-	t[9] = ageGroupCode(c.Age)     // 年龄段编码
-	t[10] = regionCode(c.Region)   // 地域编码
-	t[11] = careerCode(c.Career)   // 职业圈层编码
-	t[12] = 0                      // 用车场景（multi-hot简化为单值）
-	t[13] = c.CarAge               // 现车年限
+	t[0] = c.IntentScore                     // 意向分
+	t[1] = c.PriceSensitivity                // 价格敏感度
+	t[2] = c.BrandAwareness                  // 品牌认知度
+	t[3] = modelCode(c.InterestModel)        // 兴趣车型编码
+	t[4] = float64(c.StoreVisited)           // 到店状态
+	t[5] = float64(c.DecisionCycle)          // 决策周期
+	t[6] = c.TrustLevel                      // 信任度
+	t[7] = sourceCode(c.Source)              // 流量来源编码
+	t[8] = float64(c.Gender)                 // 性别
+	t[9] = ageGroupCode(c.Age)               // 年龄段编码
+	t[10] = regionCode(c.Region)             // 地域编码
+	t[11] = careerCode(c.Career)             // 职业圈层编码
+	t[12] = 0                                // 用车场景（multi-hot简化为单值）
+	t[13] = c.CarAge                         // 现车年限
 	t[14] = resistanceCode(c.ResistanceType) // 抗性类型编码
 	t[15] = customerTypeCode(c.CustomerType) // 客户身份编码
-	t[16] = 0                      // 地域商圈编码
+	t[16] = 0                                // 地域商圈编码
 	// T[17-31] 预留
 	return t
 }
@@ -143,11 +143,11 @@ func (c *Customer) SaveTVector(t [32]float64) {
 
 func modelCode(model string) float64 {
 	modelMap := map[string]float64{
-		"":             0,
-		"越野SUV-X1":   1,
-		"越野SUV-X3":   2,
-		"越野SUV-X5":   3,
-		"越野SUV-X7":   4,
+		"":         0,
+		"越野SUV-X1": 1,
+		"越野SUV-X3": 2,
+		"越野SUV-X5": 3,
+		"越野SUV-X7": 4,
 		"皮卡系列":     5,
 	}
 	if code, ok := modelMap[model]; ok {
@@ -158,13 +158,13 @@ func modelCode(model string) float64 {
 
 func sourceCode(source string) float64 {
 	sourceMap := map[string]float64{
-		"":             0,
-		"抖音":          1,
-		"小红书":        2,
-		"微信":          3,
-		"百度":          4,
-		"门店自然":      5,
-		"老客转介绍":    6,
+		"":      0,
+		"抖音":    1,
+		"小红书":   2,
+		"微信":    3,
+		"百度":    4,
+		"门店自然":  5,
+		"老客转介绍": 6,
 	}
 	if code, ok := sourceMap[source]; ok {
 		return code
@@ -193,14 +193,14 @@ func ageGroupCode(age int) float64 {
 
 func regionCode(region string) float64 {
 	regionMap := map[string]float64{
-		"":         0,
-		"华东":     1,
-		"华南":     2,
-		"华北":     3,
-		"华中":     4,
-		"西南":     5,
-		"西北":     6,
-		"东北":     7,
+		"":   0,
+		"华东": 1,
+		"华南": 2,
+		"华北": 3,
+		"华中": 4,
+		"西南": 5,
+		"西北": 6,
+		"东北": 7,
 	}
 	if code, ok := regionMap[region]; ok {
 		return code
@@ -210,15 +210,15 @@ func regionCode(region string) float64 {
 
 func careerCode(career string) float64 {
 	careerMap := map[string]float64{
-		"":             0,
-		"企业主":       1,
-		"高管":         2,
-		"白领":         3,
-		"自由职业":     4,
-		"公务员":       5,
-		"工程师":       6,
-		"医生":         7,
-		"教师":         8,
+		"":     0,
+		"企业主":  1,
+		"高管":   2,
+		"白领":   3,
+		"自由职业": 4,
+		"公务员":  5,
+		"工程师":  6,
+		"医生":   7,
+		"教师":   8,
 	}
 	if c, ok := careerMap[career]; ok {
 		return c
@@ -283,7 +283,7 @@ const (
 
 // JourneySubStage 到店子状态常量
 const (
-	SubStageEmpty     = ""           // 刚到店，尚未试驾/报价
+	SubStageEmpty     = ""            // 刚到店，尚未试驾/报价
 	SubStageTestDrive = "test_driven" // 已试驾
 	SubStageQuoted    = "quoted"      // 已报价（此子状态后才允许促单）
 )

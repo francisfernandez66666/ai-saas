@@ -1,11 +1,11 @@
 package api
 
 import (
-	"github.com/gin-gonic/gin"
-	"golang.org/x/crypto/bcrypt"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 // loginRequest 登录请求结构体
@@ -104,10 +104,10 @@ func Register(c *gin.Context) {
 
 	// 3. 写入数据库（默认 role=sales，tenant_id=0，即默认租户）
 	newUser := model.User{
-		Username:    req.Username,
+		Username:     req.Username,
 		PasswordHash: string(hashedPassword),
-		Role:        "sales",      // 新账号默认为销售权限
-		TenantID:    new(uint),    // 默认租户，可后台分配不同tid
+		Role:         "sales",   // 新账号默认为销售权限
+		TenantID:     new(uint), // 默认租户，可后台分配不同tid
 	}
 	result := db.DB.Create(&newUser)
 	if result.Error != nil {
@@ -168,11 +168,11 @@ func ResetPassword(c *gin.Context) {
 	code := "123456" // 简化演示：固定验证码，实际应生成随机码并存入 Redis
 
 	c.JSON(200, gin.H{
-		"code":    0,
+		"code": 0,
 		"data": gin.H{
 			"username": req.Username,
 			"code":     code,
-			"message": "验证码已生成，请在10分钟内使用（演示模式：固定码 123456）",
+			"message":  "验证码已生成，请在10分钟内使用（演示模式：固定码 123456）",
 		},
 		"message": "验证码已生成",
 	})

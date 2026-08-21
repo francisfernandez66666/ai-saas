@@ -1,47 +1,56 @@
 package db
 
 import (
-	"log"
-
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
 
-// T 从 gin.Context 自动取出 tenant_id 并封装为 GORM query wrapper
+// ============================================================
+// 租户查询注入工具（SaaS 安全红线版）
+//
+// 语义说明（配合 middleware.TenantResolver + TenantConsistency 使用）：
+// - 所有业务路由经中间件链后，Context 中 tenant_id 必为 >0 的生效租户
+//   （匿名/C端=Host解析租户；登录态=一致性校验后的租户）
+// - T(c) 仅做机械注入，不再打印日志（高频接口日志洪水），不再有超管全透传
+//   （超管跨租户由 TenantConsistency 显式裁决并审计，Context 中永远是具体租户）
+// - Context 无 tenant_id（白名单路由/系统内部调用）→ 不过滤，交由调用方自证
+// ============================================================
+
+// T 从 gin.Context 自动取出生效租户并封装为 GORM scope
 // 用法：db.DB.Where("status = ?", 1).Scopes(db.T(c))
 // 效果：自动在 SQL 中添加 "WHERE tenant_id = ?"
-// 如果 Context 中没有 tenant_id，则不添加条件（透传模式，用于免登录免租户接口）
-// 如果 tenant_id=0（超级管理员），则不过滤，透传所有数据
 func T(c *gin.Context) func(db *gorm.DB) *gorm.DB {
-	return func(db *gorm.DB) *gorm.DB {
-		tenantID, exists := c.Get("tenant_id")
+	return func(tx *gorm.DB) *gorm.DB {
+		v, exists := c.Get("tenant_id")
 		if !exists {
-			log.Printf("[db.T] Context 中未找到 tenant_id，将跳过 tenant 过滤")
-			return db
+			// 白名单路由/系统内部调用：无租户上下文，不过滤
+			return tx
 		}
-
-		id, ok := tenantID.(uint)
-		if !ok {
-			log.Printf("[db.T] tenant_id 类型断言失败: %v", tenantID)
-			return db
+		id, ok := v.(uint)
+		if !ok || id == 0 {
+			// 正常业务路由不会出现 0（中间件链保证）；出现则视为异常调用方，
+			// 防御式放行但由调用方自担数据越界责任
+			return tx
 		}
-
-		// 超级管理员（tenant_id=0）直接透传，不添加租户过滤
-		if id == 0 {
-			log.Printf("[db.T] 超级管理员透传，不添加 tenant_id 过滤")
-			return db
-		}
-
-		log.Printf("[db.T] 注入 tenant_id=%d 到 SQL 查询", id)
-		return db.Scopes(func(tx *gorm.DB) *gorm.DB {
-			return tx.Where("tenant_id = ?", id)
-		})
+		return tx.Where("tenant_id = ?", id)
 	}
 }
 
-// TenantFilter 根据 tenantID 创建 GORM query wrapper，用于 Engine 等非 per-request 场景
-// 当 tenantID=0 时，返回原 db（无过滤，查所有租户）
-// 当 tenantID>0 时，添加 WHERE tenant_id = ? 过滤
+// WithPreset 租户私有数据 + 系统预置数据(tenant_id=0)联合可见
+// 仅用于预置语义表：tags / templates / features / brands / car_models /
+// flow_definitions 等系统预置(0)+租户私有(>0)共存的表
+// 用法：db.DB.Scopes(db.WithPreset(tid)).Find(&tags)
+func WithPreset(tenantID uint) func(db *gorm.DB) *gorm.DB {
+	return func(tx *gorm.DB) *gorm.DB {
+		if tenantID == 0 {
+			return tx
+		}
+		return tx.Where("tenant_id IN ?", []uint{tenantID, 0})
+	}
+}
+
+// TenantFilter 按 tenantID 创建 GORM scope，用于 Engine 等非 per-request 场景
+// tenantID=0 时返回原 db（无过滤，查所有租户）——引擎内部语义，与 T(c) 不同
 func TenantFilter(tenantID uint) func(db *gorm.DB) *gorm.DB {
 	return func(db *gorm.DB) *gorm.DB {
 		if tenantID == 0 {

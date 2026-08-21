@@ -1,0 +1,163 @@
+package mq
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log"
+	"strconv"
+	"strings"
+	"time"
+
+	"ai-scrm/config"
+
+	"github.com/segmentio/kafka-go"
+)
+
+// ============================================================
+// KafkaCenter：segmentio/kafka-go 实现
+// 生产者：按主题动态路由（AllowAutoTopicCreation），key=one_id 保证同用户有序
+// 消费者组：Subscribe 登记 → StartConsumers 统一启动，消费前 Inbox 幂等抢占
+// ============================================================
+
+type KafkaCenter struct {
+	cfg      config.MQConfig
+	writer   *kafka.Writer
+	handlers map[string]EventHandler
+}
+
+func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
+	if len(cfg.Brokers) == 0 {
+		return nil, fmt.Errorf("KAFKA_BROKERS 未配置")
+	}
+	w := &kafka.Writer{
+		Addr:                   kafka.TCP(cfg.Brokers...),
+		Balancer:               &kafka.Hash{}, // 按 key(one_id) 哈希分区
+		AllowAutoTopicCreation: true,
+		RequiredAcks:           kafka.RequireOne,
+		BatchTimeout:           50 * time.Millisecond,
+	}
+	return &KafkaCenter{cfg: cfg, writer: w, handlers: map[string]EventHandler{}}, nil
+}
+
+// Publish 生产事件（Header 注入 + 审计落库 + kafka 写入）
+func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) error {
+	env := buildEnvelope(topic, tenantID, oneID, eventType, payload)
+	recordAudit(env, "sent")
+
+	fullTopic := c.cfg.TopicPrefix + topic
+	err := c.writer.WriteMessages(ctx, kafka.Message{
+		Topic:   fullTopic,
+		Key:     []byte(env.Key),
+		Value:   env.Payload,
+		Headers: kafkaHeaders(env),
+	})
+	if err != nil {
+		log.Printf("[MQ-Kafka] 发布失败 topic=%s event=%s: %v", fullTopic, env.Header.EventID, err)
+		return err
+	}
+	log.Printf("[MQ-Kafka] 已发布 topic=%s event=%s tenant=%d one=%s type=%s",
+		fullTopic, env.Header.EventID, tenantID, env.Header.OneID, eventType)
+	return nil
+}
+
+// Subscribe 登记消费者回调（StartConsumers 时统一建 reader）
+func (c *KafkaCenter) Subscribe(topic string, handler EventHandler) {
+	c.handlers[topic] = handler
+	log.Printf("[MQ-Kafka] 已订阅 topic=%s", c.cfg.TopicPrefix+topic)
+}
+
+// StartConsumers 为每个已订阅主题启动一个消费者组循环（阻塞，调用方放 goroutine）
+func (c *KafkaCenter) StartConsumers(ctx context.Context) {
+	for topic, handler := range c.handlers {
+		go c.consumeLoop(ctx, topic, handler)
+	}
+}
+
+func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string, handler EventHandler) {
+	fullTopic := c.cfg.TopicPrefix + topic
+	reader := kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     c.cfg.Brokers,
+		GroupID:     c.cfg.TopicPrefix + "group", // 同组多实例自动分摊分区
+		GroupTopics: []string{fullTopic},
+		MinBytes:    1,
+		MaxBytes:    10e6,
+	})
+	defer func() {
+		_ = reader.Close()
+	}()
+	log.Printf("[MQ-Kafka] 消费循环启动 topic=%s group=%s", fullTopic, c.cfg.TopicPrefix+"group")
+
+	for {
+		msg, err := reader.FetchMessage(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return // 正常关闭
+			}
+			log.Printf("[MQ-Kafka] 拉取失败 topic=%s: %v", fullTopic, err)
+			continue
+		}
+
+		env, herr := fromKafkaMessage(topic, msg)
+		if herr != nil {
+			log.Printf("[MQ-Kafka] 消息解析失败 topic=%s: %v", fullTopic, herr)
+			_ = reader.CommitMessages(ctx, msg)
+			continue
+		}
+
+		// Inbox 幂等抢占：event_id 已处理过则直接提交跳过
+		processed, err := EnsureProcessed(env.Header.EventID, env.Header.TenantID, env.Header.OneID, topic)
+		if err != nil {
+			log.Printf("[MQ-Kafka] Inbox 抢占失败 event=%s: %v", env.Header.EventID, err)
+			// 不提交，等待重投
+			continue
+		}
+		if !processed {
+			if err := handler(ctx, env); err != nil {
+				log.Printf("[MQ-Kafka] 处理失败 event=%s: %v（标记待重试）", env.Header.EventID, err)
+				MarkInboxFailed(env.Header.EventID)
+				_ = reader.CommitMessages(ctx, msg) // 防卡死；重试依赖审计表回放
+				continue
+			}
+		}
+		_ = reader.CommitMessages(ctx, msg)
+	}
+}
+
+// fromKafkaMessage kafka 消息 → 信封（Header 校验：铁律字段缺失即拒收）
+func fromKafkaMessage(defaultTopic string, msg kafka.Message) (Envelope, error) {
+	env := Envelope{
+		Topic:   strings.TrimPrefix(msg.Topic, ""),
+		Key:     string(msg.Key),
+		Payload: msg.Value,
+	}
+	for _, h := range msg.Headers {
+		switch h.Key {
+		case "tenant_id":
+			n, _ := strconv.ParseUint(string(h.Value), 10, 64)
+			env.Header.TenantID = uint(n)
+		case "one_id":
+			env.Header.OneID = string(h.Value)
+		case "event_id":
+			env.Header.EventID = string(h.Value)
+		case "event_time":
+			if t, err := time.Parse(time.RFC3339Nano, string(h.Value)); err == nil {
+				env.Header.EventTime = t
+			}
+		case "trace_id":
+			env.Header.TraceID = string(h.Value)
+		}
+	}
+	if env.Header.EventID == "" || env.Header.TenantID == 0 {
+		return env, fmt.Errorf("Header 缺失铁律字段(event_id/tenant_id)")
+	}
+	_ = defaultTopic
+	return env, nil
+}
+
+// Close 关闭生产者
+func (c *KafkaCenter) Close() error {
+	return c.writer.Close()
+}
+
+var _ = json.Marshal // 保持导入对齐
