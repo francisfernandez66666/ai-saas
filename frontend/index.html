@@ -12,6 +12,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>AI-SCRM · 车企智能销售平台</title>
   <style>
+    /* ===== 全局重置与页面骨架：渐变背景 + 垂直居中布局 ===== */
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
@@ -23,6 +24,7 @@
       justify-content: center;
       color: #2d3748;
     }
+    /* ===== 主视觉区（Hero）：标题/标语/徽章的容器 ===== */
     .hero {
       text-align: center;
       padding: 80px 20px;
@@ -44,6 +46,7 @@
       color: #4a5568;
       margin-bottom: 32px;
     }
+    /* ===== 特性卡片区：三列自适应网格（移动端折叠为单列） ===== */
     .features {
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -85,6 +88,7 @@
       font-size: 14px;
       line-height: 1.6;
     }
+    /* ===== 行动按钮区（CTA）：体验入口 + 注册入口 ===== */
     .cta {
       margin-top: 64px;
       text-align: center;
@@ -129,6 +133,7 @@
     .nav-link:hover {
       color: #667eea;
     }
+    /* ===== 响应式适配：≤600px 单列布局 ===== */
     @media (max-width: 600px) {
       .hero { padding: 40px 16px; }
       h1 { font-size: 32px; }
@@ -143,27 +148,29 @@
 </head>
 <body>
 
+  <!-- 主视觉区：品牌标识 + 一句话定位 -->
   <div class="hero">
     <div class="logo">🏔️</div>
     <h1>AI-SCRM</h1>
     <p class="tagline">车企AI驱动的智能客户关系管理平台</p>
 
+    <!-- 特性卡片区：智能接话 / 全链路 AI / 多端在线 三大卖点 -->
     <div class="features">
-      <div class="feature-card">
+      <div class="feature-card"><!-- 卖点一：AI 自动接话 -->
         <div class="feature-icon">
           <svg viewBox="0 0 24 24"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>
         </div>
         <div class="feature-title">智能接话</div>
         <div class="feature-desc">AI自动接听客户咨询，分钟级响应，永不错过商机</div>
       </div>
-      <div class="feature-card">
+      <div class="feature-card"><!-- 卖点二：全链路 AI 驱动 -->
         <div class="feature-icon">
           <svg viewBox="0 0 24 24"><path d="M2 3h20v2H2V3zm0 4h20v2H2V7zm0 4h20v2H2v-2zm0 4h20v2H2v-2zm0 4h20v2H2v-2z"/></svg>
         </div>
         <div class="feature-title">全链路 AI</div>
         <div class="feature-desc">从建联到成单的全流程 AI 驱动，提效 100 倍</div>
       </div>
-      <div class="feature-card">
+      <div class="feature-card"><!-- 卖点三：多端在线覆盖 -->
         <div class="feature-icon">
           <svg viewBox="0 0 24 24"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm4.93-7.5l1.42-1.42c-.98-.98-2.57-.43-3.54.75L14.5 14.46l-5.33 5.32c-.59.59-.59 1.52 0 2.11zm-11.28.78l1.56 1.56c.39.39 1.02.11 1.41-.7L2.54 9.13c-.47-.66-.79-1.56-.79-2.38 0-1.32.63-2.39 1.28-2.96l2.17-2.17c.38-.38.99-.41 1.41-.19l1.66 1.66L13 15.5l2.66 2.66c.45.45.45 1.06 0 1.51z"/></svg>
         </div>
@@ -172,25 +179,29 @@
       </div>
     </div>
 
+    <!-- 能力徽章：SaaS 化 / 多租户 / 实时数据 -->
     <div class="badges">
       <span class="badge">SaaS 化</span>
       <span class="badge">多租户</span>
       <span class="badge">实时数据</span>
     </div>
 
+    <!-- 行动区：立即体验（客户端）/ 免费注册 -->
     <div class="cta">
       <a class="cta-btn" href="/client">立即体验</a>
       <a class="cta-btn" href="/auth/register">免费注册</a>
     </div>
 
+    <!-- 页内导航锚点 -->
     <div class="nav-links">
       <a class="nav-link" href="#features">功能介绍</a>
       <a class="nav-link" href="#about">关于我们</a>
     </div>
   </div>
 
+  <!-- 页脚：版本标识 -->
   <footer class="footer mt-auto">
-    <p>AI-SCRM · SaaS 版 · 版本 v0.2</p>
+    <p>AI-SCRM · SaaS 多租户版</p>
   </footer>
 
 </body>
