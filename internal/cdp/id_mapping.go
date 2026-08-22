@@ -1,37 +1,7 @@
 package cdp
 
-import (
-	"log"
-)
-
-// IdMappingService 内部ID ↔ CDP实体ID映射服务
-type IdMappingService interface {
-	MapInternalToCDP(uint, string, string) error
-	GetCDPID(uint, string) (string, error)
-	UnmapInternal(uint, string) error
-}
-
-// NewIdMappingService 创建ID映射服务
-func NewIdMappingService() IdMappingService {
-	return &idMappingService{}
-}
-
-type idMappingService struct{}
-
-// MapInternalToCDP 映射内部ID到CDP实体
-func (s *idMappingService) MapInternalToCDP(internalID uint, entityType string, cdpEntityID string) error {
-	log.Printf("[CDP] Map internal=%d to %s", internalID, entityType)
-	return nil
-}
-
-// GetCDPID 获取CDP实体ID
-func (s *idMappingService) GetCDPID(internalID uint, entityType string) (string, error) {
-	log.Printf("[CDP] Get CDPID internal=%d type=%s", internalID, entityType)
-	return "", nil
-}
-
-// UnmapInternal 解除映射
-func (s *idMappingService) UnmapInternal(internalID uint, entityType string) error {
-	log.Printf("[CDP] Unmap internal=%d type=%s", internalID, entityType)
-	return nil
-}
+// ============================================================
+// ID-Mapping（One ID 身份解析）
+// 实现位于 profile_store.go（UpsertAnchor：锚点值→OneID 归并）
+// 本文件保留包内语义入口，供后续扩展关系链（推荐人/被荐人）使用
+// ============================================================

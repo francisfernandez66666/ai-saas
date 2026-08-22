@@ -270,6 +270,10 @@ var skipTenantPaths = map[string]bool{
 	"/api/v1/auth/register":          true,
 	"/api/v1/auth/reset-password":    true,
 	"/api/v1/auth/verify-reset-code": true,
+	// 租户入驻闭环（SaaS 注册漏斗）
+	"/api/v1/tenant/signup":     true,
+	"/api/v1/tenant/check-code": true,
+	"/api/v1/plans":             true,
 }
 
 // TenantResolver 全局租户解析中间件（fail-closed）
@@ -348,14 +352,19 @@ func TenantResolver() gin.HandlerFunc {
 		// 注入 Context：
 		// tenant_id 先给 Host 解析值（匿名/C端免登录接口的生效租户）；
 		// 登录态路由随后由 JWTAuth（覆盖为 claims 值）+ TenantConsistency（最终裁决）接力
-		c.Set("tenant_id", tenant.ID)
-		c.Set("host_tenant_id", tenant.ID)
-		c.Set("tenant_code", tenant.Code)
-		c.Set("tenant_tier", tenant.Tier)
-		c.Set("tenant_plan", tenant.PlanID)
+		applyTenantContext(c, tenant)
 
 		c.Next()
 	}
+}
+
+// applyTenantContext 将解析出的租户写入请求上下文（Resolver 与一致性中间件共用）
+func applyTenantContext(c *gin.Context, tenant *model.Tenant) {
+	c.Set("tenant_id", tenant.ID)
+	c.Set("host_tenant_id", tenant.ID)
+	c.Set("tenant_code", tenant.Code)
+	c.Set("tenant_tier", tenant.Tier)
+	c.Set("tenant_plan", tenant.PlanID)
 }
 
 // ============================================================
@@ -441,6 +450,13 @@ func TenantConsistency() gin.HandlerFunc {
 				"data":    nil,
 			})
 			return
+		case hostID != 0 && tokID != hostID && gin.Mode() == gin.DebugMode && isLocalDevHost(normalizeHost(c.Request.Host)):
+			// 本地开发特例：localhost 无真实域名归属，以登录租户为准刷新上下文，
+			// 使多租户联调可行（生产环境子域名不受影响，仍严格一致性校验）
+			if t := loadTenantByID(tokID); t != nil {
+				applyTenantContext(c, t)
+			}
+			c.Set("tenant_id", tokID)
 		case hostID != 0 && tokID != hostID:
 			// 核心防线：token 租户 ≠ 访问域名租户
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{

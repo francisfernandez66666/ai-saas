@@ -2,10 +2,12 @@ package api
 
 import (
 	"ai-scrm/internal/ai"
+	"ai-scrm/internal/config_center"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -209,4 +211,19 @@ func GetAvailableModels(c *gin.Context) {
 			Identifiers: identifiers,
 		},
 	})
+}
+
+// RollbackTenantConfig POST /api/v1/admin/config/rollback {keys?:[]}
+// 清除本租户覆盖层回落系统默认（config_center.Rollback）
+func RollbackTenantConfig(c *gin.Context) {
+	var req struct {
+		Keys []string `json:"keys"`
+	}
+	_ = c.ShouldBindJSON(&req)
+	n, err := configcenter.Rollback(db.EffectiveTenantIDFromGin(c), req.Keys)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "回滚失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("已回滚 %d 项配置至系统默认", n)})
 }

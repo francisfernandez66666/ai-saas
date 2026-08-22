@@ -127,6 +127,8 @@ func autoMigrate() error {
 		&model.CdpProfile{},
 		&model.CdpTagAssignment{},
 		&model.EventLog{},
+		&model.IdMapping{},
+		&model.CdpTagDefinition{},
 		// ---- 流程状态机（SAAS_PLAN §十七）
 		&model.FlowStateMachine{},
 		// ---- 四级组织架构（P2 组织树）

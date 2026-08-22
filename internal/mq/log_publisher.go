@@ -23,7 +23,9 @@ func newLogCenter(cfg config.MQConfig) *LogCenter {
 	return &LogCenter{cfg: cfg, handlers: map[string]EventHandler{}}
 }
 
-// Publish 结构化日志发布
+// Publish 结构化日志发布 + 本地分发
+// P4 起 LogCenter 兼作"进程内事件总线"：无 Kafka 时订阅者（如 CDP IngestConsumer）
+// 仍可闭环消费，切换 MQ_TYPE=kafka 后无缝升级为真实总线，业务与消费者代码零改动
 func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) error {
 	env := buildEnvelope(topic, tenantID, oneID, eventType, payload)
 	recordAudit(env, "sent")
@@ -38,6 +40,15 @@ func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, on
 		"payload":    json.RawMessage(env.Payload),
 	})
 	log.Printf("[MQ-LOG] %s", string(line))
+
+	// 本地异步分发（panic 隔离，不阻断发布方）
+	if h, ok := c.handlers[topic]; ok {
+		envCopy := env
+		go func() {
+			defer func() { _ = recover() }()
+			_ = h(ctx, envCopy)
+		}()
+	}
 	return nil
 }
 

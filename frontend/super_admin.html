@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<!-- AI-SCRM 平台超管后台：全平台租户列表 + 状态流转（封禁/恢复）+ 审计 -->
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>平台管理 · AI-SCRM</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#f5f7fa;padding:24px;color:#2d3748}
+h2{margin-bottom:16px}.bar{display:flex;gap:10px;margin-bottom:14px;align-items:center}
+.bar input{padding:8px;border:1px solid #e2e8f0;border-radius:6px}
+table{width:100%;background:#fff;border-radius:10px;border-collapse:collapse;overflow:hidden;box-shadow:0 3px 14px rgba(0,0,0,.06)}
+th,td{padding:11px 13px;text-align:left;font-size:13px;border-bottom:1px solid #edf2f7}
+th{background:#fafafa;color:#4a5568}
+.st{padding:2px 9px;border-radius:10px;font-size:12px}
+.active,.trial{background:#c6f6d5;color:#276749}.suspended{background:#fed7d7;color:#9b2c2c}.expired{background:#feebc8;color:#975a16}
+button{padding:4px 10px;border:none;border-radius:6px;cursor:pointer;font-size:12px;margin-right:5px}
+.ban{background:#fed7d7;color:#9b2c2c}.on{background:#c6f6d5;color:#276749}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+</style></head><body>
+<div class="top"><h2>平台租户管理</h2>
+<div>当前超管：<b id="me"></b>　<a href="/" style="font-size:13px">首页</a></div></div>
+<div class="bar"><input id="kw" placeholder="按名称/标识搜索" oninput="render()"></div>
+<table id="tb"><thead><tr>
+<th>ID</th><th>企业名称</th><th>标识</th><th>套餐</th><th>客户用量</th><th>状态</th><th>开通日期</th><th>操作</th>
+</tr></thead><tbody></tbody></table>
+<script>
+/* 会话守卫：非超管立即弹回 */
+const token=sessionStorage.getItem('token');
+if(localStorage.getItem('role')!=='super_admin'){location.href='/login'}
+document.getElementById('me').textContent=localStorage.getItem('username')||'-';
+const AUTH={headers:{'Authorization':'Bearer '+token}};
+let LIST=[];
+/* 拉取全平台租户 */
+async function load(){
+  const r=await fetch('/api/v1/super/tenants',AUTH);
+  const j=await r.json(); LIST=j.data||[]; render();
+}
+function render(){
+  const kw=document.getElementById('kw').value.trim();
+  const tb=document.querySelector('#tb tbody');
+  tb.innerHTML=LIST.filter(t=>!kw||t.name.includes(kw)||t.code.includes(kw)).map(t=>`
+    <tr><td>${t.id}</td><td>${t.name}</td><td>${t.code}</td><td>${t.plan_name||'-'}</td>
+    <td>${t.used_customers}/${t.max_customers||'∞'}</td>
+    <td><span class="st ${t.status}">${t.status}</span></td><td>${t.created_at}</td>
+    <td>${t.status==='suspended'
+      ?`<button class="on" onclick="setStatus(${t.id},'active')">恢复</button>`
+      :`<button class="ban" onclick="setStatus(${t.id},'suspended')">停用</button>`}</td></tr>`).join('');
+}
+/* 状态流转（写审计，缓存失效后即时生效） */
+async function setStatus(id,st){
+  if(!confirm('确认将租户 #'+id+' 置为 '+st+' ?'))return;
+  await fetch(`/api/v1/super/tenants/${id}/status`,{method:'PUT',headers:{...AUTH,'Content-Type':'application/json'},body:JSON.stringify({status:st})});
+  load();
+}
+load();
+</script></body></html>

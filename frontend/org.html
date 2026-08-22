@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<!-- AI-SCRM 组织架构管理：部门树 CRUD + 成员管理（四级权限边界由后端裁剪） -->
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>组织架构 · AI-SCRM</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#f5f7fa;padding:22px;color:#2d3748}
+.cols{display:grid;grid-template-columns:minmax(280px,38%) 1fr;gap:18px;max-width:1200px;margin:0 auto}
+.panel{background:#fff;border-radius:10px;padding:18px;box-shadow:0 3px 14px rgba(0,0,0,.06)}
+h3{margin-bottom:12px}.top{display:flex;justify-content:space-between;margin-bottom:14px}
+.node{padding:6px 8px;border-radius:6px;display:flex;align-items:center;gap:8px;cursor:pointer}
+.node:hover{background:#f0f4ff}.node.sel{background:#e6ecff}
+.nm{flex:1}.cnt{color:#718096;font-size:12px}
+.ops button{margin-left:4px;border:none;background:none;cursor:pointer;font-size:12px;color:#667eea}
+.child{margin-left:26px;border-left:1px dashed #cbd5e0;padding-left:10px}
+table{width:100%;border-collapse:collapse}th,td{padding:8px 10px;font-size:13px;border-bottom:1px solid #edf2f7;text-align:left}
+button.p{padding:7px 14px;background:#667eea;color:#fff;border:none;border-radius:6px;cursor:pointer}
+dialog{border:none;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,.2);padding:24px;width:min(380px,90vw)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+label{display:block;font-size:13px;margin:10px 0 5px}input,select{width:100%;padding:8px;border:1px solid #e2e8f0;border-radius:6px}
+.dlg-btn{margin-top:18px;text-align:right}.dlg-btn button{margin-left:8px;padding:8px 16px;border:none;border-radius:6px;cursor:pointer}
+.ok-b{background:#667eea;color:#fff}
+</style></head><body>
+<div class="cols">
+<div class="panel">
+  <div class="top"><h3>部门树</h3>
+    <div><button class="p" onclick="dlgAdd(null)">＋新建根部门</button>　<button onclick="location='/'" style="background:none;border:none;cursor:pointer">首页</button></div>
+  </div>
+  <div id="tree">加载中...</div>
+</div>
+<div class="panel">
+  <div class="top"><h3>成员 · <span id="curDeptName">全部</span></h3>
+    <button class="p" onclick="dlgAddUser()">＋添加成员</button></div>
+  <table><thead><tr><th>账号</th><th>姓名</th><th>角色</th><th>部门</th><th>状态</th></tr></thead>
+  <tbody id="users"></tbody></table>
+</div>
+</div>
+
+<dialog id="dlg"><form method="dialog" onsubmit="return false">
+<h3 id="dlgTitle"></h3><div id="dlgBody"></div>
+<div class="dlg-btn"><button onclick="document.getElementById('dlg').close()">取消</button>
+<button class="ok-b" onclick="dlgSubmit()">确 定</button></div>
+</form></dialog>
+
+<script>
+/* 会话与权限上下文 */
+const token=sessionStorage.getItem('token')||localStorage.getItem('token');
+if(!token){location.href='/login'}
+const ROLE=localStorage.getItem('role');
+const AUTH=h=>({headers:{'Authorization':'Bearer '+(h||token),'Content-Type':'application/json'}});
+let TREE=[],DEPTS=[],SEL=null;
+
+/* 加载部门树并渲染（可折叠省略——直接平铺缩进） */
+async function loadTree(){
+  const j=await (await fetch('/api/v1/org/departments/tree',AUTH())).json();
+  TREE=j.data||[];
+  DEPTS=[];(function flat(ns,d){ns.forEach(n=>{DEPTS.push(n);flat(n.children||[],d+1)})})(TREE,0);
+  const box=document.getElementById('tree');box.innerHTML='';
+  (function draw(ns,depth){
+    ns.forEach(n=>{
+      const div=document.createElement('div');
+      div.className='node'+(SEL===n.id?' sel':'');div.style.marginLeft=(depth*20)+'px';
+      div.innerHTML=`<span class="nm">${n.name}${depth?'':' 🏠'}</span><span class="cnt">${n.user_count}人</span>
+        <span class="ops">
+          <button title="添加子部门" onclick="event.stopPropagation();dlgAdd(${n.id})">＋子</button>
+          <button title="重命名" onclick="event.stopPropagation();dlgRename(${n.id},'${n.name}')">✎</button>
+          ${ROLE==='tenant_admin'||ROLE==='super_admin'?`<button title="移动" onclick="event.stopPropagation();dlgMove(${n.id})">⇄</button>`:''}
+          <button title="删除空部门" onclick="event.stopPropagation();delDept(${n.id})">🗑</button>
+        </span>`;
+      div.onclick=()=>{SEL=n.id;document.getElementById('curDeptName').textContent=n.name;loadUsers();draw(TREE,0)};
+      box.appendChild(div);
+      if(n.children&&n.children.length)draw(n.children,depth+1);
+    });
+  })(TREE,0);
+}
+
+/* 部门对话框：新建/改名/移动 三态复用 */
+let dlgMode=null,dlgId=null;
+function openDlg(title,bodyHTML,mode,id){
+  document.getElementById('dlgTitle').textContent=title;
+  document.getElementById('dlgBody').innerHTML=bodyHTML;
+  dlgMode=mode;dlgId=id;
+  document.getElementById('dlg').showModal();
+}
+function deptOptions(exceptId){
+  return DEPTS.filter(d=>d.id!==exceptId).map(d=>`<option value="${d.id}" data-path="${d.path}">${'　'.repeat(d.depth-1)}${d.name}</option>`).join('');
+}
+function dlgAdd(parentId){
+  openDlg(parentId?'新建子部门':'新建根部门',
+    `<label>部门名称</label><input id="f_name">
+     ${parentId?`<input type="hidden" id="f_parent" value="${parentId}">`
+       :(ROLE==='dept_admin'?'':`<label>父部门（留空=根）</label><select id="f_parent"><option value="">— 根 —</option>${deptOptions()}</select>`)}`, 'add');
+}
+function dlgRename(id,name){
+  openDlg('重命名部门',`<label>新名称</label><input id="f_name" value="${name}">`,'rename',id);
+}
+function dlgMove(id){
+  openDlg('移动部门到…',`<label>目标父部门</label><select id="f_parent">${deptOptions(id)}</select>`,'move',id);
+}
+async function dlgSubmit(){
+  const name=document.getElementById('f_name')?.value.trim();
+  const parent=document.getElementById('f_parent')?.value||null;
+  if(dlgMode==='add'){
+    await fetch('/api/v1/org/departments',{method:'POST',headers:AUTH(),body:JSON.stringify({name,parent_id:parent?Number(parent):null})});
+  }else if(dlgMode==='rename'){
+    await fetch('/api/v1/org/departments/'+dlgId,{method:'PUT',headers:AUTH(),body:JSON.stringify({name})});
+  }else if(dlgMode==='move'){
+    await fetch('/api/v1/org/departments/'+dlgId,{method:'PUT',headers:AUTH(),body:JSON.stringify({new_parent_id:Number(parent)})});
+  }
+  document.getElementById('dlg').close();loadTree();
+}
+async function delDept(id){
+  if(!confirm('删除该空部门？'))return;
+  const r=await fetch('/api/v1/org/departments/'+id,{method:'DELETE',headers:AUTH()});
+  const j=await r.json();alert(j.message);loadTree();
+}
+
+/* 成员列表（选中部门过滤） */
+async function loadUsers(){
+  const j=await (await fetch('/api/v1/org/users',AUTH())).json();
+  let list=j.data||[];
+  if(SEL)list=list.filter(u=>u.department_id===SEL);
+  const roleCn={super_admin:'平台超管',tenant_admin:'租户管理员',dept_admin:'部门管理员',user:'成员',readonly:'只读'};
+  document.getElementById('users').innerHTML=list.map(u=>`
+    <tr><td>${u.username}</td><td>${u.real_name||'-'}</td><td>${roleCn[u.role]||u.role}</td>
+    <td>${u.dept_name||'-'}</td>
+    <td>${u.status===1?'正常':'<span style="color:#e53e3e">禁用</span>'}
+    　${ROLE==='tenant_admin'||ROLE==='super_admin'||ROLE==='dept_admin'?`<button onclick="toggleU(${u.id},${u.status})">${u.status===1?'停用':'启用'}</button>`:''}</td></tr>`).join('')
+    ||'<tr><td colspan=5 style="color:#a0aec0">暂无成员</td></tr>';
+}
+async function toggleU(id,st){
+  await fetch('/api/v1/org/users/'+id,{method:'PUT',headers:AUTH(),body:JSON.stringify({status:st===1?0:1})});
+  loadUsers();
+}
+function dlgAddUser(){
+  openDlg('添加成员',`
+    <label>用户名</label><input id="u_name">
+    <label>初始密码</label><input id="u_pwd" type="password">
+    <label>姓名</label><input id="u_real">
+    <label>角色</label><select id="u_role">
+      <option value="user">普通成员</option><option value="dept_admin">部门管理员</option>
+      ${ROLE!=='dept_admin'?'<option value="readonly">只读</option>':''}</select>
+    <label>所属部门</label><select id="u_dept">${deptOptions().replace(/data-path="[^"]*"/g,'')}</select>`,'addUser');
+}
+async function dlgSubmitUser(){
+  const body={username:v('u_name'),password:v('u_pwd'),real_name:v('u_real'),
+    role:v('u_role'),department_id:Number(v('u_dept'))};
+  const r=await fetch('/api/v1/org/users',{method:'POST',headers:AUTH(),body:JSON.stringify(body)});
+  const j=await r.json();alert(j.message);
+  if(j.code===0){document.getElementById('dlg').close();loadUsers();loadTree()}
+}
+const v=id=>document.getElementById(id)?.value.trim()||'';
+/* 表单提交路由（dialog 复用一个 submit 入口） */
+const _origSubmit=dlgSubmit;
+dlgSubmit=function(){ if(dlgMode==='addUser')return dlgSubmitUser(); _origSubmit() };
+
+loadTree();loadUsers();
+</script></body></html>

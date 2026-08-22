@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<!-- AI-SCRM 租户入驻页：企业信息+子域名标识+管理员账号 → 开通7天试用 -->
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>免费开通 · AI-SCRM</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#f5f7fa;min-height:100vh;display:flex;align-items:center;justify-content:center;color:#2d3748}
+.card{background:#fff;border-radius:12px;padding:36px;box-shadow:0 4px 24px rgba(0,0,0,.08);width:min(420px,92vw)}
+h2{margin-bottom:6px} .sub{color:#718096;font-size:13px;margin-bottom:22px}
+label{display:block;font-size:13px;margin:14px 0 6px;color:#4a5568}
+input,select{width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px}
+.btn{width:100%;margin-top:22px;padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
+.btn:hover{opacity:.9} .tip{margin-top:16px;font-size:13px;text-align:center;color:#718096}
+.tip a{color:#667eea} .msg{margin-top:14px;font-size:13px;min-height:18px}
+.ok{color:#38a169}.err{color:#e53e3e}
+</style>
+<script>
+/* 检查子域名标识可用性（输入防抖 400ms） */
+let t=null;
+function checkCode(v){
+  clearTimeout(t);
+  const tip=document.getElementById('codeTip');
+  if(!v){tip.textContent='';return}
+  t=setTimeout(async()=>{
+    const r=await fetch('/api/v1/tenant/check-code?code='+encodeURIComponent(v));
+    const d=(await r.json()).data||{};
+    tip.textContent=d.reason||''; tip.className='msg '+(d.available?'ok':'err');
+  },400);
+}
+/* 提交入驻申请 */
+async function submitForm(e){
+  e.preventDefault();
+  const f=new FormData(e.target), body=Object.fromEntries(f), msg=document.getElementById('msg');
+  msg.textContent='开通中...'; msg.className='msg';
+  try{
+    const r=await fetch('/api/v1/tenant/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(j.code===0){ msg.textContent=j.message+'！即将跳转登录...'; msg.className='msg ok';
+      setTimeout(()=>location.href=j.data.login_url,1500);
+    } else { msg.textContent=j.message; msg.className='msg err'; }
+  }catch(err){ msg.textContent='网络异常'; msg.className='msg err'; }
+}
+</script></head><body>
+<div class="card">
+<h2>免费开通试用</h2><div class="sub">7 天全功能试用，无需绑卡</div>
+<form onsubmit="submitForm(event)">
+<label>企业名称 *</label><input name="company_name" required>
+<label>访问标识 * （将作为子域名 acme.example.com）</label>
+<input name="code" required oninput="checkCode(this.value)" placeholder="小写字母开头，3-20位">
+<div id="codeTip" class="msg"></div>
+<label>管理员账号 *</label><input name="username" required placeholder="登录用户名">
+<label>管理员密码 * （至少6位）</label><input name="password" type="password" required>
+<label>联系人</label><input name="contact_name">
+<label>联系手机</label><input name="contact_phone">
+<button class="btn" type="submit">立即开通</button>
+<div id="msg" class="msg"></div>
+</form>
+<div class="tip">已有账号？<a href="/login">直接登录</a>　<a href="/pricing">查看套餐</a></div>
+</div></body></html>

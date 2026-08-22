@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<!-- AI-SCRM 统一登录页：企业码(可选)+账号密码；按角色跳转三端 -->
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>登录 · AI-SCRM</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#f5f7fa;min-height:100vh;display:flex;align-items:center;justify-content:center;color:#2d3748}
+.card{background:#fff;border-radius:12px;padding:36px;box-shadow:0 4px 24px rgba(0,0,0,.08);width:min(420px,92vw)}
+h2{margin-bottom:6px} .sub{color:#718096;font-size:13px;margin-bottom:22px}
+label{display:block;font-size:13px;margin:14px 0 6px;color:#4a5568}
+input,select{width:100%;padding:10px;border:1px solid #e2e8f0;border-radius:8px;font-size:14px}
+.btn{width:100%;margin-top:22px;padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;font-size:15px;cursor:pointer}
+.btn:hover{opacity:.9} .tip{margin-top:16px;font-size:13px;text-align:center;color:#718096}
+.tip a{color:#667eea} .msg{margin-top:14px;font-size:13px;min-height:18px}
+.ok{color:#38a169}.err{color:#e53e3e}
+</style>
+<script>
+async function doLogin(e){
+  e.preventDefault();
+  const body=Object.fromEntries(new FormData(e.target)), msg=document.getElementById('msg');
+  msg.textContent='登录中...'; msg.className='msg';
+  const r=await fetch('/api/v1/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j=await r.json();
+  if(j.code!==0){ msg.textContent=j.message||'登录失败'; msg.className='msg err'; return }
+  /* 记录会话并按角色分流 */
+  sessionStorage.setItem('token',j.data.token);
+  localStorage.setItem('role',j.data.user.role);
+  localStorage.setItem('username',j.data.user.username);
+  const role=j.data.user.role;
+  location.href = role==='super_admin' ? '/super_admin.html'
+               : role==='tenant_admin'||role==='admin' ? '/admin.html' : '/advisor.html';
+}
+</script></head><body>
+<div class="card">
+<h2>登录工作台</h2><div class="sub">销售/管理员/平台超管统一入口</div>
+<form onsubmit="doLogin(event)">
+<label>企业码（租户用户必填）</label><input name="tenant_code" placeholder="如 acme">
+<label>用户名</label><input name="username" required>
+<label>密码</label><input name="password" type="password" required>
+<button class="btn" type="submit">登 录</button>
+<div id="msg" class="msg"></div>
+</form>
+<div class="tip">没有账号？<a href="/register">免费开通</a>　<a href="/">返回首页</a></div>
+</div></body></html>

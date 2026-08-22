@@ -6,12 +6,14 @@ import (
 	"ai-scrm/internal/model"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+	"strings"
 )
 
 // loginRequest 登录请求结构体
 type loginRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username   string `json:"username" binding:"required"`
+	Password   string `json:"password" binding:"required"`
+	TenantCode string `json:"tenant_code"` // 企业码（统一登录页使用；空=跨租户用户名查找）
 }
 
 // registerRequest 注册请求结构体
@@ -41,9 +43,15 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	// 1. 从数据库查询用户
+	// 1. 从数据库查询用户（携带企业码时限定租户，防同名账号串站）
 	var user model.User
-	result := db.DB.Raw("SELECT id, username, password_hash, role, tenant_id FROM tenant_users WHERE username = ?", req.Username).Scan(&user)
+	userQuery := "SELECT id, username, password_hash, role, tenant_id FROM tenant_users WHERE username = ?"
+	args := []interface{}{req.Username}
+	if code := strings.TrimSpace(req.TenantCode); code != "" {
+		userQuery += " AND tenant_id IN (SELECT id FROM tenants WHERE code = ?)"
+		args = append(args, code)
+	}
+	result := db.DB.Raw(userQuery, args...).Scan(&user)
 	if result.Error != nil {
 		c.JSON(500, gin.H{"code": 500, "message": "数据库错误", "data": nil})
 		return

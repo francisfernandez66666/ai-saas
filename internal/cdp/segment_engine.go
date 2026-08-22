@@ -1,30 +1,28 @@
 package cdp
 
 import (
-	"log"
+	"ai-scrm/internal/model"
 )
 
-// SegmentEngine 客户细分引擎
+// SegmentEngine 分群引擎（SAAS_PLAN §16.4）
+// 分群=查询或常驻计算结果，不落静态标签；派生结论（LTV/AIPL）在此层计算
 type SegmentEngine interface {
-	SegmentByIntent() (map[string][]uint, error)
-	SegmentByValue() (map[string][]uint, error)
-}
-
-// NewSegmentEngine 创建细分引擎
-func NewSegmentEngine() SegmentEngine {
-	return &segmentEngine{}
+	SegmentByTag(tagCode string) ([]string, error) // 按原子标签圈选 OneID 列表
 }
 
 type segmentEngine struct{}
 
-// SegmentByIntent 按意向分分段
-func (s *segmentEngine) SegmentByIntent() (map[string][]uint, error) {
-	log.Println("[CDP] Segment by intent")
-	return make(map[string][]uint), nil
+func NewSegmentEngine() SegmentEngine { return &segmentEngine{} }
+
+// SegmentByTag 圈选持有指定标签的全部 OneID
+func (s *segmentEngine) SegmentByTag(tagCode string) ([]string, error) {
+	var oneIDs []string
+	err := gdb().Table("cdp_tag_assignments a").
+		Joins("LEFT JOIN cdp_profiles p ON a.cdp_profile_id = p.id").
+		Joins("LEFT JOIN cdp_tag_definitions df ON a.definition_id = df.id").
+		Where("df.code = ?", tagCode).
+		Distinct("p.cdp_id").Pluck("cdp_id", &oneIDs).Error
+	return oneIDs, err
 }
 
-// SegmentByValue 按价值分段
-func (s *segmentEngine) SegmentByValue() (map[string][]uint, error) {
-	log.Println("[CDP] Segment by value")
-	return make(map[string][]uint), nil
-}
+var _ = model.CdpProfile{}
