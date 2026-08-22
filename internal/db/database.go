@@ -129,6 +129,8 @@ func autoMigrate() error {
 		&model.EventLog{},
 		// ---- 流程状态机（SAAS_PLAN §十七）
 		&model.FlowStateMachine{},
+		// ---- 四级组织架构（P2 组织树）
+		&model.Department{},
 		// ---- 消息中心（SAAS_PLAN §2.5）
 		&model.InboxEvent{},
 		&model.MessageEventRecord{},

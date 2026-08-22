@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	"ai-scrm/internal/model"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -133,4 +134,64 @@ func RQ(c *gin.Context) *gorm.DB {
 		q = q.Where("tenant_id = ?", tid)
 	}
 	return q
+}
+
+// ============================================================
+// 数据范围隔离（四级组织体系 · 第二维，叠加在租户过滤之上）
+//
+// 角色可见范围（业务表：customers/conversations/follow_ups/test_drives）：
+//   super_admin / tenant_admin → 本租户全部（RQ 已过滤）
+//   dept_admin  → 归属销售位于"本部门子树"的客户（path 前缀子查询）
+//   readonly    → 同其挂载部门的范围推导（挂根=全租户只读视角）
+//   user        → 仅 assigned_user_id = 本人
+// 依赖中间件注入的 Context 键：role / dept_path / user_id（OrgResolve 写入）
+// ============================================================
+
+// DataScope 数据范围 scope：与 RQ(c) 叠加使用
+// 用法：db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Customer{})
+func DataScope(c *gin.Context) func(db *gorm.DB) *gorm.DB {
+	return func(tx *gorm.DB) *gorm.DB {
+		tid := EffectiveTenantIDFromGin(c)
+		if tid == 0 {
+			return tx
+		}
+		var roleStr string
+		if v, ok := c.Get("role"); ok {
+			roleStr, _ = v.(string)
+		}
+		switch roleStr {
+		case model.RoleSuperAdmin, model.RoleTenantAdmin:
+			return tx // 平台超管（已显式指定租户）/ 租户管理员：全租户
+		case model.RoleDeptAdmin, model.RoleReadOnly:
+			pathVal, _ := c.Get("dept_path")
+			path, _ := pathVal.(string)
+			if path == "" {
+				// 未挂载部门：fail-closed，看不到任何业务数据
+				return tx.Where("1 = 0")
+			}
+			// 子树范围：归属销售 ∈ 子树部门下用户集合（物化路径前缀匹配）
+			return tx.Where(
+				"assigned_user_id IN (SELECT id FROM tenant_users WHERE tenant_id = ? AND department_id IN (SELECT id FROM departments WHERE tenant_id = ? AND path LIKE ?))",
+				tid, tid, path+"%")
+		case model.RoleUser:
+			var uid uint
+			if v, ok := c.Get("user_id"); ok {
+				switch val := v.(type) {
+				case uint:
+					uid = val
+				case int:
+					uid = uint(val)
+				case int64:
+					uid = uint(val)
+				}
+			}
+			if uid == 0 {
+				return tx.Where("1 = 0")
+			}
+			return tx.Where("assigned_user_id = ?", uid)
+		default:
+			// 未知角色 fail-closed
+			return tx.Where("1 = 0")
+		}
+	}
 }

@@ -93,7 +93,7 @@ func GetAdvisorStats(c *gin.Context) {
 	// 修复（越权）：非admin角色一律用JWT里解出来的真实身份覆盖，
 	// 杜绝伪造user_id查看其他顾问的统计数据
 	_, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
+	if !(role == model.RoleTenantAdmin || role == model.RoleSuperAdmin) {
 		jwtUserID, _ := c.Get("user_id")
 		if uid, ok := jwtUserID.(uint); ok {
 			userID = int(uid)
@@ -193,8 +193,7 @@ func ToggleAiReply(c *gin.Context) {
 		return
 	}
 
-	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" && customer.AssignedUserID != jwtUserID {
+	if !canOperateCustomer(c, customer.AssignedUserID) {
 		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
 		return
 	}
@@ -264,8 +263,7 @@ func CreateTestDrive(c *gin.Context) {
 		return
 	}
 
-	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" && customer.AssignedUserID != jwtUserID {
+	if !canOperateCustomer(c, customer.AssignedUserID) {
 		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
 		return
 	}
@@ -288,6 +286,7 @@ func CreateTestDrive(c *gin.Context) {
 		Note:         req.Note,
 	}
 	if td.AdvisorID == 0 {
+		jwtUserID, _, _ := middleware.CurrentUser(c)
 		td.AdvisorID = jwtUserID
 	}
 	if td.ContactName == "" {
@@ -317,7 +316,7 @@ func GetTestDrives(c *gin.Context) {
 	}
 
 	_, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
+	if !(role == model.RoleTenantAdmin || role == model.RoleSuperAdmin) {
 		jwtUserID, _ := c.Get("user_id")
 		if uid, ok := jwtUserID.(uint); ok {
 			query = query.Where("advisor_id = ?", uid)
@@ -338,13 +337,9 @@ func GetTestDrive(c *gin.Context) {
 		return
 	}
 
-	_, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
-		jwtUserID, _ := c.Get("user_id")
-		if uid, ok := jwtUserID.(uint); ok && td.AdvisorID != uid {
-			c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看"})
-			return
-		}
+	if !customerInDataScope(c, td.AdvisorID) {
+		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看"})
+		return
 	}
 
 	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: td})
@@ -369,8 +364,7 @@ func UpdateTestDrive(c *gin.Context) {
 		return
 	}
 
-	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" && td.AdvisorID != jwtUserID {
+	if !canOperateCustomer(c, td.AdvisorID) {
 		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权修改"})
 		return
 	}
@@ -420,6 +414,70 @@ func UpdateTestDrive(c *gin.Context) {
 // GET /api/v1/advisor/customers
 // 支持按状态筛选、关键词搜索
 // ============================================================
+
+// customerInDataScope 校验客户是否落在当前用户的数据范围内（四级组织树）
+// 返回 false 时调用方应返回 404（不泄露存在性）
+func customerInDataScope(c *gin.Context, assignedUserID uint) bool {
+	roleV, _ := c.Get("role")
+	role, _ := roleV.(string)
+	switch role {
+	case model.RoleTenantAdmin, model.RoleSuperAdmin:
+		return true
+	case model.RoleUser:
+		uidV, _ := c.Get("user_id")
+		uid, _ := uidV.(uint)
+		return assignedUserID == uid && assignedUserID > 0
+	case model.RoleDeptAdmin, model.RoleReadOnly:
+		pathV, _ := c.Get("dept_path")
+		myPath, _ := pathV.(string)
+		if myPath == "" || assignedUserID == 0 {
+			return false
+		}
+		var cnt int64
+		// 注意：JOIN 查询不能走 RQ（其注入的裸 tenant_id 会与两表列名歧义），
+		// 改为显式 u.tenant_id 条件
+		db.DB.Table("tenant_users u").
+			Joins("LEFT JOIN departments d ON u.department_id = d.id").
+			Where("u.tenant_id = ? AND u.id = ? AND d.path LIKE ?",
+				db.EffectiveTenantIDFromGin(c), assignedUserID, myPath+"%").
+			Count(&cnt)
+		return cnt > 0
+	}
+	return false
+}
+
+// canOperateCustomer 敏感/写操作归属判定（四级组织语义）
+// tenant_admin/super：全租户可操作；user：仅本人名下；dept_admin：本部门子树；
+// readonly：拒绝（写操作另有 ReadonlyWriteGuard 前置拦截，此处兜底）
+func canOperateCustomer(c *gin.Context, assignedUserID uint) bool {
+	roleV, _ := c.Get("role")
+	role, _ := roleV.(string)
+	switch role {
+	case model.RoleTenantAdmin, model.RoleSuperAdmin:
+		return true
+	case model.RoleUser:
+		uidV, _ := c.Get("user_id")
+		uid, _ := uidV.(uint)
+		return assignedUserID == uid && assignedUserID > 0
+	case model.RoleDeptAdmin:
+		pathV, _ := c.Get("dept_path")
+		myPath, _ := pathV.(string)
+		if myPath == "" || assignedUserID == 0 {
+			return false
+		}
+		var cnt int64
+		// 注意：JOIN 查询不能走 RQ（其注入的裸 tenant_id 会与两表列名歧义），
+		// 改为显式 u.tenant_id 条件
+		db.DB.Table("tenant_users u").
+			Joins("LEFT JOIN departments d ON u.department_id = d.id").
+			Where("u.tenant_id = ? AND u.id = ? AND d.path LIKE ?",
+				db.EffectiveTenantIDFromGin(c), assignedUserID, myPath+"%").
+			Count(&cnt)
+		return cnt > 0
+	}
+	return false
+}
+
 func GetAdvisorCustomers(c *gin.Context) {
 	var req advisorCustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -436,13 +494,13 @@ func GetAdvisorCustomers(c *gin.Context) {
 
 	// 租户隔离（SaaS 安全红线）：Customer 表已含 tenant_id 列，
 	// 经 TenantConsistency 后 Context 中必为生效租户，此处强制注入过滤
-	query := db.RQ(c).Model(&model.Customer{}).Scopes(db.T(c))
+	query := db.RQ(c).Model(&model.Customer{}).Scopes(db.T(c), db.DataScope(c))
 
-	// 修复（越权）：req.UserID 之前完全信任前端传的query参数，
-	// 顾问A只要把user_id改成顾问B的ID，就能看到顾问B名下的全部客户。
-	// 现在非admin角色一律用JWT里解出来的真实身份覆盖，杜绝伪造user_id查看他人客户。
-	_, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
+	// 四级数据范围（P2 组织树）：普通用户强制本人；dept_admin/readonly 由
+	// db.DataScope 按部门子树过滤；tenant_admin/super_admin 可用 req.UserID 切换视角
+	roleV, _ := c.Get("role")
+	role, _ := roleV.(string)
+	if role == model.RoleUser {
 		jwtUserID, _ := c.Get("user_id")
 		if uid, ok := jwtUserID.(uint); ok {
 			req.UserID = uid
@@ -456,7 +514,7 @@ func GetAdvisorCustomers(c *gin.Context) {
 	// 修复问题1：admin后台需要看到所有线索（含未分配的），通过assigned=all参数控制
 	// 修复（越权）：assigned=all 只对admin角色生效，普通顾问传这个参数也不能绕过
 	assignedParam := c.Query("assigned")
-	if assignedParam != "all" || role != "admin" {
+	if assignedParam != "all" || (role != model.RoleTenantAdmin && role != model.RoleSuperAdmin) {
 		query = query.Where("assigned_user_id > 0")
 	}
 	if req.UserID > 0 {
@@ -590,16 +648,17 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
 		return
 	}
+	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
+	if !customerInDataScope(c, customer.AssignedUserID) {
+		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		return
+	}
 
 	// 修复（越权）：之前任何顾问传别人的customer id都能看到完整详情+聊天记录。
 	// 现在非admin角色必须是这个客户的指派顾问才能看，否则403。
-	if _, _, role := middleware.CurrentUser(c); role != "admin" {
-		jwtUserID, _ := c.Get("user_id")
-		uid, _ := jwtUserID.(uint)
-		if customer.AssignedUserID != uid {
-			c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看该客户", Data: nil})
-			return
-		}
+	if !customerInDataScope(c, customer.AssignedUserID) {
+		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看该客户", Data: nil})
+		return
 	}
 
 	// 获取客户标签
@@ -667,6 +726,11 @@ func EditCustomerTags(c *gin.Context) {
 		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
 		return
 	}
+	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
+	if !customerInDataScope(c, customer.AssignedUserID) {
+		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		return
+	}
 
 	var req editTagsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -701,6 +765,11 @@ func EditCustomerInfo(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		return
+	}
+	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
+	if !customerInDataScope(c, customer.AssignedUserID) {
 		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
 		return
 	}
@@ -775,6 +844,11 @@ func UpdateCustomerStage(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
+		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		return
+	}
+	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
+	if !customerInDataScope(c, customer.AssignedUserID) {
 		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
 		return
 	}
@@ -907,7 +981,7 @@ func GetFollowups(c *gin.Context) {
 	// 修复（越权）：非admin角色一律用JWT里解出来的真实身份覆盖，
 	// 杜绝伪造user_id查看其他顾问的跟进数据
 	_, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
+	if !(role == model.RoleTenantAdmin || role == model.RoleSuperAdmin) {
 		jwtUserID, _ := c.Get("user_id")
 		if uid, ok := jwtUserID.(uint); ok {
 			userID = int(uid)
@@ -990,17 +1064,17 @@ func AdvisorTakeover(c *gin.Context) {
 	}
 
 	// 修复（越权）：非admin顾问只能接管分配给自己的客户的会话
-	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
-		var cust model.Customer
-		if err := db.RQ(c).First(&cust, conversation.CustomerID).Error; err != nil {
-			c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作此会话", Data: nil})
-			return
-		}
-		if cust.AssignedUserID != jwtUserID {
-			c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "该客户未分配给您，无法接管", Data: nil})
-			return
-		}
+	// 四级语义：admin 家族全通；未分配(0)允许接管；已分配走 canOperateCustomer
+	_, _, role := middleware.CurrentUser(c)
+	var cust model.Customer
+	if err := db.RQ(c).First(&cust, conversation.CustomerID).Error; err != nil {
+		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作此会话", Data: nil})
+		return
+	}
+	if !(role == model.RoleTenantAdmin || role == model.RoleSuperAdmin) &&
+		cust.AssignedUserID != 0 && !canOperateCustomer(c, cust.AssignedUserID) {
+		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "该客户未分配给您，无法接管", Data: nil})
+		return
 	}
 
 	// 切换到人工模式并锁定
@@ -1120,8 +1194,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		return
 	}
 
-	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" && customer.AssignedUserID != jwtUserID {
+	if !canOperateCustomer(c, customer.AssignedUserID) {
 		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
 		return
 	}

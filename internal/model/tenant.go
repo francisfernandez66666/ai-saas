@@ -34,6 +34,7 @@ type Tenant struct {
 	GracePeriodEndAt   *time.Time      `json:"grace_period_end_at"`                       // 宽限期截止
 	MaxUsers           int             `json:"max_users"`                                 // 配额：最大用户数
 	MaxCustomers       int             `json:"max_customers"`                             // 配额：最大客户数
+	MaxDepartments     int             `json:"max_departments"`                           // 配额：最大部门数
 	MaxAICTalls        int             `json:"max_ai_calls_monthly"`                      // 配额：每月 AI 调用次数
 	MaxStorageMB       int             `json:"max_storage_mb"`                            // 配额：存储空间 MB
 	MaxKnowledgeBrands int             `json:"max_knowledge_brands"`                      // 配额：品牌数
@@ -70,6 +71,7 @@ type SubscriptionPlan struct {
 	PriceYearlyCents   int       `json:"price_yearly_cents"`              // 年价（分）
 	TrialDays          int       `json:"trial_days"`                      // 试用天数，默认 7
 	MaxUsers           int       `json:"max_users"`                       // 最大用户数
+	MaxDepartments     int       `json:"max_departments"`                 // 最大部门数配额（个人版=1个根部门）
 	MaxCustomers       int       `json:"max_customers"`                   // 最大客户数
 	MaxAICTalls        int       `json:"max_ai_calls_monthly"`            // 每月 AI 调用次数配额
 	MaxStorageMB       int       `json:"max_storage_mb"`                  // 存储空间 MB 配额

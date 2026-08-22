@@ -120,7 +120,7 @@ func seedUsers() {
 			Username:     "sales" + string(rune('1'+i)),
 			PasswordHash: salesPwd,
 			RealName:     salesNames[i],
-			Role:         "sales",
+			Role:         model.RoleUser,
 			Phone:        salesPhones[i],
 			Department:   "销售部",
 			TenantID:     &defaultTenantID, // 归属默认租户

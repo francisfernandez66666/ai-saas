@@ -22,6 +22,7 @@ type User struct {
 	Status       int       `gorm:"default:1" json:"status"`                      // 状态: 1-正常 0-禁用
 	Department   string    `gorm:"size:50" json:"department"`                    // 部门
 	TenantID     *uint     `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
+	DepartmentID *uint     `gorm:"index" json:"department_id"`                   // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

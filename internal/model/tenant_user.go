@@ -10,7 +10,7 @@ import (
 
 // TenantUser 租户用户表
 // SaaS 化改造：直接替代 sys_users，原 sys_users 表废弃。
-// Role 定义：super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+// Role 定义（四级+只读）：super_admin(平台超管)/tenant_admin(租户管理员)/dept_admin(部门管理员)/user(普通用户)/readonly(只读)
 // tenant_id 为 NULL 时表示超级管理员，非 NULL 时表示某租户下用户
 type TenantUser struct {
 	ID           uint       `gorm:"primaryKey" json:"id"`                         // 主键
@@ -18,7 +18,7 @@ type TenantUser struct {
 	PasswordHash string     `gorm:"size:255;not null" json:"-"`                   // 密码哈希（不返回给前端）
 	RealName     string     `gorm:"size:50" json:"real_name"`                     // 真实姓名
 	TenantID     *uint      `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
-	Role         string     `gorm:"size:20;not null;default:sales" json:"role"`   // 角色：super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+	Role         string     `gorm:"size:20;not null;default:sales" json:"role"`   // 角色：super_admin/tenant_admin/dept_admin/user/readonly（四级+只读）
 	Phone        string     `gorm:"size:20" json:"phone"`                         // 手机号
 	Email        string     `gorm:"size:100" json:"email"`                        // 邮箱
 	Avatar       string     `gorm:"size:255" json:"avatar"`                       // 头像URL
@@ -39,8 +39,12 @@ func (TenantUser) TableName() string {
 const (
 	RoleSuperAdmin  = "super_admin"
 	RoleTenantAdmin = "tenant_admin"
-	RoleSales       = "sales"
+	RoleDeptAdmin   = "dept_admin" // 部门管理员（四级体系，管辖本部门子树）
+	RoleUser        = "user"       // 普通用户（仅本人数据）
 	RoleReadOnly    = "readonly"
+
+	// 旧角色名兼容别名（存量数据迁移由 db.MigrateOrgData 处理）
+	RoleSales = RoleUser
 )
 
 // IsSuperAdmin 是否超级管理员
