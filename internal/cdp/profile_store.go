@@ -107,4 +107,41 @@ func GetProfile(tenantID uint, oneID string) *ProfileView {
 	return view
 }
 
+// RepointAnchor 锚点重指向（OneID 合并后调用，Phase B）
+// 把 anchorValue 原本指向 fromOneID 的映射改为指向 toOneID（canonical）
+// 无旧映射时直接建立新映射（幂等）；访客画像标签随迁移由后续事件重建
+func RepointAnchor(tenantID uint, anchorType, anchorValue, fromOneID, toOneID string) {
+	if anchorValue == "" || fromOneID == "" || toOneID == "" || fromOneID == toOneID {
+		return
+	}
+	var m model.IdMapping
+	err := gdb().Where("tenant_id = ? AND internal_type = ?",
+		tenantID, "anchor:"+anchorType+":"+anchorValue).First(&m).Error
+	if err != nil {
+		UpsertAnchor(tenantID, anchorType, anchorValue, toOneID)
+		return
+	}
+	if m.CdpEntityId == fromOneID {
+		gdb().Model(&m).Update("cdp_entity_id", toOneID)
+		log.Printf("[CDP] 锚点重指向: %s:%s %s → %s", anchorType, anchorValue, fromOneID, toOneID)
+	}
+}
+
+// ListTagDefinitions 标签字典全量（OpenAPI 字典查询用，租户可见系统级字典）
+func ListTagDefinitions(tenantID uint) ([]model.CdpTagDefinition, error) {
+	var defs []model.CdpTagDefinition
+	err := gdb().Where("tenant_id IN ?", []uint{0, tenantID}).Order("id ASC").Find(&defs).Error
+	return defs, err
+}
+
+// GetProfileTagsSummary 标签摘要（编排层 decision_context 用；只返回 code:value）
+// 与 GetProfile 360°视图分离：摘要路径零冗余字段，供高频调用
+func GetProfileTagsSummary(tenantID uint, oneID string) map[string]string {
+	view := GetProfile(tenantID, oneID)
+	if view == nil {
+		return nil
+	}
+	return view.Tags
+}
+
 var _ = json.Marshal

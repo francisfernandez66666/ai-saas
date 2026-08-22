@@ -376,7 +376,9 @@ func Chat(c *gin.Context) {
 			// 根因：硬编码assigned_user_id=1是admin，张伟是ID=2，所以销售端看不到客户
 			if customer.AssignedUserID == 0 {
 				var salesUsers []model.User
-				db.RQ(c).Where("role = ? AND status = 1", "sales").Find(&salesUsers)
+				// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。
+				// 根因：组织迁移把 sales 改名为 user 后，硬编码"sales"永远查不到 → 永远走兜底分支
+				db.RQ(c).Where("role = ? AND status = 1", model.RoleSales).Find(&salesUsers)
 				if len(salesUsers) > 0 {
 					minCount := -1
 					var bestUserID uint = salesUsers[0].ID
@@ -390,20 +392,25 @@ func Chat(c *gin.Context) {
 					}
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
-					leadUpdates["assigned_user_id"] = 2 // 兜底：无销售用户时默认分配2号（张伟）
+					// 修复Bug1：兜底值必须显式 uint——int 字面量入 map 后被下方 v.(uint) 断言 panic
+					leadUpdates["assigned_user_id"] = uint(2) // 兜底：无销售用户时默认分配2号（张伟）
 				}
 			}
 			if len(leadUpdates) > 0 {
 				db.RQ(c).Model(&customer).Updates(leadUpdates)
-				// 同步内存对象
+				// 同步内存对象（修复Bug1：断言全部改安全形式，杜绝留资链路 panic 中断）
 				if v, ok := leadUpdates["phone"]; ok {
-					customer.Phone = v.(string)
+					customer.Phone, _ = v.(string)
 				}
 				if v, ok := leadUpdates["journey_stage"]; ok {
-					customer.JourneyStage = v.(string)
+					customer.JourneyStage, _ = v.(string)
 				}
 				if v, ok := leadUpdates["assigned_user_id"]; ok {
-					customer.AssignedUserID = v.(uint)
+					if uid, uok := v.(uint); uok {
+						customer.AssignedUserID = uid
+					} else {
+						log.Printf("[留资-告警] assigned_user_id 类型异常(%T)，保持原值: %v", v, customer.AssignedUserID)
+					}
 				}
 			}
 			log.Printf("[到店倾向-已留资线索] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
@@ -512,11 +519,16 @@ func Chat(c *gin.Context) {
 		db.RQ(c).Create(&storeVisitMsg)
 
 		// 第二段追问（异步，25-45秒后发出，收集预约信息）
+		// 修复Bug2（2026-08-22）：goroutine 内禁用 db.RQ(c)——handler 返回后 request ctx
+		// 被 net/http 取消，GORM 写入静默失败，第二段追问永远不落库。
+		// 改为：入 goroutine 前捕获租户ID，内部用脱离请求生命周期的 context 构建会话
 		secondReply := service.GetStoreVisitSecondReply(req.Content)
-		go func(cid, convID uint, content string) {
+		goroutineTenantID := tenantID
+		go func(cid, convID uint, content string, tid uint) {
 			sd := service.GetStoreVisitSecondDelay()
 			chatflow.CancellableSleep(cid, sd)
 			secondMsg := model.Message{
+				TenantID:       tid, // 显式盖章，不依赖请求上下文
 				ConversationID: convID,
 				CustomerID:     cid,
 				SenderType:     "ai",
@@ -525,9 +537,12 @@ func Chat(c *gin.Context) {
 				RouteResult:    "store_visit_fast",
 				CreatedAt:      time.Now(),
 			}
-			db.RQ(c).Create(&secondMsg)
+			if err := db.DB.WithContext(db.WithTenant(context.Background(), tid)).Create(&secondMsg).Error; err != nil {
+				log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(已重试放弃): %v", cid, err)
+				return
+			}
 			log.Printf("[到店倾向-未留资线索] 客户%d 第二段追问已发送", cid)
-		}(customer.ID, conversation.ID, secondReply)
+		}(customer.ID, conversation.ID, secondReply, goroutineTenantID)
 
 		c.JSON(http.StatusOK, gin.H{
 			"code":    0,
@@ -689,7 +704,7 @@ skipStoreVisitFast:
 					"pending_handoff":     false,
 				})
 				log.Printf("[Chat] 会话%d 顾问超时，自动重开AI回复", conversation.ID)
-				aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+				aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 			} else {
 				aiReply = ""
 				routeResult = "human_locked_no_ai"
@@ -697,7 +712,7 @@ skipStoreVisitFast:
 			}
 		} else {
 			conversation.Mode = "ai"
-			aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+			aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 		}
 
 	case strategy.RoutePendingHuman:
@@ -721,7 +736,7 @@ skipStoreVisitFast:
 		// 已留资客户：不重复问留资信息，直接引导到店试驾
 		conversation.Mode = "ai"
 		log.Printf("[对话] 会话%d 询价路由触发，引导到店试驾后出报价", conversation.ID)
-		aiReply = strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+		aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 
 	case strategy.RouteHuman:
 		// 直接转人工（硬切，用户有感知）
@@ -762,6 +777,7 @@ skipStoreVisitFast:
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&aiMsg)
+		publishConversationMsg(tenantID, customer.ID, routeResult)
 	}
 
 	// 9. 更新会话状态
@@ -1234,7 +1250,8 @@ func ChatTest(c *gin.Context) {
 			// 修复问题2：ChatTest到店倾向已留资分支也用轮询选顾问
 			if customer.AssignedUserID == 0 {
 				var salesUsers []model.User
-				db.RQ(c).Where("role = ? AND status = 1", "sales").Find(&salesUsers)
+				// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同主路径）
+				db.RQ(c).Where("role = ? AND status = 1", model.RoleSales).Find(&salesUsers)
 				if len(salesUsers) > 0 {
 					minCount := -1
 					var bestUserID uint = salesUsers[0].ID
@@ -1248,19 +1265,25 @@ func ChatTest(c *gin.Context) {
 					}
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
-					leadUpdates["assigned_user_id"] = 2 // 兜底：张伟(ID=2)
+					// 修复Bug1：兜底值必须显式 uint，防 v.(uint) 断言 panic
+					leadUpdates["assigned_user_id"] = uint(2) // 兜底：张伟(ID=2)
 				}
 			}
 			if len(leadUpdates) > 0 {
 				db.RQ(c).Model(&customer).Updates(leadUpdates)
+				// 同步内存对象（修复Bug1：断言改安全形式）
 				if v, ok := leadUpdates["phone"]; ok {
-					customer.Phone = v.(string)
+					customer.Phone, _ = v.(string)
 				}
 				if v, ok := leadUpdates["journey_stage"]; ok {
-					customer.JourneyStage = v.(string)
+					customer.JourneyStage, _ = v.(string)
 				}
 				if v, ok := leadUpdates["assigned_user_id"]; ok {
-					customer.AssignedUserID = v.(uint)
+					if uid, uok := v.(uint); uok {
+						customer.AssignedUserID = uid
+					} else {
+						log.Printf("[留资-告警][测试接口] assigned_user_id 类型异常(%T)，保持原值: %v", v, customer.AssignedUserID)
+					}
 				}
 			}
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
@@ -1369,11 +1392,13 @@ func ChatTest(c *gin.Context) {
 		db.RQ(c).Create(&storeVisitMsg)
 
 		// 第二段追问（异步，25-45秒后发出，收集预约信息）
+		// 修复Bug2（2026-08-22）：同主路径——脱离请求生命周期写库，显式租户盖章+错误检查
 		secondReply := service.GetStoreVisitSecondReply(req.Content)
-		go func(cid, convID uint, content string) {
+		go func(cid, convID uint, content string, tid uint) {
 			sd := service.GetStoreVisitSecondDelay()
 			chatflow.CancellableSleep(cid, sd)
 			secondMsg := model.Message{
+				TenantID:       tid,
 				ConversationID: convID,
 				CustomerID:     cid,
 				SenderType:     "ai",
@@ -1382,9 +1407,12 @@ func ChatTest(c *gin.Context) {
 				RouteResult:    "store_visit_fast",
 				CreatedAt:      time.Now(),
 			}
-			db.RQ(c).Create(&secondMsg)
+			if err := db.DB.WithContext(db.WithTenant(context.Background(), tid)).Create(&secondMsg).Error; err != nil {
+				log.Printf("[到店倾向-告警][测试接口] 客户%d 第二段追问落库失败: %v", cid, err)
+				return
+			}
 			log.Printf("[到店倾向-未留资线索-测试接口] 客户%d 第二段追问已发送", cid)
-		}(customer.ID, conv.ID, secondReply)
+		}(customer.ID, conv.ID, secondReply, tenantID)
 
 		c.JSON(http.StatusOK, gin.H{
 			"code":    0,
@@ -1672,7 +1700,7 @@ skipStoreVisitFastTest:
 
 	// ---- 生成AI回复 ----
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
-	aiReply := strategy.GenerateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
 
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
@@ -1750,6 +1778,7 @@ skipStoreVisitFastTest:
 		CreatedAt:      time.Now(),
 	}
 	db.RQ(c).Create(&aiMsg)
+	publishConversationMsg(tenantID, customer.ID, strategyOutput.RouteResult)
 
 	// ---- 更新会话状态 ----
 	conversation.LastMessageAt = &aiMsg.CreatedAt
@@ -1968,6 +1997,18 @@ func Welcome(c *gin.Context) {
 
 // CreateGuest 创建访客客户（免登录）
 // POST /api/v1/chat/guest
+// publishConversationMsg 发布会话消息事件（缺口4修复，2026-08-22）
+// 激活 CDP beh_msg_active 标签；注意：聊天内容不送 CDP（SAAS_PLAN §15.4 边界），只传事件事实
+func publishConversationMsg(tenantID uint, customerID uint, route string) {
+	if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
+		fmt.Sprintf("c:%d", customerID), "conversation_msg",
+		mq.UserEvent{EventType: "behavior", EventName: "conversation_msg",
+			Attributes: map[string]any{"customer_id": customerID, "route": route},
+			OccurredAt: time.Now()}); err != nil {
+		log.Printf("[MQ] conversation_msg 事件发布失败: %v", err)
+	}
+}
+
 func CreateGuest(c *gin.Context) {
 	// 生成唯一访客名：访客_后4位随机数
 	rand.Seed(time.Now().UnixNano())
@@ -2002,6 +2043,16 @@ func CreateGuest(c *gin.Context) {
 	}
 
 	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, customer.Name, customer.AssignedUserID)
+
+	// 缺口4修复（2026-08-22）：guest_created 事件上行（激活 CDP idm_guest 标签）
+	// 此前 IngestConsumer 支持该事件但全仓无发布点，访客身份标签是死代码
+	if err := mq.Publish(context.Background(), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
+		fmt.Sprintf("c:%d", customer.ID), "guest_created",
+		mq.UserEvent{EventType: "identity", EventName: "guest_created", AnchorType: "device",
+			Attributes: map[string]any{"customer_id": customer.ID, "source": customer.Source},
+			OccurredAt: time.Now()}); err != nil {
+		log.Printf("[MQ] guest_created 事件发布失败: %v", err)
+	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"code":        0,

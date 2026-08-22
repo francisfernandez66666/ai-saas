@@ -21,9 +21,10 @@ import (
 // ============================================================
 
 type KafkaCenter struct {
-	cfg      config.MQConfig
-	writer   *kafka.Writer
-	handlers map[string]EventHandler
+	cfg config.MQConfig
+	w   *kafka.Writer
+	// 2026-08-22：多消费者 fan-out（同 topic 多个订阅方，与 LogCenter 语义对齐）
+	handlers map[string][]EventHandler
 }
 
 func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
@@ -37,7 +38,7 @@ func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
 		RequiredAcks:           kafka.RequireOne,
 		BatchTimeout:           50 * time.Millisecond,
 	}
-	return &KafkaCenter{cfg: cfg, writer: w, handlers: map[string]EventHandler{}}, nil
+	return &KafkaCenter{cfg: cfg, w: w, handlers: map[string][]EventHandler{}}, nil
 }
 
 // Publish 生产事件（Header 注入 + 审计落库 + kafka 写入）
@@ -46,7 +47,7 @@ func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, 
 	recordAudit(env, "sent")
 
 	fullTopic := c.cfg.TopicPrefix + topic
-	err := c.writer.WriteMessages(ctx, kafka.Message{
+	err := c.w.WriteMessages(ctx, kafka.Message{
 		Topic:   fullTopic,
 		Key:     []byte(env.Key),
 		Value:   env.Payload,
@@ -61,20 +62,21 @@ func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, 
 	return nil
 }
 
-// Subscribe 登记消费者回调（StartConsumers 时统一建 reader）
+// Subscribe 登记消费者回调（追加语义；StartConsumers 时统一建 reader）
 func (c *KafkaCenter) Subscribe(topic string, handler EventHandler) {
-	c.handlers[topic] = handler
-	log.Printf("[MQ-Kafka] 已订阅 topic=%s", c.cfg.TopicPrefix+topic)
+	c.handlers[topic] = append(c.handlers[topic], handler)
+	log.Printf("[MQ-Kafka] 已订阅 topic=%s（消费者数=%d）", c.cfg.TopicPrefix+topic, len(c.handlers[topic]))
 }
 
 // StartConsumers 为每个已订阅主题启动一个消费者组循环（阻塞，调用方放 goroutine）
+// fan-out：循环内依次调用该 topic 全部 handler
 func (c *KafkaCenter) StartConsumers(ctx context.Context) {
-	for topic, handler := range c.handlers {
-		go c.consumeLoop(ctx, topic, handler)
+	for topic := range c.handlers {
+		go c.consumeLoop(ctx, topic)
 	}
 }
 
-func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string, handler EventHandler) {
+func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string) {
 	fullTopic := c.cfg.TopicPrefix + topic
 	reader := kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     c.cfg.Brokers,
@@ -113,8 +115,15 @@ func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string, handler Eve
 			continue
 		}
 		if !processed {
-			if err := handler(ctx, env); err != nil {
-				log.Printf("[MQ-Kafka] 处理失败 event=%s: %v（标记待重试）", env.Header.EventID, err)
+			handled := true
+			for i, h := range c.handlers[topic] {
+				if err := h(ctx, env); err != nil {
+					log.Printf("[MQ-Kafka] 处理失败 event=%s consumer#%d: %v（标记待重试）",
+						env.Header.EventID, i, err)
+					handled = false
+				}
+			}
+			if !handled {
 				MarkInboxFailed(env.Header.EventID)
 				_ = reader.CommitMessages(ctx, msg) // 防卡死；重试依赖审计表回放
 				continue
@@ -157,7 +166,7 @@ func fromKafkaMessage(defaultTopic string, msg kafka.Message) (Envelope, error) 
 
 // Close 关闭生产者
 func (c *KafkaCenter) Close() error {
-	return c.writer.Close()
+	return c.w.Close()
 }
 
 var _ = json.Marshal // 保持导入对齐

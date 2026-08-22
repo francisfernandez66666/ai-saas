@@ -305,7 +305,8 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		db.DB.Model(&genConv).Updates(updates)
 	}
 
-	return reply
+	// 微修复（2026-08-22）：实测AI回复带前导换行（模型输出习惯），统一去除首尾空白
+	return strings.TrimSpace(reply)
 }
 
 // getConversationHistory 获取会话的历史对话消息

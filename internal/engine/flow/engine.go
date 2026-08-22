@@ -1,11 +1,11 @@
 package flow
 
 import (
+	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	statemachine "ai-scrm/internal/state_machine"
 	"errors"
-	"fmt"
 	"log"
 	"time"
 )
@@ -77,12 +77,13 @@ func (e *Engine) StartFlow(flowCode string, ctx *FlowContext) (*model.FlowInstan
 }
 
 // syncStateMachine 同步流程状态机（SAAS_PLAN §十七：状态机只被流程引擎读写）
-// one_id 分片键暂用客户占位（c:{customerID}），CDP OneID 落地后切换
+// 修复（2026-08-22 Phase B）：分片键从占位符 c:{customerID} 升级为真 OneID
+// （手机锚点归并后 canonical OneID；无映射回落 c:{id}，语义兼容）
 func (e *Engine) syncStateMachine(instance *model.FlowInstance) {
 	if instance.TenantID == 0 {
 		return // 无租户语境的引擎直启不记状态机
 	}
-	shardKey := fmt.Sprintf("c:%d", instance.CustomerID)
+	shardKey := cdp.ResolveOneID(instance.TenantID, instance.CustomerID)
 	sm, err := statemachine.Get(instance.TenantID, instance.ID)
 	if err != nil {
 		log.Printf("[流程引擎] 状态机读取失败: %v", err)

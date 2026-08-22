@@ -15,12 +15,13 @@ import (
 // ============================================================
 
 type LogCenter struct {
-	cfg      config.MQConfig
-	handlers map[string]EventHandler
+	cfg config.MQConfig
+	// 2026-08-22：改多消费者 fan-out——同 topic 可多个订阅方（CDP 与流程引擎并行消费 user_event，各消费各的流）
+	handlers map[string][]EventHandler
 }
 
 func newLogCenter(cfg config.MQConfig) *LogCenter {
-	return &LogCenter{cfg: cfg, handlers: map[string]EventHandler{}}
+	return &LogCenter{cfg: cfg, handlers: map[string][]EventHandler{}}
 }
 
 // Publish 结构化日志发布 + 本地分发
@@ -41,21 +42,25 @@ func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, on
 	})
 	log.Printf("[MQ-LOG] %s", string(line))
 
-	// 本地异步分发（panic 隔离，不阻断发布方）
-	if h, ok := c.handlers[topic]; ok {
-		envCopy := env
-		go func() {
-			defer func() { _ = recover() }()
-			_ = h(ctx, envCopy)
-		}()
+	// 本地异步分发（fan-out 到该 topic 全部订阅方；panic 隔离，不阻断发布方）
+	if hs, ok := c.handlers[topic]; ok {
+		for i := range hs {
+			h := hs[i]
+			envCopy := env
+			go func() {
+				defer func() { _ = recover() }()
+				_ = h(ctx, envCopy)
+			}()
+		}
 	}
 	return nil
 }
 
-// Subscribe 登记（log 模式无投递通道，仅保留接口一致性）
+// Subscribe 登记消费者（追加语义，同 topic 多消费者并存）
 func (c *LogCenter) Subscribe(topic string, handler EventHandler) {
-	c.handlers[topic] = handler
-	log.Printf("[MQ-LOG] 已登记订阅 topic=%s（log 模式不投递）", c.cfg.TopicPrefix+topic)
+	c.handlers[topic] = append(c.handlers[topic], handler)
+	log.Printf("[MQ-LOG] 已登记订阅 topic=%s（进程内总线模式，消费者数=%d）",
+		c.cfg.TopicPrefix+topic, len(c.handlers[topic]))
 }
 
 // StartConsumers 空操作

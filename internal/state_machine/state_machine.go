@@ -9,6 +9,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/service"
 
 	"gorm.io/gorm"
 )
@@ -97,8 +98,13 @@ func Complete(tenantID uint, flowInstanceID uint) error {
 }
 
 // SweepOnce 单轮巡检：将心跳超时的 running 实例重新入队
-// 当前实现：重置心跳并记日志告警（真实 requeue 经 flow_drive 下发，待 P3 Kafka 接入）
-// 返回本轮回收的实例数
+//
+// 修复Bug3（2026-08-22）：
+//   - 原实现对所有 waiting 实例每 60s 无限 requeue（waiting 是正常暂停语义，不是卡死）
+//     且无任何消费者 → 实测半小时产生 30 条垃圾 flow_requeue 事件
+//   - 止血：新增系统配置开关 sm_sweep_requeue_enabled（默认 false），
+//     关闭时仅重置心跳 + 用 last_event_id 打标记防重复刷日志；
+//     真正的断点续跑判定需编排层消费 flow_drive 后按节点语义实现（专项）
 func SweepOnce(heartbeatTimeout time.Duration) int {
 	deadline := time.Now().Add(-heartbeatTimeout)
 	var stale []model.FlowStateMachine
@@ -107,9 +113,24 @@ func SweepOnce(heartbeatTimeout time.Duration) int {
 		log.Printf("[状态机巡检] 扫描失败: %v", err)
 		return 0
 	}
+	requeueEnabled := isRequeueEnabled()
+	requeued := 0
 	for _, sm := range stale {
+		if !requeueEnabled {
+			// 开关关闭：只重置心跳防止反复扫描；首次发现才打日志（last_event_id 兼作已告警标记）
+			if sm.LastEventID != "sweep_noticed" {
+				log.Printf("[状态机巡检] 实例%d(租户%d) 心跳超时（waiting 语义，未启用requeue，仅记录）",
+					sm.FlowInstanceID, sm.TenantID)
+			}
+			_ = db.DB.Model(&model.FlowStateMachine{}).
+				Where("id = ?", sm.ID).
+				Updates(map[string]interface{}{
+					"heartbeat_ts":  time.Now(),
+					"last_event_id": "sweep_noticed",
+				}).Error
+			continue
+		}
 		log.Printf("[状态机巡检] 实例%d(租户%d) 心跳超时，发 flow_drive 断点续跑", sm.FlowInstanceID, sm.TenantID)
-		// P3：断点续跑走 Kafka flow_drive（log 模式打日志），流程引擎消费者收到后重跑当前节点
 		if err := mq.Publish(context.Background(), mq.TopicFlowDrive, sm.TenantID, sm.OneID, "flow_requeue",
 			mq.FlowDriveEvent{
 				InstanceID: sm.FlowInstanceID,
@@ -117,14 +138,24 @@ func SweepOnce(heartbeatTimeout time.Duration) int {
 				Payload:    map[string]any{"current_node": sm.CurrentNode, "last_event_id": sm.LastEventID},
 			}); err != nil {
 			log.Printf("[状态机巡检] flow_drive 发布失败: %v", err)
+			continue // 发布失败不重置心跳，下轮重试
 		}
 		// 重置心跳防重复发布
 		_ = db.DB.Model(&model.FlowStateMachine{}).
 			Where("id = ?", sm.ID).
 			Updates(map[string]interface{}{"heartbeat_ts": time.Now()}).Error
+		requeued++
 	}
 	if len(stale) > 0 {
-		log.Printf("[状态机巡检] 本轮回收 %d 个超时实例", len(stale))
+		log.Printf("[状态机巡检] 本轮扫描 %d 个超时实例，回收 %d 个", len(stale), requeued)
 	}
-	return len(stale)
+	return requeued
+}
+
+// isRequeueEnabled 读巡检 requeue 开关（默认 false，止血 Bug3）
+func isRequeueEnabled() bool {
+	if service.DefaultSystemConfigService == nil {
+		return false
+	}
+	return service.DefaultSystemConfigService.GetBool("sm_sweep_requeue_enabled", false)
 }

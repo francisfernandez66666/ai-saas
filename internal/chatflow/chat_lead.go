@@ -1,6 +1,7 @@
 package chatflow
 
 import (
+	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
@@ -80,7 +81,9 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	// 修复：原来硬编码assigned_user_id=1，改为选当前客户数最少的顾问
 	if customer.AssignedUserID == 0 {
 		var salesUsers []model.User
-		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", "sales", customer.TenantID).Find(&salesUsers)
+		// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。
+		// 根因：组织迁移把 sales 改名为 user 后，硬编码"sales"永远查不到 → 永远走兜底分支
+		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, customer.TenantID).Find(&salesUsers)
 		if len(salesUsers) > 0 {
 			minCount := -1
 			var bestUserID uint = salesUsers[0].ID
@@ -94,21 +97,26 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			}
 			updates["assigned_user_id"] = bestUserID
 		} else {
-			updates["assigned_user_id"] = 2 // 兜底：无销售用户时默认分配2号（张伟）
+			// 修复Bug1：兜底值必须显式 uint，防下方 v.(uint) 断言 panic 中断留资链路
+			updates["assigned_user_id"] = uint(2) // 兜底：无销售用户时默认分配2号（张伟）
 		}
 	}
 
 	if len(updates) > 0 {
 		db.DB.Model(customer).Updates(updates)
-		// 同步更新内存中的customer对象
+		// 同步更新内存中的customer对象（修复Bug1：断言改安全形式）
 		if v, ok := updates["phone"]; ok {
-			customer.Phone = v.(string)
+			customer.Phone, _ = v.(string)
 		}
 		if v, ok := updates["journey_stage"]; ok {
-			customer.JourneyStage = v.(string)
+			customer.JourneyStage, _ = v.(string)
 		}
 		if v, ok := updates["assigned_user_id"]; ok {
-			customer.AssignedUserID = v.(uint)
+			if uid, uok := v.(uint); uok {
+				customer.AssignedUserID = uid
+			} else {
+				log.Printf("[留资检测-告警] assigned_user_id 类型异常(%T)，保持原值: %v", v, customer.AssignedUserID)
+			}
 		}
 		log.Printf("[留资检测] 客户%d留资成功: phone=%s, stage=%v, assigned=%v",
 			customer.ID, phoneMatch, updates["journey_stage"], updates["assigned_user_id"])
@@ -146,7 +154,41 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	log.Printf("[通知顾问] 顾问%d 有新的已留资线索：客户%d，手机号%s",
 		customer.AssignedUserID, customer.ID, phoneMatch)
 
+	// Phase C（2026-08-22）：业务结果回流 → 推进流程主干（编排层消费 flow_result）
+	// 注意：不直接 import flow 包（会形成 chatflow→flow→strategy→llm→chatflow 环），
+	// 本地查在途实例 + mq 发布，消费者在 flow 包
+	publishFlowResult(customer.TenantID, customer.ID, "lead_captured",
+		map[string]any{"customer_id": customer.ID, "phone_masked": maskPhone(phoneMatch)})
+
 	return -1 // 已留资，无需合并
+}
+
+// publishFlowResult 业务结果回流发布（chatflow 本地版，避免循环依赖）
+func publishFlowResult(tenantID uint, customerID uint, nodeResult string, detail map[string]any) {
+	var inst model.FlowInstance
+	err := db.DB.Where("tenant_id = ? AND customer_id = ? AND status = ?",
+		tenantID, customerID, "running").Order("id DESC").First(&inst).Error
+	if err != nil {
+		return // 无在途实例：结果无需驱动流程
+	}
+	oneID := cdp.ResolveOneID(tenantID, customerID)
+	if err := mq.Publish(context.Background(), mq.TopicFlowResult, tenantID, oneID,
+		nodeResult, mq.FlowResultEvent{
+			InstanceID: inst.ID,
+			NodeID:     inst.CurrentNodeID,
+			Result:     nodeResult,
+			Detail:     detail,
+		}); err != nil {
+		log.Printf("[回流] flow_result 发布失败: %v", err)
+	}
+}
+
+// maskPhone 手机号脱敏（回流事件 detail 不带明文手机号）
+func maskPhone(p string) string {
+	if len(p) != 11 {
+		return p
+	}
+	return p[:3] + "****" + p[7:]
 }
 
 // IsLeadCaptured 判断客户是否已留资（lead_captured及以上阶段）
@@ -271,7 +313,8 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	// 8.5 老客户无顾问时，轮询分配给当前客户最少的销售
 	if existingCustomer.AssignedUserID == 0 {
 		var salesUsers []model.User
-		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", "sales", existingCustomer.TenantID).Find(&salesUsers)
+		// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同 DetectLeadCapture 主路径）
+		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, existingCustomer.TenantID).Find(&salesUsers)
 		if len(salesUsers) > 0 {
 			minCount := -1
 			var bestUserID uint = salesUsers[0].ID
@@ -287,7 +330,7 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 			existingCustomer.AssignedUserID = bestUserID
 			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，轮询分配给顾问%d", existingCustomer.ID, bestUserID)
 		} else {
-			db.DB.Model(&existingCustomer).Update("assigned_user_id", 2)
+			db.DB.Model(&existingCustomer).Update("assigned_user_id", uint(2)) // 修复Bug1：显式 uint
 			existingCustomer.AssignedUserID = 2
 			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，兜底分配给顾问2", existingCustomer.ID)
 		}
@@ -295,6 +338,13 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 
 	// 9. 标记访客为无效（不物理删除，保留审计）
 	db.DB.Model(guestCustomer).Update("status", 0)
+
+	// 9.5 CDP 锚点重指向（Phase B，2026-08-22）：
+	// 访客的 phone 锚点若已映射到访客 OneID(c:{guestID})，重指向 canonical 老客户 OneID
+	// 保证 ResolveOneID 查 phone 锚点必得 canonical，画像/事件/状态表分片键统一
+	cdp.RepointAnchor(tid, "phone", phone,
+		fmt.Sprintf("c:%d", guestCustomer.ID),
+		fmt.Sprintf("c:%d", existingCustomer.ID))
 
 	log.Printf("[OneID合并] 合并完成: 访客%d(status=0) → 老客户%d, 标签数=%d, 阶段=%s",
 		guestCustomer.ID, existingCustomer.ID, len(mergedTags), existingCustomer.JourneyStage)

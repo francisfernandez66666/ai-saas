@@ -2,6 +2,7 @@ package api
 
 import (
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
@@ -1230,7 +1231,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
 	// 生成AI回复
-	aiReply := strategy.GenerateReply(&customer, conversation.ID, userInput, &strategyOutput)
+	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, userInput, &strategyOutput)
 
 	// 保存AI回复消息
 	now := time.Now()
@@ -1437,7 +1438,9 @@ func GetChatHistory(c *gin.Context) {
 // ============================================================
 func GetAdvisorList(c *gin.Context) {
 	var users []model.User
-	db.RQ(c).Where("role = ? AND status = 1", "sales").
+	// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。
+	// 根因：组织迁移 sales→user 后硬编码"sales"查空，顾问端列表一直为空
+	db.RQ(c).Where("role = ? AND status = 1", model.RoleSales).
 		Select("id, real_name, username").
 		Order("id ASC").
 		Find(&users)
