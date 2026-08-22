@@ -12,43 +12,43 @@ import (
 // Tenant 租户表
 // SaaS 化改造：系统层一等实体，非业务字段，而是整个系统的组织单元
 type Tenant struct {
-	ID                 uint            `gorm:"primaryKey" json:"id"`                      // 主键
-	Name               string          `gorm:"size:100;not null" json:"name"`             // 企业/个人名称
-	Code               string          `gorm:"size:50;uniqueIndex;not null" json:"code"`  // 子域名标识，注册后不可改
-	CustomDomain       *string         `gorm:"size:200;uniqueIndex" json:"custom_domain"` // 白标自定义域名（指针：NULL可多条，唯一索引不冲突）
-	Tier               string          `gorm:"size:20;default:personal" json:"tier"`      // 版本：personal/enterprise/custom
-	PlanID             uint            `gorm:"index;default:0" json:"plan_id"`            // 当前套餐ID
-	LogoURL            string          `gorm:"size:255" json:"logo_url"`                  // 白标 logo
-	FaviconURL         string          `gorm:"size:255" json:"favicon_url"`               // 浏览器图标
-	PrimaryColor       string          `gorm:"size:7" json:"primary_color"`               // 主题色 #hex
-	SecondaryColor     string          `gorm:"size:7" json:"secondary_color"`             // 辅助色
-	ContactName        string          `gorm:"size:50" json:"contact_name"`               // 联系人
-	ContactPhone       string          `gorm:"size:20" json:"contact_phone"`              // 联系手机
-	ContactEmail       string          `gorm:"size:100" json:"contact_email"`             // 联系邮箱
-	Industry           string          `gorm:"size:50" json:"industry"`                   // 行业
-	Scale              string          `gorm:"size:20" json:"scale"`                      // 规模：个人/小型/中型/大型
-	TrialStartAt       *time.Time      `json:"trial_start_at"`                            // 试用开始
-	TrialEndAt         *time.Time      `json:"trial_end_at"`                              // 试用结束
-	SubscribedAt       *time.Time      `json:"subscribed_at"`                             // 首次订阅时间
-	ExpiredAt          *time.Time      `json:"expired_at"`                                // 当前套餐到期时间
-	GracePeriodEndAt   *time.Time      `json:"grace_period_end_at"`                       // 宽限期截止
-	MaxUsers           int             `json:"max_users"`                                 // 配额：最大用户数
-	MaxCustomers       int             `json:"max_customers"`                             // 配额：最大客户数
-	MaxDepartments     int             `json:"max_departments"`                           // 配额：最大部门数
-	MaxAICTalls        int             `json:"max_ai_calls_monthly"`                      // 配额：每月 AI 调用次数
-	MaxStorageMB       int             `json:"max_storage_mb"`                            // 配额：存储空间 MB
-	MaxKnowledgeBrands int             `json:"max_knowledge_brands"`                      // 配额：品牌数
-	MaxKnowledgeModels int             `json:"max_knowledge_models"`                      // 配额：车型数
-	UsedAICTalls       int             `json:"used_ai_calls"`                             // 当月已用 AI 调用数
-	UsedCustomers      int             `json:"used_customers"`                            // 当前客户总数
-	UsedStorageBytes   int64           `json:"used_storage_bytes"`                        // 当前存储占用
-	UsageResetAt       *time.Time      `json:"usage_reset_at"`                            // 用量重置时间（每月 1 日）
-	Status             string          `gorm:"size:20;default:active" json:"status"`      // 状态：trial/active/suspended/expired/cancelled
-	FeaturesOverride   json.RawMessage `json:"features_override"`                         // 功能覆盖（定制版额外开关）
-	WhiteLabelConfig   json.RawMessage `json:"white_label_config"`                        // 白标配置 JSON（站点名、CSS、脚本等）
-	CreatedAt          time.Time       `json:"created_at"`                                // 创建时间
-	UpdatedAt          time.Time       `json:"updated_at"`                                // 更新时间
-	DeletedAt          *time.Time      `json:"deleted_at"`                                // 软删除
+	ID                 uint            `gorm:"primaryKey" json:"id"`                                    // 主键
+	Name               string          `gorm:"size:100;not null" json:"name"`                           // 企业/个人名称
+	Code               string          `gorm:"size:50;uniqueIndex;not null" json:"code"`                // 子域名标识，注册后不可改
+	CustomDomain       *string         `gorm:"size:200;uniqueIndex" json:"custom_domain"`               // 白标自定义域名（指针：NULL可多条，唯一索引不冲突）
+	Tier               string          `gorm:"size:20;default:personal" json:"tier"`                    // 版本：personal/enterprise/custom
+	PlanID             uint            `gorm:"index;default:0" json:"plan_id"`                          // 当前套餐ID
+	LogoURL            string          `gorm:"size:255" json:"logo_url"`                                // 白标 logo
+	FaviconURL         string          `gorm:"size:255" json:"favicon_url"`                             // 浏览器图标
+	PrimaryColor       string          `gorm:"size:7" json:"primary_color"`                             // 主题色 #hex
+	SecondaryColor     string          `gorm:"size:7" json:"secondary_color"`                           // 辅助色
+	ContactName        string          `gorm:"size:50" json:"contact_name"`                             // 联系人
+	ContactPhone       string          `gorm:"size:20" json:"contact_phone"`                            // 联系手机
+	ContactEmail       string          `gorm:"size:100" json:"contact_email"`                           // 联系邮箱
+	Industry           string          `gorm:"size:50" json:"industry"`                                 // 行业
+	Scale              string          `gorm:"size:20" json:"scale"`                                    // 规模：个人/小型/中型/大型
+	TrialStartAt       *time.Time      `json:"trial_start_at"`                                          // 试用开始
+	TrialEndAt         *time.Time      `json:"trial_end_at"`                                            // 试用结束
+	SubscribedAt       *time.Time      `json:"subscribed_at"`                                           // 首次订阅时间
+	ExpiredAt          *time.Time      `json:"expired_at"`                                              // 当前套餐到期时间
+	GracePeriodEndAt   *time.Time      `json:"grace_period_end_at"`                                     // 宽限期截止
+	MaxUsers           int             `json:"max_users"`                                               // 配额：最大用户数
+	MaxCustomers       int             `json:"max_customers"`                                           // 配额：最大客户数
+	MaxDepartments     int             `json:"max_departments"`                                         // 配额：最大部门数
+	MaxAICalls         int             `gorm:"column:max_ai_calls_monthly" json:"max_ai_calls_monthly"` // 配额：每月 AI 调用次数
+	MaxStorageMB       int             `json:"max_storage_mb"`                                          // 配额：存储空间 MB
+	MaxKnowledgeBrands int             `json:"max_knowledge_brands"`                                    // 配额：品牌数
+	MaxKnowledgeModels int             `json:"max_knowledge_models"`                                    // 配额：车型数
+	UsedAICalls        int             `gorm:"column:used_ai_calls" json:"used_ai_calls"`               // 当月已用 AI 调用数
+	UsedCustomers      int             `json:"used_customers"`                                          // 当前客户总数
+	UsedStorageBytes   int64           `json:"used_storage_bytes"`                                      // 当前存储占用
+	UsageResetAt       *time.Time      `json:"usage_reset_at"`                                          // 用量重置时间（每月 1 日）
+	Status             string          `gorm:"size:20;default:active" json:"status"`                    // 状态：trial/active/suspended/expired/cancelled
+	FeaturesOverride   json.RawMessage `json:"features_override"`                                       // 功能覆盖（定制版额外开关）
+	WhiteLabelConfig   json.RawMessage `json:"white_label_config"`                                      // 白标配置 JSON（站点名、CSS、脚本等）
+	CreatedAt          time.Time       `json:"created_at"`                                              // 创建时间
+	UpdatedAt          time.Time       `json:"updated_at"`                                              // 更新时间
+	DeletedAt          *time.Time      `json:"deleted_at"`                                              // 软删除
 }
 
 // TableName 指定表名
@@ -73,7 +73,7 @@ type SubscriptionPlan struct {
 	MaxUsers           int       `json:"max_users"`                       // 最大用户数
 	MaxDepartments     int       `json:"max_departments"`                 // 最大部门数配额（个人版=1个根部门）
 	MaxCustomers       int       `json:"max_customers"`                   // 最大客户数
-	MaxAICTalls        int       `json:"max_ai_calls_monthly"`            // 每月 AI 调用次数配额
+	MaxAICalls         int       `json:"max_ai_calls_monthly"`            // 每月 AI 调用次数配额
 	MaxStorageMB       int       `json:"max_storage_mb"`                  // 存储空间 MB 配额
 	MaxKnowledgeBrands int       `json:"max_knowledge_brands"`            // 品牌数配额
 	MaxKnowledgeModels int       `json:"max_knowledge_models"`            // 车型数配额

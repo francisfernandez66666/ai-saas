@@ -82,6 +82,14 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 修复：原来canPromote声明在MockMode检查之后，前两处BuildFallbackReply调用无法传入
 	canPromote := customer.CanPromote()
 
+	// ---- 计量与配额（SaaS 计费）：硬边界拦截不消耗配额，走到这里才算一次 AI 回复 ----
+	tenantID := customer.TenantID
+	if !service.CheckAIQuota(tenantID) {
+		log.Printf("[Usage] 租户%d AI 配额已超限，本次降级为规则话术（不发起模型请求）", tenantID)
+		return ai.BuildFallbackReply(strategyOutput, canPromote)
+	}
+	service.RecordAICall(tenantID)
+
 	// 模拟模式：直接用策略中心的模板话术兜底
 	// 修复：从SystemConfigService读取mock_mode，后台开关即时生效
 	if service.DefaultSystemConfigService.GetBool("mock_mode", config.GlobalConfig.AI.MockMode) {

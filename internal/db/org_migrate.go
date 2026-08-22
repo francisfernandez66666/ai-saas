@@ -17,6 +17,8 @@ import (
 
 // MigrateOrgData 组织数据迁移入口（main 启动时调用，幂等）
 func MigrateOrgData() {
+	renameLegacyAiColumns()
+	repairUsageIndex()
 	// 0) 修复历史空路径行（早期版本建根未回填 path）
 	if res := DB.Exec(`UPDATE departments SET path = '/' || id || '/' WHERE path = '' OR path IS NULL`); res.Error == nil && res.RowsAffected > 0 {
 		log.Printf("[org-migrate] 修复 %d 个缺失物化路径的部门", res.RowsAffected)
@@ -124,4 +126,55 @@ func uintToStr(v uint) string {
 		v /= 10
 	}
 	return string(digits)
+}
+
+// renameLegacyAiColumns 历史字段拼写修正：aic_talls → ai_calls（幂等）
+// 根因：早期 Go 字段 MaxAICTalls/UsedAICTalls 被 GORM 自动派生为错误列名
+func renameLegacyAiColumns() {
+	pairs := [][3]string{
+		{"tenants", "max_aic_talls", "max_ai_calls_monthly"},
+		{"tenants", "used_aic_talls", "used_ai_calls"},
+	}
+	for _, p := range pairs {
+		var exists bool
+		DB.Raw(`SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = ? AND column_name = ?)`, p[0], p[1]).Scan(&exists)
+		if !exists {
+			continue
+		}
+		var newExists bool
+		DB.Raw(`SELECT EXISTS (
+			SELECT 1 FROM information_schema.columns
+			WHERE table_name = ? AND column_name = ?)`, p[0], p[2]).Scan(&newExists)
+		if newExists {
+			continue
+		}
+		if err := DB.Exec(`ALTER TABLE ` + p[0] + ` RENAME COLUMN ` + p[1] + ` TO ` + p[2]).Error; err != nil {
+			log.Printf("[org-migrate] 列改名 %s.%s 失败: %v", p[0], p[1], err)
+		} else {
+			log.Printf("[org-migrate] 已修正历史列名 %s.%s → %s", p[0], p[1], p[2])
+		}
+	}
+}
+
+// repairUsageIndex 修复 usage_records 复合唯一索引（幂等）
+// 根因：早期模型只在 date 列建了同名单列索引，ON CONFLICT (tenant_id,date,metric)
+// 需要三列联合唯一才能命中
+func repairUsageIndex() {
+	var cols int
+	DB.Raw(`SELECT COUNT(*) FROM pg_attribute a
+		JOIN pg_class c ON a.attrelid = c.oid
+		JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = 'idx_tenant_date_metric'`).Scan(&cols)
+	if cols == 3 {
+		return // 已是正确复合索引
+	}
+	DB.Exec(`DROP INDEX IF EXISTS idx_tenant_date_metric`)
+	if err := DB.Exec(`CREATE UNIQUE INDEX idx_tenant_date_metric
+		ON usage_records (tenant_id, date, metric)`).Error; err != nil {
+		log.Printf("[org-migrate] 重建用量索引失败: %v", err)
+	} else {
+		log.Printf("[org-migrate] 已重建 usage_records 三列唯一索引")
+	}
 }

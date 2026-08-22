@@ -87,7 +87,7 @@ func TenantSignup(c *gin.Context) {
 		ContactPhone:   req.ContactPhone,
 		MaxUsers:       plan.MaxUsers,
 		MaxCustomers:   plan.MaxCustomers,
-		MaxAICTalls:    plan.MaxAICTalls,
+		MaxAICalls:     plan.MaxAICalls,
 		MaxDepartments: plan.MaxDepartments,
 		TrialStartAt:   &now,
 		TrialEndAt:     &trialEnd,

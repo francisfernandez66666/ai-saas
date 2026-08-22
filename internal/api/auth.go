@@ -4,8 +4,10 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/service"
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
+	"net/http"
 	"strings"
 )
 
@@ -43,6 +45,13 @@ func Login(c *gin.Context) {
 		return
 	}
 
+	// 0. 防爆破守卫：锁定中直接拒绝（不消耗数据库查询）
+	clientIP := c.ClientIP()
+	if err := service.CheckLoginAllowed(req.Username, clientIP); err != nil {
+		c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": err.Error()})
+		return
+	}
+
 	// 1. 从数据库查询用户（携带企业码时限定租户，防同名账号串站）
 	var user model.User
 	userQuery := "SELECT id, username, password_hash, role, tenant_id FROM tenant_users WHERE username = ?"
@@ -57,12 +66,14 @@ func Login(c *gin.Context) {
 		return
 	}
 	if result.RowsAffected == 0 {
+		service.RecordLoginFailure(req.Username, clientIP)
 		c.JSON(401, gin.H{"code": 401, "message": "用户名或密码错误", "data": nil})
 		return
 	}
 
 	// 2. bcrypt CompareHashAndPassword：检查明文密码与哈希是否匹配
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
+		service.RecordLoginFailure(req.Username, clientIP)
 		c.JSON(401, gin.H{"code": 401, "message": "用户名或密码错误", "data": nil})
 		return
 	}
@@ -72,6 +83,7 @@ func Login(c *gin.Context) {
 	if user.TenantID != nil {
 		tenantID = *user.TenantID
 	}
+	service.ClearLoginFailures(req.Username)
 	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role, tenantID)
 	if err != nil {
 		c.JSON(500, gin.H{"code": 500, "message": "Token生成失败", "data": nil})

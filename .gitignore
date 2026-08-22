@@ -22,3 +22,4 @@ server
 tessdata/
 CHANGES.diff
 *.part6
+backups/
