@@ -8,6 +8,7 @@ import (
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"fmt"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -65,16 +66,53 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 		return
 	}
 
+	// 平台级键（pay_mode/billing_enforced等）安全闸门（商业化 M1/M5）：
+	// 仅 super_admin 可改，且强制写系统默认层。
+	// 修复（2026-08-23）：非超管调用改为"静默剥离平台键"而非整单403——
+	// admin.html 的 saveAll 会全量提交所有分类配置，租户管理员改任意参数
+	// 都会夹带平台键，直接拒绝会破坏既有保存流程；剥离+留痕即可
+	roleV, _ := c.Get("role")
+	roleStr, _ := roleV.(string)
+	isSuper := roleStr == model.RoleSuperAdmin
+	platform := []service.ConfigUpdateItem{}
+	tenant := []service.ConfigUpdateItem{}
+	for _, it := range items {
+		if service.PlatformLevelKeys[it.Key] {
+			platform = append(platform, it)
+		} else {
+			tenant = append(tenant, it)
+		}
+	}
+	if len(platform) > 0 && !isSuper {
+		keys := make([]string, 0, len(platform))
+		for _, it := range platform {
+			keys = append(keys, it.Key)
+		}
+		log.Printf("[安全] 非超管(role=%s)尝试修改平台级键 %v，已剥离忽略", roleStr, keys)
+		platform = nil // 剥离：租户层其余配置照常生效
+	}
+
 	// 批量更新DB + 热加载内存
 	// P2 租户化：租户管理员改参数写入 (tenant_id,key) 覆盖层，不污染系统默认(0)
 	// super_admin 未显式指定租户时 tid=默认租户（中间件已裁决），显式指定则写对应租户
-	if err := service.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), items); err != nil {
+	if err := service.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), tenant); err != nil {
 		c.JSON(http.StatusInternalServerError, schema.Response{
 			Code:    500,
 			Message: "更新失败: " + err.Error(),
 			Data:    nil,
 		})
 		return
+	}
+	// 平台键走系统默认层（BatchUpdate 内部含 Reload 热加载）
+	if len(platform) > 0 {
+		if err := service.DefaultSystemConfigService.BatchUpdate(platform); err != nil {
+			c.JSON(http.StatusInternalServerError, schema.Response{
+				Code:    500,
+				Message: "平台参数更新失败: " + err.Error(),
+				Data:    nil,
+			})
+			return
+		}
 	}
 
 	c.JSON(http.StatusOK, schema.Response{

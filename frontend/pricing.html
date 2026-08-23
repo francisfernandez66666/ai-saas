@@ -18,6 +18,9 @@ ul{list-style:none;margin:14px 0}.li,.plan li{padding:5px 0;font-size:14px;color
 </style></head><body>
 <h1>选择适合您的套餐</h1><p class="sub">全部套餐支持免费试用 · 随时升降级</p>
 <div class="grid" id="plans"></div>
+<!-- 商业化 M2（2026-08-23）：AI 商业包（试用/包月/增量，按"次"计费） -->
+<h1 style="font-size:26px;margin-top:44px">AI 商业包</h1><p class="sub" id="pkgSub">注册即送试用包 · 增量包买断不过期</p>
+<div class="grid" id="pkgs"></div>
 <div class="back"><a href="/register">← 返回注册</a>　<a href="/">首页</a></div>
 <script>
 /* 渲染上架套餐卡片 */
@@ -36,6 +39,18 @@ fetch('/api/v1/plans').then(r=>r.json()).then(j=>{
         <div class="quota">席位 ${p.max_users} · 客户 ${p.max_customers} · 部门 ${p.max_departments}</div>
         <a class="buy" href="/register">${m>0?'免费试用':'联系我们'}</a>
       </div>`);
+  });
+  /* 商业包卡片（M2） */
+  const pbox=document.getElementById('pkgs');
+  const names={free:'注册赠送',paid:'包月',increment:'买断'};
+  ((j||{}).packages||[]).forEach((p,i)=>{
+    const price=p.price_cents>0?'¥'+(p.price_cents/100).toFixed(0):'免费';
+    pbox.insertAdjacentHTML('beforeend',`
+      <div class="plan ${i===2?'hot':''}"><b>${p.name}</b>
+      <span style="position:absolute;top:14px;right:14px;background:#edf2f7;color:#4a5568;font-size:11px;padding:3px 9px;border-radius:10px">${names[p.p_type]||p.p_type}</span>
+      <div class="price">${price}${p.p_type==='paid'?'<small>/月</small>':''}</div>
+      <ul><li>${p.ai_calls} 次 AI 调用</li>${p.duration_days?`<li>${p.duration_days} 天有效期</li>`:'<li>额度永不过期</li>'}<li>${p.description||''}</li></ul>
+      <a class="buy" href="/register">开通后订阅</a></div>`);
   });
 });
 </script></body></html>

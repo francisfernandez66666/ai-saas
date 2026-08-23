@@ -82,6 +82,21 @@ type MessageQueueService struct {
 // DefaultMessageQueueService 全局实例
 var DefaultMessageQueueService = NewMessageQueueService()
 
+// ActiveQueueCount 当前 processing 中的队列数（/status 观测用，商业化 M4）
+func (s *MessageQueueService) ActiveQueueCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, q := range s.queues {
+		q.mu.Lock()
+		if q.processing {
+			n++
+		}
+		q.mu.Unlock()
+	}
+	return n
+}
+
 // NewMessageQueueService 创建服务
 func NewMessageQueueService() *MessageQueueService {
 	return &MessageQueueService{

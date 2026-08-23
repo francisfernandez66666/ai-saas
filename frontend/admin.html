@@ -191,7 +191,8 @@
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen">
-<a href="/org.html" style="position:fixed;right:14px;top:12px;z-index:9999;background:#667eea;color:#fff;padding:6px 12px;border-radius:8px;font-size:13px;text-decoration:none">🏢 组织架构</a>
+<a href="/org.html" style="position:fixed;right:14px;top:12px;z-index:9999;background:#667eea;color:#fff;padding:6px 12px;border-radius:8px;font-size:13px;text-decoration:none;margin-right:96px">🏢 组织架构</a>
+<a href="/billing" style="position:fixed;right:14px;top:12px;z-index:9999;background:#ed8936;color:#fff;padding:6px 12px;border-radius:8px;font-size:13px;text-decoration:none">💰 订阅收银台</a>
   <!-- 登录遮罩：支持 tenant_code 入口，按权限层级显示功能 -->
   <div id="loginGate" class="fixed inset-0 z-[100] bg-gray-50 flex items-center justify-center hidden">
     <div class="w-full max-w-xs bg-white rounded-xl shadow-lg p-6">
@@ -273,6 +274,26 @@
         <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="tags">
           🏷️ 标签体系
         </button>
+        <!-- 商业化第一批（2026-08-23）：收款模式/计费灰度开关 -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="billing">
+          💰 商业化
+        </button>
+        <!-- 触达通道配置（企微webhook/重置码通道） -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="notify">
+          📣 触达通知
+        </button>
+        <!-- 审计日志查询（M5 补齐只写不读缺口） -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="audit">
+          📜 审计日志
+        </button>
+        <!-- M4 开放平台：API Key 签发与管理（B端自助） -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="openapi">
+          🔑 开放平台
+        </button>
+        <!-- M3 用量看板：本租户token趋势/阶段分布/成本口径 -->
+        <button class="tab-btn py-3 px-1 text-sm font-medium text-gray-500 hover:text-gray-700 whitespace-nowrap" data-tab="usage">
+          📊 用量
+        </button>
       </nav>
     </div>
   </div>
@@ -328,6 +349,16 @@
       <div id="panel-flow_engine" class="config-panel hidden"></div>
       <!-- 新增面板：标签体系 -->
       <div id="panel-tags" class="config-panel hidden"></div>
+      <!-- 商业化面板（收款模式/计费灰度，动态渲染配置卡片） -->
+      <div id="panel-billing" class="config-panel hidden"></div>
+      <!-- 触达通知面板 -->
+      <div id="panel-notify" class="config-panel hidden"></div>
+      <!-- 审计日志面板（独立渲染表格+筛选） -->
+      <div id="panel-audit" class="config-panel hidden"></div>
+      <!-- 开放平台面板（API Key 管理） -->
+      <div id="panel-openapi" class="config-panel hidden"></div>
+      <!-- 用量看板面板（M3） -->
+      <div id="panel-usage" class="config-panel hidden"></div>
     </div>
   </div>
 
@@ -363,7 +394,9 @@
       'ai_chain': 'AI链路',
       'customers': '客户线索',
       'flow_engine': '流程引擎',
-      'tags': '标签体系'
+      'tags': '标签体系',
+      'billing': '商业化',
+      'notify': '触达通知'
     };
 
     // ============================================================
@@ -424,12 +457,14 @@
       if (!name || name.startsWith('访客_')) return '客户';
       return name;
     }
+    // 取名字首字作头像展示
     function displayInitial(name) {
       if (!name || name.startsWith('访客_')) return '客';
       return name[0] || '?';
     }
     // ---------------------------------------------------------
 
+    // 统一请求封装：自动带Token，401/403弹登录门
     async function apiFetch(url, options = {}) {
       options.headers = Object.assign({}, options.headers, authToken ? { 'Authorization': 'Bearer ' + authToken } : {});
       const res = await fetch(url, options);
@@ -442,6 +477,7 @@
       return res;
     }
 
+    // 显示登录遮罩（可带错误提示）
     function showLoginGate(errMsg) {
       document.getElementById('loginGate').classList.remove('hidden');
       const errEl = document.getElementById('loginError');
@@ -453,6 +489,7 @@
       }
     }
 
+    // 后台内联登录：校验管理员角色；首登强改密跳统一登录页
     async function doLogin() {
       const username = document.getElementById('loginUsername').value.trim();
       const password = document.getElementById('loginPassword').value;
@@ -474,6 +511,13 @@
         }
         if (data.data.user.role !== 'admin') {
           showLoginGate('该账号不是管理员，无法进入后台');
+          return;
+        }
+        // M3 首登强改密：标记=true 先跳统一登录页完成改密（内联改密表单）
+        if (data.data.user.must_change_password) {
+          showLoginGate('首次登录需先修改密码，正在跳转...');
+          sessionStorage.setItem('token', data.data.token);
+          setTimeout(() => { location.href = '/login'; }, 800);
           return;
         }
         authToken = data.data.token;
@@ -650,7 +694,7 @@
 
       // 【优化】切换到流程引擎或标签体系时，隐藏操作栏（这两个Tab不需要保存按钮）
       const actionBar = document.getElementById('actionBar');
-      if (tab === 'flow_engine' || tab === 'tags') {
+      if (['flow_engine','tags','audit','openapi','usage'].includes(tab)) {
         actionBar.classList.add('hidden');
       } else {
         actionBar.classList.remove('hidden');
@@ -661,7 +705,7 @@
     // 渲染所有面板
     // ============================================================
     function renderAllPanels() {
-      ['reply_speed', 'strategy', 'mental_stage', 'ai_chain'].forEach(category => {
+      ['reply_speed', 'strategy', 'mental_stage', 'ai_chain', 'billing', 'notify'].forEach(category => {
         const configs = allConfigs.filter(c => c.category === category);
         const panel = document.getElementById('panel-' + category);
         panel.innerHTML = renderCategoryPanel(category, configs);
@@ -676,8 +720,258 @@
       // 【新增】标签体系Tab
       renderTagSystemPanel();
 
+      // 【商业化M5】审计日志Tab（切到该页时刷新数据）
+      renderAuditPanel();
+
+      // 【商业化M4】开放平台Tab（API Key 列表）
+      renderOpenapiPanel();
+
+      // 【商业化M3】用量看板Tab
+      renderUsagePanel();
+
+      // 顶栏额度展示（M2）
+      loadQuotaChip();
+
       // 初始化拖拽排序（AI链路-模型优先级）
       initSortable();
+    }
+
+    // ============================================================
+    // 审计日志面板（M5，2026-08-23）：表格+筛选，补齐"只写不读"
+    // ============================================================
+    let auditCache = [];
+    // 拉取审计日志（action/from/to筛选）
+    async function loadAuditLogs() {
+      try {
+        const q = new URLSearchParams();
+        const action = document.getElementById('auditAction')?.value.trim() || '';
+        const from = document.getElementById('auditFrom')?.value || '';
+        const to = document.getElementById('auditTo')?.value || '';
+        if (action) q.set('action', action);
+        if (from) q.set('from', from);
+        if (to) q.set('to', to);
+        const r = await apiFetch('/api/v1/admin/audit-logs?' + q.toString());
+        const j = await r.json();
+        if (j.code === 0) { auditCache = (j.data.list || []); renderAuditTable(); }
+      } catch (e) { console.error('审计查询失败', e); }
+    }
+    // 审计日志面板：首次初始化筛选项，每次进入刷新数据
+    function renderAuditPanel() {
+      const panel = document.getElementById('panel-audit');
+      if (!panel.dataset.init) {
+        panel.dataset.init = '1';
+        panel.innerHTML = `
+          <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
+            <span class="text-sm text-gray-500">筛选：</span>
+            <select id="auditAction" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+              <option value="">全部动作</option>
+              <option value="order_manual_confirm_critical">我已付费(critical)</option>
+              <option value="order_paid_confirm">订单确认发放</option>
+              <option value="order_paid_mock">模拟支付</option>
+              <option value="apikey_create">API Key签发</option>
+              <option value="apikey_disable">API Key停用</option>
+              <option value="super_admin_access">超管访问</option>
+              <option value="tenant_signup">租户注册</option>
+            </select>
+            <input id="auditFrom" type="date" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <span class="text-gray-400 text-sm">至</span>
+            <input id="auditTo" type="date" class="px-3 py-2 border border-gray-200 rounded-lg text-sm">
+            <button onclick="loadAuditLogs()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">查询</button>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+            <table class="w-full text-sm"><thead><tr class="bg-gray-50 text-left text-xs text-gray-500">
+              <th class="px-4 py-3">时间</th><th class="px-4 py-3">动作</th><th class="px-4 py-3">操作人</th>
+              <th class="px-4 py-3">资源</th><th class="px-4 py-3">详情</th><th class="px-4 py-3">IP</th>
+            </tr></thead><tbody id="auditBody"></tbody></table>
+          </div>`;
+      }
+      loadAuditLogs();
+    }
+    // 审计表格渲染（critical标红）
+    function renderAuditTable() {
+      const body = document.getElementById('auditBody');
+      if (!body) return;
+      if (auditCache.length === 0) {
+        body.innerHTML = '<tr><td colspan="6" class="px-4 py-8 text-center text-gray-400 text-sm">暂无审计记录</td></tr>';
+        return;
+      }
+      body.innerHTML = auditCache.map(a => `
+        <tr class="border-t border-gray-100">
+          <td class="px-4 py-2.5 whitespace-nowrap text-gray-600">${a.created_at}</td>
+          <td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-xs ${a.action.includes('critical') ? 'bg-red-100 text-red-700' : 'bg-indigo-50 text-indigo-700'}">${a.action}</span></td>
+          <td class="px-4 py-2.5 text-gray-700">${a.username || a.user_id}</td>
+          <td class="px-4 py-2.5 text-gray-500 max-w-[220px] truncate">${a.resource}</td>
+          <td class="px-4 py-2.5 text-gray-500 max-w-[280px] truncate" title="${(a.detail||'').replace(/"/g,'&quot;')}">${a.detail}</td>
+          <td class="px-4 py-2.5 text-gray-500">${a.ip}</td>
+        </tr>`).join('');
+    }
+
+    // ============================================================
+    // 开放平台面板（M4，2026-08-23）：API Key 签发/启停/删除
+    // 明文 Key 仅签发响应出现一次，前端弹窗展示+复制，此后只显示前缀
+    // ============================================================
+    let apikeyCache = [];
+    const PERM_LABELS = { 'customer.read': '客户读取', 'cdp.read': '画像读取', 'chat.read': '会话读取', 'all': '全部权限' };
+    // 开放平台面板：Key列表加载与骨架渲染
+    async function renderOpenapiPanel() {
+      const panel = document.getElementById('panel-openapi');
+      if (!panel.dataset.init) {
+        panel.dataset.init = '1';
+        panel.innerHTML = `
+          <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex items-center justify-between">
+            <div class="text-sm text-gray-500">开放 API 基地址：<code class="bg-gray-100 px-2 py-0.5 rounded">/openapi/v1</code>，
+            鉴权方式：<code class="bg-gray-100 px-2 py-0.5 rounded">Authorization: Bearer sk_xxx</code>。停用即时生效。</div>
+            <button onclick="showKeyCreator()" class="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">+ 签发新 Key</button>
+          </div>
+          <div id="keyCreateBox" class="bg-white rounded-xl shadow-sm p-4 mb-4 hidden">
+            <div class="flex flex-wrap items-center gap-3 mb-3">
+              <input id="newKeyName" placeholder="Key 名称（如：BI系统对接）" class="px-3 py-2 border border-gray-200 rounded-lg text-sm w-64">
+              <span class="text-sm text-gray-500">权限：</span>
+              <label class="text-sm"><input type="checkbox" value="customer.read" checked class="permCb"> 客户读取</label>
+              <label class="text-sm"><input type="checkbox" value="cdp.read" class="permCb"> 画像读取</label>
+              <label class="text-sm"><input type="checkbox" value="chat.read" class="permCb"> 会话读取</label>
+              <button onclick="createApiKey()" class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700">确认签发</button>
+              <button onclick="document.getElementById('keyCreateBox').classList.add('hidden')" class="px-3 py-2 text-gray-500 text-sm">取消</button>
+            </div>
+            <p class="text-xs text-gray-400">最小权限原则：只勾选对方业务必需的读取范围；「全部权限」仅限对账类集成。</p>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+            <table class="w-full text-sm"><thead><tr class="bg-gray-50 text-left text-xs text-gray-500">
+              <th class="px-4 py-3">名称</th><th class="px-4 py-3">Key前缀</th><th class="px-4 py-3">权限</th>
+              <th class="px-4 py-3">调用次数</th><th class="px-4 py-3">最近使用</th><th class="px-4 py-3">状态</th><th class="px-4 py-3">操作</th>
+            </tr></thead><tbody id="keyBody"></tbody></table>
+          </div>`;
+      }
+      try {
+        const r = await apiFetch('/api/v1/admin/apikeys');
+        const j = await r.json();
+        if (j.code === 0) { apikeyCache = j.data || []; renderKeyTable(); }
+      } catch (e) { console.error('Key列表加载失败', e); }
+    }
+    // Key列表渲染（前缀展示，明文永不回显）
+    function renderKeyTable() {
+      const body = document.getElementById('keyBody');
+      if (!body) return;
+      if (apikeyCache.length === 0) {
+        body.innerHTML = '<tr><td colspan="7" class="px-4 py-8 text-center text-gray-400 text-sm">暂无 API Key，点击右上角签发</td></tr>';
+        return;
+      }
+      body.innerHTML = apikeyCache.map(k => `
+        <tr class="border-t border-gray-100">
+          <td class="px-4 py-2.5 text-gray-800 font-medium">${k.name}</td>
+          <td class="px-4 py-2.5"><code class="bg-gray-100 px-2 py-0.5 rounded text-xs">${k.key_prefix}...</code></td>
+          <td class="px-4 py-2.5 text-xs">${(() => { try { return JSON.parse(k.permissions).map(p => PERM_LABELS[p] || p).join('、'); } catch(e){ return k.permissions; } })()}</td>
+          <td class="px-4 py-2.5 text-gray-600">${k.call_count}</td>
+          <td class="px-4 py-2.5 text-gray-500 text-xs">${k.last_used_at ? new Date(k.last_used_at).toLocaleString() : '从未使用'}</td>
+          <td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-xs ${k.is_active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}">${k.is_active ? '启用' : '停用'}</span></td>
+          <td class="px-4 py-2.5 whitespace-nowrap">
+            ${k.is_active
+              ? `<button onclick="toggleKey(${k.id},false)" class="px-3 py-1.5 bg-amber-50 text-amber-600 rounded-lg text-xs hover:bg-amber-100 mr-1">停用</button>`
+              : `<button onclick="toggleKey(${k.id},true)" class="px-3 py-1.5 bg-green-50 text-green-600 rounded-lg text-xs hover:bg-green-100 mr-1">启用</button>`}
+            <button onclick="deleteKey(${k.id})" class="px-3 py-1.5 bg-red-50 text-red-600 rounded-lg text-xs hover:bg-red-100">删除</button>
+          </td>
+        </tr>`).join('');
+    }
+    // 展开签发表单
+    function showKeyCreator() { document.getElementById('keyCreateBox').classList.remove('hidden'); }
+    // 签发API Key：明文仅弹窗展示一次+剪贴板复制
+    async function createApiKey() {
+      const name = document.getElementById('newKeyName').value.trim();
+      const perms = Array.from(document.querySelectorAll('.permCb:checked')).map(cb => cb.value);
+      if (!name || perms.length === 0) { alert('请填写名称并至少选择一项权限'); return; }
+      const r = await apiFetch('/api/v1/admin/apikeys', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, perms })
+      });
+      const j = await r.json();
+      if (j.code !== 0) { alert(j.message || '签发失败'); return; }
+      document.getElementById('newKeyName').value = '';
+      document.getElementById('keyCreateBox').classList.add('hidden');
+      // 明文唯一一次展示：弹窗 + 一键复制
+      const key = j.data.key;
+      if (confirm('【请立即保存】明文 Key 仅显示这一次：\n\n' + key + '\n\n点击确定尝试复制到剪贴板')) {
+        try { await navigator.clipboard.writeText(key); } catch (e) {}
+      }
+      renderOpenapiPanel();
+    }
+    // 启用/停用Key（停用即时生效）
+    async function toggleKey(id, active) {
+      await apiFetch(`/api/v1/admin/apikeys/${id}/${active ? 'enable' : 'disable'}`, { method: 'POST' });
+      renderOpenapiPanel();
+    }
+    // 删除Key（二次确认，不可恢复）
+    async function deleteKey(id) {
+      if (!confirm('确认删除该 Key？删除后使用此 Key 的调用立即失效且不可恢复。')) return;
+      await apiFetch(`/api/v1/admin/apikeys/${id}`, { method: 'DELETE' });
+      renderOpenapiPanel();
+    }
+
+    // ============================================================
+    // 用量看板面板（M3）：本租户 token 趋势 / 阶段分布 / 成本口径
+    // 数据源 usage_ledger；计价为成本核算展示口径，不参与扣费
+    // ============================================================
+    async function renderUsagePanel() {
+      const panel = document.getElementById('panel-usage');
+      if (!panel.dataset.init) {
+        panel.dataset.init = '1';
+        panel.innerHTML = '<p class="text-sm text-gray-400 py-10 text-center">加载中...</p>';
+      }
+      try {
+        const r = await apiFetch('/api/v1/admin/usage/summary?days=30');
+        const j = await r.json();
+        if (j.code !== 0) { panel.innerHTML = '<p class="text-sm text-red-400 text-center py-10">加载失败</p>'; return; }
+        const d = j.data;
+        const maxTok = Math.max(1, ...(d.by_day || []).map(x => x.tokens));
+        const bars = (d.by_day || []).slice(-14).map(x => `
+          <div class="flex flex-col items-center" title="\${x.date}: \${x.tokens} tokens / ¥\${(x.cost_micro/1e6).toFixed(4)}">
+            <div class="w-6 bg-indigo-200 rounded-t" style="height:\${Math.max(4, x.tokens/maxTok*80)}px"></div>
+            <span class="text-[9px] text-gray-400 mt-1">\${x.date.slice(5)}</span>
+          </div>`).join('');
+        const stageRows = (d.by_stage || []).map(x => `
+          <tr><td class="px-3 py-2">\${x.stage||'-'}</td><td class="px-3 py-2">\${x.calls}</td>
+          <td class="px-3 py-2">\${x.tokens}</td><td class="px-3 py-2">¥\${(x.cost_micro/1e6).toFixed(4)}</td></tr>`).join('');
+        panel.innerHTML = `
+          <div class="grid grid-cols-3 gap-4 mb-5">
+            <div class="bg-white rounded-xl shadow-sm p-4"><p class="text-xs text-gray-400 mb-1">调用次数(近30天)</p><b class="text-xl text-indigo-600">\${d.total_calls}</b></div>
+            <div class="bg-white rounded-xl shadow-sm p-4"><p class="text-xs text-gray-400 mb-1">Token消耗</p><b class="text-xl text-indigo-600">\${d.total_tokens}</b></div>
+            <div class="bg-white rounded-xl shadow-sm p-4"><p class="text-xs text-gray-400 mb-1">成本估算(¥)</p><b class="text-xl text-orange-500">¥\${d.total_cost_yuan.toFixed(2)}</b></div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
+            <p class="text-xs text-gray-400 mb-3">近14天Token趋势</p>
+            <div class="flex items-end gap-2 h-[110px]">\${bars || '<span class=\'text-xs text-gray-300\'>暂无数据，真实AI对话后生成</span>'}</div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+            <table class="w-full text-sm"><thead><tr class="bg-gray-50 text-left text-xs text-gray-500">
+              <th class="px-3 py-2">阶段</th><th class="px-3 py-2">调用</th><th class="px-3 py-2">Tokens</th><th class="px-3 py-2">成本¥</th>
+            </tr></thead><tbody>\${stageRows || '<tr><td colspan=4 class="text-center text-gray-300 py-4">暂无数据</td></tr>'}</tbody></table>
+          </div>`;
+      } catch (e) { console.error('用量加载失败', e); }
+    }
+
+    // ============================================================
+    // 顶栏额度展示（M2 my-package）：登录后拉取，未登录静默跳过
+    // ============================================================
+    async function loadQuotaChip() {
+      if (!authToken) return;
+      try {
+        const r = await fetch('/api/v1/billing/my-package', { headers: { 'Authorization': 'Bearer ' + authToken } });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.code !== 0) return;
+        const d = j.data;
+        const pct = d.max_ai_calls > 0 ? Math.min(100, Math.round(d.used_ai_calls / d.max_ai_calls * 100)) : 0;
+        const color = pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-green-500';
+        const chip = document.createElement('span');
+        chip.id = 'quotaChip';
+        chip.className = 'flex items-center text-sm text-gray-600 cursor-pointer hover:text-indigo-600';
+        chip.title = `月配额 ${d.used_ai_calls}/${d.max_ai_calls || '∞'} · 增量余额 ${d.ai_call_balance} 次（买断不过期）`;
+        chip.onclick = () => location.href = '/billing';
+        chip.innerHTML = `
+          <span class="w-2 h-2 rounded-full ${color} mr-2"></span>
+          AI额度 ${d.used_ai_calls}/${d.max_ai_calls || '∞'}
+          ${d.ai_call_balance > 0 ? `<span class="ml-1 px-1.5 py-0.5 bg-orange-100 text-orange-600 rounded text-xs">+${d.ai_call_balance}</span>` : ''}`;
+        document.getElementById('statusDot').parentElement.insertBefore(chip, document.getElementById('statusDot'));
+      } catch (e) { /* 未登录/网络异常静默 */ }
     }
 
     // ============================================================
@@ -1074,6 +1368,7 @@
     // 数组操作：添加/删除元素
     // ============================================================
 
+    // 数字数组配置项追加输入框
     function addNumberArrayItem(btn, key) {
       const container = btn.parentElement;
       const inputs = container.querySelectorAll('input[type="number"]');
@@ -1093,6 +1388,7 @@
       markChanged();
     }
 
+    // 字符串数组配置项追加输入框
     function addStringArrayItem(btn, key) {
       const text = prompt('请输入新标签:');
       if (!text || !text.trim()) return;
@@ -1111,6 +1407,7 @@
       markChanged();
     }
 
+    // 移除数组配置项某一项并同步值
     function removeArrayItem(btn, key, index) {
       const cfg = allConfigs.find(c => c.key === key);
       if (!cfg) return;
@@ -1139,6 +1436,7 @@
       markChanged();
     }
 
+    // 输入变化同步回隐藏数组字段
     function syncArrayValue(input) {
       const key = input.dataset.key;
       const idx = parseInt(input.dataset.index);
@@ -1396,6 +1694,7 @@
     let customerLeadPage = 1;
     let customerLeadFilter = 'all';
 
+    // 客户线索面板渲染入口
     async function renderCustomerLeadPanel() {
       const panel = document.getElementById('panel-customers');
       panel.innerHTML = `
@@ -1428,6 +1727,7 @@
       await loadCustomerLeads();
     }
 
+    // 拉取线索列表
     async function loadCustomerLeads() {
       const listEl = document.getElementById('customerLeadList');
       if (!listEl) return;
@@ -1474,6 +1774,7 @@
       }
     }
 
+    // 线索详情抽屉
     async function showLeadDetail(customerId) {
       try {
         const res = await apiFetch(API_BASE.replace('/admin','') + '/advisor/customer/' + customerId);
@@ -1518,6 +1819,7 @@
       } catch (e) { showToast('获取详情失败','error'); }
     }
 
+    // 加载该客户试驾单
     async function loadAdminTestDrives(customerId, btn) {
       const container = document.getElementById('adminTestDriveList_' + customerId);
       if (!container.classList.contains('hidden')) { container.classList.add('hidden'); btn.textContent = '🚗 查看试驾单'; return; }
@@ -1547,6 +1849,7 @@
       } catch (e) { container.innerHTML = '<div class="text-red-400 text-xs">加载失败</div>'; }
     }
 
+    // 加载该客户聊天记录
     async function loadLeadChat(customerId, btn) {
       const chatEl = document.getElementById('leadChat_'+customerId);
       if (!chatEl.classList.contains('hidden')) { chatEl.classList.add('hidden'); btn.textContent='💬 查看聊天记录'; return; }
@@ -1567,6 +1870,7 @@
       } catch(e) { chatEl.innerHTML = '<div class="text-red-400">加载失败</div>'; }
     }
 
+    // 时间短格式化(MM-DD HH:mm)
     function formatShortTime(t) {
       if (!t) return '';
       const d = new Date(t);
@@ -1575,6 +1879,7 @@
 
     // 修复问题2：删掉clearDelayAdmin函数，秒回功能改为后台配置reply_delay_mode=instant
 
+    // HTML转义（防XSS）
     function esc(str) {
       if (!str) return '';
       const d = document.createElement('div');

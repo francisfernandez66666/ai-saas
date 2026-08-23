@@ -251,6 +251,7 @@ type createTestDriveRequest struct {
 	Note         string `json:"note"`
 }
 
+// CreateTestDrive POST /api/v1/advisor/test-drive 创建试驾单
 func CreateTestDrive(c *gin.Context) {
 	var req createTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -303,6 +304,7 @@ func CreateTestDrive(c *gin.Context) {
 	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "试驾单创建成功", Data: td})
 }
 
+// GetTestDrives GET /api/v1/advisor/test-drives 试驾单列表（按客户筛选）
 func GetTestDrives(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Query("customer_id"))
 	status := c.Query("status")
@@ -330,6 +332,7 @@ func GetTestDrives(c *gin.Context) {
 	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: list})
 }
 
+// GetTestDrive GET /api/v1/advisor/test-drive/:id 试驾单详情
 func GetTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
@@ -357,6 +360,7 @@ type updateTestDriveRequest struct {
 	Result       *string `json:"result"`
 }
 
+// UpdateTestDrive PUT /api/v1/advisor/test-drive/:id 更新试驾单（状态流转）
 func UpdateTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
@@ -479,6 +483,7 @@ func canOperateCustomer(c *gin.Context, assignedUserID uint) bool {
 	return false
 }
 
+// GetAdvisorCustomers GET /api/v1/advisor/customers 工作台客户列表（按角色数据范围裁剪）
 func GetAdvisorCustomers(c *gin.Context) {
 	var req advisorCustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -840,6 +845,7 @@ type updateStageRequest struct {
 	JourneySubStage string `json:"journey_sub_stage"`                // 到店子状态: test_driven/quoted（仅arrived时有效）
 }
 
+// UpdateCustomerStage PUT /api/v1/advisor/customer/:id/stage 修改到店子状态（已到店/已试驾/已报价）
 func UpdateCustomerStage(c *gin.Context) {
 	id := c.Param("id")
 

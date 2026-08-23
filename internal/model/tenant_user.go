@@ -23,7 +23,8 @@ type TenantUser struct {
 	Email        string     `gorm:"size:100" json:"email"`                        // 邮箱
 	Avatar       string     `gorm:"size:255" json:"avatar"`                       // 头像URL
 	Department   string     `gorm:"size:50" json:"department"`                    // 部门
-	Status       int        `gorm:"default:1" json:"status"`                      // 状态：1=正常 0=禁用
+	Status             int        `gorm:"default:1" json:"status"`                      // 状态：1=正常 0=禁用
+	MustChangePassword bool       `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
 	LastLoginAt  *time.Time `json:"last_login_at"`                                // 最后登录时间
 	LastLoginIP  string     `gorm:"size:45" json:"last_login_ip"`                 // 最后登录IP
 	CreatedAt    time.Time  `json:"created_at"`                                   // 创建时间

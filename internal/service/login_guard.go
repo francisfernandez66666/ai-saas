@@ -38,6 +38,7 @@ var (
 // ErrLocked 登录锁定错误（携带剩余时间）
 type ErrLocked struct{ Remaining time.Duration }
 
+// Error 实现 error 接口：返回锁定剩余提示
 func (e *ErrLocked) Error() string {
 	return fmt.Sprintf("失败次数过多，账号已临时锁定，请 %d 分钟后再试", int(e.Remaining.Minutes())+1)
 }

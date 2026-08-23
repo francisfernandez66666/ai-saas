@@ -134,7 +134,14 @@ func (c *GLMClient) GetModelName() string {
 //  2. 自然摊平请求高峰，减少429限流
 //  3. 可以配合"正在输入中"状态做先接住再回复
 func (c *GLMClient) GenerateText(messages []ChatMessage, temperature float64) (string, error) {
+	reply, _, err := c.GenerateTextWithUsage(messages, temperature)
+	return reply, err
+}
+
+// GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座；mock 路径用量为零值）
+func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var reply string
+	var usage Usage
 	var err error
 
 	// 如果是模拟模式，直接返回模拟回复
@@ -146,9 +153,9 @@ func (c *GLMClient) GenerateText(messages []ChatMessage, temperature float64) (s
 		reply = "【AI服务未配置，请设置ZHIPU_API_KEY环境变量后重启服务】"
 	} else {
 		// 带重试调用（指数退避 + 429特殊处理）
-		reply, err = c.generateWithRetry(messages, temperature)
+		reply, usage, err = c.generateWithRetry(messages, temperature)
 		if err != nil {
-			return "", err
+			return "", Usage{}, err
 		}
 	}
 
@@ -159,13 +166,13 @@ func (c *GLMClient) GenerateText(messages []ChatMessage, temperature float64) (s
 		log.Printf("[智谱AI] 回复长度: %d字符", utf8.RuneCountInString(reply))
 	}
 
-	return reply, nil
+	return reply, usage, nil
 }
 
 // generateWithRetry 带重试的API调用
 // 重试策略：指数退避(2s→4s→8s)，429限流翻倍(4s→8s→16s)
 // 参数类错误(4xx非429)不重试
-func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, error) {
+func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -189,9 +196,9 @@ func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float6
 			time.Sleep(time.Duration(waitSeconds) * time.Second)
 		}
 
-		reply, err := c.callAPI(messages, temperature)
+		reply, u, err := c.callAPI(messages, temperature)
 		if err == nil {
-			return reply, nil
+			return reply, u, nil
 		}
 
 		lastErr = err
@@ -203,7 +210,7 @@ func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float6
 		}
 	}
 
-	return "", fmt.Errorf("智谱AI调用失败，已重试%d次: %v", c.MaxRetries+1, lastErr)
+	return "", Usage{}, fmt.Errorf("智谱AI调用失败，已重试%d次: %v", c.MaxRetries+1, lastErr)
 }
 
 // calcTypingDelay 计算模拟打字延迟
@@ -243,7 +250,7 @@ func calcTypingDelay(text string, speed float64, minDelay float64, maxDelay floa
 
 // callAPI 调用智谱API
 // 注意：使用复用的httpClient，避免每次创建连接
-func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string, error) {
+func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := ChatRequest{
 		Model:       c.ModelName,
 		Messages:    messages,
@@ -253,13 +260,13 @@ func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %v", err)
+		return "", Usage{}, fmt.Errorf("序列化请求失败: %v", err)
 	}
 
 	url := c.BaseURL + "/chat/completions"
 	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %v", err)
+		return "", Usage{}, fmt.Errorf("创建请求失败: %v", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -268,23 +275,23 @@ func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string
 	// 使用复用的HTTP客户端
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("请求API失败: %v", err)
+		return "", Usage{}, fmt.Errorf("请求API失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %v", err)
+		return "", Usage{}, fmt.Errorf("读取响应失败: %v", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API返回错误: status=%d, body=%s", resp.StatusCode, string(body))
+		return "", Usage{}, fmt.Errorf("API返回错误: status=%d, body=%s", resp.StatusCode, string(body))
 	}
 
 	var chatResp ChatResponse
 	err = json.Unmarshal(body, &chatResp)
 	if err != nil {
-		return "", fmt.Errorf("解析响应失败: %v", err)
+		return "", Usage{}, fmt.Errorf("解析响应失败: %v", err)
 	}
 
 	if len(chatResp.Choices) > 0 {
@@ -307,10 +314,15 @@ func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string
 				chatResp.Usage.CompletionTokens,
 				truncateString(string(body), 500))
 		}
-		return content, nil
+		usage := Usage{
+			PromptTokens:     chatResp.Usage.PromptTokens,
+			CompletionTokens: chatResp.Usage.CompletionTokens,
+			TotalTokens:      chatResp.Usage.TotalTokens,
+		}
+		return content, usage, nil
 	}
 
-	return "", fmt.Errorf("AI未返回内容")
+	return "", Usage{}, fmt.Errorf("AI未返回内容")
 }
 
 // ============================================================
@@ -404,12 +416,14 @@ func containsKeyword(text string, keywords ...string) bool {
 	return false
 }
 
+// containsIgnoreCase 大小写不敏感子串包含判断
 func containsIgnoreCase(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		(len(s) == 0 || len(substr) == 0 ||
 			indexOfIgnoreCase(s, substr) >= 0)
 }
 
+// indexOfIgnoreCase 大小写不敏感子串定位（-1=不存在）
 func indexOfIgnoreCase(s, substr string) int {
 	sLower := toLower(s)
 	subLower := toLower(substr)
@@ -421,6 +435,7 @@ func indexOfIgnoreCase(s, substr string) int {
 	return -1
 }
 
+// toLower ASCII 小写转换（仅处理A-Z，避免unicode开销）
 func toLower(s string) string {
 	result := make([]byte, len(s))
 	for i := 0; i < len(s); i++ {

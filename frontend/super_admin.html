@@ -22,6 +22,66 @@ button{padding:4px 10px;border:none;border-radius:6px;cursor:pointer;font-size:1
 <table id="tb"><thead><tr>
 <th>ID</th><th>企业名称</th><th>标识</th><th>套餐</th><th>客户用量</th><th>状态</th><th>开通日期</th><th>操作</th>
 </tr></thead><tbody></tbody></table>
+
+<!-- 商业化 M2：商业包管理（定价页数据源，启停即时生效） -->
+<h2 style="margin-top:30px">AI 商业包管理</h2>
+<p class="sub" style="margin-bottom:12px">公开定价页与租户订阅入口实时读取；已有订单引用的包删除时自动转下架</p>
+<div class="bar">
+<input id="pCode" placeholder="标识(如 pro_8000)" style="width:130px">
+<input id="pName" placeholder="名称" style="width:110px">
+<select id="pType" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px">
+<option value="paid">包月</option><option value="increment">增量买断</option><option value="free">试用</option>
+</select>
+<input id="pCalls" type="number" placeholder="AI次数" style="width:90px">
+<input id="pPrice" type="number" placeholder="售价分" style="width:90px">
+<input id="pDays" type="number" placeholder="有效天数" style="width:90px">
+<button onclick="createPkg()" style="background:#667eea;color:#fff;padding:8px 14px">新增</button>
+</div>
+<table><thead><tr><th>ID</th><th>标识</th><th>名称</th><th>类型</th><th>AI次数</th><th>售价</th><th>有效期</th><th>状态</th><th>操作</th></tr></thead>
+<tbody id="pkgBody"><tr><td colspan="9" style="text-align:center;color:#718096">加载中...</td></tr></tbody></table>
+
+<!-- 商业化 M3：模型成本核算（usage_ledger 聚合，选型依据） -->
+<h2 style="margin-top:30px">模型成本核算 <span id="costRange" style="font-size:13px;color:#718096"></span></h2>
+<table><thead><tr><th>供应商</th><th>模型</th><th>调用次数</th><th>Tokens</th><th>成本(¥)</th><th>占比</th></tr></thead>
+<tbody id="costBody"><tr><td colspan="6" style="text-align:center;color:#718096">加载中...</td></tr></tbody></table>
+
+<!-- 商业化 M2：用户反馈（advisor端AI话术反馈直达此处） -->
+<h2 style="margin-top:30px">用户反馈</h2>
+<div class="bar">
+<select id="fbStatus" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px" onchange="loadFeedbacks()">
+<option value="open">待处理</option><option value="resolved">已处理</option><option value="">全部</option>
+</select>
+<span style="font-size:12px;color:#718096">顾问端AI回复气泡「反馈」提交，新反馈推群机器人</span>
+</div>
+<table><thead><tr><th>时间</th><th>租户</th><th>提交人</th><th>类型</th><th>意见</th><th>上下文</th><th>操作</th></tr></thead>
+<tbody id="fbBody"><tr><td colspan="7" style="text-align:center;color:#718096">加载中...</td></tr></tbody></table>
+
+<!-- 商业化 M1：待人工确认收款（static_qr 模式租户提交「我已付费」后出现在这里） -->
+<h2 style="margin-top:30px">待确认收款 <span id="pendingCnt" style="font-size:13px;color:#975a16"></span></h2>
+<p class="sub" style="margin-bottom:12px">租户已扫码付款并点击「我已付费」，请核对账户到账后确认发放权益（重复确认自动幂等跳过）</p>
+<table><thead><tr><th>订单号</th><th>租户</th><th>商业包</th><th>金额</th><th>提交时间</th><th>操作</th></tr></thead>
+<tbody id="pendingBody"><tr><td colspan="6" style="text-align:center;color:#718096">加载中...</td></tr></tbody></table>
+
+<!-- 商业化 M5：审计日志查询 -->
+<h2 style="margin-top:30px">审计日志</h2>
+<div class="bar">
+<select id="aAction" style="padding:8px;border:1px solid #e2e8f0;border-radius:6px">
+<option value="">全部动作</option>
+<option value="order_manual_confirm_critical">我已付费(critical)</option>
+<option value="order_paid_confirm">订单确认发放</option>
+<option value="order_paid_mock">模拟支付</option>
+<option value="super_admin_access">超管访问</option>
+<option value="super_tenant_status">租户封禁/恢复</option>
+<option value="tenant_signup">租户注册</option>
+<option value="apikey_create">API Key签发</option>
+</select>
+<input type="number" id="aTenant" placeholder="按租户ID过滤" style="width:130px">
+<input type="date" id="aFrom"> <span style="color:#718096">至</span> <input type="date" id="aTo">
+<button onclick="loadAudit()" style="background:#667eea;color:#fff;padding:8px 14px">查询</button>
+</div>
+<table><thead><tr><th>时间</th><th>租户</th><th>动作</th><th>操作人</th><th>资源</th><th>详情</th><th>IP</th></tr></thead>
+<tbody id="auditBody"><tr><td colspan="7" style="text-align:center;color:#718096">加载中...</td></tr></tbody></table>
+
 <script>
 /* 会话守卫：非超管立即弹回 */
 const token=sessionStorage.getItem('token');
@@ -34,6 +94,7 @@ async function load(){
   const r=await fetch('/api/v1/super/tenants',AUTH);
   const j=await r.json(); LIST=j.data||[]; render();
 }
+/* 租户表格渲染（关键词过滤） */
 function render(){
   const kw=document.getElementById('kw').value.trim();
   const tb=document.querySelector('#tb tbody');
@@ -51,5 +112,123 @@ async function setStatus(id,st){
   await fetch(`/api/v1/super/tenants/${id}/status`,{method:'PUT',headers:{...AUTH,'Content-Type':'application/json'},body:JSON.stringify({status:st})});
   load();
 }
-load();
+/* ---- M1 待确认收款 ---- */
+async function loadPending(){
+  const r=await fetch('/api/v1/super/orders/pending',AUTH), j=await r.json();
+  const rows=j.data||[];
+  document.getElementById('pendingCnt').textContent=rows.length?`(${rows.length}笔待核实)`:'';
+  const body=document.getElementById('pendingBody');
+  if(rows.length===0){body.innerHTML='<tr><td colspan="6" style="text-align:center;color:#718096">暂无待确认收款</td></tr>';return}
+  body.innerHTML=rows.map(o=>`
+    <tr><td>${o.order_no}</td><td>${o.tenant_name} (#${o.tenant_id})</td><td>${o.package_name||'-'}</td>
+    <td>¥${(o.amount_cents/100).toFixed(2)}</td><td>${new Date(o.created_at).toLocaleString()}</td>
+    <td><button class="on" onclick="confirmOrder(${o.id})">确认到账并发放</button></td></tr>`).join('');
+}
+/* 超管确认到账：后端幂等，重复确认自动跳过发放 */
+async function confirmOrder(id){
+  if(!confirm('确认已收到该笔款项？确认后立即发放对应权益。'))return;
+  const r=await fetch(`/api/v1/super/orders/${id}/confirm`,{method:'POST',...AUTH});
+  const j=await r.json();
+  alert(j.message||'操作完成');loadPending();
+}
+/* ---- M5 审计日志 ---- */
+async function loadAudit(){
+  const q=new URLSearchParams();
+  if(document.getElementById('aAction').value)q.set('action',document.getElementById('aAction').value);
+  if(document.getElementById('aTenant').value)q.set('tenant_id',document.getElementById('aTenant').value);
+  if(document.getElementById('aFrom').value)q.set('from',document.getElementById('aFrom').value);
+  if(document.getElementById('aTo').value)q.set('to',document.getElementById('aTo').value);
+  const r=await fetch('/api/v1/super/audit-logs?'+q,AUTH),j=await r.json();
+  const rows=(j.data&&j.data.list)||[];
+  const body=document.getElementById('auditBody');
+  if(rows.length===0){body.innerHTML='<tr><td colspan="7" style="text-align:center;color:#718096">暂无记录</td></tr>';return}
+  body.innerHTML=rows.map(a=>`
+    <tr><td>${a.created_at}</td><td>#${a.tenant_id}</td>
+    <td><span class="st ${a.action.includes('critical')?'suspended':'trial'}">${a.action}</span></td>
+    <td>${a.username||a.user_id}</td><td>${a.resource||'-'}</td>
+    <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(a.detail||'').replace(/"/g,'&quot;')}">${a.detail||'-'}</td>
+    <td>${a.ip}</td></tr>`).join('');
+}
+/* ---- M2 商业包管理 ---- */
+const TYPE_NAMES={free:'试用',paid:'包月',increment:'增量买断'};
+/* 商业包列表渲染（M2） */
+async function loadPkgs(){
+  const r=await fetch('/api/v1/super/packages',AUTH), j=await r.json();
+  const rows=j.data||[];
+  const body=document.getElementById('pkgBody');
+  if(rows.length===0){body.innerHTML='<tr><td colspan="9" style="text-align:center;color:#718096">暂无商业包</td></tr>';return}
+  body.innerHTML=rows.map(p=>`
+    <tr><td>${p.id}</td><td>${p.code}</td><td>${p.name}</td>
+    <td>${TYPE_NAMES[p.p_type]||p.p_type}</td><td>${p.ai_calls}</td>
+    <td>¥${(p.price_cents/100).toFixed(p.price_cents%100?2:0)}</td>
+    <td>${p.duration_days?p.duration_days+'天':'—'}</td>
+    <td><span class="st ${p.enabled?'trial':'suspended'}">${p.enabled?'上架':'下架'}</span></td>
+    <td><button class="${p.enabled?'ban':'on'}" onclick="togglePkg(${p.id},${!p.enabled})">${p.enabled?'下架':'上架'}</button></td></tr>`).join('');
+}
+/* 上架/下架切换（定价页与订阅入口同步过滤） */
+async function togglePkg(id,enabled){
+  const r=await fetch(`/api/v1/super/packages/${id}`,{method:'PUT',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({enabled})});
+  const j=await r.json(); if(j.code!==0)alert(j.message||'操作失败'); loadPkgs();
+}
+/* 新增商业包（表单校验+free包强制无期限） */
+async function createPkg(){
+  const code=document.getElementById('pCode').value.trim(),
+        name=document.getElementById('pName').value.trim(),
+        p_type=document.getElementById('pType').value,
+        ai_calls=parseInt(document.getElementById('pCalls').value)||0,
+        price_cents=parseInt(document.getElementById('pPrice').value)||0,
+        duration_days=parseInt(document.getElementById('pDays').value)||0;
+  if(!code||!name){alert('标识和名称必填');return}
+  if(p_type==='free')duration_days=0; /* 试用包随租户周期 */
+  const r=await fetch('/api/v1/super/packages',{method:'POST',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({code,name,p_type,ai_calls,price_cents,duration_days})});
+  const j=await r.json();
+  if(j.code!==0){alert(j.message||'创建失败');return}
+  ['pCode','pName','pCalls','pPrice','pDays'].forEach(id=>document.getElementById(id).value='');
+  loadPkgs();
+}
+/* ---- M3 模型成本核算 ---- */
+async function loadCost(){
+  const r=await fetch('/api/v1/super/usage/cost?days=30',AUTH), j=await r.json();
+  if(j.code!==0)return;
+  const d=j.data;
+  document.getElementById('costRange').textContent=`近${d.days}天 · 共${d.total_calls}次 / ${d.total_tokens} tokens / ¥${d.total_cost_yuan}`;
+  const body=document.getElementById('costBody');
+  if((d.models||[]).length===0){body.innerHTML='<tr><td colspan="6" style="text-align:center;color:#718096">暂无用量数据（真实AI对话后生成）</td></tr>';return}
+  body.innerHTML=d.models.map(m=>`
+    <tr><td>${m.provider}</td><td>${m.model}</td><td>${m.calls}</td>
+    <td>${m.tokens}</td><td>¥${m.cost_yuan.toFixed(4)}</td>
+    <td><div style="background:#edf2f7;border-radius:4px;overflow:hidden;width:90px;height:8px;display:inline-block;vertical-align:middle"><div style="background:#667eea;height:100%;width:${Math.min(100,m.cost_share_pct)}%"></div></div> ${m.cost_share_pct.toFixed(1)}%</td></tr>`).join('');
+}
+/* ---- M2 用户反馈 ---- */
+const FB_TYPES={ai_reply:'AI话术',feature:'功能建议',other:'其他'};
+/* 用户反馈列表（按状态筛选，含脱敏上下文） */
+async function loadFeedbacks(){
+  const st=document.getElementById('fbStatus').value;
+  const r=await fetch('/api/v1/super/feedbacks?status='+st+'&page_size=50',AUTH), j=await r.json();
+  const rows=(j.data&&j.data.list)||[];
+  const body=document.getElementById('fbBody');
+  if(rows.length===0){body.innerHTML='<tr><td colspan="7" style="text-align:center;color:#718096">暂无反馈</td></tr>';return}
+  body.innerHTML=rows.map(f=>{
+    let ctx=''; try{const c=JSON.parse(f.context||'{}');
+      ctx=[c.customer_masked?'客户:'+c.customer_masked:'',c.ai_reply_excerpt?'回复:'+(c.ai_reply_excerpt||'').slice(0,30):''].filter(Boolean).join('<br>')||'-';
+    }catch(e){ctx='-'}
+    return `<tr><td>${(f.created_at||'').replace('T',' ').slice(0,16)}</td>
+    <td>${f.tenant_name} (#${f.tenant_id})</td><td>${f.username}</td>
+    <td>${FB_TYPES[f.target_type]||f.target_type}</td>
+    <td style="max-width:220px">${f.content}</td><td style="font-size:11px;color:#718096">${ctx}</td>
+    <td>${f.status==='open'
+      ?`<button class="on" onclick="resolveFb(${f.id})">标记处理</button>`
+      :'<span style="font-size:12px;color:#718096">已处理</span>'}</td></tr>`}).join('');
+}
+/* 标记反馈已处理（可填处理备注） */
+async function resolveFb(id){
+  const note=prompt('处理备注（可空）：'); if(note===null)return;
+  await fetch('/api/v1/super/feedbacks/resolve',{method:'POST',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({id,note})});
+  loadFeedbacks();
+}
+load();loadPkgs();loadCost();loadPending();loadFeedbacks();loadAudit();
+setInterval(loadPending,30000); /* 待确认列表30秒自刷 */
 </script></body></html>

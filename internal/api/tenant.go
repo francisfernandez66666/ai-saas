@@ -2,6 +2,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -9,6 +10,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
 
 	"github.com/gin-gonic/gin"
@@ -66,6 +68,33 @@ func TenantSignup(c *gin.Context) {
 		return
 	}
 
+	// ---- 注册防薅护栏（商业化第二批 M1，借鉴翻译助手三期§3.1）----
+	// signup 即送真实 AI 调用额度，无防护=脚本批量注册直接烧钱
+	ip := c.ClientIP()
+	svc := service.DefaultSystemConfigService
+	if dailyLimit := svc.GetInt("register_ip_daily_limit", 3); dailyLimit > 0 {
+		var cnt int64
+		db.DB.Model(&model.TenantAuditLog{}).
+			Where("action = ? AND ip = ? AND created_at >= CURRENT_DATE", "tenant_signup", ip).
+			Count(&cnt)
+		if cnt >= int64(dailyLimit) {
+			log.Printf("[防薅] IP=%s 今日注册已达上限(%d)", ip, dailyLimit)
+			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该网络今日注册次数已达上限，请明日再试或联系我们"})
+			return
+		}
+	}
+	if minGap := svc.GetInt("register_ip_min_interval_sec", 60); minGap > 0 {
+		var last time.Time
+		db.DB.Model(&model.TenantAuditLog{}).
+			Select("created_at").
+			Where("action = ? AND ip = ?", "tenant_signup", ip).
+			Order("id DESC").Limit(1).Scan(&last)
+		if !last.IsZero() && time.Since(last) < time.Duration(minGap)*time.Second {
+			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "注册过于频繁，请稍后再试"})
+			return
+		}
+	}
+
 	// 默认套餐：personal（不存在则置空由超管补配）
 	var plan model.SubscriptionPlan
 	db.DB.Where("code = ?", "personal").First(&plan)
@@ -78,11 +107,18 @@ func TenantSignup(c *gin.Context) {
 
 	now := time.Now()
 	trialEnd := now.AddDate(0, 0, 7)
+	// 注册审核开关（M1）：开启时新租户进入 review 状态——不发试用包、业务接口全拦，
+	// 超管在平台后台执行「发放试用」后转 trial 放行
+	reviewMode := svc.GetBool("registration_review", false)
+	status := "trial"
+	if reviewMode {
+		status = "review"
+	}
 	ten := model.Tenant{
 		Name:           strings.TrimSpace(req.CompanyName),
 		Code:           req.Code,
 		Tier:           "personal",
-		Status:         "trial",
+		Status:         status,
 		ContactName:    req.ContactName,
 		ContactPhone:   req.ContactPhone,
 		MaxUsers:       plan.MaxUsers,
@@ -131,6 +167,13 @@ func TenantSignup(c *gin.Context) {
 		return
 	}
 
+	// 注册联动发试用包（商业化 M2）：TenantSignup 成功后自动发放 free 包，
+	// 替代裸的 trial 7 天——新租户立即可用 AI 对话，额度逐次递减可见
+	// M1 审核模式跳过：待超管 grant-trial 幂等发放
+	if !reviewMode {
+		grantTrialPackage(ten.ID)
+	}
+
 	// 审计
 	db.DB.Create(&model.TenantAuditLog{
 		TenantID: ten.ID, UserID: adminID, Action: "tenant_signup",
@@ -139,15 +182,41 @@ func TenantSignup(c *gin.Context) {
 	})
 
 	loginURL := fmt.Sprintf("/login?tenant_code=%s", req.Code)
+	msg := "试用开通成功（7 天）"
+	if reviewMode {
+		msg = "注册成功，账号审核中（通常1个工作日内完成）"
+	}
 	c.JSON(http.StatusOK, gin.H{
 		"code":    0,
-		"message": "试用开通成功（7 天）",
+		"message": msg,
 		"data": gin.H{
 			"tenant_id":   ten.ID,
 			"tenant_code": req.Code,
+			"status":      ten.Status,
 			"login_url":   loginURL,
 		},
 	})
+}
+
+// grantTrialPackage 注册联动发放免费试用包（商业化 M2）
+// 额度取系统配置 trial_ai_calls（默认500次）；无 free 包时按配置直接加月配额兜底
+func grantTrialPackage(tenantID uint) {
+	var pkg model.Package
+	if err := db.DB.Where("p_type = ? AND enabled = ?", model.PackageTypeFree, true).
+		Order("sort_order ASC").First(&pkg).Error; err == nil {
+		if err := service.GrantPackage(nil, tenantID, &pkg); err != nil {
+			log.Printf("[Signup] 试用包发放失败 tenant=%d: %v", tenantID, err)
+		}
+		return
+	}
+	// 兜底：packages 表无 free 包（seed 未跑/被删），按配置值直加月配额
+	trialCalls := 500
+	if service.DefaultSystemConfigService != nil {
+		trialCalls = service.DefaultSystemConfigService.GetInt("trial_ai_calls", 500)
+	}
+	db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
+		Update("max_ai_calls_monthly", gorm.Expr("COALESCE(max_ai_calls_monthly,0)+?", trialCalls))
+	log.Printf("[Signup] 已发放试用额度 %d 次 → 租户%d（配置兜底）", trialCalls, tenantID)
 }
 
 // CheckTenantCode GET /api/v1/tenant/check-code?code=xxx
@@ -166,11 +235,15 @@ func CheckTenantCode(c *gin.Context) {
 }
 
 // ListPlans GET /api/v1/plans （定价页公开查询）
+// 商业化 M2 扩展：data 保持 legacy subscription_plans（老定价页兼容），
+// packages 返回新商业包体系（试用/包月/增量），两者并存过渡
 func ListPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := db.DB.Where("is_active = ?", true).Order("sort_order ASC, id ASC").Find(&plans).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": plans})
+	var pkgs []model.Package
+	db.DB.Where("enabled = ?", true).Order("sort_order ASC, id ASC").Find(&pkgs)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": plans, "packages": pkgs})
 }

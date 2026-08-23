@@ -1,7 +1,9 @@
 package service
 
 import (
+	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -44,25 +46,44 @@ func RecordAICall(tenantID uint) {
 
 // CheckAIQuota 判定租户 AI 调用是否超配额
 // 返回 false 表示已超限（调用方应降级为规则话术，不发起模型请求）
+//
+// 商业化 M5 灰度（2026-08-23）：billing_enforced=false 时恒放行（照常记 usage_records），
+// 仅日志提示超额——上线初期防误伤；true 时走完整配额逻辑。
+// 扣减优先级（实施文档 §二）：
+//
+//	月配额未超(used<max) → 直接用
+//	月配额已超 且 ai_call_balance>0 → 原子扣增量余额（买断资产）
+//	都没有 → 返回 false 降级规则话术
 func CheckAIQuota(tenantID uint) bool {
 	if tenantID == 0 {
 		return true // 无租户语境（平台内部）不限
 	}
-	var row struct {
-		Used int `gorm:"column:u"`
-		Max  int `gorm:"column:m"`
-	}
-	err := db.DB.Table("tenants").
-		Select("COALESCE(used_ai_calls,0) as u, COALESCE(max_ai_calls_monthly,0) as m").
-		Where("id = ?", tenantID).Take(&row).Error
+	used, max, balance, err := GetTenantQuotaView(tenantID)
 	if err != nil {
 		log.Printf("[Usage] 配额查询失败 tenant=%d: %v", tenantID, err)
 		return true // 查询异常放行（fail-open，避免计量故障影响客户对话）
 	}
-	if row.Max == 0 {
+
+	enforced := DefaultSystemConfigService.GetBool("billing_enforced", false)
+	if !enforced {
+		if max != 0 && used >= max && balance <= 0 {
+			log.Printf("[Usage] [灰度] 租户%d 已超配额(used=%d max=%d)，billing_enforced=false 放行仅留痕", tenantID, used, max)
+		}
+		return true
+	}
+
+	if max == 0 {
 		return true // 0=不限
 	}
-	return row.Used < row.Max
+	if used < max {
+		return true // 月配额内直接用
+	}
+	// 月配额已超：尝试扣增量余额（原子 UPDATE ... WHERE balance>0，防并发超扣）
+	if DeductBalance(tenantID) {
+		log.Printf("[Usage] 租户%d 月配额已超，本次走增量余额（扣1次）", tenantID)
+		return true
+	}
+	return false
 }
 
 // ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（缺口5修复，2026-08-22）
@@ -94,4 +115,106 @@ func ResetAllTenantsMonthlyUsageIfDue() int {
 			res.RowsAffected, monthStart)
 	}
 	return int(res.RowsAffected)
+}
+
+// ============================================================
+// Token 计量底座（商业化第二批 M3）
+// usage_ledger 请求级落账：只记账不扣费——商业包"次"扣减逻辑不变；
+// 计价仅为成本核算展示口径：cost = total_tokens ÷1000 × 单价 × markup
+// ============================================================
+
+// RecordUsage 异步落账一条 LLM 调用记录（失败仅告警，绝不阻断对话主链路）
+func RecordUsage(tenantID, customerID, userID uint, stage, provider, modelName string,
+	promptTokens, completionTokens int, latencyMs int64) {
+	if tenantID == 0 || (promptTokens <= 0 && completionTokens <= 0) {
+		return // mock/规则兜底路径无用量
+	}
+	go func() {
+		defer func() { _ = recover() }()
+		total := promptTokens + completionTokens
+		cost := estimateCostMicro(provider, total)
+		row := model.UsageLedger{
+			TenantID: tenantID, CustomerID: customerID, UserID: userID,
+			Stage: stage, Provider: provider, Model: modelName,
+			PromptTokens: promptTokens, CompletionTokens: completionTokens,
+			TotalTokens: total, CostMicro: cost, LatencyMs: int(latencyMs),
+			CreatedAt: time.Now(),
+		}
+		if err := db.DB.Create(&row).Error; err != nil {
+			log.Printf("[Usage] ledger落账失败 tenant=%d: %v", tenantID, err)
+		}
+	}()
+}
+
+// estimateCostMicro 成本估算（微元）= total_tokens ÷1000 × 单价(微元/千token) × 均摊系数
+func estimateCostMicro(provider string, totalTokens int) int64 {
+	var unitPrice int64 = 8000 // 默认硅基流动档
+	if strings.Contains(strings.ToLower(provider), "zhipu") {
+		unitPrice = int64(DefaultSystemConfigService.GetInt("price_micro_per_ktok_zhipu", 15000))
+	} else {
+		unitPrice = int64(DefaultSystemConfigService.GetInt("price_micro_per_ktok_siliconflow", 8000))
+	}
+	markup := DefaultSystemConfigService.GetFloat("billing_markup_multiplier", 1.5)
+	return int64(float64(totalTokens) / 1000 * float64(unitPrice) * markup)
+}
+
+// UsageDayRow 按日聚合行
+type UsageDayRow struct {
+	Date      string `json:"date"`
+	Calls     int64  `json:"calls"`
+	Tokens    int64  `json:"tokens"`
+	CostMicro int64  `json:"cost_micro"`
+}
+
+// UsageStageRow 按阶段聚合行
+type UsageStageRow struct {
+	Stage     string `json:"stage"`
+	Calls     int64  `json:"calls"`
+	Tokens    int64  `json:"tokens"`
+	CostMicro int64  `json:"cost_micro"`
+}
+
+// UsageCostByModelRow 模型维度成本行（超管选型依据）
+type UsageCostByModelRow struct {
+	Provider  string `json:"provider"`
+	Model     string `json:"model"`
+	Calls     int64  `json:"calls"`
+	Tokens    int64  `json:"tokens"`
+	CostMicro int64  `json:"cost_micro"`
+}
+
+// UsageSummaryByDay 租户按日趋势
+func UsageSummaryByDay(tenantID uint, days int) ([]UsageDayRow, error) {
+	rows := []UsageDayRow{}
+	err := db.DB.Model(&model.UsageLedger{}).
+		Select(`TO_CHAR(created_at,'YYYY-MM-DD') AS date,
+			COUNT(*) AS calls, COALESCE(SUM(total_tokens),0) AS tokens,
+			COALESCE(SUM(cost_micro),0) AS cost_micro`).
+		Where("tenant_id = ? AND created_at >= NOW() - ?::interval", tenantID, fmt.Sprintf("%d days", days)).
+		Group("date").Order("date ASC").Scan(&rows).Error
+	return rows, err
+}
+
+// UsageStageDistribution 租户内阶段分布
+func UsageStageDistribution(tenantID uint, days int) ([]UsageStageRow, error) {
+	rows := []UsageStageRow{}
+	err := db.DB.Model(&model.UsageLedger{}).
+		Select(`COALESCE(stage,'unknown') AS stage,
+			COUNT(*) AS calls, COALESCE(SUM(total_tokens),0) AS tokens,
+			COALESCE(SUM(cost_micro),0) AS cost_micro`).
+		Where("tenant_id = ? AND created_at >= NOW() - ?::interval", tenantID, fmt.Sprintf("%d days", days)).
+		Group("stage").Order("tokens DESC").Scan(&rows).Error
+	return rows, err
+}
+
+// UsageCostByModel 全平台模型成本核算（超管）
+func UsageCostByModel(days int) ([]UsageCostByModelRow, error) {
+	rows := []UsageCostByModelRow{}
+	err := db.DB.Model(&model.UsageLedger{}).
+		Select(`provider, model, COUNT(*) AS calls,
+			COALESCE(SUM(total_tokens),0) AS tokens,
+			COALESCE(SUM(cost_micro),0) AS cost_micro`).
+		Where("created_at >= NOW() - ?::interval", fmt.Sprintf("%d days", days)).
+		Group("provider, model").Order("cost_micro DESC").Scan(&rows).Error
+	return rows, err
 }

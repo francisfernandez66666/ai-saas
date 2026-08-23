@@ -69,6 +69,36 @@ func OrgResolve() gin.HandlerFunc {
 	}
 }
 
+// MustChangePasswordGuard 首登强制改密拦截（M3，须挂在 OrgResolve 之后）
+// 标记=true 时除 change-password / auth/me 外一律 403，改密成功清除标记后自动放行
+// 注意：不走 OrgContext 缓存、每次查库——与 OpenAPI Key 校验同理保持"无缓存窗口"，
+// 否则改密后最长 30s 内仍被拦（缓存未失效），SQL 直改标记也无法即时生效
+func MustChangePasswordGuard() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := c.Request.URL.Path
+		if path == "/api/v1/auth/change-password" || path == "/api/v1/auth/me" {
+			c.Next() // 白名单：改密本身与身份查询必须可用
+			return
+		}
+		uidV, _ := c.Get("user_id")
+		uid := toUint(uidV)
+		if uid == 0 {
+			c.Next()
+			return
+		}
+		var flag bool
+		if err := db.DB.Table("tenant_users").
+			Select("COALESCE(must_change_password,false)").
+			Where("id = ?", uid).Scan(&flag).Error; err == nil && flag {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code": 403, "message": "首次登录请先修改密码（安全策略）", "data": nil,
+			})
+			return
+		}
+		c.Next()
+	}
+}
+
 // ReadonlyWriteGuard 只读角色写操作拦截（须挂在 OrgResolve 之后）
 func ReadonlyWriteGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {

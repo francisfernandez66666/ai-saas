@@ -53,6 +53,7 @@ type orgScope struct {
 	DeptPath string // 形如 "/1/5/"；tenant_admin 为 ""
 }
 
+// getOrgScope 解析组织数据范围查询参数
 func getOrgScope(c *gin.Context) orgScope {
 	s := orgScope{TenantID: db.EffectiveTenantIDFromGin(c)}
 	if v, ok := c.Get("role"); ok {

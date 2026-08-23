@@ -114,9 +114,41 @@ var DefaultConfigs = []model.SystemConfig{
 	// 用途：测试/演示场景可切到instant秒回，正式环境用normal
 	{Category: "reply_speed", Key: "reply_delay_mode", Value: "normal", ValueType: "string", Description: "回复延迟模式：normal=正常延迟，instant=秒回无延迟", DefaultValue: "normal", SortOrder: 99},
 
+	// M3 分阶段模型覆盖：便宜模型跑意图识别、强模型跑话术生成；空=走全局降级链
+	{Category: "ai_chain", Key: "stage_models", Value: "{}", ValueType: "json", Description: "分阶段模型覆盖(reply/intent/strategy各选provider+model,留空走降级链)", DefaultValue: "{}", SortOrder: 8},
 	// ---- 分类5：human_takeover（人工接管类）----
 	{Category: "human_takeover", Key: "assigned_lead_ai_auto_reply", Value: "true", ValueType: "bool", Description: "已分配线索AI自动回复开关(true=顾问超时未回时AI自动回复)", DefaultValue: "true", SortOrder: 1},
 	{Category: "human_takeover", Key: "assigned_lead_ai_timeout", Value: "300", ValueType: "number", Description: "已分配线索顾问超时时间(秒)，超时后AI自动回复", DefaultValue: "300", SortOrder: 2},
+
+	// ---- 分类6：billing（商业化类，2026-08-23 M1/M2/M5）----
+	// pay_mode 三态：mock=测试模拟到账（默认，跑通全链路）/ static_qr=静态码+人工确认 / sdk=商户号到位后切换
+	{Category: "billing", Key: "pay_mode", Value: "\"mock\"", ValueType: "string", Description: "收款模式(mock模拟到账/static_qr静态码人工确认)", DefaultValue: "\"mock\"", SortOrder: 1},
+	{Category: "billing", Key: "static_qr_image", Value: "\"\"", ValueType: "string", Description: "静态收款码(URL或base64，static_qr模式下单返回给租户)", DefaultValue: "\"\"", SortOrder: 2},
+	// 灰度开关（借翻译助手决策"默认不强制只留痕"）：false=CheckAIQuota 恒放行只记用量（上线初期防误伤）
+	{Category: "billing", Key: "billing_enforced", Value: "false", ValueType: "bool", Description: "计费强制开关(false=超额不停服仅记日志告警)", DefaultValue: "false", SortOrder: 3},
+	// 注册试用包额度：新租户注册自动发放 free 包时的 AI 调用次数
+	{Category: "billing", Key: "trial_ai_calls", Value: "500", ValueType: "number", Description: "注册试用包AI调用次数(次)", DefaultValue: "500", SortOrder: 4},
+
+	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
+	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
+	{Category: "notify", Key: "reset_code_channel", Value: "\"log\"", ValueType: "string", Description: "重置码发送通道(log=打日志需校验手机号/smtp=邮件直发)", DefaultValue: "\"log\"", SortOrder: 2},
+
+	// ---- 防薅：Turnstile 人机验证（批次三，2026-08-23 代码就绪）----
+	// 挂 C 端免登录接口 /chat/guest · /chat/test；enabled=false 或 secret 为空时完全关闭零开销
+	// 前端从 GET /api/v1/turnstile/sitekey 拿站点键渲染组件，验证令牌走 X-Turnstile-Token 头
+	{Category: "billing", Key: "billing_markup_multiplier", Value: "1.5", ValueType: "number", Description: "Token成本均摊系数(对外成本口径=真实token×系数)", DefaultValue: "1.5", SortOrder: 5},
+	{Category: "billing", Key: "price_micro_per_ktok_zhipu", Value: "15000", ValueType: "number", Description: "智谱单价(微元/千token,成本核算用)", DefaultValue: "15000", SortOrder: 6},
+	{Category: "billing", Key: "price_micro_per_ktok_siliconflow", Value: "8000", ValueType: "number", Description: "硅基流动单价(微元/千token,成本核算用)", DefaultValue: "8000", SortOrder: 7},
+	{Category: "notify", Key: "dingtalk_webhook_url", Value: "\"\"", ValueType: "string", Description: "钉钉群机器人webhook(双通道触达,与企微同时投递)", DefaultValue: "\"\"", SortOrder: 6},
+	{Category: "notify", Key: "turnstile_enabled", Value: "false", ValueType: "bool", Description: "Turnstile人机验证开关(挂C端guest/test防刷)", DefaultValue: "false", SortOrder: 3},
+	{Category: "notify", Key: "turnstile_site_key", Value: "\"\"", ValueType: "string", Description: "Turnstile站点键(前端渲染用,可公开)", DefaultValue: "\"\"", SortOrder: 4},
+	{Category: "notify", Key: "turnstile_secret_key", Value: "\"\"", ValueType: "string", Description: "Turnstile密钥(服务端siteverify用,敏感勿外泄)", DefaultValue: "\"\"", SortOrder: 5},
+
+	// ---- 防薅第二层：注册护栏（借鉴翻译助手三期§3.1，2026-08-24）----
+	// signup 即送真实 AI 调用额度=烧钱洞；三键组合：IP限流 + 审核开关（超管 grant-trial 放行）
+	{Category: "notify", Key: "register_ip_daily_limit", Value: "3", ValueType: "number", Description: "同IP每日注册租户上限(0=不限)", DefaultValue: "3", SortOrder: 6},
+	{Category: "notify", Key: "register_ip_min_interval_sec", Value: "60", ValueType: "number", Description: "同IP两次注册最小间隔秒(0=不限)", DefaultValue: "60", SortOrder: 7},
+	{Category: "notify", Key: "registration_review", Value: "false", ValueType: "bool", Description: "注册审核开关(true=新租户待审核不发试用包,超管grant-trial放行)", DefaultValue: "false", SortOrder: 8},
 }
 
 // InitSystemConfigService 初始化系统配置服务
@@ -144,9 +176,11 @@ func InitSystemConfigService() {
 func (s *SystemConfigService) ensureDefaults() {
 	inserted := 0
 	for _, cfg := range DefaultConfigs {
-		// 按key查是否已存在
+		// 按 key 查是否已存在
+		// 修复（2026-08-23）：必须限定 tenant_id=0（系统层）——只按 key 判断会因
+		// 租户覆盖行存在而误跳过，导致系统默认层缺失、全局读值静默回落代码默认
 		var existing model.SystemConfig
-		result := db.DB.Where("\"key\" = ?", cfg.Key).First(&existing)
+		result := db.DB.Where("tenant_id = 0 AND \"key\" = ?", cfg.Key).First(&existing)
 		if result.Error != nil {
 			// 不存在，插入默认值
 			if err := db.DB.Create(&cfg).Error; err != nil {
@@ -415,6 +449,7 @@ func (s *SystemConfigService) BatchUpdateForTenant(tenantID uint, items []Config
 	return nil
 }
 
+// GetFloat 获取 float 配置值（key 不存在回退默认值）
 func (s *SystemConfigService) GetFloat(key string, defaultValue float64) float64 {
 	s.mu.RLock()
 	val, exists := s.cache[key]
@@ -583,8 +618,10 @@ func (s *SystemConfigService) BatchUpdate(items []ConfigUpdateItem) error {
 			continue
 		}
 
+		// 修复（2026-08-23）：限定系统默认层(tenant_id=0)——本方法语义是"写系统层"，
+		// 不带租户过滤会误改所有租户覆盖行
 		result := db.DB.Model(&model.SystemConfig{}).
-			Where("\"key\" = ?", item.Key).
+			Where("tenant_id = 0 AND \"key\" = ?", item.Key).
 			Update("value", item.Value)
 		if result.Error != nil {
 			log.Printf("[系统配置] 更新失败: key=%s, error=%v", item.Key, result.Error)
@@ -602,10 +639,11 @@ func (s *SystemConfigService) BatchUpdate(items []ConfigUpdateItem) error {
 
 // ResetAll 恢复所有配置为默认值
 // 用DefaultConfigs中的DefaultValue覆盖当前Value
+// 修复（2026-08-23）：限定系统默认层(tenant_id=0)，租户覆盖层不动
 func (s *SystemConfigService) ResetAll() error {
 	for _, cfg := range DefaultConfigs {
 		result := db.DB.Model(&model.SystemConfig{}).
-			Where("\"key\" = ?", cfg.Key).
+			Where("tenant_id = 0 AND \"key\" = ?", cfg.Key).
 			Update("value", cfg.DefaultValue)
 		if result.Error != nil {
 			log.Printf("[系统配置] 重置失败: key=%s, error=%v", cfg.Key, result.Error)
@@ -625,6 +663,30 @@ func (s *SystemConfigService) ResetAll() error {
 type ConfigUpdateItem struct {
 	Key   string `json:"key" binding:"required"`   // 配置键名
 	Value string `json:"value" binding:"required"` // 新值（JSON字符串）
+}
+
+// PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）
+// 语义：这些参数是平台层开关（收款模式/计费灰度/触达通道），与单个租户无关，
+// 必须写系统默认层(tenant_id=0)且仅超管可改——绝不允许落入租户覆盖层，
+// 否则读取端(GetString系统层)看不到变更，且任一租户管理员可改全站收款方式
+var PlatformLevelKeys = map[string]bool{
+	"pay_mode":                        true,
+	"static_qr_image":                 true,
+	"billing_enforced":                true,
+	"trial_ai_calls":                  true,
+	"wecom_webhook_url":               true,
+	"reset_code_channel":              true,
+	"turnstile_enabled":               true,
+	"turnstile_site_key":              true,
+	"turnstile_secret_key":            true,
+	"register_ip_daily_limit":         true,
+	"register_ip_min_interval_sec":    true,
+	"registration_review":             true,
+	"dingtalk_webhook_url":            true,
+	"billing_markup_multiplier":       true,
+	"price_micro_per_ktok_zhipu":      true,
+	"price_micro_per_ktok_siliconflow": true,
+	"stage_models":                    true,
 }
 
 // GetInterval 解析[min,max]格式的配置项，返回区间内的随机整数值

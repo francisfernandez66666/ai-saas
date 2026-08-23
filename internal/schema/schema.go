@@ -7,9 +7,10 @@ package schema
 
 // Response 通用响应结构
 type Response struct {
-	Code    int         `json:"code"`    // 状态码: 0-成功, 其他-失败
-	Message string      `json:"message"` // 消息
-	Data    interface{} `json:"data"`    // 数据
+	Code       int         `json:"code"`                 // 状态码: 0-成功, 其他-失败
+	Error_code string      `json:"error_code,omitempty"` // 机器可读错误码（M4 OpenAPI规范化：bad_request/not_found/...）
+	Message    string      `json:"message"`              // 消息
+	Data       interface{} `json:"data"`                 // 数据
 }
 
 // PageResponse 分页响应结构

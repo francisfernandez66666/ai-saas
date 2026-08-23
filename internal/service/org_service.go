@@ -26,12 +26,13 @@ import (
 
 // OrgContext 用户组织上下文
 type OrgContext struct {
-	UserID   uint
-	TenantID uint
-	Role     string // super_admin/tenant_admin/dept_admin/user/readonly（DB 实时值）
-	Status   int    // 1=正常 0=禁用
-	DeptID   uint   // 挂载部门（0=未挂载，仅 tenant_admin 允许）
-	DeptPath string // 物化路径 "/1/5/"；直属租户层为空串
+	UserID             uint
+	TenantID           uint
+	Role               string // super_admin/tenant_admin/dept_admin/user/readonly（DB 实时值）
+	Status             int    // 1=正常 0=禁用
+	DeptID             uint   // 挂载部门（0=未挂载，仅 tenant_admin 允许）
+	DeptPath           string // 物化路径 "/1/5/"；直属租户层为空串
+	MustChangePassword bool   // 首登强制改密标记（M3，改密成功后清除）
 }
 
 type orgCacheEntry struct {
@@ -92,15 +93,16 @@ func LoadOrgContext(userID uint) *OrgContext {
 // loadOrgFromDB 查库组装（LEFT JOIN 部门取 path）
 func loadOrgFromDB(userID uint) *OrgContext {
 	var row struct {
-		ID       uint
-		TenantID *uint
-		Role     string
-		Status   int
-		DeptID   *uint
-		Path     *string
+		ID                 uint
+		TenantID           *uint
+		Role               string
+		Status             int
+		DeptID             *uint
+		Path               *string
+		MustChangePassword bool
 	}
 	err := db.DB.Table("tenant_users u").
-		Select("u.id, u.tenant_id, u.role, u.status, u.department_id as dept_id, d.path as path").
+		Select("u.id, u.tenant_id, u.role, u.status, u.department_id as dept_id, d.path as path, COALESCE(u.must_change_password,false) as must_change_password").
 		Joins("LEFT JOIN departments d ON u.department_id = d.id").
 		Where("u.id = ?", userID).
 		Take(&row).Error
@@ -111,10 +113,11 @@ func loadOrgFromDB(userID uint) *OrgContext {
 		return nil
 	}
 	oc := &OrgContext{
-		UserID:   row.ID,
-		Role:     row.Role,
-		Status:   row.Status,
-		DeptPath: "",
+		UserID:             row.ID,
+		Role:               row.Role,
+		Status:             row.Status,
+		DeptPath:           "",
+		MustChangePassword: row.MustChangePassword,
 	}
 	if row.TenantID != nil {
 		oc.TenantID = *row.TenantID

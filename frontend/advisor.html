@@ -132,6 +132,8 @@
         </div>
         <!-- AI文案开关 -->
         <div class="flex items-center space-x-2">
+          <!-- M2 顶栏额度展示：月配额+增量余额（点击进收银台） -->
+          <span id="quotaBadge" class="hidden text-xs text-gray-500 bg-gray-100 rounded-full px-2.5 py-1 cursor-pointer hover:bg-indigo-50" onclick="location.href='/billing'" title="本月AI调用配额与买断余额"></span>
           <span class="text-xs text-gray-500">AI文案</span>
           <label class="toggle-switch">
             <input type="checkbox" checked id="aiCopySwitch" onchange="toggleAICopy()">
@@ -415,6 +417,7 @@
       if (!name || name.startsWith('访客_')) return '客户';
       return name;
     }
+    // 取名字首字作头像
     function displayInitial(name) {
       if (!name || name.startsWith('访客_')) return '客';
       return name[0] || '?';
@@ -435,6 +438,7 @@
       return res;
     }
 
+    // 登录遮罩（切换账号入口）
     function showLoginGate(errMsg) {
       document.getElementById('loginGate').classList.remove('hidden');
       const errEl = document.getElementById('loginError');
@@ -446,6 +450,7 @@
       }
     }
 
+    // 内联登录：校验销售/管理员角色
     async function doLogin() {
       const username = document.getElementById('loginUsername').value.trim();
       const password = document.getElementById('loginPassword').value;
@@ -566,6 +571,9 @@
       const params = new URLSearchParams(window.location.search);
       if (params.get('user_id')) userId = parseInt(params.get('user_id'));
 
+      // M2 顶栏额度徽标（静默失败不影响主流程）
+      loadQuotaBadge();
+
       try {
         await Promise.all([loadStats(), loadFollowups(), loadCustomers()]);
         loadAllTags();
@@ -585,6 +593,21 @@
       const dateStr = (today.getMonth() + 1) + '月' + today.getDate() + '日';
       const el = document.getElementById('followupDate');
       if (el) el.textContent = dateStr;
+    }
+
+    // M2（商业化）：顶栏额度徽标——月配额用量+买断余额，点击跳收银台
+    async function loadQuotaBadge() {
+      if (!authToken) return;
+      try {
+        const r = await fetch('/api/v1/billing/my-package', { headers: { 'Authorization': 'Bearer ' + authToken } });
+        if (!r.ok) return;
+        const j = await r.json();
+        if (j.code !== 0) return;
+        const d = j.data, badge = document.getElementById('quotaBadge');
+        badge.textContent = `⚡${d.used_ai_calls}/${d.max_ai_calls || '∞'}` +
+          (d.ai_call_balance > 0 ? ` +${d.ai_call_balance}` : '');
+        badge.classList.remove('hidden');
+      } catch (e) { /* 静默 */ }
     }
 
     // ============================================================
@@ -667,6 +690,7 @@
       loadCustomers();
     }
 
+    // 拉取工作台客户列表
     async function loadCustomers() {
       try {
         // 修复：不再传user_id，后端JWT中间件自动识别顾问身份
@@ -723,6 +747,7 @@
       }
     }
 
+    // 打开客户详情页（含聊天记录/试驾单）
     async function openCustomerDetail(id) {
       // 修复问题3：切换客户前先停掉旧的轮询
       stopDetailPolling();
@@ -813,6 +838,7 @@
       if (tagPollInterval) { clearInterval(tagPollInterval); tagPollInterval = null; }
     }
 
+    // 客户详情信息渲染
     function renderCustomerDetail(detail) {
       const c = detail.customer;
 
@@ -994,6 +1020,7 @@
       renderDetailChatHistory(chatMessages);
     }
 
+    // 聊天记录气泡渲染（AI消息带反馈按钮）
     function renderDetailChatHistory(msgs) {
       const container = document.getElementById('detailChatHistory');
       if (!container) return;
@@ -1021,6 +1048,9 @@
           const senderLabel = isHuman ? '我' : 'AI';
           const bgColor = isHuman ? 'bg-blue-500' : 'bg-green-500';
           const labelBg = isHuman ? 'bg-blue-100 text-blue-600' : 'bg-green-100 text-green-600';
+          // M2 反馈按钮：仅 AI 回复气泡下缘展示
+          const fbBtn = isHuman ? '' :
+            `<button onclick="openFeedback(${msg.id},'${esc(msg.content).replace(/'/g,"\\'")}')" class="text-[9px] text-gray-300 hover:text-indigo-500 mt-0.5">反馈</button>`;
           return `<div class="flex items-start space-x-2 justify-end">
             <span class="text-[9px] text-gray-300 mt-1 flex-shrink-0">${formatTime(msg.created_at)}</span>
             <div class="flex flex-col items-end">
@@ -1028,6 +1058,7 @@
               <div class="${bgColor} rounded-lg px-3 py-1.5 max-w-[75%]">
                 <p class="text-xs text-white">${esc(msg.content)}</p>
               </div>
+              ${fbBtn}
             </div>
           </div>`;
         }
@@ -1050,6 +1081,7 @@
       } catch (e) { console.error('加载试驾单失败:', e); }
     }
 
+    // 试驾单列表渲染
     function renderTestDrives(list) {
       const container = document.getElementById('detailTestDrives');
       if (!container) return;
@@ -1077,6 +1109,7 @@
       }).join('');
     }
 
+    // 打开创建试驾单弹窗
     function openTestDriveModal() {
       const c = customerDetail?.customer;
       document.getElementById('tdCustomerName').value = c ? displayName(c.name) : '';
@@ -1088,10 +1121,12 @@
       document.getElementById('testDriveModal').classList.remove('hidden');
     }
 
+    // 关闭试驾单弹窗
     function closeTestDriveModal() {
       document.getElementById('testDriveModal').classList.add('hidden');
     }
 
+    // 提交创建试驾单
     async function createTestDrive() {
       const c = customerDetail?.customer;
       if (!c || !currentCustomerId) { showToast('请先选择客户', 'error'); return; }
@@ -1213,6 +1248,7 @@
       }
     }
 
+    // AI自动回复开关切换
     async function toggleAiReply() {
       if (!currentConversationId) {
         showToast('暂无活跃会话', 'info');
@@ -1272,6 +1308,7 @@
       } catch (e) { console.error(e); }
     }
 
+    // 跟进提醒条目渲染
     function renderFollowupItem(f) {
       return `<div class="bg-white rounded-lg border border-gray-100 p-3 flex items-center space-x-3 cursor-pointer"
         onclick="openCustomerDetail(${f.customer_id})">
@@ -1306,8 +1343,10 @@
       `;
       document.getElementById('editModal').classList.remove('hidden');
     }
+    // 关闭客户编辑弹窗
     function closeEditModal() { document.getElementById('editModal').classList.add('hidden'); }
 
+    // 保存客户资料修改
     async function saveCustomerEdit() {
       if (!currentCustomerId) return;
       const body = {};
@@ -1346,8 +1385,10 @@
       document.getElementById('followupTime').value = tomorrow.toISOString().slice(0, 16);
       document.getElementById('followupModal').classList.remove('hidden');
     }
+    // 关闭跟进提醒弹窗
     function closeFollowupModal() { document.getElementById('followupModal').classList.add('hidden'); }
 
+    // 提交跟进提醒
     async function saveFollowup() {
       if (!currentCustomerId) return;
       const method = document.getElementById('followupMethod').value;
@@ -1387,6 +1428,7 @@
       } catch (e) { console.error(e); }
     }
 
+    // 打开标签编辑弹窗
     function openTagModal() {
       const tagNames = allAvailableTags.map(t => t.name);
       const container = document.getElementById('tagEditContent');
@@ -1401,8 +1443,10 @@
       document.getElementById('newTagInput').value = '';
       document.getElementById('tagModal').classList.remove('hidden');
     }
+    // 关闭标签编辑弹窗
     function closeTagModal() { document.getElementById('tagModal').classList.add('hidden'); }
 
+    // 新增自定义标签到勾选区
     function addNewTag() {
       const input = document.getElementById('newTagInput');
       const name = input.value.trim();
@@ -1417,6 +1461,7 @@
       input.value = '';
     }
 
+// 保存客户标签（触发权重反馈）
 async function saveTags() {
       if (!currentCustomerId) return;
       const checked = Array.from(document.querySelectorAll('.tag-checkbox:checked')).map(cb => cb.value);
@@ -1458,8 +1503,6 @@ async function saveTags() {
         showToast(feedbackParts.join('，') + '，系统将根据反馈调整权重', 'info');
       }
     }
-      } catch (e) { showToast('更新失败', 'error'); }
-    }
 
     // ============================================================
     // AI文案开关
@@ -1479,6 +1522,7 @@ async function saveTags() {
       return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
     }
 
+    // 时间短格式化
     function formatShortTime(t) {
       if (!t) return '';
       const d = new Date(t);
@@ -1489,6 +1533,7 @@ async function saveTags() {
       return (d.getMonth() + 1) + '/' + d.getDate();
     }
 
+    // HTML转义（防XSS）
     function esc(str) {
       if (!str) return '';
       const d = document.createElement('div');
@@ -1496,6 +1541,7 @@ async function saveTags() {
       return d.innerHTML.replace(/\n/g, '<br>');
     }
 
+    // Toast轻提示（info/success/error）
     function showToast(msg, type) {
       const t = document.getElementById('toast');
       t.textContent = msg;
@@ -1529,5 +1575,54 @@ async function saveTags() {
       if (savedId) userId = parseInt(savedId);
     })();
   </script>
+
+<!-- M2 反馈弹窗（AI话术反馈，可勾选附带脱敏上下文） -->
+<div id="fbModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:center;justify-content:center">
+  <div class="bg-white rounded-xl p-5 w-[92vw] max-w-sm">
+    <h3 class="text-base font-semibold text-gray-800 mb-1">意见反馈</h3>
+    <p class="text-xs text-gray-400 mb-3" id="fbCtxPreview"></p>
+    <textarea id="fbContent" maxlength="1000" rows="4" placeholder="说说这条AI回复的问题或建议（最多1000字）"
+      class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-indigo-300 mb-2"></textarea>
+    <label class="flex items-center space-x-2 text-xs text-gray-500 mb-3">
+      <input type="checkbox" id="fbWithContext" checked>
+      <span>附带上下文（该条回复摘要+客户脱敏信息，仅平台处理质量问题时可见）</span>
+    </label>
+    <div class="flex space-x-2">
+      <button onclick="document.getElementById('fbModal').classList.add('hidden')" class="flex-1 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">取消</button>
+      <button onclick="submitFeedback()" class="flex-1 py-2 rounded-lg text-sm bg-indigo-500 text-white">提交反馈</button>
+    </div>
+  </div>
+</div>
+<script>
+let fbRefId = 0;
+// 打开AI话术反馈弹窗（M2）
+function openFeedback(msgId, excerpt) {
+  fbRefId = msgId;
+  const preview = document.getElementById('fbCtxPreview');
+  preview.textContent = '针对AI回复：' + (excerpt.length > 40 ? excerpt.slice(0,40) + '...' : excerpt);
+  document.getElementById('fbContent').value = '';
+  document.getElementById('fbModal').style.display = 'flex';
+}
+// 提交反馈到 /feedback（20条/天限流）
+async function submitFeedback() {
+  const content = document.getElementById('fbContent').value.trim();
+  if (!content) { alert('请填写反馈内容'); return; }
+  try {
+    const res = await apiFetch(API + '/feedback', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        target_type: 'ai_reply', ref_id: fbRefId, content: content,
+        with_context: document.getElementById('fbWithContext').checked
+      })
+    });
+    const j = await res.json();
+    if (j.code === 0) {
+      document.getElementById('fbModal').style.display = 'none';
+      alert('感谢反馈！我们会尽快处理');
+    } else { alert(j.message || '提交失败'); }
+  } catch (e) { alert('提交失败，请检查网络'); }
+}
+</script>
+
 </body>
 </html>

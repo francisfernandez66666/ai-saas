@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<!-- AI-SCRM 收银台（商业化第一批 M1/M2，2026-08-23）
+     功能：我的额度展示 → 商业包订阅 → 订单轮询 → mock模拟支付 / static_qr「我已付费」 -->
+<html lang="zh-CN"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>订阅与收银台 · AI-SCRM</title><style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,'PingFang SC',sans-serif;background:#f5f7fa;min-height:100vh;padding:24px;color:#2d3748}
+h2{margin-bottom:4px}.sub{color:#718096;font-size:13px;margin-bottom:20px}
+.top{display:flex;justify-content:space-between;align-items:center;margin-bottom:18px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px;margin-bottom:28px}
+.pkg{background:#fff;border-radius:12px;padding:20px;box-shadow:0 3px 14px rgba(0,0,0,.06);position:relative;display:flex;flex-direction:column}
+.pkg .price{font-size:24px;font-weight:800;margin:8px 0}.pkg .price small{font-size:12px;color:#718096;font-weight:400}
+.pkg p{font-size:13px;color:#718096;margin:8px 0 14px;flex:1}
+.badge{position:absolute;top:-8px;right:10px;background:#667eea;color:#fff;font-size:11px;padding:2px 9px;border-radius:10px}
+button{padding:9px 14px;border:none;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600}
+.buy{background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;width:100%}
+.buy:disabled{opacity:.5;cursor:not-allowed}
+table{width:100%;background:#fff;border-radius:10px;border-collapse:collapse;overflow:hidden;box-shadow:0 3px 14px rgba(0,0,0,.06)}
+th,td{padding:10px 12px;text-align:left;font-size:13px;border-bottom:1px solid #edf2f7}
+th{background:#fafafa;color:#4a5568}
+.st{padding:2px 9px;border-radius:10px;font-size:12px}
+.pending{background:#feebc8;color:#975a16}.paid{background:#c6f6d5;color:#276749}
+.quota-box{background:#fff;border-radius:12px;padding:16px 22px;box-shadow:0 3px 14px rgba(0,0,0,.06);display:flex;gap:34px;margin-bottom:26px;flex-wrap:wrap}
+.qv{text-align:center}.qv b{font-size:22px;display:block;color:#4c51bf}.qv span{font-size:12px;color:#718096}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:99}
+.modal.show{display:flex}
+.mcard{background:#fff;border-radius:14px;padding:26px;width:min(380px,92vw)}
+.qr{background:#f6f8ff;border:1px dashed #b794f4;border-radius:10px;padding:18px;text-align:center;margin:14px 0;font-size:13px;word-break:break-all}
+.btnrow{display:flex;gap:10px}.btnrow button{flex:1}
+.sec{background:#fff7ed;color:#c05621;border:none}.ok{background:#48bb78;color:#fff}
+.msg{font-size:13px;margin-top:10px;min-height:16px;color:#e53e3e}
+a{color:#667eea;text-decoration:none}
+</style></head><body>
+<div class="top"><div><h2>订阅与收银台</h2><div class="sub">AI 调用按"次"计费 · 增量包买断不过期</div></div>
+<div><span id="payModeTag" style="font-size:12px;color:#718096"></span>　<a href="/">首页</a></div></div>
+
+<!-- 我的额度（顶栏展示数据同源） -->
+<div class="quota-box" id="quotaBox">加载中...</div>
+
+<h2 style="font-size:17px">商业包</h2><p class="sub">试用包注册自动发放；包月包到期顺延；加油包入余额池</p>
+<div class="grid" id="pkgGrid"></div>
+
+<h2 style="font-size:17px">我的订单</h2><p class="sub">待支付订单可继续操作；已到账订单权益即时发放</p>
+<table><thead><tr><th>订单号</th><th>金额</th><th>渠道</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+<tbody id="orderBody"></tbody></table>
+
+<!-- 支付弹窗：mock=模拟支付按钮 / static_qr=收款码+我已付费 -->
+<div class="modal" id="payModal"><div class="mcard">
+<h3 style="margin-bottom:6px">订单支付</h3>
+<p style="font-size:13px;color:#718096" id="pmOrderNo"></p>
+<div class="qr" id="pmQR"></div>
+<div class="msg" id="pmMsg"></div>
+<div class="btnrow">
+  <button class="sec" onclick="closeModal()">取消</button>
+  <button class="sec" onclick="manualConfirm()">我已付费</button>
+  <button class="ok" id="btnMockPay" onclick="mockPay()">模拟支付(测试)</button>
+</div>
+</div></div>
+
+<script>
+const token=sessionStorage.getItem('token');
+if(!token){location.href='/login'}
+const AUTH={headers:{'Authorization':'Bearer '+token}};
+let PAY_MODE='mock', currentOrder=null;
+
+/* 我的额度 */
+async function loadQuota(){
+  const r=await fetch('/api/v1/billing/my-package',AUTH);
+  const j=await r.json();
+  if(j.code!==0)return;
+  const d=j.data;
+  document.getElementById('quotaBox').innerHTML=`
+    <div class="qv"><b>${d.tenant_name}</b><span>${d.status==='trial'?'试用中':d.status}</span></div>
+    <div class="qv"><b>${d.used_ai_calls} / ${d.max_ai_calls||'∞'}</b><span>本月AI调用(次)</span></div>
+    <div class="qv"><b>${d.ai_call_balance}</b><span>增量余额(买断)</span></div>
+    <div class="qv"><b>${d.expired_at?new Date(d.expired_at).toLocaleDateString():'-'}</b><span>套餐到期日</span></div>`;
+}
+
+/* 商业包列表 */
+async function loadPkgs(){
+  const r=await fetch('/api/v1/packages'), j=await r.json();
+  const list=j.data||[];
+  const names={free:'注册赠送',paid:'包月',increment:'买断'};
+  document.getElementById('pkgGrid').innerHTML=list.filter(p=>p.p_type!=='free').map(p=>`
+    <div class="pkg">${p.p_type==='increment'?'<span class="badge">热卖</span>':''}
+    <b>${p.name}</b>
+    <div class="price">${p.price_cents>0?'¥'+(p.price_cents/100).toFixed(0):'免费'}<small>${p.p_type==='paid'?'/月':''}</small></div>
+    <p>${p.description||''}<br>含 ${p.ai_calls} 次AI调用${p.duration_days?` · ${p.duration_days}天有效期`:' · 永不过期'}</p>
+    <button class="buy" onclick="subscribe(${p.id})">立即订阅 (${names[p.p_type]})</button></div>`).join('');
+}
+
+/* 订阅商业包：free直发；paid/increment生成订单并打开支付弹窗 */
+async function subscribe(pkgId){
+  const r=await fetch('/api/v1/billing/subscribe',{method:'POST',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({package_id:pkgId})});
+  const j=await r.json();
+  if(j.code!==0){alert(j.message||'订阅失败');return}
+  if(j.data.granted){alert('试用包已发放');loadAll();return}
+  openPay(j.data.order,j.data.pay_mode);
+}
+
+/* 打开支付弹窗：按 pay_mode 渲染 */
+function openPay(order,payMode){
+  currentOrder=order; PAY_MODE=payMode||'mock';
+  document.getElementById('pmOrderNo').textContent=`订单 ${order.order_no} · 应付 ¥${(order.amount_cents/100).toFixed(2)}`;
+  const qr=document.getElementById('pmQR');
+  qr.textContent = order.qr_content && !order.qr_content.startsWith('{')
+    ? order.qr_content : '请扫码支付（收款码未配置时请联系平台）';
+  document.getElementById('btnMockPay').style.display = PAY_MODE==='mock' ? '' : 'none';
+  document.getElementById('pmMsg').textContent='';
+  document.getElementById('payModal').classList.add('show');
+}
+/* 关闭弹窗并刷新订单/额度（支付结果即时可见） */
+function closeModal(){document.getElementById('payModal').classList.remove('show');loadOrders();loadQuota()}
+
+/* mock模式：模拟到账 → 权益即时发放 */
+async function mockPay(){
+  const r=await fetch('/api/v1/billing/orders/mock-pay',{method:'POST',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({order_id:currentOrder.id})});
+  const j=await r.json();
+  document.getElementById('pmMsg').textContent=j.message;
+  document.getElementById('pmMsg').style.color=j.code===0?'#38a169':'#e53e3e';
+  if(j.code===0)setTimeout(closeModal,900);
+}
+/* static_qr模式：「我已付费」→ 超管人工核实后发放 */
+async function manualConfirm(){
+  const r=await fetch('/api/v1/billing/manual-confirm',{method:'POST',headers:{...AUTH.headers,'Content-Type':'application/json'},
+    body:JSON.stringify({order_id:currentOrder.id})});
+  const j=await r.json();
+  document.getElementById('pmMsg').textContent=j.message;
+  document.getElementById('pmMsg').style.color=j.code===0?'#38a169':'#e53e3e';
+}
+
+/* 订单列表：服务端按租户锚定（修复：原 sessionStorage 本地清单换设备丢历史） */
+async function loadOrders(){
+  const body=document.getElementById('orderBody');
+  let rows=[];
+  try{
+    const r=await fetch('/api/v1/billing/orders?limit=50',AUTH);
+    const j=await r.json();
+    if(j.code===0)rows=j.data||[];
+  }catch(e){}
+  if(rows.length===0){body.innerHTML='<tr><td colspan="6" style="text-align:center;color:#718096">暂无订单，订阅商业包后生成</td></tr>';return}
+  const chNames={mock:'模拟',manual:'静态码人工',wechat:'微信',alipay:'支付宝'};
+  body.innerHTML=rows.map(o=>`
+    <tr><td>${o.order_no}</td><td>¥${(o.amount_cents/100).toFixed(2)}<br><span style="font-size:11px;color:#718096">${o.package_name||''}</span></td>
+    <td>${chNames[o.channel]||o.channel||'-'}</td>
+    <td><span class="st ${o.status==='pending'?'pending':'paid'}">${o.status==='pending'?(o.manual_confirm?'待平台确认':'待支付'):o.status}</span></td>
+    <td>${new Date(o.created_at).toLocaleString()}</td>
+    <td>${o.status==='pending'?`<button style="background:#667eea;color:#fff" onclick='openPay(${JSON.stringify(o)},"${PAY_MODE}")'>继续支付</button>`:'已完成'}</td></tr>`).join('');
+}
+
+/* 三区块统一刷新入口 */
+function loadAll(){loadQuota();loadPkgs();loadOrders()}
+/* 页面初始化：读取pay_mode展示收款提示 + 启动15s轮询 */
+(async function init(){
+  // 读当前 pay_mode 展示提示（生产环境隐藏 mock 入口由后端403双保险兜底）
+  const r=await fetch('/api/v1/billing/my-package',AUTH),j=await r.json();
+  if(j.code===0){
+    PAY_MODE=j.data.pay_mode;
+    document.getElementById('payModeTag').textContent=
+      PAY_MODE==='static_qr'?'收款方式：扫码转账+平台人工确认':PAY_MODE==='sdk'?'收款方式：在线支付':'测试环境：支持模拟支付';
+  }
+  loadAll();
+  // 收银台自动轮询：待支付/待平台确认订单状态变化时无需手动刷新
+  pollTimer=setInterval(()=>{loadOrders();loadQuota()},15000);
+})();
+</script></body></html>

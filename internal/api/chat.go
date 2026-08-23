@@ -62,6 +62,7 @@ import (
 // 8. 更新会话状态
 // 9. 返回结果
 
+// Chat POST /api/v1/chat 正式对话入口（JWT链；硬边界→快速通道→简单消息→合并队列四层分流）
 func Chat(c *gin.Context) {
 	// 修复：记录请求开始时间，用于总延迟2分钟硬顶兜底
 	requestStart := time.Now()
@@ -2009,6 +2010,7 @@ func publishConversationMsg(tenantID uint, customerID uint, route string) {
 	}
 }
 
+// CreateGuest POST /api/v1/chat/guest 访客自动注册（免登录；TurnstileGuard 视开关前置拦截）
 func CreateGuest(c *gin.Context) {
 	// 生成唯一访客名：访客_后4位随机数
 	rand.Seed(time.Now().UnixNano())

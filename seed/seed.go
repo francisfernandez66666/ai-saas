@@ -6,6 +6,8 @@ import (
 	"ai-scrm/pkg/utils"
 	"encoding/json"
 	"log"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 // ============================================================
@@ -25,6 +27,7 @@ func InitSeedData() {
 	// 修复：原先租户创建嵌在 seedUsers 内，已有用户数据时提前 return 导致租户永远建不出来
 	seedTenants()
 	seedSubscriptionPlans()
+	seedPackages()
 	seedUsers()
 	seedTags()
 	seedTagRules()
@@ -74,6 +77,39 @@ func seedTenants() {
 	log.Println("已创建默认租户：name=rox-sales code=default")
 }
 
+// ============================================================
+// 1.5 商业包预置（商业化 M2，2026-08-23）：4 档演示包
+// 幂等：按 code 判断存在则跳过（后台可改价格，seed 不回写覆盖运营配置）
+// ============================================================
+func seedPackages() {
+	packages := []model.Package{
+		{Code: "trial_500", Name: "注册试用包", PType: model.PackageTypeFree, AICalls: 500, PriceCents: 0, DurationDays: 0,
+			Description: "注册即送500次AI对话，体验完整智能接待能力", SortOrder: 1},
+		{Code: "starter_1000", Name: "入门包月", PType: model.PackageTypePaid, AICalls: 1000, PriceCents: 9900, DurationDays: 30,
+			Description: "每月1000次AI调用，适合1-5人销售团队", SortOrder: 2},
+		{Code: "std_5000", Name: "标准包月", PType: model.PackageTypePaid, AICalls: 5000, PriceCents: 39900, DurationDays: 30,
+			Description: "每月5000次AI调用，适合10人以上团队规模化使用", SortOrder: 3},
+		{Code: "booster_1000", Name: "AI加油包", PType: model.PackageTypeIncrement, AICalls: 1000, PriceCents: 19900, DurationDays: 0,
+			Description: "一次性充值1000次AI调用额度，买断制不过期", SortOrder: 4},
+	}
+	inserted := 0
+	for i := range packages {
+		var count int64
+		db.DB.Model(&model.Package{}).Where("code = ?", packages[i].Code).Count(&count)
+		if count > 0 {
+			continue
+		}
+		if err := db.DB.Create(&packages[i]).Error; err != nil {
+			log.Printf("创建商业包 %s 失败: %v", packages[i].Code, err)
+			continue
+		}
+		inserted++
+	}
+	if inserted > 0 {
+		log.Printf("已预置 %d 个商业包（试用/包月/增量）", inserted)
+	}
+}
+
 func seedUsers() {
 	var count int64
 	db.DB.Model(&model.User{}).Count(&count)
@@ -86,6 +122,22 @@ func seedUsers() {
 			db.DB.Save(&admin)
 			log.Println("检测到老管理员 role='admin'，已自动升级为 super_admin")
 		}
+		// M3 存量补齐：仍在用出厂弱密码的默认账号补置首登强改密标记
+		// 注意：必须校验密码哈希确实等于出厂值，否则用户已自改密码会被误标记
+		for _, name := range []string{"admin", "sales1", "sales2", "sales3"} {
+			var u model.User
+			if err := db.DB.Where("username = ?", name).First(&u).Error; err != nil {
+				continue
+			}
+			factoryPwd := "sales123"
+			if name == "admin" {
+				factoryPwd = "admin123"
+			}
+			if bcrypt.CompareHashAndPassword([]byte(u.PasswordHash), []byte(factoryPwd)) == nil {
+				db.DB.Model(&u).Update("must_change_password", true)
+				log.Printf("出厂弱密码账号 %s 已置首登强改密标记（M3 安全策略）", name)
+			}
+		}
 		log.Println("用户数据已存在，跳过写入")
 		return
 	}
@@ -96,6 +148,7 @@ func seedUsers() {
 	defaultTenantID := defaultTenant.ID
 
 	// 管理员 - role=super_admin，tenant_id=0 表示超级管理员（全局不受租户隔离约束）
+	// M3：默认演示账号 must_change_password=true（首登强制改密）
 	adminPwd, _ := utils.HashPassword("admin123")
 	admin := &model.User{
 		Username:     "admin",
@@ -107,6 +160,7 @@ func seedUsers() {
 		Department:   "运营部",
 		TenantID:     nil, // NULL 表示超级管理员
 		Status:       1,
+		MustChangePassword: true,
 	}
 	db.DB.Create(admin)
 	log.Println("已创建超级管理员: admin (role=super_admin, tenant_id=NULL)")
@@ -126,6 +180,7 @@ func seedUsers() {
 			Department:   "销售部",
 			TenantID:     &defaultTenantID, // 归属默认租户
 			Status:       1,
+			MustChangePassword: true, // M3：演示账号同样首登强改密
 		}
 		db.DB.Create(sales)
 		log.Println("已创建销售账号: sales" + string(rune('1'+i)) + " (tenant_id=" + string(rune('1'+defaultTenantID)) + ")")

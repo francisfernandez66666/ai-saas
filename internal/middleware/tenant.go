@@ -260,6 +260,7 @@ func resolveTenant(c *gin.Context) *model.Tenant {
 // skipTenantPaths 不需要租户上下文的路径（精确匹配）
 var skipTenantPaths = map[string]bool{
 	"/health":      true,
+	"/status":      true, // M4 状态页：免鉴权无敏感信息
 	"/":            true,
 	"/pricing":     true,
 	"/register":    true,
@@ -287,6 +288,12 @@ func TenantResolver() gin.HandlerFunc {
 
 		path := c.Request.URL.Path
 		if skipTenantPaths[path] {
+			c.Next()
+			return
+		}
+		// OpenAPI 独立路由组（M4）：租户来自 API Key 归属而非 Host，
+		// 由 OpenAPIAuth 中间件自行注入，跳过 Host 解析（渠道回调无租户头同理）
+		if strings.HasPrefix(path, "/openapi/") {
 			c.Next()
 			return
 		}
@@ -320,6 +327,14 @@ func TenantResolver() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"code":    403,
 				"message": "租户已停用，请联系平台",
+				"data":    nil,
+			})
+			return
+		case "review":
+			// M1 注册审核：待超管发放试用前业务接口全拦（登录本身不受限）
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "账号审核中，审核通过后即可使用（通常1个工作日）",
 				"data":    nil,
 			})
 			return
@@ -531,6 +546,7 @@ func EffectiveTenantID(c *gin.Context) uint {
 	return toUint(v)
 }
 
+// toUint interface→uint 安全转换（nil/未知类型一律0兜底）
 func toUint(v interface{}) uint {
 	if v == nil {
 		return 0

@@ -56,6 +56,7 @@ async function loadTree(){
   TREE=j.data||[];
   DEPTS=[];(function flat(ns,d){ns.forEach(n=>{DEPTS.push(n);flat(n.children||[],d+1)})})(TREE,0);
   const box=document.getElementById('tree');box.innerHTML='';
+  /* 组织树缩进渲染 */
   (function draw(ns,depth){
     ns.forEach(n=>{
       const div=document.createElement('div');

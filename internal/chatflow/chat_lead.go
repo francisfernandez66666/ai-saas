@@ -154,6 +154,10 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	log.Printf("[通知顾问] 顾问%d 有新的已留资线索：客户%d，手机号%s",
 		customer.AssignedUserID, customer.ID, phoneMatch)
 
+	// 商业化批次一顺手做（2026-08-23）：留资成功 → 企微群机器人推送
+	// SCRM 最高价值触达：销售群实时收到"新留资线索"通知（手机号脱敏）
+	service.NotifyLeadCaptured(customer.Name, maskPhone(phoneMatch), customer.InterestModel)
+
 	// Phase C（2026-08-22）：业务结果回流 → 推进流程主干（编排层消费 flow_result）
 	// 注意：不直接 import flow 包（会形成 chatflow→flow→strategy→llm→chatflow 环），
 	// 本地查在途实例 + mq 发布，消费者在 flow 包

@@ -40,6 +40,7 @@ type Tenant struct {
 	MaxKnowledgeBrands int             `json:"max_knowledge_brands"`                                    // 配额：品牌数
 	MaxKnowledgeModels int             `json:"max_knowledge_models"`                                    // 配额：车型数
 	UsedAICalls        int             `gorm:"column:used_ai_calls" json:"used_ai_calls"`               // 当月已用 AI 调用数
+	AICallBalance      int             `gorm:"column:ai_call_balance" json:"ai_call_balance"`           // AI增量包余额（买断资产，不随月重置，商业化M2）
 	UsedCustomers      int             `json:"used_customers"`                                          // 当前客户总数
 	UsedStorageBytes   int64           `json:"used_storage_bytes"`                                      // 当前存储占用
 	UsageResetAt       *time.Time      `json:"usage_reset_at"`                                          // 用量重置时间（每月 1 日）
@@ -95,6 +96,7 @@ type SubscriptionPlan struct {
 // ============================================================
 
 // ApiKey API Key 表
+// 商业化 M4（2026-08-23）补列：call_count 调用计数（供未来按调用计费）
 type ApiKey struct {
 	ID          uint       `gorm:"primaryKey" json:"id"`                 // 主键
 	TenantID    *uint      `gorm:"index" json:"-"`                       // 租户ID，仅定制版使用
@@ -103,6 +105,7 @@ type ApiKey struct {
 	KeyHash     string     `gorm:"size:200;uniqueIndex" json:"key_hash"` // SHA256(key) 唯一
 	Permissions string     `json:"permissions"`                          // ["chat", "customer:read", ...]
 	LastUsedAt  *time.Time `json:"last_used_at"`                         // 最后使用时间
+	CallCount   int64      `gorm:"default:0" json:"call_count"`          // 累计调用次数（M4 计量）
 	ExpiresAt   *time.Time `json:"expires_at"`                           // 过期时间
 	IsActive    bool       `gorm:"default:true" json:"is_active"`        // 是否激活
 	CreatedAt   time.Time  `json:"created_at"`                           // 创建时间
@@ -114,22 +117,28 @@ type ApiKey struct {
 // ============================================================
 
 // BillingOrder 订单表
+// 商业化 M1（2026-08-23）补列：package_id/channel/manual_confirm/qr_content
+// 支撑 pay_mode 三态收银台（mock/static_qr/sdk）；autoMigrate 幂等加列
 type BillingOrder struct {
 	ID                  uint       `gorm:"primaryKey" json:"id"`                // 主键
 	OrderNo             string     `gorm:"size:32;uniqueIndex" json:"order_no"` // 订单号
 	TenantID            *uint      `gorm:"index" json:"-"`                      // 租户ID
-	PlanID              uint       `gorm:"index" json:"-"`                      // 套餐ID
+	PlanID              uint       `gorm:"index" json:"plan_id"`                // 套餐ID（legacy subscription_plans）
+	PackageID           uint       `gorm:"index" json:"package_id"`             // 商业包ID（M2 packages 表）
 	AmountCents         int        `json:"amount_cents"`                        // 实付金额（分）
 	OriginalAmountCents int        `json:"original_amount_cents"`               // 原价（分），用于展示优惠
 	Period              string     `gorm:"size:10" json:"period"`               // monthly/yearly/once
-	PayChannel          string     `gorm:"size:20" json:"pay_channel"`          // wechat/alipay/manual
+	PayChannel          string     `gorm:"size:20" json:"pay_channel"`          // wechat/alipay/manual（legacy，新单用 channel）
+	Channel             string     `gorm:"size:20" json:"channel"`              // 支付路由：mock/manual/wechat/alipay（M1 pay_mode 三态落点）
 	Status              string     `gorm:"size:20" json:"status"`               // pending/paid/refunding/refunded/closed/expired
 	PaidAt              *time.Time `json:"paid_at"`                             // 支付时间（unpaid 为零值）
 	RefundedAt          *time.Time `json:"refunded_at"`                         // 退款时间
 	ExpireAt            *time.Time `json:"expire_at"`                           // 订单超时未支付自动关闭
 	PaymentData         string     `json:"payment_data"`                        // 支付平台回调原始数据
+	ManualConfirm       bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）
 	InvoiceRequested    bool       `json:"invoice_requested"`                   // 是否申请发票
 	InvoiceStatus       string     `gorm:"size:20" json:"invoice_status"`       // 发票状态
+	QRContent           string     `gorm:"type:text" json:"qr_content"`         // 收款码内容（URL/base64，下单时从系统配置快照）
 	Remark              string     `json:"remark"`                              // 备注
 	CreatedAt           time.Time  `json:"created_at"`                          // 创建时间
 	UpdatedAt           time.Time  `json:"updated_at"`                          // 更新时间
@@ -188,15 +197,19 @@ type MessageEvent struct {
 func (ApiKey) TableName() string {
 	return "api_keys"
 }
+// TableName 指定表名：billing_orders
 func (BillingOrder) TableName() string {
 	return "billing_orders"
 }
+// TableName 指定表名：usage_records
 func (UsageRecord) TableName() string {
 	return "usage_records"
 }
+// TableName 指定表名：tenant_audit_logs
 func (TenantAuditLog) TableName() string {
 	return "tenant_audit_logs"
 }
+// TableName 指定表名：message_events
 func (MessageEvent) TableName() string {
 	return "message_events"
 }

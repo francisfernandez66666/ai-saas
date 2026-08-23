@@ -146,9 +146,56 @@
   let localIds = new Set();   // 修复：全局消息ID集合，sendMessage和poll共用去重
 
   // ============================================================
+  // Turnstile 人机验证（批次三防薅，2026-08-23）
+  // 后台关闭时零开销：不加载脚本不加头；开启时先渲染组件再放行请求
+  // ============================================================
+  let tsToken = '';
+  // Turnstile令牌请求头（未通过验证时为空对象）
+  function tsHeaders() {
+    return tsToken ? { 'X-Turnstile-Token': tsToken } : {};
+  }
+  // 按后台开关条件加载Turnstile组件：开启才注入脚本渲染浮层
+  async function loadTurnstile() {
+    try {
+      const r = await fetch(API_BASE + '/turnstile/sitekey');
+      const j = await r.json();
+      if (!j.data || !j.data.enabled || !j.data.site_key) return; // 关闭态直通
+      await new Promise((resolve) => {
+        window._tsOnload = () => {
+          const box = document.createElement('div');
+          box.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9999;background:#fff;padding:12px;border-radius:12px;box-shadow:0 4px 20px rgba(0,0,0,.15)';
+          document.body.appendChild(box);
+          turnstile.render(box, {
+            sitekey: j.data.site_key,
+            callback: (t) => { tsToken = t; box.remove(); console.log('[Turnstile] 验证通过'); },
+            'error-callback': () => { box.innerHTML = '<span style="font-size:13px;color:#e53e3e">验证失败，请刷新页面</span>'; }
+          });
+          resolve();
+        };
+        const s = document.createElement('script');
+        s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=_tsOnload';
+        s.async = true;
+        document.head.appendChild(s);
+      });
+    } catch (e) { console.error('[Turnstile] 初始化异常(不影响使用):', e); }
+  }
+  // 验证拦截提示浮条（6秒自毁）
+  function showTurnstileBlock(msg) {
+    if (!document.getElementById('tsBlock')) {
+      const tip = document.createElement('div');
+      tip.id = 'tsBlock';
+      tip.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);z-index:9999;background:#fff5f5;color:#c53030;border:1px solid #feb2b2;padding:10px 16px;border-radius:10px;font-size:13px';
+      tip.textContent = msg || '请完成人机验证后刷新页面';
+      document.body.appendChild(tip);
+      setTimeout(() => tip.remove(), 6000);
+    }
+  }
+
+  // ============================================================
   // 初始化
   // ============================================================
   async function init() {
+    loadTurnstile();
     // ---- 访客自动注册：设备级持久化 ----
     // 使用localStorage替代sessionStorage：同设备同浏览器永远复用同一客户ID
     // 新开标签页不再创建新客户，避免同一用户分裂成多条线索
@@ -159,7 +206,7 @@
     } else {
       // 调guest接口创建新访客
       try {
-        const res = await fetch(API_BASE + '/chat/guest', { method: 'POST' });
+        const res = await fetch(API_BASE + '/chat/guest', { method: 'POST', headers: tsHeaders() });
         const data = await res.json();
         if (data.code === 0 && data.customer_id) {
           customerId = data.customer_id;
@@ -167,6 +214,7 @@
           console.log('[访客注册] 新客户ID:', customerId, data.name);
         } else {
           console.error('[访客注册] 失败:', data.message);
+          showTurnstileBlock(data.message);
           customerId = 1; // 降级用默认客户
         }
       } catch (e) {
@@ -283,6 +331,7 @@
     pollTimer = setInterval(pollNewMessages, 5000);
   }
 
+  // 停止消息轮询定时器
   function stopPolling() {
     if (pollTimer) {
       clearInterval(pollTimer);
@@ -402,7 +451,7 @@
     try {
       const res = await fetch(API_BASE + '/chat/test', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: Object.assign({ 'Content-Type': 'application/json' }, tsHeaders()),
         body: JSON.stringify({
           customer_id: customerId,
           content: content
@@ -569,6 +618,7 @@
     headerRight.innerHTML = '<span class="typing-text text-xs text-green-500">正在输入中...</span>';
   }
 
+  // 隐藏"正在输入"气泡
   function hideTyping() {
     isTyping = false;
     // 清掉延迟显示的定时器（如果还没触发的话）
@@ -596,6 +646,7 @@
   // 辅助函数
   // ============================================================
 
+  // 追加一条消息到列表并去重入库
   function addMessageToList(senderType, content) {
     messages.push({
       id: Date.now(),
@@ -607,11 +658,13 @@
     scrollToBottom();
   }
 
+  // 聊天区滚动到底部
   function scrollToBottom() {
     const area = document.getElementById('chatArea');
     setTimeout(() => { area.scrollTop = area.scrollHeight; }, 100);
   }
 
+  // 回车发送（shift+回车换行；输入法组合态不触发）
   function handleKeyDown(e) {
     // 修复：中文拼音输入法在"上屏"候选词时也会触发一次keydown Enter，
     // 如果这里不判断isComposing/e.isComposing，会导致sendMessage()被多触发一次——
@@ -622,17 +675,20 @@
     }
   }
 
+  // 输入框高度自适应内容
   function autoResize(el) {
     el.style.height = 'auto';
     el.style.height = Math.min(el.scrollHeight, 120) + 'px';
   }
 
+  // 插入表情到输入框末尾
   function insertEmoji() {
     const input = document.getElementById('msgInput');
     input.value += '😊';
     input.focus();
   }
 
+  // 时间格式化(HH:MM)
   function formatTime(t) {
     if (!t) return '';
     const d = new Date(t);
@@ -641,6 +697,7 @@
 
   // （updateTime函数已移除，右上角不再显示时间，只显示"正在输入中"）
 
+  // HTML转义（防XSS）
   function escapeHtml(str) {
     if (!str) return '';
     const div = document.createElement('div');
@@ -648,6 +705,7 @@
     return div.innerHTML.replace(/\n/g, '<br>');
   }
 
+  // Toast轻提示
   function showToast(msg, type) {
     const toast = document.getElementById('toast');
     toast.textContent = msg;

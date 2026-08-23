@@ -194,16 +194,20 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 			"请直接回复客户：",
 	})
 
-	// 5. 调用AI（走多模型路由，自动降级）
+	// 5. 调用AI（走多模型路由，自动降级；stage_models 可为 reply 阶段覆盖专属模型）
 	// 修复：从SystemConfigService读取temperature，后台调参即时生效
 	aiTemp := service.DefaultSystemConfigService.GetFloat("ai_temperature", ai.DefaultClient.Temperature)
-	reply, modelName, err := ai.Router.GenerateText(messages, aiTemp)
+	callStart := time.Now()
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", messages, aiTemp)
 	if err != nil {
 		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
+	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
+	service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
+		usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
 	if modelName != "" {
-		log.Printf("[AI] 实际使用模型: %s", modelName)
+		log.Printf("[AI] 实际使用模型: %s (tokens=%d)", modelName, usage.TotalTokens)
 	}
 
 	// 6. 空回复兜底

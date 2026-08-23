@@ -1,7 +1,10 @@
 package api
 
 import (
+	"fmt"
+	"log"
 	"net/http"
+	"time"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
@@ -89,6 +92,40 @@ func SuperTenantStatus(c *gin.Context) {
 	// 租户解析缓存失效，封禁即时生效
 	middleware.InvalidateTenantCache()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "状态已更新为 " + req.Status})
+}
+
+// SuperGrantTrial POST /api/v1/super/tenants/:id/grant-trial —— 审核模式放行（M1）
+// 幂等：已存在 trial_granted 审计记录的租户拒绝重复发放；review/trial/suspended → trial
+func SuperGrantTrial(c *gin.Context) {
+	var t model.Tenant
+	if err := db.DB.First(&t, c.Param("id")).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "租户不存在"})
+		return
+	}
+	var granted int64
+	db.DB.Model(&model.TenantAuditLog{}).
+		Where("tenant_id = ? AND action = ?", t.ID, "trial_granted").
+		Count(&granted)
+	if granted > 0 {
+		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该租户已发放过试用额度（幂等拦截）"})
+		return
+	}
+	grantTrialPackage(t.ID)
+	now := time.Now()
+	end := now.AddDate(0, 0, 7)
+	db.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Updates(map[string]interface{}{
+		"status":         "trial",
+		"trial_start_at": now,
+		"trial_end_at":   end,
+	})
+	uidV, _ := c.Get("user_id")
+	db.DB.Create(&model.TenantAuditLog{
+		TenantID: t.ID, UserID: toUintSafe(uidV), Action: "trial_granted",
+		Resource: fmt.Sprintf("tenant:%d", t.ID),
+		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
+	})
+	log.Printf("[防薅] 超管为租户%d(%s)发放试用包，状态 review→trial", t.ID, t.Code)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "试用额度已发放，租户已激活"})
 }
 
 // toUintSafe 轻量转换

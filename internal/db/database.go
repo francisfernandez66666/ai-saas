@@ -136,6 +136,12 @@ func autoMigrate() error {
 		// ---- 消息中心（SAAS_PLAN §2.5）
 		&model.InboxEvent{},
 		&model.MessageEventRecord{},
+		// ---- 商业化第一批（2026-08-23，M2/M3）：商业包 + 密码重置码
+		&model.Package{},
+		&model.PasswordReset{},
+		// ---- 商业化第二批（2026-08-24）：用户反馈 + Token 计量底座
+		&model.Feedback{},
+		&model.UsageLedger{},
 	)
 }
 
@@ -174,12 +180,15 @@ func backfillTenantIDs() {
 	// 注意：tags/templates/features/brands 等预置类表本次也一并归入默认租户，
 	// 原因：这些行是单租户时期为 rox-sales 创建的业务数据；"系统预置=0 全租户可见"
 	// 的语义从 Phase P1 引入 WithPreset 查询时才生效，届时由 seed 重新生成 0 号预置数据
+	// 修复（2026-08-23）：system_configs 必须排除在回填之外——配置是平台层数据，
+	// tenant_id=0 是其语义归属（系统默认层）；回填会把系统层搬空，
+	// 导致 GetString/GetBool 永远读不到值、全部静默回落代码默认值
 	tables := []string{
 		"customers", "customer_tags", "conversations", "messages",
 		"follow_ups", "test_drives", "flow_instances", "flow_definitions",
 		"tags", "tag_rules", "tag_weight_mappings", "templates", "features",
 		"brands", "car_models", "model_specs", "competitor_compares",
-		"knowledge_fragments", "system_configs",
+		"knowledge_fragments",
 	}
 	for _, t := range tables {
 		res := DB.Exec(fmt.Sprintf("UPDATE %s SET tenant_id = ? WHERE tenant_id = 0", t), tid)

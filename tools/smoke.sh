@@ -31,6 +31,11 @@ psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
    WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE code='acme');" >/dev/null 2>&1
 ACME_ID=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc "SELECT id FROM tenants WHERE code='acme'" | tr -d '[:space:]')
 
+# ---- 准备（M3）：清除默认账号首登强改密标记，模拟"已改密"状态 ----
+# （出厂弱密码检测逻辑见 seed.go——改过密码的账号重启后不会被重新标记）
+psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
+  "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3');" >/dev/null 2>&1
+
 echo "---- 一、租户解析 fail-closed ----"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/health")
 check "健康检查白名单放行" 200 "$CODE"
@@ -86,6 +91,102 @@ if [ -n "$IDS" ]; then
 else
   echo "  SKIP  隔离断言（本租户暂无可见客户）"
 fi
+
+echo "---- 四、M3 首登强制改密拦截 ----"
+# 置标记 → 登录响应带标记 → 鉴权接口403拦截 → 改密清除标记后放行
+psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
+  "UPDATE tenant_users SET must_change_password=true WHERE username='admin';" >/dev/null 2>&1
+
+FTOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jsonget "['data']['token']")
+FLAG=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jsonget "['data']['user']['must_change_password']")
+[ "$FLAG" = "True" ] && check "登录响应带 must_change_password 标记" y y || check "登录响应带 must_change_password 标记" y n
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "Authorization: Bearer $FTOKEN")
+check "强改密标记未解除→鉴权接口403" 403 "$CODE"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/auth/change-password" \
+  -H "Authorization: Bearer $FTOKEN" -H "Content-Type: application/json" \
+  -d '{"old_password":"wrong","new_password":"admin123"}')
+check "错误旧密码拒绝" 400 "$CODE"
+
+# 同值改密（admin123→admin123）仅用于清除标记，保持默认账号契约不变
+CHG=$(curl -s -X POST "$B/api/v1/auth/change-password" \
+  -H "Authorization: Bearer $FTOKEN" -H "Content-Type: application/json" \
+  -d '{"old_password":"admin123","new_password":"admin123"}' | jsonget "['code']")
+[ "$CHG" = "0" ] && check "改密成功清除标记" y y || check "改密成功清除标记" y n
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "Authorization: Bearer $FTOKEN")
+check "改密后接口恢复放行" 200 "$CODE"
+
+echo "---- 五、M1 收银台 mock 全链路 + 幂等 ----"
+BOOSTER=$(curl -s "$B/api/v1/packages" | python3 -c "
+import sys,json
+for p in json.load(sys.stdin)['data']:
+    if p['p_type']=='increment': print(p['id']); break" 2>/dev/null)
+ORDER=$(curl -s -X POST "$B/api/v1/billing/orders" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+  -d "{\"package_id\":${BOOSTER:-0}}" | jsonget "['data']['id']")
+ORDER=${ORDER:-none}
+[ "$ORDER" != "none" ] && check "创建订单(mock渠道)" y y || check "创建订单(mock渠道)" y n
+
+CHANNEL=$(curl -s "$B/api/v1/billing/orders/$ORDER" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" | jsonget "['data']['channel']")
+[ "$CHANNEL" = "mock" ] && check "订单路由到mock渠道(channel=mock)" y y || check "订单路由到mock渠道(实际=$CHANNEL)" y n
+
+GRANT=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$ORDER}" | jsonget "['data']['granted']")
+[ "$GRANT" = "True" ] && check "模拟到账→权益发放(granted)" y y || check "模拟到账→权益发放" y n
+
+BALANCE=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  "SELECT COALESCE(ai_call_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
+[ "${BALANCE:-0}" -ge 1000 ] && check "增量余额已入账(balance=$BALANCE)" y y || check "增量余额已入账(balance=$BALANCE)" y n
+
+GRANT2=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$ORDER}" | jsonget "['data']['granted']")
+[ "$GRANT2" = "False" ] && check "重复支付幂等(不二次发放)" y y || check "重复支付幂等" y n
+
+BALANCE2=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  "SELECT COALESCE(ai_call_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
+[ "$BALANCE2" = "$BALANCE" ] && check "幂等后余额未重复累计" y y || check "幂等后余额未重复累计($BALANCE→$BALANCE2)" y n
+
+echo "---- 六、M4 OpenAPI 鉴权/隔离/计量 ----"
+SK=$(curl -s -X POST "$B/api/v1/admin/apikeys" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+  -d '{"name":"smoke-key","perms":["customer.read"]}' | jsonget "['data']['key']")
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/customers")
+check "无Key访问→401" 401 "$CODE"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/customers" -H "Authorization: Bearer sk_invalidinvalidinvalidinvalid00")
+check "无效Key→401" 401 "$CODE"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/customers" -H "Authorization: Bearer ${SK}")
+check "有效Key读客户列表→200" 200 "$CODE"
+
+# 隔离断言：Key归属acme，返回客户必须全属acme租户
+OID_LIST=$(curl -s "$B/openapi/v1/customers?page_size=50" -H "Authorization: Bearer ${SK}" | \
+  python3 -c "import sys,json;l=json.load(sys.stdin)['data']['list'];print(','.join(str(c['id']) for c in l) or '0')" 2>/dev/null)
+BAD_OWNERS=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  "SELECT count(*) FROM customers WHERE id IN (${OID_LIST:-0}) AND tenant_id <> ${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
+[ "${BAD_OWNERS:-1}" = "0" ] && check "Key隔离：返回客户全属归属租户" y y || check "Key隔离：混入${BAD_OWNERS}条他租户客户" y n
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/usage" -H "Authorization: Bearer ${SK}")
+check "越权perm(customer.read打usage)→403" 403 "$CODE"
+
+KEYID=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  "SELECT id FROM api_keys WHERE key_prefix='${SK:0:10}' LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+curl -s -o /dev/null -X POST "$B/api/v1/admin/apikeys/$KEYID/disable" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/customers" -H "Authorization: Bearer ${SK}")
+check "停用Key即时生效→401" 401 "$CODE"
+
+APICALLS=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  "SELECT count(*) FROM usage_records WHERE metric='api_calls'" 2>/dev/null | tr -d '[:space:]')
+[ "${APICALLS:-0}" -ge 1 ] && check "api_calls计量明细已落库" y y || check "api_calls计量明细已落库" y n
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

@@ -141,6 +141,7 @@ func (c *Customer) SaveTVector(t [32]float64) {
 // 为什么要编码？T向量是数值向量，需要做特征编码
 // ============================================================
 
+// modelCode 兴趣车型→编码（T向量输入维度）
 func modelCode(model string) float64 {
 	modelMap := map[string]float64{
 		"":         0,
@@ -156,6 +157,7 @@ func modelCode(model string) float64 {
 	return 99 // 其他车型
 }
 
+// sourceCode 来源渠道→编码（T向量输入维度）
 func sourceCode(source string) float64 {
 	sourceMap := map[string]float64{
 		"":      0,

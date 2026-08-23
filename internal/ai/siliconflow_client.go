@@ -102,13 +102,19 @@ func (c *SiliconFlowClient) GetModelName() string {
 
 // GenerateText 生成文本
 func (c *SiliconFlowClient) GenerateText(messages []ChatMessage, temperature float64) (string, error) {
+	reply, _, err := c.GenerateTextWithUsage(messages, temperature)
+	return reply, err
+}
+
+// GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座）
+func (c *SiliconFlowClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	if !c.Enabled {
-		return "", fmt.Errorf("硅基流动未启用（缺少API Key）")
+		return "", Usage{}, fmt.Errorf("硅基流动未启用（缺少API Key）")
 	}
 
-	reply, err := c.generateWithRetry(messages, temperature)
+	reply, usage, err := c.generateWithRetry(messages, temperature)
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 
 	if reply == "" {
@@ -117,12 +123,12 @@ func (c *SiliconFlowClient) GenerateText(messages []ChatMessage, temperature flo
 		log.Printf("[硅基流动] 回复长度: %d字符", utf8.RuneCountInString(reply))
 	}
 
-	return reply, nil
+	return reply, usage, nil
 }
 
 // generateWithRetry 带重试的API调用
 // 重试策略：指数退避 base=4s，429限流翻倍，加随机抖动
-func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, error) {
+func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
 		if attempt > 0 {
@@ -145,9 +151,9 @@ func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperatur
 			time.Sleep(time.Duration(waitSeconds) * time.Second)
 		}
 
-		reply, err := c.callAPI(messages, temperature)
+		reply, usage, err := c.callAPI(messages, temperature)
 		if err == nil {
-			return reply, nil
+			return reply, usage, nil
 		}
 
 		lastErr = err
@@ -159,11 +165,11 @@ func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperatur
 		}
 	}
 
-	return "", fmt.Errorf("硅基流动调用失败，已重试%d次: %v", c.MaxRetries+1, lastErr)
+	return "", Usage{}, fmt.Errorf("硅基流动调用失败，已重试%d次: %v", c.MaxRetries+1, lastErr)
 }
 
 // callAPI 调用硅基流动API
-func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64) (string, error) {
+func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := SiliconFlowChatRequest{
 		Model:       c.ModelName,
 		Messages:    messages,
@@ -173,13 +179,13 @@ func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64)
 
 	jsonData, err := json.Marshal(reqBody)
 	if err != nil {
-		return "", fmt.Errorf("序列化请求失败: %v", err)
+		return "", Usage{}, fmt.Errorf("序列化请求失败: %v", err)
 	}
 
 	url := c.BaseURL + "/chat/completions"
 	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
-		return "", fmt.Errorf("创建请求失败: %v", err)
+		return "", Usage{}, fmt.Errorf("创建请求失败: %v", err)
 	}
 
 	httpReq.Header.Set("Content-Type", "application/json")
@@ -187,23 +193,23 @@ func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("请求API失败: %v", err)
+		return "", Usage{}, fmt.Errorf("请求API失败: %v", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return "", fmt.Errorf("读取响应失败: %v", err)
+		return "", Usage{}, fmt.Errorf("读取响应失败: %v", err)
 	}
 
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("API返回错误: status=%d, body=%s", resp.StatusCode, string(body))
+		return "", Usage{}, fmt.Errorf("API返回错误: status=%d, body=%s", resp.StatusCode, string(body))
 	}
 
 	var chatResp SiliconFlowChatResponse
 	err = json.Unmarshal(body, &chatResp)
 	if err != nil {
-		return "", fmt.Errorf("解析响应失败: %v", err)
+		return "", Usage{}, fmt.Errorf("解析响应失败: %v", err)
 	}
 
 	if len(chatResp.Choices) > 0 {
@@ -218,16 +224,22 @@ func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64)
 			log.Printf("[硅基流动] 思考模型: 思考过程=%d字符，但content为空",
 				utf8.RuneCountInString(chatResp.Choices[0].Message.ReasoningContent))
 		}
-		return content, nil
+		usage := Usage{
+			PromptTokens:     chatResp.Usage.PromptTokens,
+			CompletionTokens: chatResp.Usage.CompletionTokens,
+			TotalTokens:      chatResp.Usage.TotalTokens,
+		}
+		return content, usage, nil
 	}
 
-	return "", fmt.Errorf("AI未返回内容")
+	return "", Usage{}, fmt.Errorf("AI未返回内容")
 }
 
 // ============================================================
 // 错误类型判断
 // ============================================================
 
+// isSiliconFlowRateLimitError 是否429限流错误（重试退避时间翻倍）
 func isSiliconFlowRateLimitError(err error) bool {
 	if err == nil {
 		return false
@@ -240,6 +252,7 @@ func isSiliconFlowRateLimitError(err error) bool {
 		strings.Contains(errStr, "限流")
 }
 
+// isSiliconFlowClientError 是否参数类4xx错误（重试无意义，直接跳出）
 func isSiliconFlowClientError(err error) bool {
 	if err == nil {
 		return false
