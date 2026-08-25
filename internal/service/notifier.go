@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -35,19 +36,26 @@ func maskEmail(email string) string {
 // 敏感配置约定：wecom_webhook_url 入 system_configs 系统层(tenant_id=0)，不入 git
 // ============================================================
 
-// ResetCodeSender 重置密码验证码发送通道接口（M3）
+// ResetCodeSender 邮件发送通道接口（M3 重置码 + M邮箱验证码共用）
 type ResetCodeSender interface {
 	SendResetCode(to string, code string) error
+	SendRaw(to []string, subject, body string) error // 通用邮件（验证码内容按用途组装）
 }
 
-// LogSender 日志通道：验证码打到服务端日志（reset_code_channel=log 默认）
+// LogSender 日志通道：邮件打到服务端日志（reset_code_channel=log 默认）
 // 注意：log 模式等于"知道用户名即可看到码"，故 reset 接口额外要求提供注册时的
-// 手机号/邮箱匹配才发码（见 api/auth_password.go 的 contact 校验）
+// 手机号/邮箱匹配才发码；注册验证码场景由 email_verify_enabled 开关独立控制
 type LogSender struct{}
 
 // SendResetCode 实现：打日志
 func (LogSender) SendResetCode(to string, code string) error {
 	log.Printf("[重置码] 账号=%s 验证码=%s（10分钟内有效，一次性）", to, code)
+	return nil
+}
+
+// SendRaw 实现：打日志
+func (LogSender) SendRaw(to []string, subject, body string) error {
+	log.Printf("[邮件-log通道] to=%s subject=%s body=%s", to, subject, strings.ReplaceAll(body, "\n", " | "))
 	return nil
 }
 
@@ -81,23 +89,65 @@ func NewSMTPSenderFromEnv() *SMTPSender {
 	}
 }
 
-// SendResetCode 实现：发验证码邮件（Plain AUTH + STARTTLS 语义由 net/smtp 处理）
+// SendResetCode 实现：发验证码邮件
+// 双通道：587 STARTTLS（net/smtp 自动升级）/ 465 隐式TLS（tls.Dial 先握手）
 func (s *SMTPSender) SendResetCode(to string, code string) error {
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
 	subject := "AI-SCRM 密码重置验证码"
 	body := fmt.Sprintf(
 		"您正在重置 AI-SCRM 账号密码。\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。",
 		code)
-	msg := buildMailMessage(s.From, to, subject, body)
+	return sendMailTLS(s, []string{to}, subject, body)
+}
 
+// SendRaw 通用邮件发送（注册验证码/绑定邮箱验证码）
+func (s *SMTPSender) SendRaw(to []string, subject, body string) error {
+	return sendMailTLS(s, to, subject, body)
+}
+
+// sendMailTLS 统一发送入口：按端口自动选择 465 隐式 TLS 或 587 STARTTLS
+func sendMailTLS(s *SMTPSender, to []string, subject, body string) error {
+	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	msg := buildMailMessage(s.From, to[0], subject, body)
 	auth := smtp.PlainAuth("", s.User, s.Pass, s.Host)
-	// 先尝试 STARTTLS（绝大多数服务商要求），失败回退明文（本地调试 mailhog 等）
-	if err := smtp.SendMail(addr, auth, s.From, []string{to}, msg); err != nil {
-		log.Printf("[重置码] SMTP 发送失败 to=%s: %v", maskEmail(to), err)
-		return err
+
+	if s.Port == 465 {
+		// 465 隐式TLS：先建立TLS连接再走SMTP会话（net/smtp.SendMail 不支持此模式）
+		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.Host})
+		if err != nil {
+			return fmt.Errorf("TLS连接失败: %w", err)
+		}
+		defer conn.Close()
+		cli, err := smtp.NewClient(conn, s.Host)
+		if err != nil {
+			return fmt.Errorf("SMTP会话失败: %w", err)
+		}
+		defer cli.Close()
+		if err = cli.Auth(auth); err != nil {
+			return fmt.Errorf("认证失败: %w", err)
+		}
+		if err = cli.Mail(s.From); err != nil {
+			return fmt.Errorf("设置发件人失败: %w", err)
+		}
+		for _, rcpt := range to {
+			if err = cli.Rcpt(rcpt); err != nil {
+				return fmt.Errorf("收件人被拒(%s): %w", maskEmail(rcpt), err)
+			}
+		}
+		w, err := cli.Data()
+		if err != nil {
+			return fmt.Errorf("写入正文失败: %w", err)
+		}
+		if _, err = w.Write(msg); err != nil {
+			return fmt.Errorf("传输失败: %w", err)
+		}
+		if err = w.Close(); err != nil {
+			return fmt.Errorf("结束数据失败: %w", err)
+		}
+		return cli.Quit()
 	}
-	log.Printf("[重置码] 邮件已发送 to=%s", maskEmail(to))
-	return nil
+
+	// 587/25：STARTTLS 明文起连自动升级
+	return smtp.SendMail(addr, auth, s.From, to, msg)
 }
 
 // buildMailMessage 组装 RFC 5322 报文（Subject/Base64 处理中文标题乱码）
@@ -182,7 +232,7 @@ func NotifyWecom(content string) {
 
 // dingtalkReq 钉钉机器人 markdown 消息体（格式与企微不同：title+text 双字段）
 type dingtalkReq struct {
-	MsgType  string          `json:"msgtype"`
+	MsgType  string           `json:"msgtype"`
 	Markdown dingtalkMarkdown `json:"markdown"`
 }
 
@@ -235,4 +285,17 @@ func NotifyLeadCaptured(customerName, phoneMasked, interestModel string) {
 		msg += fmt.Sprintf("\n意向车型：%s", interestModel)
 	}
 	NotifyGroup(msg)
+}
+
+// MaskEmailAddr 邮箱脱敏（对外展示用）：a***b@domain.com
+func MaskEmailAddr(email string) string {
+	at := strings.Index(email, "@")
+	if at <= 0 {
+		return "***"
+	}
+	local := email[:at]
+	if len(local) > 1 {
+		return local[:1] + "***" + email[at:]
+	}
+	return "*" + email[at:]
 }

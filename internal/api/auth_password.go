@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -135,6 +137,10 @@ func SendResetCode(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "用户不存在"})
 		return
 	}
+	if strings.TrimSpace(user.Email) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "该账号未绑定邮箱，请联系管理员重置密码"})
+		return
+	}
 
 	channel := service.DefaultSystemConfigService.GetString("reset_code_channel", "log")
 
@@ -167,15 +173,16 @@ func SendResetCode(c *gin.Context) {
 		return
 	}
 
-	// Sender 抽象分发：本期 LogSender 打日志；批次三 SMTP 就绪后零改动切换
-	if err := service.DefaultResetSender().SendResetCode(req.Username, code); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证码发送失败"})
+	// Sender 抽象分发：smtp=发到账号绑定邮箱；log=打日志（开发调试，仍要求contact校验）
+	if err := service.DefaultResetSender().SendResetCode(user.Email, code); err != nil {
+		log.Printf("[重置码] 发送失败 username=%s: %v", req.Username, err)
+		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "邮件发送失败，请稍后再试或联系管理员"})
 		return
 	}
 
-	msg := "验证码已发送，10分钟内有效"
+	msg := "验证码已发送至绑定邮箱 " + service.MaskEmailAddr(user.Email) + "，10分钟内有效"
 	if channel == "log" {
-		msg += "（当前为日志通道，请查看服务端日志）"
+		msg = "验证码已生成（当前为日志通道，请查看服务端日志），10分钟内有效"
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg})
 }

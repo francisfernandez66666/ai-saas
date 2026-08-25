@@ -77,27 +77,33 @@ async function loadTree(){
 
 /* 部门对话框：新建/改名/移动 三态复用 */
 let dlgMode=null,dlgId=null;
+/* 通用对话框：新增/重命名/移动复用 */
 function openDlg(title,bodyHTML,mode,id){
   document.getElementById('dlgTitle').textContent=title;
   document.getElementById('dlgBody').innerHTML=bodyHTML;
   dlgMode=mode;dlgId=id;
   document.getElementById('dlg').showModal();
 }
+/* 部门下拉选项生成（排除自身防环） */
 function deptOptions(exceptId){
   return DEPTS.filter(d=>d.id!==exceptId).map(d=>`<option value="${d.id}" data-path="${d.path}">${'　'.repeat(d.depth-1)}${d.name}</option>`).join('');
 }
+/* 新增子部门对话框 */
 function dlgAdd(parentId){
   openDlg(parentId?'新建子部门':'新建根部门',
     `<label>部门名称</label><input id="f_name">
      ${parentId?`<input type="hidden" id="f_parent" value="${parentId}">`
        :(ROLE==='dept_admin'?'':`<label>父部门（留空=根）</label><select id="f_parent"><option value="">— 根 —</option>${deptOptions()}</select>`)}`, 'add');
 }
+/* 重命名对话框 */
 function dlgRename(id,name){
   openDlg('重命名部门',`<label>新名称</label><input id="f_name" value="${name}">`,'rename',id);
 }
+/* 移动部门对话框（物化路径重写） */
 function dlgMove(id){
   openDlg('移动部门到…',`<label>目标父部门</label><select id="f_parent">${deptOptions(id)}</select>`,'move',id);
 }
+/* 提交部门变更 */
 async function dlgSubmit(){
   const name=document.getElementById('f_name')?.value.trim();
   const parent=document.getElementById('f_parent')?.value||null;
@@ -110,6 +116,7 @@ async function dlgSubmit(){
   }
   document.getElementById('dlg').close();loadTree();
 }
+/* 删除部门（有人员/子部门时后端拒绝） */
 async function delDept(id){
   if(!confirm('删除该空部门？'))return;
   const r=await fetch('/api/v1/org/departments/'+id,{method:'DELETE',headers:AUTH()});
@@ -129,10 +136,12 @@ async function loadUsers(){
     　${ROLE==='tenant_admin'||ROLE==='super_admin'||ROLE==='dept_admin'?`<button onclick="toggleU(${u.id},${u.status})">${u.status===1?'停用':'启用'}</button>`:''}</td></tr>`).join('')
     ||'<tr><td colspan=5 style="color:#a0aec0">暂无成员</td></tr>';
 }
+/* 启用/禁用账号 */
 async function toggleU(id,st){
   await fetch('/api/v1/org/users/'+id,{method:'PUT',headers:AUTH(),body:JSON.stringify({status:st===1?0:1})});
   loadUsers();
 }
+/* 新增账号对话框 */
 function dlgAddUser(){
   openDlg('添加成员',`
     <label>用户名</label><input id="u_name">
@@ -143,6 +152,7 @@ function dlgAddUser(){
       ${ROLE!=='dept_admin'?'<option value="readonly">只读</option>':''}</select>
     <label>所属部门</label><select id="u_dept">${deptOptions().replace(/data-path="[^"]*"/g,'')}</select>`,'addUser');
 }
+/* 提交创建账号 */
 async function dlgSubmitUser(){
   const body={username:v('u_name'),password:v('u_pwd'),real_name:v('u_real'),
     role:v('u_role'),department_id:Number(v('u_dept'))};

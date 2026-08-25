@@ -34,6 +34,8 @@ type signupReq struct {
 	Password     string `json:"password" binding:"required"`
 	ContactName  string `json:"contact_name"`
 	ContactPhone string `json:"contact_phone"`
+	AdminEmail   string `json:"admin_email"`      // 管理员邮箱（email_verify_enabled 时必填+验证码校验）
+	EmailCode    string `json:"email_code"`       // 邮箱验证码
 }
 
 // TenantSignup POST /api/v1/tenant/signup （免登录）
@@ -53,6 +55,25 @@ func TenantSignup(c *gin.Context) {
 	if strings.TrimSpace(req.CompanyName) == "" || len(req.Password) < 6 {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "企业名称必填且密码至少 6 位"})
 		return
+	}
+
+	// 管理员邮箱验证（M-邮箱接入，2026-08-24）：开关开启时必填且需持有效验证码
+	req.AdminEmail = service.NormalizeEmail(req.AdminEmail)
+	if service.EmailVerifyEnabled() {
+		if req.AdminEmail == "" || req.EmailCode == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请输入管理员邮箱并获取验证码"})
+			return
+		}
+		var dupMail int64
+		db.DB.Model(&model.User{}).Where("email = ?", req.AdminEmail).Count(&dupMail)
+		if dupMail > 0 {
+			c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换"})
+			return
+		}
+		if err := service.VerifyEmailCode(req.AdminEmail, model.EmailPurposeRegister, req.EmailCode); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+			return
+		}
 	}
 
 	// 子域名/用户名唯一性预检
@@ -152,6 +173,7 @@ func TenantSignup(c *gin.Context) {
 			PasswordHash: hashed,
 			RealName:     req.ContactName,
 			Phone:        req.ContactPhone,
+			Email:        req.AdminEmail, // 已验证的管理员邮箱
 			Role:         model.RoleTenantAdmin,
 			Status:       1,
 			TenantID:     &ten.ID,

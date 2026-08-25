@@ -142,6 +142,8 @@ func autoMigrate() error {
 		// ---- 商业化第二批（2026-08-24）：用户反馈 + Token 计量底座
 		&model.Feedback{},
 		&model.UsageLedger{},
+		// ---- 邮箱验证码（注册/换绑邮箱）
+		&model.EmailVerify{},
 	)
 }
 

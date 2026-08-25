@@ -573,6 +573,8 @@
 
       // M2 顶栏额度徽标（静默失败不影响主流程）
       loadQuotaBadge();
+      // 回显绑定邮箱（我的页）
+      loadMyEmail();
 
       try {
         await Promise.all([loadStats(), loadFollowups(), loadCustomers()]);
@@ -1621,6 +1623,67 @@ async function submitFeedback() {
       alert('感谢反馈！我们会尽快处理');
     } else { alert(j.message || '提交失败'); }
   } catch (e) { alert('提交失败，请检查网络'); }
+}
+</script>
+
+
+<!-- 换绑邮箱弹窗（M-邮箱验证）：新邮箱收码→校验→完成绑定 -->
+<div id="emailModal" class="hidden" style="position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9999;display:flex;align-items:center;justify-content:center">
+  <div class="bg-white rounded-xl p-5 w-[92vw] max-w-sm">
+    <h3 class="text-base font-semibold text-gray-800 mb-1">绑定/更换邮箱</h3>
+    <p class="text-xs text-gray-400 mb-3">用于密码找回与账号安全通知</p>
+    <label class="block text-xs text-gray-500 mb-1">新邮箱</label>
+    <input id="emNew" placeholder="you@example.com" class="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm mb-2">
+    <div class="flex gap-2 mb-2">
+      <input id="emCode" placeholder="6位邮箱验证码" maxlength="6" class="flex-1 px-3 py-2 border border-gray-200 rounded-lg text-sm">
+      <button id="emSendBtn" onclick="sendEmailCode()" class="px-3 py-2 border border-indigo-300 bg-white text-indigo-600 rounded-lg text-xs whitespace-nowrap">获取验证码</button>
+    </div>
+    <div class="flex space-x-2 mt-2">
+      <button onclick="document.getElementById('emailModal').classList.add('hidden')" class="flex-1 py-2 rounded-lg text-sm bg-gray-100 text-gray-600">取消</button>
+      <button onclick="confirmChangeEmail()" class="flex-1 py-2 rounded-lg text-sm bg-indigo-500 text-white">确认绑定</button>
+    </div>
+  </div>
+</div>
+<script>
+/* 打开弹窗并回显当前绑定邮箱 */
+function openEmailModal(){
+  document.getElementById('emailModal').classList.remove('hidden');
+}
+/* 向新邮箱发送换绑验证码（登录态接口） */
+async function sendEmailCode(){
+  const btn=document.getElementById('emSendBtn');
+  const email=document.getElementById('emNew').value.trim();
+  if(!email){alert('请填写新邮箱');return}
+  btn.disabled=true;btn.textContent='发送中...';
+  try{
+    const r=await apiFetch(API+'/auth/email/code',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({new_email:email})});
+    const j=await r.json();
+    if(j.code===0){alert('验证码已发送至新邮箱');
+      let cd=60;btn.textContent=cd+'s';const t=setInterval(()=>{cd--;btn.textContent=cd+'s';
+        if(cd<=0){clearInterval(t);btn.disabled=false;btn.textContent='重新获取'}},1000);
+    }else{alert(j.message||'发送失败');btn.disabled=false;btn.textContent='获取验证码'}
+  }catch(e){alert('发送失败');btn.disabled=false;btn.textContent='获取验证码'}
+}
+/* 提交新邮箱+验证码完成绑定，成功后刷新回显 */
+async function confirmChangeEmail(){
+  const email=document.getElementById('emNew').value.trim(), code=document.getElementById('emCode').value.trim();
+  if(!email||!code){alert('请填写新邮箱和验证码');return}
+  try{
+    const r=await apiFetch(API+'/auth/email/change',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({new_email:email,code})});
+    const j=await r.json();
+    if(j.code===0){alert(j.message);document.getElementById('emailModal').classList.add('hidden');loadMyEmail();}
+    else alert(j.message||'绑定失败');
+  }catch(e){alert('绑定失败')}
+}
+/* 回显当前账号绑定邮箱 */
+async function loadMyEmail(){
+  try{
+    const r=await apiFetch(API+'/auth/me');
+    const j=await r.json();
+    const em=(j.data&&j.data.email)||'';
+    document.getElementById('myEmail').textContent = em ? '📧 '+em+'（点击更换）' : '📧 未绑定邮箱（点击绑定）';
+  }catch(e){}
 }
 </script>
 

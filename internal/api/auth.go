@@ -19,9 +19,12 @@ type loginRequest struct {
 }
 
 // registerRequest 注册请求结构体
+// M-邮箱验证（2026-08-24）：email_verify_enabled=true 时 email+email_code 必填
 type registerRequest struct {
-	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"`
+	Username  string `json:"username" binding:"required"`
+	Password  string `json:"password" binding:"required"`
+	Email     string `json:"email"`     // 绑定邮箱（验证码目的地）
+	EmailCode string `json:"email_code"` // 邮箱验证码
 }
 
 // resetRequest 重置密码请求结构体
@@ -118,6 +121,25 @@ func Register(c *gin.Context) {
 		return
 	}
 
+	// 0.5 邮箱验证（2026-08-24）：开关开启时必须持有效验证码；邮箱全局唯一
+	req.Email = service.NormalizeEmail(req.Email)
+	if service.EmailVerifyEnabled() {
+		if req.Email == "" || req.EmailCode == "" {
+			c.JSON(400, gin.H{"code": 400, "message": "请输入邮箱并获取验证码"})
+			return
+		}
+		var dup int64
+		db.DB.Model(&model.User{}).Where("email = ?", req.Email).Count(&dup)
+		if dup > 0 {
+			c.JSON(409, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换或直接登录"})
+			return
+		}
+		if err := service.VerifyEmailCode(req.Email, model.EmailPurposeRegister, req.EmailCode); err != nil {
+			c.JSON(400, gin.H{"code": 400, "message": err.Error()})
+			return
+		}
+	}
+
 	// 1. 检查用户名是否已存在
 	var count int64
 	db.DB.Raw("SELECT count(*) FROM tenant_users WHERE username = ?", req.Username).Scan(&count)
@@ -139,6 +161,7 @@ func Register(c *gin.Context) {
 		PasswordHash: string(hashedPassword),
 		Role:         "sales",   // 新账号默认为销售权限
 		TenantID:     new(uint), // 默认租户，可后台分配不同tid
+		Email:        req.Email, // 绑定邮箱（已验证）
 	}
 	result := db.DB.Create(&newUser)
 	if result.Error != nil {
@@ -164,12 +187,16 @@ func Register(c *gin.Context) {
 // 固定验证码 123456 删除，改为随机码 + password_resets 哈希存储 + 一次性 + 限频
 
 // GetCurrentUser GET /api/v1/auth/me —— 当前登录用户信息
-// 修复：原实现硬编码返回 {"user":"admin"}，改为读真实身份（含强改密标记）
+// 修复：原实现硬编码返回 {"user":"admin"}，改为读真实身份（含强改密标记+绑定邮箱回显）
 func GetCurrentUser(c *gin.Context) {
 	userID, username, role := middleware.CurrentUser(c)
 	tenantID := middleware.EffectiveTenantID(c)
-	var mustChange bool
-	db.DB.Model(&model.User{}).Select("must_change_password").Where("id = ?", userID).Scan(&mustChange)
+	var row struct {
+		MustChangePassword bool
+		Email              string
+	}
+	db.DB.Model(&model.User{}).Select("COALESCE(must_change_password,false) AS must_change_password, COALESCE(email,'') AS email").
+		Where("id = ?", userID).Scan(&row)
 	c.JSON(200, gin.H{
 		"code": 0,
 		"data": gin.H{
@@ -177,7 +204,8 @@ func GetCurrentUser(c *gin.Context) {
 			"username":             username,
 			"role":                 role,
 			"tenant_id":            tenantID,
-			"must_change_password": mustChange,
+			"email":                row.Email,
+			"must_change_password": row.MustChangePassword,
 		},
 	})
 }

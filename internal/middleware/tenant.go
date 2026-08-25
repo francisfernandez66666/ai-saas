@@ -269,6 +269,8 @@ var skipTenantPaths = map[string]bool{
 	// 认证入口：登录时尚无租户身份（登录后由 TenantConsistency 绑定）
 	"/api/v1/auth/login":             true,
 	"/api/v1/auth/register":          true,
+	"/api/v1/auth/register-config":   true, // 注册页配置下发（M-邮箱）
+	"/api/v1/auth/email-code":        true, // 注册验证码发送（M-邮箱）
 	"/api/v1/auth/reset-password":    true,
 	"/api/v1/auth/verify-reset-code": true,
 	// 租户入驻闭环（SaaS 注册漏斗）
