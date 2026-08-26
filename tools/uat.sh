@@ -5,6 +5,7 @@
 # ============================================================
 B="http://localhost:${1:-9090}"
 PSQL="psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc"
+Q(){ psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc "$1"; }
 PASS=0; FAIL=0; FAILED_CASES=""
 
 check(){ if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  PASS  $1";
@@ -269,6 +270,48 @@ echo ""
 echo "== 十三、二维码内容类型 =="
 CT=$(curl -s -o /tmp/uat_qr.png -w "%{content_type}" "$B/api/v1/admin/referral/qrcode" -H "$BH")
 check "后端渲染PNG" image/png "$CT"
+
+echo ""
+echo "== 十四、UAT定稿三项+邀请记录（2026-08-26）=="
+TS2=$((TS+7))
+# 14.1 弱密码拒绝
+R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"弱密户\",\"code\":\"weak$((TS2%99999))\",\"username\":\"wk$TS2\",\"password\":\"abc123\"}" | jget "d['message']")
+case "$R" in *至少8位*字母*) check "弱密码拒绝(提示含强度要求)" y y;; *) check "弱密码拒绝(msg=$R)" y n;; esac
+# 14.2 未知行业兜底general / 已知行业保留
+C_G="uindg$((TS2%99999))"
+curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"未知行业\",\"code\":\"$C_G\",\"username\":\"ug$TS2\",\"password\":\"uat123456\",\"industry\":\"metaverse\"}" >/dev/null
+G_IND=$($PSQL "SELECT industry FROM tenants WHERE code='$C_G'")
+check "未知行业回落general" general "$G_IND"
+Q "INSERT INTO industry_packs (code,name,industry,version,pack_level,status,file_path) VALUES ('education','教育行业包','education','1.0.0','industry','active','n/a') ON CONFLICT DO NOTHING" >/dev/null
+C_E="uinde$((TS2%99999))"
+curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"已知行业\",\"code\":\"$C_E\",\"username\":\"ue$TS2\",\"password\":\"uat123456\",\"industry\":\"education\"}" >/dev/null
+E_IND=$($PSQL "SELECT industry FROM tenants WHERE code='$C_E'")
+check "已知行业保留不回落" education "$E_IND"
+# 14.3 重复邮箱注册409
+EM="dup$TS2@t.com"
+curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"首注邮箱\",\"code\":\"dpa$((TS2%99999))\",\"username\":\"dp$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}" >/dev/null
+DUP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"重注\",\"code\":\"dpb$((TS2%99999))\",\"username\":\"dq$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}")
+check "重复邮箱注册409" 409 "$DUP"
+# 14.4 邀请记录接口（甲=既有受邀链顶层租户）
+A_ID2=$($PSQL "SELECT id FROM tenants WHERE code LIKE 'uata%' ORDER BY id DESC LIMIT 1")
+ATOK2=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"tenant_code\":\"$($PSQL "SELECT code FROM tenants WHERE id=$A_ID2")\",\"username\":\"$($PSQL "SELECT username FROM tenant_users WHERE tenant_id=$A_ID2 AND role='tenant_admin' LIMIT 1")\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+REC=$(curl -s "$B/api/v1/admin/referral/records" -H "Authorization: Bearer $ATOK2")
+check "邀请记录接口可达且含记录" True "$(echo "$REC" | jget "len(d['data']['list'])>0")"
+KEYS_OK=$(echo "$REC" | python3 -c '
+import sys,json
+try:
+    d=json.load(sys.stdin)["data"]["list"][0]
+    print("True" if all(k in d for k in ("email","paid_rewarded","signup_reward","invited_ok","paid_ok")) else "False")
+except Exception:
+    print("False")')
+[ "$KEYS_OK" != "True" ] && echo "    [debug] records原始: $(echo "$REC" | head -c 220)"
+check "记录含邮箱/支付/奖励字段" True "$KEYS_OK"
 
 echo ""
 echo "== 恢复现场 =="

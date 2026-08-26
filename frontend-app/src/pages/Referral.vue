@@ -28,12 +28,38 @@
     规则：好友经你的链接注册 → 你得 {{ fmt(info.bonus_per_signup) }} 免费token且有效期+{{ info.ext_days_per_signup }}天；
     好友购买包月套餐首笔到账 → 你再得 {{ fmt(info.bonus_on_paid) }} 永久token。多邀多得，单邀单个。
   </div>
+
+  <!-- 邀请记录列表：受邀人ID/邮箱/邀请成功/支付成功/奖励发放 -->
+  <div class="card">
+    <h3>📋 邀请记录</h3>
+    <table style="width:100%;font-size:13px;border-collapse:collapse" v-if="records.length">
+      <thead>
+        <tr class="muted" style="text-align:left">
+          <th style="padding:6px">账户ID</th><th>企业</th><th>邮箱</th><th>邀请成功</th>
+          <th>已支付</th><th>注册奖</th><th>付费奖</th><th>注册时间</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="r in records" :key="r.tenant_id" style="border-top:1px solid var(--line)">
+          <td style="padding:6px">{{ r.tenant_id }}</td>
+          <td>{{ r.company_name }}</td>
+          <td>{{ r.email || '-' }}</td>
+          <td>{{ r.invited_ok ? '✅' : '❌' }}</td>
+          <td>{{ r.paid_ok ? '✅' : '—' }}</td>
+          <td>{{ r.signup_reward ? '✅ 已发' : '—' }}</td>
+          <td>{{ r.paid_reward ? '✅ 已发' : (r.paid_ok ? '待发放' : '—') }}</td>
+          <td class="muted">{{ r.registered_at }}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p v-else class="muted">暂无邀请记录——复制上方链接开始邀请吧</p>
+  </div>
 </template>
 <script setup>
 import { ref, onMounted } from 'vue'
 import { api, getToken } from '../lib/api.js'
 
-const code = ref(''), url = ref(''), qr = ref(''), info = ref({})
+const code = ref(''), url = ref(''), qr = ref(''), info = ref({}), records = ref([])
 const fmt = n => (n||0).toLocaleString('zh-CN')
 
 /** 剪贴板复制（非安全上下文降级 execCommand） */
@@ -44,7 +70,7 @@ function fallbackCopy(t){
 }
 
 onMounted(async () => {
-  // ① 邀请信息聚合（含奖励参数快照与我的统计）
+  // ① 邀请信息聚合
   const j = await api('/admin/referral/info')
   if (j.code === 0){
     info.value = j.data.referral
@@ -54,5 +80,8 @@ onMounted(async () => {
     const r = await fetch('/api/v1/admin/referral/qrcode?size=240', { headers:{ Authorization:'Bearer '+getToken() } })
     if (r.ok) qr.value = URL.createObjectURL(await r.blob())
   }
+  // ③ 邀请记录（受邀人id/邮箱/邀请成功/支付成功/奖励发放）
+  const rec = await api('/admin/referral/records')
+  if (rec.code === 0) records.value = rec.data.list || []
 })
 </script>

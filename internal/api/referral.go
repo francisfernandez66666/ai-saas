@@ -15,7 +15,9 @@ import (
 	"net/http"
 	"strconv"
 
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
+	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -90,4 +92,51 @@ func currentUserID(c *gin.Context) uint {
 		return uid
 	}
 	return 0
+}
+
+
+// InviteeRecord 单条邀请记录（前台展示口径）
+type InviteeRecord struct {
+	TenantID     uint   `json:"tenant_id"`      // 被邀请人账户ID
+	CompanyName  string `json:"company_name"`
+	Email        string `json:"email"`          // 被邀请人绑定邮箱（外键身份锚）
+	InvitedOK    bool   `json:"invited_ok"`     // 邀请成功（首绑完成即成功）
+	PaidOK       bool   `json:"paid_ok"`        // 好友已支付（存在paid订单）
+	PaidRewarded bool   `json:"paid_rewarded"`  // 邀请付费奖励已发放
+	SignupReward bool   `json:"signup_reward"`  // 邀请注册奖励已发放
+	RegisteredAt string `json:"registered_at"`
+}
+
+// GetReferralRecords GET /api/v1/admin/referral/records —— 邀请好友前台记录列表
+func GetReferralRecords(c *gin.Context) {
+	ti := middleware.GetTenantInfo(c)
+	if ti.ID == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		return
+	}
+	var rows []model.Tenant
+	db.DB.Where("invited_by_tenant_id = ?", ti.ID).Order("id DESC").Find(&rows)
+
+	out := make([]InviteeRecord, 0, len(rows))
+	for _, t := range rows {
+		rec := InviteeRecord{
+			TenantID:     t.ID,
+			CompanyName:  t.Name,
+			Email:        t.ContactEmail,
+			InvitedOK:    true,
+			PaidRewarded: t.ReferralPaidRewarded,
+			RegisteredAt: t.CreatedAt.Format("2006-01-02 15:04"),
+		}
+		// 邀请注册奖励是否发放：referral_signup 台账(邀请人=我,受邀=该租户)
+		var signupCnt, paidCnt int64
+		db.DB.Model(&model.RewardClaim{}).
+			Where("grant_type='referral_signup' AND tenant_id=? AND ref_id=?", ti.ID, t.ID).Count(&signupCnt)
+		rec.SignupReward = signupCnt > 0
+		// 好友支付状态：名下是否存在 paid 订单
+		db.DB.Model(&model.BillingOrder{}).
+			Where("tenant_id=? AND status='paid'", t.ID).Count(&paidCnt)
+		rec.PaidOK = paidCnt > 0
+		out = append(out, rec)
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"list": out}})
 }

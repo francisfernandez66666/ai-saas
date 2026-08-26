@@ -38,6 +38,7 @@ type signupReq struct {
 	AdminEmail   string `json:"admin_email"`      // 管理员邮箱（email_verify_enabled 时必填+验证码校验）
 	EmailCode    string `json:"email_code"`       // 邮箱验证码
 	Ref          string `json:"ref"`              // 邀请码（M-R 邀请推广，选填；首绑唯一）
+	Industry     string `json:"industry"`         // 行业（选填；未知行业自动兜底为通用行业 general）
 }
 
 // TenantSignup POST /api/v1/tenant/signup （免登录）
@@ -134,6 +135,31 @@ func TenantSignup(c *gin.Context) {
 		}
 	}
 
+	// ---- UAT定稿三项（2026-08-26）----
+
+	// ① 弱密码拒绝：与改密共用同一强度基线（≥8位含字母和数字）
+	if err := validatePasswordStrength(req.Password); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+
+	// ② 重复邮箱注册拒绝：邮箱为 OneID 外键唯一锚，全局唯一无条件校验
+	req.AdminEmail = service.NormalizeEmail(req.AdminEmail)
+	if req.AdminEmail != "" {
+		var dupMail int64
+		db.DB.Model(&model.User{}).Where("email = ?", req.AdminEmail).Count(&dupMail)
+		if dupMail > 0 {
+			c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换或直接登录"})
+			return
+		}
+	}
+
+	// ③ 行业兜底：未填/未知行业不拒绝，回落通用行业（general）
+	industry := strings.ToLower(strings.TrimSpace(req.Industry))
+
+	// 行业兜底（UAT定稿②）：未填或未知行业不拒绝，回落通用行业(general)
+	industry = resolveIndustry(industry)
+
 	// 默认套餐：personal（不存在则置空由超管补配）
 	var plan model.SubscriptionPlan
 	db.DB.Where("code = ?", "personal").First(&plan)
@@ -166,6 +192,7 @@ func TenantSignup(c *gin.Context) {
 		MaxDepartments: plan.MaxDepartments,
 		TrialStartAt:   &now,
 		TrialEndAt:     &trialEnd,
+		Industry:       industry,
 	}
 	if plan.ID > 0 {
 		ten.PlanID = plan.ID
@@ -304,4 +331,23 @@ func ListPlans(c *gin.Context) {
 	var pkgs []model.Package
 	db.DB.Where("enabled = ?", true).Order("sort_order ASC, id ASC").Find(&pkgs)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": plans, "packages": pkgs})
+}
+
+// resolveIndustry 行业解析与兜底（UAT定稿②，2026-08-26）
+// 规则：入参为空 → 直接通用行业；非空时校验是否为已上架的行业级包 code，
+// 命中返回原值，未命中不拒绝、回落通用行业(general)。通用行业无需包文件，
+// 仅作为租户身份标签存在（后续可挂载通用内容包）。
+func resolveIndustry(industry string) string {
+	industry = strings.ToLower(strings.TrimSpace(industry))
+	if industry == "" {
+		return "general"
+	}
+	var cnt int64
+	db.DB.Model(&model.IndustryPack{}).
+		Where("pack_level = ? AND code = ?", "industry", industry).Count(&cnt)
+	if cnt > 0 {
+		return industry
+	}
+	log.Printf("[Signup] 行业[%s]暂无对应行业包，回落通用行业general", industry)
+	return "general"
 }

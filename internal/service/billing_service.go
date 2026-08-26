@@ -1,6 +1,7 @@
 package service
 
 import (
+	"crypto/rand"
 	"context"
 	"fmt"
 	"log"
@@ -55,9 +56,13 @@ func GetPayMode() string {
 	return mode
 }
 
-// GenerateOrderNo 订单号：时间戳+随机段，32位内唯一索引兜底
+// GenerateOrderNo 订单号：秒级时间戳+6字节随机hex（UAT修复 2026-08-26）
+// 原"UnixNano%10000"四位尾数在批量下单场景高频碰撞(23505)——改为 crypto/rand
+// 8位hex后缀，碰撞概率≈1/2^32且与秒级字段解耦；总长仍≤32满足唯一索引
 func GenerateOrderNo() string {
-	return fmt.Sprintf("BO%s%04d", time.Now().Format("20060102150405"), time.Now().UnixNano()%10000)
+	b := make([]byte, 4)
+	rand.Read(b)
+	return fmt.Sprintf("BO%s%s", time.Now().Format("20060102150405"), fmt.Sprintf("%02x", b))
 }
 
 // CreateOrderForPackage 按商业包创建订单（M1 下单统一入口）

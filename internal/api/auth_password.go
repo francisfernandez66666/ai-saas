@@ -43,10 +43,11 @@ type changePasswordReq struct {
 	NewPassword string `json:"new_password" binding:"required"`
 }
 
-// validatePasswordStrength 新密码强度：≥8位且同时含字母和数字
+// validatePasswordStrength 密码强度：≥8位且同时含字母和数字
+// UAT定稿(2026-08-26)：注册与改密共用同一强度基线；弱密码一律拒绝
 func validatePasswordStrength(pwd string) error {
 	if len(pwd) < 8 {
-		return fmt.Errorf("新密码至少8位")
+		return fmt.Errorf("密码至少8位且同时包含字母和数字")
 	}
 	var hasLetter, hasDigit bool
 	for _, r := range pwd {
@@ -58,7 +59,7 @@ func validatePasswordStrength(pwd string) error {
 		}
 	}
 	if !hasLetter || !hasDigit {
-		return fmt.Errorf("新密码须同时包含字母和数字")
+		return fmt.Errorf("密码至少8位且同时包含字母和数字")
 	}
 	return nil
 }
