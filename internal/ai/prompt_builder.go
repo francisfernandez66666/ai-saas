@@ -30,7 +30,7 @@ import (
 // leadCaptured: 客户是否已留资（journey_stage>=lead_captured），硬规则：
 //
 //	已留资及以后，禁止再输出"促到店/约试驾/问姓名电话"类话术，只管好好介绍产品
-func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, finalAnchor int, canPromote bool, isStoreVisit bool, leadCaptured bool) string {
+func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, hasArrived bool, finalAnchor int, canPromote bool, isStoreVisit bool, leadCaptured bool) string {
 	var sb strings.Builder
 
 	// 修复：语气风格从后台配置读取(tone_style)，无需改代码发版
@@ -40,6 +40,14 @@ func BuildSystemPrompt(features []model.Feature, modelID uint, hasArrived bool, 
 	// 人设——根据tone_style动态调整
 	sb.WriteString(getTonePersona(toneStyle))
 	sb.WriteString("\n")
+
+	// P2 双层KB（2026-08-26）：行业/企业包定制指令注入（prompts.json → pack_prompts_{code} 键）
+	// 顺序：行业在前、企业在后（企业更贴近该租户，放后面权重感更强）
+	for _, instruction := range service.GetBoundPackPrompts(tenantID) {
+		sb.WriteString("【定制指令】\n")
+		sb.WriteString(instruction)
+		sb.WriteString("\n\n")
+	}
 
 	sb.WriteString("【语气铁律】\n")
 	sb.WriteString("1. 用口语，不用书面语。说「你」不说「您」，说「咱」不说「我们」\n")

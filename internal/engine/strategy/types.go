@@ -68,6 +68,15 @@ type StrategyInput struct {
 	ConversationID uint               // 会话ID
 	CanPromote     bool               // 是否允许促单（只有已到店+已报价后才允许，防止体验阶段推优惠）
 	JourneyStage   string             // 客户线索阶段（用于意图识别+留资转化策略）
+	// TenantID 租户ID（M1租户隔离修复 2026-08-25）：
+	// 引擎缓存为全量加载（DefaultEngine 含所有租户私有模板/卖点），
+	// Step4 召回时按此字段内存过滤——预置(tenant_id=0)全员可见，私有仅本租户可见；
+	// 值为0时 fail-closed 只见预置。所有构造处必须显式传 customer.TenantID。
+	TenantID uint
+	// DeptIDs 顾问部门继承链（三级包架构 2026-08-26）：自身→父→…→根 的部门ID集合。
+	// 部门专属内容（部门包物化）仅当链上包含其 DepartmentID 时可见；
+	// 为空=纯租户语境（C端客户对话/未指派顾问），只见行业+企业两层
+	DeptIDs []uint
 }
 
 // StrategyOutput 策略引擎输出
@@ -79,12 +88,14 @@ type StrategyOutput = strategytypes.StrategyOutput
 // AnchorWeight 锚类型权重
 // 用于Step1的加权打分: score_a = w_a · f_a(T, S)
 type AnchorWeight struct {
-	IntentScoreWeight float64 // 意向分权重
-	TrustWeight       float64 // 信任度权重
-	HookRateWeight    float64 // 接钩率权重
-	StageWeight       float64 // 心智阶段权重
-	PriceSensWeight   float64 // 价格敏感度权重
-	BaseBias          float64 // 基础偏置
+	// json 标签修复（2026-08-26）：后台配置为 snake_case，无标签时反序列化静默得到
+	// 全零权重（len 校验通过）——自该功能上线起所有锚打分实际用零权重，意向/信任失效
+	IntentScoreWeight float64 `json:"intent_score_weight"`
+	TrustWeight       float64 `json:"trust_weight"`
+	HookRateWeight    float64 `json:"hook_rate_weight"`
+	StageWeight       float64 `json:"stage_weight"`
+	PriceSensWeight   float64 `json:"price_sens_weight"`
+	BaseBias          float64 `json:"base_bias"`
 }
 
 // DefaultAnchorWeights 各锚类型的默认权重配置

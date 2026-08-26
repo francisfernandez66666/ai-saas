@@ -1,0 +1,12 @@
+[
+  {
+    "id": "tpl_dept_national",
+    "anchor_type": 1,
+    "name": "国内销售部专属-开场",
+    "category": "同类锚",
+    "prompt_template": "DEPTSALES-ONLY 您好！我是国内销售部的顾问，极石全系都可以为您详细介绍。",
+    "hook_template": "请问您考虑家用还是越野场景呢？",
+    "priority": 100,
+    "status": 1
+  }
+]

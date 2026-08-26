@@ -10,6 +10,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
 
@@ -36,6 +37,7 @@ type signupReq struct {
 	ContactPhone string `json:"contact_phone"`
 	AdminEmail   string `json:"admin_email"`      // 管理员邮箱（email_verify_enabled 时必填+验证码校验）
 	EmailCode    string `json:"email_code"`       // 邮箱验证码
+	Ref          string `json:"ref"`              // 邀请码（M-R 邀请推广，选填；首绑唯一）
 }
 
 // TenantSignup POST /api/v1/tenant/signup （免登录）
@@ -89,30 +91,46 @@ func TenantSignup(c *gin.Context) {
 		return
 	}
 
-	// ---- 注册防薅护栏（商业化第二批 M1，借鉴翻译助手三期§3.1）----
-	// signup 即送真实 AI 调用额度，无防护=脚本批量注册直接烧钱
-	ip := c.ClientIP()
+	// ---- 注册防薅护栏 v2（2026-08-26）：主锚=账号身份(OneID/唯一邮箱)，IP降为内测兜底 ----
+	// 生产态(邮箱验证开)：唯一邮箱即身份锚，同邮箱注册提交限流 register_email_daily_limit；
+	//   IP 仅写入审计供事后风控，不做硬拦截——避免同 NAT 多企业误伤（用户定稿语义）
+	// 内测态(邮箱验证关)：无身份锚可用 → 保留原 IP 双闸兜底
 	svc := service.DefaultSystemConfigService
-	if dailyLimit := svc.GetInt("register_ip_daily_limit", 3); dailyLimit > 0 {
+	if service.EmailVerifyEnabled() && req.AdminEmail != "" {
+		daily := svc.GetInt("register_email_daily_limit", 3)
 		var cnt int64
 		db.DB.Model(&model.TenantAuditLog{}).
-			Where("action = ? AND ip = ? AND created_at >= CURRENT_DATE", "tenant_signup", ip).
+			Where("action = ? AND created_at >= CURRENT_DATE AND detail LIKE ?",
+				"tenant_signup", fmt.Sprintf(`%%"email":"%s"%%`, req.AdminEmail)).
 			Count(&cnt)
-		if cnt >= int64(dailyLimit) {
-			log.Printf("[防薅] IP=%s 今日注册已达上限(%d)", ip, dailyLimit)
-			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该网络今日注册次数已达上限，请明日再试或联系我们"})
+		if cnt >= int64(daily) {
+			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", req.AdminEmail, daily)
+			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该邮箱今日注册尝试已达上限，请明日再试或联系我们"})
 			return
 		}
-	}
-	if minGap := svc.GetInt("register_ip_min_interval_sec", 60); minGap > 0 {
-		var last time.Time
-		db.DB.Model(&model.TenantAuditLog{}).
-			Select("created_at").
-			Where("action = ? AND ip = ?", "tenant_signup", ip).
-			Order("id DESC").Limit(1).Scan(&last)
-		if !last.IsZero() && time.Since(last) < time.Duration(minGap)*time.Second {
-			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "注册过于频繁，请稍后再试"})
-			return
+	} else {
+		ip := c.ClientIP()
+		if dailyLimit := svc.GetInt("register_ip_daily_limit", 3); dailyLimit > 0 {
+			var cnt int64
+			db.DB.Model(&model.TenantAuditLog{}).
+				Where("action = ? AND ip = ? AND created_at >= CURRENT_DATE", "tenant_signup", ip).
+				Count(&cnt)
+			if cnt >= int64(dailyLimit) {
+				log.Printf("[防薅] IP=%s 今日注册已达上限(%d)", ip, dailyLimit)
+				c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该网络今日注册次数已达上限，请明日再试或联系我们"})
+				return
+			}
+		}
+		if minGap := svc.GetInt("register_ip_min_interval_sec", 60); minGap > 0 {
+			var last time.Time
+			db.DB.Model(&model.TenantAuditLog{}).
+				Select("created_at").
+				Where("action = ? AND ip = ?", "tenant_signup", ip).
+				Order("id DESC").Limit(1).Scan(&last)
+			if !last.IsZero() && time.Since(last) < time.Duration(minGap)*time.Second {
+				c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "注册过于频繁，请稍后再试"})
+				return
+			}
 		}
 	}
 
@@ -153,10 +171,24 @@ func TenantSignup(c *gin.Context) {
 		ten.PlanID = plan.ID
 	}
 
+	// M-R 邀请推广（2026-08-25）：新租户邀请码（8位，冲突概率≈1/31^8）
+	if code, err := service.GenerateInviteCode(); err == nil {
+		ten.InviteCode = code
+	}
+	refCode := strings.TrimSpace(strings.ToUpper(req.Ref))
+
 	var adminID uint
 	err = db.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Create(&ten).Error; err != nil {
 			return err
+		}
+		// M-R 邀请推广：首绑邀请关系 + 邀请人侧奖励
+		service.ApplyReferralBinding(tx, &ten, refCode, req.AdminEmail)
+		// P1.5 注册赠送免费桶 —— 双发修复(2026-08-26 UAT发现)：
+		// 带 ref 时 ApplyReferralBinding 的新客侧发放即注册礼，两条路径叠加曾致60万。
+		// 现互斥：仅无 ref 走 GrantTrialBucket；有 ref 的同额由邀请路径承担。
+		if refCode == "" {
+			service.GrantTrialBucket(tx, ten.ID, req.AdminEmail)
 		}
 		// 根部门
 		root := model.Department{TenantID: ten.ID, Name: "销售部", Depth: 1, Status: 1}
@@ -189,19 +221,23 @@ func TenantSignup(c *gin.Context) {
 		return
 	}
 
-	// 注册联动发试用包（商业化 M2）：TenantSignup 成功后自动发放 free 包，
-	// 替代裸的 trial 7 天——新租户立即可用 AI 对话，额度逐次递减可见
-	// M1 审核模式跳过：待超管 grant-trial 幂等发放
-	if !reviewMode {
-		grantTrialPackage(ten.ID)
-	}
+	// P1.5(2026-08-26)：注册赠礼统一收口到 GrantTrialBucket（事务内已发，双唯一防撞库）
+	// 移除遗留 grantTrialPackage 双发路径；审核态租户桶已预置、放行前无法消耗
 
-	// 审计
+	// 审计（detail 带 email：防薅v2 账号锚限流的计数依据）
 	db.DB.Create(&model.TenantAuditLog{
 		TenantID: ten.ID, UserID: adminID, Action: "tenant_signup",
 		Resource: fmt.Sprintf("tenant:%s", req.Code),
+		Detail:   fmt.Sprintf(`{"code":"%s","email":"%s"}`, req.Code, req.AdminEmail),
 		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
+
+	// OneID 关联（防薅v2，2026-08-26）：注册成功即以邮箱为身份锚之一写 CDP
+	_ = mq.Publish(c.Request.Context(), mq.TopicUserEvent, ten.ID,
+		fmt.Sprintf("sys:t%d", ten.ID), "guest_created",
+		model.MessageEvent{EventType: "identity", EventName: "guest_created",
+			AnchorType: "email",
+			Attributes: map[string]any{"email": req.AdminEmail, "tenant_code": req.Code}})
 
 	loginURL := fmt.Sprintf("/login?tenant_code=%s", req.Code)
 	msg := "试用开通成功（7 天）"

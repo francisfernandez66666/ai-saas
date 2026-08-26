@@ -90,6 +90,13 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	}
 	service.RecordAICall(tenantID)
 
+	// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
+	// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
+	if !service.CheckTokenAvailability(tenantID) {
+		log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
+		return ai.BuildFallbackReply(strategyOutput, canPromote)
+	}
+
 	// 模拟模式：直接用策略中心的模板话术兜底
 	// 修复：从SystemConfigService读取mock_mode，后台开关即时生效
 	if service.DefaultSystemConfigService.GetBool("mock_mode", config.GlobalConfig.AI.MockMode) {
@@ -147,7 +154,22 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// canPromote已在函数顶部声明，此处不再重复
 	isStoreVisit := strategytypes.IsStoreVisitIntent(userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
 	modelID := getCustomerModelID(customer)
-	systemPrompt := ai.BuildSystemPrompt(features, modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
+	systemPrompt := ai.BuildSystemPrompt(customer.TenantID, features, modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
+
+	// P2 双层KB：租户自有资料融合检索注入（二元组打分 top3；无命中不加段）
+	if kbHits := service.SearchTenantKnowledge(customer.TenantID, userInput, 3); len(kbHits) > 0 {
+		var kbs strings.Builder
+		kbs.WriteString("\n【企业知识库参考】以下为该企业自有资料片段，仅供参考；与客户问题相关就自然融入，无关或不确定就别硬套：\n")
+		for _, f := range kbHits {
+			content := []rune(f.Content)
+			if len(content) > 300 {
+				content = content[:300]
+			}
+			kbs.WriteString("- [" + f.Title + "] " + string(content) + "\n")
+		}
+		systemPrompt += kbs.String()
+		log.Printf("[KB] 租户%d 命中 %d 条自有知识片段注入 prompt", customer.TenantID, len(kbHits))
+	}
 
 	// 2. 策略指令（锚方向 + 话术参考 + 条件交换 + 知识库素材）
 	strategyPrompt := ai.BuildStrategyPrompt(strategyOutput, customer.GetTags(), modelID, hasArrived, canPromote, chatflow.IsLeadCaptured(customer))
@@ -206,6 +228,8 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
 	service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
 		usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
+	// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
+	go service.DeductTokensActual(tenantID, int64(usage.TotalTokens))
 	if modelName != "" {
 		log.Printf("[AI] 实际使用模型: %s (tokens=%d)", modelName, usage.TotalTokens)
 	}

@@ -3,6 +3,7 @@ package strategy
 import (
 	"ai-scrm/internal/llm"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/service"
 )
 
 // ============================================================
@@ -15,6 +16,11 @@ import (
 // ============================================================
 
 // GenerateReply 基于策略输出生成自然语言回复
-func GenerateReply(customer *model.Customer, conversationID uint, userInput string, out *StrategyOutput) string {
-	return llm.GenerateAIReply(customer, conversationID, userInput, out, DefaultEngine.Features())
+// M1 租户隔离修复（2026-08-25）：卖点注入按客户租户过滤后再交 LLM——
+// DefaultEngine.Features() 为全量缓存，不过滤则租户A私有卖点会进入
+// 租户B客户的 prompt（与 Infer 内 FillTemplate 过滤同规则）。
+func GenerateReply(customer *model.Customer, conversationID uint, userInput string, out *StrategyOutput, deptIDs []uint) string {
+	scope := service.ResolveRecallScope(customer.TenantID, deptIDs)
+	features := featuresForTenant(DefaultEngine.Features(), customer.TenantID, scope)
+	return llm.GenerateAIReply(customer, conversationID, userInput, out, features)
 }

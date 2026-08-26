@@ -675,6 +675,9 @@ skipStoreVisitFast:
 		ConversationID: conversation.ID,
 		CanPromote:     customer.CanPromote(),
 		JourneyStage:   customer.JourneyStage,
+		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		// 三级包架构：归属顾问的部门继承链（未指派=C端纯租户语境，只见行业+企业层）
+		DeptIDs:        service.DeptChainForUser(conversation.AssignedUserID),
 	}
 
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
@@ -705,7 +708,7 @@ skipStoreVisitFast:
 					"pending_handoff":     false,
 				})
 				log.Printf("[Chat] 会话%d 顾问超时，自动重开AI回复", conversation.ID)
-				aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+				aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 			} else {
 				aiReply = ""
 				routeResult = "human_locked_no_ai"
@@ -713,7 +716,7 @@ skipStoreVisitFast:
 			}
 		} else {
 			conversation.Mode = "ai"
-			aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+			aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 		}
 
 	case strategy.RoutePendingHuman:
@@ -737,7 +740,7 @@ skipStoreVisitFast:
 		// 已留资客户：不重复问留资信息，直接引导到店试驾
 		conversation.Mode = "ai"
 		log.Printf("[对话] 会话%d 询价路由触发，引导到店试驾后出报价", conversation.ID)
-		aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+		aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
 	case strategy.RouteHuman:
 		// 直接转人工（硬切，用户有感知）
@@ -1696,12 +1699,15 @@ skipStoreVisitFastTest:
 		ConversationID: conversation.ID,
 		CanPromote:     customer.CanPromote(),
 		JourneyStage:   customer.JourneyStage,
+		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		// 三级包架构：归属顾问的部门继承链（未指派=C端纯租户语境，只见行业+企业层）
+		DeptIDs:        service.DeptChainForUser(conversation.AssignedUserID),
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
 	// ---- 生成AI回复 ----
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
-	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput)
+	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应

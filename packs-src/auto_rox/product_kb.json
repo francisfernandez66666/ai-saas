@@ -1,0 +1,160 @@
+{
+  "faqs": [],
+  "features": [
+    {
+      "applicable_models": [
+        "极石01",
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "越野爱好者",
+        "年轻首购"
+      ],
+      "category": "性能",
+      "desc_template": "极石搭载1.5T高效增程器+前后双电机，系统综合功率350kW、峰值扭矩740N·m。增程器只发电不直接驱动，始终工作在最优效率区间，馈电油耗仅6.76L/100km。CLTC综合续航1405km（ADAMAS）/1362km（01），纯电续航215-306km，日常通勤不烧油，长途出行无焦虑。",
+      "feature_name": "1.5T增程器+双电机350kW",
+      "id": "feat_engine_power",
+      "params": {
+        "ev_range": "纯电215-306km",
+        "fuel_consumption": "馈电6.76L/100km",
+        "power": "350kW/740N·m",
+        "range": "CLTC 1405km综合续航"
+      },
+      "priority": 9,
+      "short_desc": "350kW/740N·m增程动力，1405km综合续航",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石01",
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "价格敏感",
+        "年轻首购"
+      ],
+      "category": "服务",
+      "desc_template": "极石01起售价29.99万、ADAMAS起售价34.99万，提供多种灵活金融方案：最低首付20%起，最长5年分期，还有0利率方案可选。增程车免购置税再省3万+，审批快至当天，轻松把爱车开回家。",
+      "feature_name": "极石专属金融方案",
+      "id": "feat_finance",
+      "params": {
+        "down_payment": "20%起",
+        "price_01": "29.99万起",
+        "price_adamas": "34.99万起",
+        "tax": "增程免购置税省3万+"
+      },
+      "priority": 8,
+      "short_desc": "29.99万起+免购置税，金融方案灵活",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "企业主",
+        "家庭用户"
+      ],
+      "category": "舒适",
+      "desc_template": "极石ADAMAS二排零重力航空座椅，加热/通风/按摩一应俱全，6/7座灵活布局。15.7英寸3K中控屏+后排3K娱乐屏，高通8155芯片驱动，小石头AI助手融合DeepSeek+文心一言大模型，语音交互自然智能。电吸门全系标配（全车+尾门），8.5L冷暖双模车载冰箱全系标配，每一次出行都是豪华享受。",
+      "feature_name": "零重力座椅+智能座舱",
+      "id": "feat_luxury_interior",
+      "params": {
+        "chip": "高通8155",
+        "door": "电吸门全车+尾门",
+        "fridge": "8.5L冷暖双模冰箱",
+        "screen": "15.7英寸3K中控屏+后排娱乐屏",
+        "seat": "二排零重力航空座椅"
+      },
+      "priority": 8,
+      "short_desc": "零重力座椅+8155智能座舱，全系标配豪华配置",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "越野爱好者"
+      ],
+      "category": "性能",
+      "desc_template": "极石ADAMAS搭载前后双电机全时四驱系统，综合功率350kW、峰值扭矩740N·m，272mm最小离地间隙、770mm涉水深度，7种全地形模式随心切换。中汽研L3级越野认证，沙漠戈壁雨雪泥泞都能稳稳通过。",
+      "feature_name": "双电机全时四驱+L3越野认证",
+      "id": "feat_offroad_4x4",
+      "params": {
+        "cert": "L3级越野认证",
+        "clearance": "272mm离地间隙",
+        "power": "350kW/740N·m",
+        "wading": "770mm涉水深度"
+      },
+      "priority": 10,
+      "short_desc": "双电机全时四驱，L3越野认证，真正的全地形能力",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "越野爱好者"
+      ],
+      "category": "性能",
+      "desc_template": "极石ADAMAS独创尾门餐吧2.0系统，折叠操作台+模块化收纳+LED照明+一键供水，3分钟搭出户外厨房。5.7kW双路外放电（3.5kW+2.2kW），支持电磁炉+咖啡机同时使用。车顶300kg载荷加装车顶帐篷，二三排放倒纯平大床，车就是你的移动山居。7种全地形模式+AT胎可选，越野穿越更从容。",
+      "feature_name": "尾门餐吧+户外生态系统",
+      "id": "feat_offroad_package",
+      "params": {
+        "kitchen": "尾门餐吧2.0系统",
+        "mode": "7种全地形模式",
+        "roof": "车顶300kg载荷",
+        "v2l": "5.7kW双路外放电"
+      },
+      "priority": 6,
+      "short_desc": "尾门餐吧2.0+5.7kW外放电，户外生活全能装备",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石01",
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "家庭用户"
+      ],
+      "category": "安全",
+      "desc_template": "极石全系采用全铝承载式车身，轻量化高刚性，碰撞安全性远超同级别。ADAMAS标配空气悬架+7种全地形模式保障行驶安全；极石01高阶版搭载3颗激光雷达+双Orin-X芯片（508TOPS），支持城市NOA和高速领航辅助，长途开车不累，全家出行更安心。",
+      "feature_name": "全铝车身+高阶智驾安全",
+      "id": "feat_safety_pro",
+      "params": {
+        "body": "全铝承载式车身",
+        "chip": "双Orin-X 508TOPS",
+        "lidar": "3颗激光雷达(01高阶版)"
+      },
+      "priority": 9,
+      "short_desc": "全铝车身+激光雷达智驾，安全配置拉满",
+      "status": 1
+    },
+    {
+      "applicable_models": [
+        "极石01",
+        "极石ADAMAS"
+      ],
+      "applicable_tags": [
+        "家庭用户",
+        "老客户"
+      ],
+      "category": "服务",
+      "desc_template": "极石提供整车5年/15万公里质保，三电系统8年/15万公里质保，增程器专项保障更安心。全国服务网点持续扩展中，24小时道路救援随时待命，让您无论城市通勤还是长途穿越都无后顾之忧。",
+      "feature_name": "整车质保+道路救援",
+      "id": "feat_warranty",
+      "params": {
+        "battery": "8年/15万公里三电",
+        "rescue": "24小时道路救援",
+        "warranty": "5年/15万公里整车"
+      },
+      "priority": 7,
+      "short_desc": "整车5年/三电8年质保，长途穿越更安心",
+      "status": 1
+    }
+  ],
+  "notes": "导出自现网预置数据(rox极石汽车)"
+}

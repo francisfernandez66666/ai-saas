@@ -155,3 +155,89 @@ func InvalidateTenantUsers(tenantID uint) {
 		InvalidateOrg(id)
 	}
 }
+
+// DeptChainFromPath 解析物化路径为部门ID继承链（三级包架构 2026-08-26）
+// path 形如 "/1/5/" → [1,5]（根→…→自身）；自底向上查起语义的集合来源
+func DeptChainFromPath(path string) []uint {
+	if path == "" {
+		return nil
+	}
+	ids := []uint{}
+	cur := 0
+	for i := 0; i < len(path); i++ {
+		c := path[i]
+		if c == '/' {
+			if cur > 0 {
+				ids = append(ids, uint(cur))
+			}
+			cur = 0
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			cur = cur*10 + int(c-'0')
+		}
+	}
+	return ids
+}
+
+// DeptChainForUser 用户所属部门的完整继承链（含自身）；无部门返回空
+func DeptChainForUser(userID uint) []uint {
+	oc := LoadOrgContext(userID)
+	if oc == nil || oc.DeptPath == "" {
+		return nil
+	}
+	return DeptChainFromPath(oc.DeptPath)
+}
+
+// ============================================================
+// KB 继承链可见域解析（参考外部项目成熟语义，2026-08-26）
+// ============================================================
+
+// RecallScope 召回可见域：三级包自底向上继承 + 可选跨部门回退
+type RecallScope struct {
+	OwnDepts   map[uint]bool          // ①链内部门（自身→祖先）
+	CrossDepts map[uint]bool          // ④跨部门候选（策略开∧包共享才进入）
+	CrossTags  map[uint]string        // deptID → 「🌐跨部门·来自X部门库」打标文案
+	Distances  map[uint]int           // 链内距离（0=本部门，参数类就近覆盖 P2 用）
+}
+
+// ResolveRecallScope 解析指定顾问部门链的召回可见域
+// 规则：①链内恒可见；④仅当 租户策略 kb_cross_dept_fallback=开 且 该部门包 share_cross_dept=1
+func ResolveRecallScope(tenantID uint, selfChain []uint) *RecallScope {
+	scope := &RecallScope{
+		OwnDepts:   map[uint]bool{},
+		CrossDepts: map[uint]bool{},
+		CrossTags:  map[uint]string{},
+		Distances:  map[uint]int{},
+	}
+	for i, d := range selfChain {
+		scope.OwnDepts[d] = true
+		if _, ok := scope.Distances[d]; !ok {
+			scope.Distances[d] = i // 首次出现即最近距离
+		}
+	}
+	if DefaultSystemConfigService == nil ||
+		!DefaultSystemConfigService.GetBool("kb_cross_dept_fallback", true) {
+		return scope // 策略关：无④层
+	}
+	var binds []model.DeptPackBinding
+	db.DB.Where("tenant_id = ?", tenantID).Find(&binds)
+	for _, b := range binds {
+		if scope.OwnDepts[b.DepartmentID] || scope.CrossDepts[b.DepartmentID] {
+			continue
+		}
+		var pk model.IndustryPack
+		if err := db.DB.Select("id, code, name, pack_level, share_cross_dept").
+			First(&pk, b.PackID).Error; err != nil {
+			continue
+		}
+		if pk.PackLevel != "department" || pk.ShareCrossDept != 1 {
+			continue // 仅部门级包参与回退；opt-out 包不外泄
+		}
+		scope.CrossDepts[b.DepartmentID] = true
+		var dn struct{ Name string }
+		db.DB.Table("departments").Select("name").Where("id = ?", b.DepartmentID).Take(&dn)
+		scope.CrossTags[b.DepartmentID] = "🌐跨部门·来自" + dn.Name + "库"
+	}
+	return scope
+}

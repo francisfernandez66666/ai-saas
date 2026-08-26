@@ -279,6 +279,11 @@ var skipTenantPaths = map[string]bool{
 	"/api/v1/plans":             true,
 }
 
+// skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）
+// SPA 自身仅含登录/注册等免登页与静态资源；业务数据由页面内的 API 调用
+// 走各自的 JWT/TenantResolver 逻辑，不受此放行影响
+var skipTenantPrefixes = []string{"/app/"}
+
 // TenantResolver 全局租户解析中间件（fail-closed）
 func TenantResolver() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -293,6 +298,12 @@ func TenantResolver() gin.HandlerFunc {
 			c.Next()
 			return
 		}
+		for _, pre := range skipTenantPrefixes { // P-FE：SPA 静态资源放行
+			if strings.HasPrefix(path, pre) {
+				c.Next()
+				return
+			}
+		}
 		// OpenAPI 独立路由组（M4）：租户来自 API Key 归属而非 Host，
 		// 由 OpenAPIAuth 中间件自行注入，跳过 Host 解析（渠道回调无租户头同理）
 		if strings.HasPrefix(path, "/openapi/") {
@@ -306,6 +317,16 @@ func TenantResolver() gin.HandlerFunc {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
 				"code":    403,
 				"message": "无法识别访问租户",
+				"data":    nil,
+			})
+			return
+		}
+
+		// P4 账号注销：cancel_at 次日生效——status 未变更同样拦截（数据保留不删除）
+		if tenant.CancelAt != nil && time.Now().Format("2006-01-02") != tenant.CancelAt.Format("2006-01-02") {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"code":    403,
+				"message": "账号已注销，不可访问（数据保留期请联系平台处理）",
 				"data":    nil,
 			})
 			return

@@ -78,7 +78,8 @@ func MyPackage(c *gin.Context) {
 	tid := tenantIDOf(c)
 
 	var t model.Tenant
-	if err := db.DB.Select("id, name, status, expired_at, max_ai_calls_monthly, used_ai_calls, ai_call_balance").
+	if err := db.DB.Select("id, name, status, expired_at, max_ai_calls_monthly, used_ai_calls, ai_call_balance, "+
+		"monthly_token_quota, monthly_token_used, token_balance, free_token_balance, free_token_expires_at").
 		First(&t, tid).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "租户不存在"})
 		return
@@ -98,6 +99,13 @@ func MyPackage(c *gin.Context) {
 		"ai_call_balance":  balance, // 增量包买断余额（不随月重置）
 		"billing_enforced": enforced,
 		"pay_mode":         service.GetPayMode(),
+		// P1.5 Token三桶展示（2026-08-26）
+		"token_billing_enabled": service.TokenBillingEnabled(),
+		"monthly_token_quota":   t.MonthlyTokenQuota,
+		"monthly_token_used":    t.MonthlyTokenUsed,
+		"token_balance":         t.TokenBalance,
+		"free_token_balance":    t.FreeTokenBalance,
+		"free_token_expires_at": t.FreeTokenExpiresAt,
 	}})
 }
 

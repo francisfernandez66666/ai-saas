@@ -141,8 +141,8 @@ GRANT=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
 [ "$GRANT" = "True" ] && check "模拟到账→权益发放(granted)" y y || check "模拟到账→权益发放" y n
 
 BALANCE=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
-  "SELECT COALESCE(ai_call_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
-[ "${BALANCE:-0}" -ge 1000 ] && check "增量余额已入账(balance=$BALANCE)" y y || check "增量余额已入账(balance=$BALANCE)" y n
+  "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
+[ "${BALANCE:-0}" -ge 1000000 ] && check "增量余额已入账(token=$BALANCE)" y y || check "增量余额已入账(token=$BALANCE)" y n
 
 GRANT2=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
   -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
@@ -150,7 +150,7 @@ GRANT2=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
 [ "$GRANT2" = "False" ] && check "重复支付幂等(不二次发放)" y y || check "重复支付幂等" y n
 
 BALANCE2=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
-  "SELECT COALESCE(ai_call_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
+  "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
 [ "$BALANCE2" = "$BALANCE" ] && check "幂等后余额未重复累计" y y || check "幂等后余额未重复累计($BALANCE→$BALANCE2)" y n
 
 echo "---- 六、M4 OpenAPI 鉴权/隔离/计量 ----"

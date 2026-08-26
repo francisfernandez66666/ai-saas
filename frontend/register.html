@@ -125,6 +125,9 @@ async function submitForm(e){
   e.preventDefault();
   /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */
   const f=new FormData(e.target), body=Object.fromEntries(f), msg=document.getElementById('msg');
+  /* M-R 邀请推广：URL 携带 ?ref=邀请码 时透传给后端首绑（重复邀请后端自动忽略） */
+  const refCode=new URLSearchParams(location.search).get('ref');
+  if(refCode) body.ref=refCode.trim().toUpperCase();
   /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */
   msg.textContent='开通中...'; msg.className='msg';
   /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */
@@ -149,6 +152,9 @@ async function submitForm(e){
 <div class="card">
 /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */
 <h2>免费开通试用</h2><div class="sub">7 天全功能试用，无需绑卡</div>
+/* M-R 邀请推广：带 ?ref= 进入时显示已绑定提示 */
+<div id="refBanner" style="display:none;background:#eef2ff;color:#4f46e5;padding:8px 12px;border-radius:8px;font-size:13px;margin-bottom:14px">🎁 已应用好友邀请，注册成功后双方均可获赠 token</div>
+<script>if(new URLSearchParams(location.search).get('ref'))document.getElementById('refBanner').style.display='block';</script>
 /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */
 <form onsubmit="submitForm(event)">
 /* 邮箱验证初始化：读后台开关显隐验证码行（关闭时不强制收集） */

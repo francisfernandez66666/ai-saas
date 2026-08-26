@@ -11,6 +11,7 @@ import (
 	"ai-scrm/internal/model"
 
 	"github.com/gin-gonic/gin"
+	"ai-scrm/internal/service"
 )
 
 // ============================================================
@@ -110,7 +111,9 @@ func SuperGrantTrial(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该租户已发放过试用额度（幂等拦截）"})
 		return
 	}
-	grantTrialPackage(t.ID)
+	// P1.5(2026-08-26)：换用幂等的 GrantTrialBucket（双唯一防撞库；
+	// 非审核态重复调用因台账唯一而跳过，不再二次入桶）
+	service.GrantTrialBucket(nil, t.ID, t.ContactEmail)
 	now := time.Now()
 	end := now.AddDate(0, 0, 7)
 	db.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Updates(map[string]interface{}{

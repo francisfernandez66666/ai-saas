@@ -1,0 +1,64 @@
+# ============================================================
+# AI-SCRM 生产部署编排（P4 本地交付，2026-08-26）
+#
+# 用法：
+#   1. 准备 .env（参考 .env.example，重点 DB_/REDIS_/SMTP_）
+#   2. 放置行业包到 ./packs/*.aipack（可选，启动后也可通过超管后台上传）
+#   3. docker compose -f docker-compose.prod.yml up -d --build
+#
+# 架构提示：AI 调用统一走平台 AI 网关（LLM_GATEWAY_URL），
+# 本地部署无需任何大模型厂商密钥——token 消耗按三桶计费。
+# ============================================================
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER:-ai_scrm}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-dev123}
+      POSTGRES_DB: ${DB_NAME:-ai_scrm}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ai_scrm}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_PORT: "8080"
+      GIN_MODE: release
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-ai_scrm}
+      DB_PASSWORD: ${DB_PASSWORD:-dev123}
+      DB_NAME: ${DB_NAME:-ai_scrm}
+      REDIS_ENABLED: "true"
+      REDIS_ADDR: redis:6379
+      # ---- Token 计费与回流（平台下发后填入）----
+      INDUSTRY_PACK_PRIV_KEY: /keys/pack_priv.pem
+      INDUSTRY_PACK_PUB_KEY: /keys/pack_pub.pem
+    volumes:
+      - ./packs:/app/packs:ro        # 行业包目录（.aipack）
+      - ./keys:/keys:ro              # 引擎侧密钥（验签公钥+解封私钥）
+    ports:
+      - "${SERVER_PORT:-8080}:8080"
+
+volumes:
+  pgdata:
+  redisdata:

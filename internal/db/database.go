@@ -69,6 +69,7 @@ func Init() error {
 	dropLegacyIndexes()
 
 	// 存量业务数据回填默认租户（幂等，见函数注释）
+	ensureRewardClaimIndexes()
 	backfillTenantIDs()
 
 	return nil
@@ -121,6 +122,11 @@ func autoMigrate() error {
 		// ---- SaaS 计费/审计/API Key（Phase P0 补齐；支付逻辑后置但表先就位）
 		&model.TenantAuditLog{},
 		&model.BillingOrder{},
+		&model.IndustryPack{},
+		&model.TenantPackBinding{}, // P1 行业包地基（2026-08-25）
+		&model.DeptPackBinding{},   // 三级包架构：部门↔部门包绑定（2026-08-26）
+		&model.KbFeedbackMaterial{}, // P3 数据飞轮素材池（2026-08-26）
+		&model.RewardClaim{},         // P1.5 防薅v2：奖励领取台账（2026-08-26）
 		&model.UsageRecord{},
 		&model.ApiKey{},
 		// ---- CDP 数据底座（Phase P4 真实化前表先就位）
@@ -179,18 +185,18 @@ func backfillTenantIDs() {
 	}
 
 	// 3. 业务表回填：tenant_id=0 → 默认租户
-	// 注意：tags/templates/features/brands 等预置类表本次也一并归入默认租户，
-	// 原因：这些行是单租户时期为 rox-sales 创建的业务数据；"系统预置=0 全租户可见"
-	// 的语义从 Phase P1 引入 WithPreset 查询时才生效，届时由 seed 重新生成 0 号预置数据
-	// 修复（2026-08-23）：system_configs 必须排除在回填之外——配置是平台层数据，
-	// tenant_id=0 是其语义归属（系统默认层）；回填会把系统层搬空，
-	// 导致 GetString/GetBool 永远读不到值、全部静默回落代码默认值
+	// 修复（2026-08-25，M1 配套）：预置语义表移出回填清单。
+	// 原注释"届时由 seed 重新生成 0 号预置数据"的承诺未兑现，导致每次启动把
+	// templates/features 等预置数据强行搬进默认租户——与 FIXLOG_2026-08-23 Bug1
+	// （system_configs 被搬空）同一族问题。这些表的语义归属是 tenant_id=0 全局预置：
+	//   - 读取端走 PQ(c)（IN (tid,0) 预置可见）
+	//   - 策略引擎召回按 input.TenantID 过滤（预置0全员可见，私有仅本租户）
+	//   - 未来行业包 .aipack 导入的出厂内容也落在 0
+	// 若继续回填：新租户永远看不到任何预置话术/卖点/标签，且每次启动撤销人工修正。
+	// 业务数据表（客户/会话/消息等）保留回填不变。
 	tables := []string{
 		"customers", "customer_tags", "conversations", "messages",
-		"follow_ups", "test_drives", "flow_instances", "flow_definitions",
-		"tags", "tag_rules", "tag_weight_mappings", "templates", "features",
-		"brands", "car_models", "model_specs", "competitor_compares",
-		"knowledge_fragments",
+		"follow_ups", "test_drives", "flow_instances",
 	}
 	for _, t := range tables {
 		res := DB.Exec(fmt.Sprintf("UPDATE %s SET tenant_id = ? WHERE tenant_id = 0", t), tid)
@@ -208,4 +214,19 @@ func backfillTenantIDs() {
 // GetDB 获取数据库连接
 func GetDB() *gorm.DB {
 	return DB
+}
+
+// ensureRewardClaimIndexes 奖励台账部分唯一索引（幂等，2026-08-26）
+// 语义：trial 每(账户/邮箱)一生一次；referral 类每(类型,受邀对象)一次 —— 撞库即拒
+func ensureRewardClaimIndexes() {
+	stmts := []string{
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_trial_tenant ON reward_claims(tenant_id) WHERE grant_type = 'signup_trial'",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_trial_email ON reward_claims(email) WHERE grant_type = 'signup_trial' AND email <> ''",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_ref ON reward_claims(grant_type, ref_id) WHERE ref_id IS NOT NULL",
+	}
+	for _, q := range stmts {
+		if err := DB.Exec(q).Error; err != nil {
+			log.Printf("[migrate] reward 索引执行失败: %v", err)
+		}
+	}
 }

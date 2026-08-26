@@ -126,6 +126,18 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "static_qr_image", Value: "\"\"", ValueType: "string", Description: "静态收款码(URL或base64，static_qr模式下单返回给租户)", DefaultValue: "\"\"", SortOrder: 2},
 	// 灰度开关（借翻译助手决策"默认不强制只留痕"）：false=CheckAIQuota 恒放行只记用量（上线初期防误伤）
 	{Category: "billing", Key: "billing_enforced", Value: "false", ValueType: "bool", Description: "计费强制开关(false=超额不停服仅记日志告警)", DefaultValue: "false", SortOrder: 3},
+	{Category: "billing", Key: "order_timeout_minutes", Value: "15", ValueType: "int", Description: "待支付订单超时自动关闭(分钟)，超时未付转closed防僵尸单堆积", DefaultValue: "15", SortOrder: 4},
+	// ---- M-R 邀请推广（2026-08-25）：全平台统一推广政策，仅超管可调 ----
+	{Category: "billing", Key: "trial_token_amount", Value: "300000", ValueType: "int", Description: "注册赠送免费token数（入③免费体验桶）", DefaultValue: "300000", SortOrder: 5},
+	{Category: "billing", Key: "trial_token_valid_days", Value: "14", ValueType: "int", Description: "注册赠送免费token有效天数", DefaultValue: "14", SortOrder: 6},
+	{Category: "billing", Key: "referral_bonus_tokens", Value: "300000", ValueType: "int", Description: "每邀请1名好友注册成功，邀请人免费token增量", DefaultValue: "300000", SortOrder: 7},
+	{Category: "billing", Key: "referral_extend_days", Value: "14", ValueType: "int", Description: "每邀请1名好友注册成功，邀请人免费token有效期延长天数", DefaultValue: "14", SortOrder: 8},
+	{Category: "billing", Key: "referral_paid_bonus_tokens", Value: "500000", ValueType: "int", Description: "受邀好友购买paid套餐首笔到账后，邀请人获永久token数(入②余额桶)；单受邀限一次", DefaultValue: "500000", SortOrder: 9},
+	// KB继承链改造（2026-08-26）：跨部门回退租户策略——租户级可调（非平台键）
+	{Category: "notify", Key: "feedback_collector_url", Value: "", ValueType: "string", Description: "数据飞轮回流collector地址(HTTPS,空=关闭)；调参行为/包操作审计增量每小时上报", DefaultValue: "", SortOrder: 11},
+		{Category: "billing", Key: "register_email_daily_limit", Value: "3", ValueType: "int", Description: "防薅v2：同一邮箱每日注册提交上限(生产态主锚；IP限流仅内测兜底)", DefaultValue: "3", SortOrder: 12},
+		{Category: "billing", Key: "token_billing_enabled", Value: "false", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "false", SortOrder: 10},
+		{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// 注册试用包额度：新租户注册自动发放 free 包时的 AI 调用次数
 	{Category: "billing", Key: "trial_ai_calls", Value: "500", ValueType: "number", Description: "注册试用包AI调用次数(次)", DefaultValue: "500", SortOrder: 4},
 
@@ -688,6 +700,16 @@ var PlatformLevelKeys = map[string]bool{
 	"price_micro_per_ktok_zhipu":       true,
 	"price_micro_per_ktok_siliconflow": true,
 	"stage_models":                     true,
+	"order_timeout_minutes":            true, // M4(2026-08-25)：订单超时关闭阈值，平台级统一定价节奏
+	"trial_token_amount":               true, // M-R(2026-08-25)：注册赠送token数
+	"trial_token_valid_days":           true, // M-R：免费token有效天数
+	"referral_bonus_tokens":            true, // M-R：每邀1人注册的token奖励
+	"referral_extend_days":             true, // M-R：每邀1人的有效期延长天数
+	"referral_paid_bonus_tokens":       true, // M-R：受邀人付费后邀请人得永久token数
+	"email_verify_enabled":             true, // 修复(2026-08-25)：文档称平台级热开关但从未入表——写租户层读系统层永远看不到变更
+	"token_billing_enabled":            true, // P1.5(2026-08-26)：Token三桶扣减引擎总闸，默认关=灰度兼容现状
+	"feedback_collector_url":           true, // P3：数据飞轮回流collector端点(空=关闭)
+	"register_email_daily_limit":       true, // 防薅v2(2026-08-26)：账号锚限流阈值
 }
 
 // GetInterval 解析[min,max]格式的配置项，返回区间内的随机整数值

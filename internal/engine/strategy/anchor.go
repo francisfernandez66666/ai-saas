@@ -46,7 +46,21 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 		for i := 0; i < AnchorCount; i++ {
 			anchorWeights[i] = weightsFromConfig[i]
 		}
-		log.Printf("[策略引擎] Step1: 使用后台配置的锚权重")
+		// 防御（2026-08-26）：全零权重=反序列化失败的产物，回落默认而非退化打分
+		allZero := true
+		for _, w := range anchorWeights {
+			if w.IntentScoreWeight != 0 || w.TrustWeight != 0 || w.HookRateWeight != 0 ||
+				w.StageWeight != 0 || w.PriceSensWeight != 0 || w.BaseBias != 0 {
+				allZero = false
+				break
+			}
+		}
+		if allZero {
+			anchorWeights = DefaultAnchorWeights
+			log.Printf("[策略引擎] Step1: 后台锚权重为全零(反序列化异常)，回落默认值")
+		} else {
+			log.Printf("[策略引擎] Step1: 使用后台配置的锚权重")
+		}
 	} else {
 		anchorWeights = DefaultAnchorWeights
 		log.Printf("[策略引擎] Step1: 后台锚权重配置缺失或格式错误，使用硬编码默认值")

@@ -1,0 +1,93 @@
+package api
+
+// ============================================================
+// 邀请推广 API（M-R，2026-08-25）
+//
+// GET /api/v1/admin/referral/info    邀请码/链接参数/统计/我的桶现状
+// GET /api/v1/admin/referral/qrcode  后端渲染邀请链接二维码 PNG（前端 <img>/blob 直接用）
+//
+// 权限：AdminRequired（租户管理员及以上）——推广主体是租户管理员。
+// 二维码由后端出（用户明确要求），内容 = 注册页链接 ?ref=<邀请码>，
+// 受邀人完成注册即首绑邀请关系（InvitedByTenantID 仅此一次）。
+// ============================================================
+
+import (
+	"net/http"
+	"strconv"
+
+	"ai-scrm/internal/middleware"
+	"ai-scrm/internal/service"
+
+	"github.com/gin-gonic/gin"
+	qrcode "github.com/skip2/go-qrcode"
+)
+
+// buildInviteURL 按请求构造注册页邀请链接（scheme 兼容反代 X-Forwarded-Proto）
+func buildInviteURL(c *gin.Context, code string) string {
+	scheme := "http"
+	if p := c.GetHeader("X-Forwarded-Proto"); p == "https" {
+		scheme = "https"
+	} else if c.Request.TLS != nil {
+		scheme = "https"
+	}
+	return scheme + "://" + c.Request.Host + "/register?ref=" + code
+}
+
+// GetReferralInfo GET /api/v1/admin/referral/info
+func GetReferralInfo(c *gin.Context) {
+	ti := middleware.GetTenantInfo(c)
+	tenantID := ti.ID
+	if tenantID == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		return
+	}
+	info, err := service.GetReferralInfo(tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code": 0,
+		"data": gin.H{
+			"invite_url": buildInviteURL(c, info.InviteCode),
+			"referral":   info,
+		},
+	})
+}
+
+// GetReferralQRCode GET /api/v1/admin/referral/qrcode?size=320
+// 返回 image/png；size 可调 100~1000，默认 320
+func GetReferralQRCode(c *gin.Context) {
+	ti := middleware.GetTenantInfo(c)
+	tenantID := ti.ID
+	if tenantID == 0 {
+		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		return
+	}
+	code, err := service.EnsureInviteCode(tenantID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "邀请码生成失败"})
+		return
+	}
+	size := 320
+	if s := c.Query("size"); s != "" {
+		if n, err := strconv.Atoi(s); err == nil && n >= 100 && n <= 1000 {
+			size = n
+		}
+	}
+	png, err := qrcode.Encode(buildInviteURL(c, code), qrcode.Medium, size)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "二维码生成失败"})
+		return
+	}
+	c.Data(http.StatusOK, "image/png", png)
+}
+
+// currentUserID 从 JWT 语境取当前登录用户ID（0=未登录/系统）
+func currentUserID(c *gin.Context) uint {
+	v, _ := c.Get("user_id")
+	if uid, ok := v.(uint); ok {
+		return uid
+	}
+	return 0
+}

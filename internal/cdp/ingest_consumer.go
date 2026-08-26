@@ -25,6 +25,8 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	{Code: "idm_guest", Name: "访客身份", Category: "identity"},
 	{Code: "beh_lead_captured", Name: "已留资", Category: "behavior"},
 	{Code: "beh_msg_active", Name: "会话活跃", Category: "behavior"},
+	// M2 补齐（2026-08-25）：payment 子事件此前发布后零消费——CDP 记账收口
+	{Code: "tran_order_paid", Name: "付费转化", Category: "behavior"},
 }
 
 // StartIngestConsumer 注册 user_event 订阅（main 启动时调用一次）
@@ -67,6 +69,7 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	}
 	attrCustomerID := toUintAny(payload.Data.Attributes["customer_id"])
 	attrPhone, _ := payload.Data.Attributes["phone"].(string)
+	attrEmail, _ := payload.Data.Attributes["email"].(string) // 防薅v2：注册邮箱作为身份锚之一
 
 	oneID := env.Header.OneID
 	tid := env.Header.TenantID
@@ -74,6 +77,9 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	// 1) 身份锚点归并（手机号锚存在时建立映射）
 	if attrPhone != "" {
 		UpsertAnchor(tid, "phone", attrPhone, oneID)
+	}
+	if attrEmail != "" {
+		UpsertAnchor(tid, "email", attrEmail, oneID)
 	}
 
 	// 2) 确保画像主体存在
@@ -100,6 +106,11 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		ApplyTag(tid, profile.ID, "beh_lead_captured", "1")
 	case "conversation_msg":
 		ApplyTag(tid, profile.ID, "beh_msg_active", "1")
+	case "payment":
+		// M2（2026-08-25）：付费事实入 CDP——订单确认到账事件此前发布即沉底，
+		// 编排层心跳消费者不认此事件名。CDP 定位"记录事实"，流程联动（欢迎流）留待专项。
+		ApplyTag(tid, profile.ID, "tran_order_paid", "1")
+		log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
 	}
 	return nil
 }

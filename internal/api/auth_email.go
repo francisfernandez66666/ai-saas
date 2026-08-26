@@ -113,6 +113,15 @@ func ChangeEmail(c *gin.Context) {
 	uid, username, _ := middleware.CurrentUser(c)
 	tid := tenantIDOf(c)
 
+	// 防薅v2 换绑撞库（2026-08-26）：新邮箱曾参与任何奖励领取 → 拒绝换绑。
+	// 奖励双唯一语义（ID主键维度+邮箱外键维度）：放行"被奖励过的邮箱"换入=二次套利入口；
+	// 置于验码之前——撞库邮箱不值得消耗一次真实发信。
+	var rc int64
+	db.DB.Model(&model.RewardClaim{}).Where("email = ?", newEmail).Count(&rc)
+	if rc > 0 {
+		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱涉及历史奖励记录，不可用于换绑"})
+		return
+	}
 	if err := service.VerifyEmailCode(newEmail, model.EmailPurposeBind, req.Code); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
 		return

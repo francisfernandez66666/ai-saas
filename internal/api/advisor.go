@@ -1167,11 +1167,43 @@ func AdvisorSendMessage(c *gin.Context) {
 	}
 	db.RQ(c).Create(&humanMsg)
 
+	// P3 数据飞轮（2026-08-26）：顾问真人回复入素材池（优质回复资产回收）
+	// 脱敏：手机号掩码后入库；评分/审核走超管面板
+	go func(msgID uint, convID, custID, uid uint, content string, tid uint) {
+		defer func() { _ = recover() }()
+		masked := maskPhoneInText(content)
+		db.DB.Create(&model.KbFeedbackMaterial{
+			TenantID: tid, Conversation: convID, MessageID: msgID,
+			Source: "human", Content: masked,
+		})
+	}(humanMsg.ID, conversation.ID, conversation.CustomerID, jwtUserID, req.Content, conversation.TenantID)
+
 	c.JSON(http.StatusOK, schema.Response{
 		Code:    0,
 		Message: "发送成功",
 		Data:    humanMsg,
 	})
+}
+
+// maskPhoneInText 文本中11位手机号掩码为 138****5678（P3 素材脱敏）
+func maskPhoneInText(text string) string {
+	runes := []rune(text)
+	digitRun := 0
+	for i := 0; i <= len(runes); i++ {
+		if i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
+			digitRun++
+			continue
+		}
+		if digitRun == 11 {
+			for j := i - 11; j < i; j++ {
+				if j >= i-7 && j < i-4 {
+					runes[j] = '*'
+				}
+			}
+		}
+		digitRun = 0
+	}
+	return string(runes)
 }
 
 // ============================================================
@@ -1233,11 +1265,13 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		ConversationID: conversation.ID,
 		CanPromote:     customer.CanPromote(),
 		JourneyStage:   customer.JourneyStage,
+		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：登录顾问部门链
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
 	// 生成AI回复
-	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, userInput, &strategyOutput)
+	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, userInput, &strategyOutput, service.DeptChainForUser(currentUserID(c)))
 
 	// 保存AI回复消息
 	now := time.Now()
@@ -1317,6 +1351,8 @@ func GetStrategyRecommend(c *gin.Context) {
 		CustomerTags:   customerTags,
 		CustomerID:     customer.ID,
 		ConversationID: uint(conversationID),
+		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：登录顾问部门链
 	}
 
 	output := strategy.DefaultEngine.Infer(input)

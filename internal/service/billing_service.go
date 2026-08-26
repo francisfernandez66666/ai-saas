@@ -141,7 +141,15 @@ func GrantOrderEntitlement(tx *gorm.DB, order *model.BillingOrder) error {
 	if err := db.DB.First(&pkg, order.PackageID).Error; err != nil {
 		return fmt.Errorf("订单%d 关联包不存在: %w", order.ID, err)
 	}
-	return GrantPackage(tx, *order.TenantID, &pkg)
+	if err := GrantPackage(tx, *order.TenantID, &pkg); err != nil {
+		return err
+	}
+	// M-R 邀请推广（2026-08-25）：受邀人首笔 paid 包月套餐到账 →
+	// 邀请人获永久 token（幂等闸门 ReferralPaidRewarded，单受邀限一次；increment/free 不触发）
+	if pkg.PType == model.PackageTypePaid {
+		RewardPaidReferral(tx, *order.TenantID)
+	}
+	return nil
 }
 
 // PublishPaymentEvent 确认到账后发布 payment 子事件
@@ -162,4 +170,30 @@ func PublishPaymentEvent(order *model.BillingOrder) {
 	if err != nil {
 		log.Printf("[MQ] payment 事件发布失败 order=%s: %v", order.OrderNo, err)
 	}
+}
+
+// SweepExpiredOrders 订单超时自动关闭（M4，2026-08-25）
+// 背景：SAAS_PLAN §6.3 规划"订单超时关闭"一直未实现——pending 僵尸单无限堆积，
+// static_qr 弃付单永远混在待办视野外。阈值 order_timeout_minutes（平台级键，默认15分钟）。
+// 幂等：条件 UPDATE pending→closed，重复扫描零副作用；不发权益不发事件（closed≠paid）。
+// 返回本次关闭的订单数。
+func SweepExpiredOrders() int64 {
+	minutes := 15
+	if DefaultSystemConfigService != nil {
+		if v := DefaultSystemConfigService.GetInt("order_timeout_minutes", 15); v > 0 {
+			minutes = v
+		}
+	}
+	cutoff := time.Now().Add(-time.Duration(minutes) * time.Minute)
+	res := db.DB.Model(&model.BillingOrder{}).
+		Where("status = ? AND created_at < ?", "pending", cutoff).
+		Update("status", "closed")
+	if res.Error != nil {
+		log.Printf("[Billing] 订单超时扫描失败: %v", res.Error)
+		return 0
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("[Billing] 订单超时关闭 %d 笔(超过%d分钟未付)", res.RowsAffected, minutes)
+	}
+	return res.RowsAffected
 }

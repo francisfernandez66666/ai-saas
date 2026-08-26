@@ -82,15 +82,17 @@ func seedTenants() {
 // 幂等：按 code 判断存在则跳过（后台可改价格，seed 不回写覆盖运营配置）
 // ============================================================
 func seedPackages() {
+	// P1.5 Token统一计费（2026-08-26）：套餐 token 档位化（售价≈上游成本×3）
+	// 旧"次"字段保留只读兼容历史；新发放走 TokenAmount
 	packages := []model.Package{
-		{Code: "trial_500", Name: "注册试用包", PType: model.PackageTypeFree, AICalls: 500, PriceCents: 0, DurationDays: 0,
-			Description: "注册即送500次AI对话，体验完整智能接待能力", SortOrder: 1},
-		{Code: "starter_1000", Name: "入门包月", PType: model.PackageTypePaid, AICalls: 1000, PriceCents: 9900, DurationDays: 30,
-			Description: "每月1000次AI调用，适合1-5人销售团队", SortOrder: 2},
-		{Code: "std_5000", Name: "标准包月", PType: model.PackageTypePaid, AICalls: 5000, PriceCents: 39900, DurationDays: 30,
-			Description: "每月5000次AI调用，适合10人以上团队规模化使用", SortOrder: 3},
-		{Code: "booster_1000", Name: "AI加油包", PType: model.PackageTypeIncrement, AICalls: 1000, PriceCents: 19900, DurationDays: 0,
-			Description: "一次性充值1000次AI调用额度，买断制不过期", SortOrder: 4},
+		{Code: "trial_500", Name: "注册试用包", PType: model.PackageTypeFree, AICalls: 500, TokenAmount: 300000, PriceCents: 0, DurationDays: 0,
+			Description: "注册即送30万token（14天有效），体验完整智能接待能力", SortOrder: 1},
+		{Code: "starter_1000", Name: "入门包月", PType: model.PackageTypePaid, AICalls: 1000, TokenAmount: 3000000, PriceCents: 9900, DurationDays: 30,
+			Description: "每月300万token，适合1-5人销售团队", SortOrder: 2},
+		{Code: "std_5000", Name: "标准包月", PType: model.PackageTypePaid, AICalls: 5000, TokenAmount: 15000000, PriceCents: 39900, DurationDays: 30,
+			Description: "每月1500万token，适合10人以上团队规模化使用", SortOrder: 3},
+		{Code: "booster_1000", Name: "AI加油包", PType: model.PackageTypeIncrement, AICalls: 1000, TokenAmount: 3000000, PriceCents: 19900, DurationDays: 0,
+			Description: "一次性充值300万token，永久有效买断制", SortOrder: 4},
 	}
 	inserted := 0
 	for i := range packages {

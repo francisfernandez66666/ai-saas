@@ -5,6 +5,8 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+		"time"
+
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 	"net/http"
@@ -80,6 +82,18 @@ func Login(c *gin.Context) {
 		service.RecordLoginFailure(req.Username, clientIP)
 		c.JSON(401, gin.H{"code": 401, "message": "用户名或密码错误", "data": nil})
 		return
+	}
+
+	// P4 账号注销闸门（2026-08-26）：注销当日仍可登录，次日零点起拒绝登录（数据保留）
+	if user.TenantID != nil {
+		var ct model.Tenant
+		if err := db.DB.Select("id, cancel_at").First(&ct, *user.TenantID).Error; err == nil && ct.CancelAt != nil {
+			if time.Now().Format("2006-01-02") != ct.CancelAt.Format("2006-01-02") {
+				service.RecordLoginFailure(req.Username, clientIP)
+				c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "账号已注销，不可登录（数据保留期请联系平台处理）", "data": nil})
+				return
+			}
+		}
 	}
 
 	// 3. 生成 JWT Token

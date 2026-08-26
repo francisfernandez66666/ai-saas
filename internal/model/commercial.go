@@ -26,6 +26,7 @@ type Package struct {
 	Name         string    `gorm:"size:100;not null" json:"name"`     // 显示名：试用包/入门包月/标准包月/AI加油包
 	PType        string    `gorm:"size:20;not null" json:"p_type"`    // 类型：free/paid/increment
 	AICalls      int       `json:"ai_calls"`                          // 包内含 AI 调用次数（对外话术统一叫"次"）
+	TokenAmount      int64  `json:"token_amount"`        // P1.5(2026-08-26)：包含token数——paid=月度订阅额度；increment=永久余额；free=免费桶
 	PriceCents   int       `json:"price_cents"`                       // 售价（分）
 	DurationDays int       `json:"duration_days"`                     // 有效期天（paid=30；increment=0 买断；free=0 随租户试用）
 	Description  string    `gorm:"type:text" json:"description"`      // 包描述（定价页展示）

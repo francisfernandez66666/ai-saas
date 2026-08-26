@@ -5,6 +5,7 @@ import (
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
+	"ai-scrm/internal/service"
 	"net/http"
 	"strings"
 
@@ -191,10 +192,13 @@ func UpdateTemplate(c *gin.Context) {
 }
 
 // DeleteTemplate 删除话术模板
+// 修复（2026-08-25）：原写法 Delete(&model.Template{}, id) 对字符串主键会把 id
+// 当裸 SQL 条件拼进语句（生成 `WHERE tenant_id=? AND tpl_xxx` → 42703 列不存在）。
+// 字符串主键必须显式 Where 条件删除。org.go 部门删除为数值主键暂不受影响，另行核查。
 func DeleteTemplate(c *gin.Context) {
 	id := c.Param("id")
 
-	result := db.RQ(c).Delete(&model.Template{}, id)
+	result := db.RQ(c).Where("id = ?", id).Delete(&model.Template{})
 	if result.Error != nil {
 		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "删除失败", Data: nil})
 		return
@@ -300,6 +304,8 @@ func StrategyTest(c *gin.Context) {
 		CustomerTags:   customerTags,
 		CustomerID:     customer.ID,
 		ConversationID: req.ConversationID,
+		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：当前用户部门链
 	}
 
 	output := strategy.DefaultEngine.Infer(input)

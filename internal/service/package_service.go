@@ -35,6 +35,20 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 
 	switch pkg.PType {
 	case model.PackageTypeFree:
+		// P1.5(2026-08-26)：配置了 token_amount 的 free 包 → 发③免费体验桶（有效期取注册赠送天数）
+		if pkg.TokenAmount > 0 {
+			days := DefaultSystemConfigService.GetInt("trial_token_valid_days", 14)
+			expiry := time.Now().AddDate(0, 0, days)
+			res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
+				"free_token_balance":    gorm.Expr("COALESCE(free_token_balance,0)+?", pkg.TokenAmount),
+				"free_token_expires_at": gorm.Expr("GREATEST(COALESCE(free_token_expires_at,to_timestamp(0)),?)", expiry),
+			})
+			if res.Error != nil {
+				return res.Error
+			}
+			log.Printf("[Package] 试用包(token制)已发放 tenant=%d pkg=%s +%dtoken/%d天", tenantID, pkg.Code, pkg.TokenAmount, days)
+			return nil
+		}
 		// 试用包：月配额叠加（注册联动发 trial_ai_calls 次）
 		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).
 			Update("max_ai_calls_monthly", gorm.Expr("COALESCE(max_ai_calls_monthly,0)+?", pkg.AICalls))
@@ -57,12 +71,18 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 		}
 		newExpiry := base.AddDate(0, 0, pkg.DurationDays)
 		now := time.Now()
-		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
+		updates := map[string]interface{}{
 			"max_ai_calls_monthly": pkg.AICalls,
 			"expired_at":           newExpiry,
 			"status":               "active",
 			"subscribed_at":        now,
-		})
+		}
+		// P1.5(2026-08-26)：token制包月 → 设定①月度订阅额度并清零当月已用
+		if pkg.TokenAmount > 0 {
+			updates["monthly_token_quota"] = pkg.TokenAmount
+			updates["monthly_token_used"] = 0
+		}
+		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(updates)
 		if res.Error != nil {
 			return res.Error
 		}
@@ -71,6 +91,16 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 		return nil
 
 	case model.PackageTypeIncrement:
+		// P1.5(2026-08-26)：token制增量包 → ②永久余额累加（买断不过期）
+		if pkg.TokenAmount > 0 {
+			res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).
+				Update("token_balance", gorm.Expr("COALESCE(token_balance,0)+?", pkg.TokenAmount))
+			if res.Error != nil {
+				return res.Error
+			}
+			log.Printf("[Package] 增量包(token制)已入账 tenant=%d pkg=%s +%dtoken(永久)", tenantID, pkg.Code, pkg.TokenAmount)
+			return nil
+		}
 		// 增量包：买断余额累加（月度重置任务只清 used_ai_calls，不碰 ai_call_balance）
 		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).
 			Update("ai_call_balance", gorm.Expr("COALESCE(ai_call_balance,0)+?", pkg.AICalls))

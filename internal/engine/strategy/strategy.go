@@ -46,6 +46,9 @@ func InitEngine() {
 // LoadData 加载策略数据（模板+卖点）
 // SaaS 化改造：根据 TenantID 过滤查询，实现租户数据隔离
 // TenantID=0 时查询所有数据，>0 时只查当前租户
+// 修复（M1 2026-08-25）：原实现构建的 query 被丢弃、实际执行 db.DB.Find 裸查——
+// 现改为 query.Find 使过滤真正生效。DefaultEngine(TenantID=0) 仍全量加载作为缓存底座，
+// 真正的租户隔离闸门在 Infer 召回时的 templatesForTenant/featuresForTenant 内存过滤。
 func (e *Engine) LoadData() {
 	// 加载所有启用的话术模板
 	var templates []model.Template
@@ -53,7 +56,9 @@ func (e *Engine) LoadData() {
 	if e.TenantID > 0 {
 		query = query.Scopes(db.TenantFilter(e.TenantID))
 	}
-	db.DB.Find(&templates) // 注意：这里用 Find 而非 Scopes，因为已在 query 中
+	if err := query.Find(&templates).Error; err != nil { // 修复：原为 db.DB.Find（过滤被丢弃）
+		log.Printf("[策略引擎] 加载话术模板失败: %v", err)
+	}
 	e.templates = templates
 	log.Printf("已加载 %d 条话术模板 (tenant=%d)", len(templates), e.TenantID)
 
@@ -63,9 +68,52 @@ func (e *Engine) LoadData() {
 	if e.TenantID > 0 {
 		query2 = query2.Scopes(db.TenantFilter(e.TenantID))
 	}
-	db.DB.Find(&features) // 同前
+	if err := query2.Find(&features).Error; err != nil { // 同上修复
+		log.Printf("[策略引擎] 加载卖点数据失败: %v", err)
+	}
 	e.features = features
 	log.Printf("已加载 %d 条卖点数据 (tenant=%d)", len(features), e.TenantID)
+}
+
+// templatesForTenant 按租户+部门链过滤话术模板（M1 租户隔离修复 + 三级包架构 2026-08-26）
+// 规则：
+//   - tenant_id=0 系统预置（行业包物化亦落此层）对所有租户可见；>0 仅归属租户可见
+//   - DepartmentID=nil 为租户级内容（行业/企业包）→ 本租户全量可见
+//   - DepartmentID 非空为部门专属内容（部门包物化）→ 仅当 deptIDs 含该部门时可见
+//     （deptIDs = 顾问所属部门的完整继承链：自身→父→…→根，自底向上查起语义）
+//   - 入参 tenantId=0 时 fail-closed 只见预置
+// templatesForTenant 三集合过滤（租户隔离 + KB继承链可见域）
+func templatesForTenant(all []model.Template, tenantID uint, scope *service.RecallScope) []model.Template {
+	filtered := make([]model.Template, 0, len(all))
+	for i := range all {
+		t := &all[i]
+		if t.TenantID != 0 && t.TenantID != tenantID {
+			continue // 跨租户隔离
+		}
+		if t.DepartmentID != nil &&
+			!scope.OwnDepts[*t.DepartmentID] && !scope.CrossDepts[*t.DepartmentID] {
+			continue // 部门专属：不在链内也不满足跨部门回退条件
+		}
+		filtered = append(filtered, *t)
+	}
+	return filtered
+}
+
+// featuresForTenant 按租户+部门链过滤卖点库（规则同 templatesForTenant）
+func featuresForTenant(all []model.Feature, tenantID uint, scope *service.RecallScope) []model.Feature {
+	filtered := make([]model.Feature, 0, len(all))
+	for i := range all {
+		f := &all[i]
+		if f.TenantID != 0 && f.TenantID != tenantID {
+			continue
+		}
+		if f.DepartmentID != nil &&
+			!scope.OwnDepts[*f.DepartmentID] && !scope.CrossDepts[*f.DepartmentID] {
+			continue
+		}
+		filtered = append(filtered, *f)
+	}
+	return filtered
 }
 
 // ReloadData 重新加载数据（模板/卖点更新后调用）
@@ -123,8 +171,24 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	err := service.DefaultTagService.ApplyTagWeightsToTVector(customer, input.TVector)
 	if err == nil {
 		// 读取应用权重后的T向量
-		tVector = customer.GetTVector()
-		log.Printf("[策略引擎] Step0.5: 标签权重已注入T向量")
+		// 重大修复（2026-08-26）：ApplyTagWeightsToTVector 在客户无标签时直接 return nil、
+		// 不写入结果——此处再 GetTVector() 会拿到临时 customer 的全零向量，把真实画像
+		// （意向/信任等）清零 → 锚打分退化为纯 bias，未打标客户永远倾向"不抛锚"。
+		// 修复：仅当结果向量非零（确实应用了标签权重）时才采用，否则保留基准向量。
+		applied := customer.GetTVector()
+		nonZero := false
+		for _, v := range applied {
+			if v != 0 {
+				nonZero = true
+				break
+			}
+		}
+		if nonZero {
+			tVector = applied
+			log.Printf("[策略引擎] Step0.5: 标签权重已注入T向量")
+		} else {
+			log.Printf("[策略引擎] Step0.5: 客户无标签，保留基准T向量（修复前此路径会清零画像）")
+		}
 	} else {
 		log.Printf("[策略引擎] Step0.5: 标签权重注入失败: %v", err)
 	}
@@ -273,26 +337,41 @@ afterAnchorSelection:
 	// ============================================================
 	// Step4：话术模板召回 + 卖点动态填充
 	// 寒暄时已在Step0.1设好模板和话术，跳过Step4和条件交换
+	//
+	// M1 租户隔离修复（2026-08-25）：召回前按 input.TenantID 内存过滤。
+	// 引擎缓存为全量加载（DefaultEngine 含所有租户私有数据），
+	// 不过滤则租户A私有话术/卖点会进入租户B客户的AI召回池——跨租户泄露。
+	// 规则：预置(tenant_id=0)全员可见；私有仅本租户；TenantID=0 fail-closed 只见预置。
 	// ============================================================
 	if output.FinalAnchor != AnchorNoThrow || output.TemplateID == "" {
+		// 三级包架构+KB继承链（2026-08-26）：解析可见域（链内①/跨部门回退④）
+		recallScope := service.ResolveRecallScope(input.TenantID, input.DeptIDs)
+		tenantTemplates := templatesForTenant(e.templates, input.TenantID, recallScope)
+		log.Printf("[策略引擎] Step4: 模板池过滤 全量=%d → 本租户可见=%d (tenant=%d 链内部门=%d 跨部门候选=%d)",
+			len(e.templates), len(tenantTemplates), input.TenantID,
+			len(recallScope.OwnDepts), len(recallScope.CrossDepts))
 		template, similarity := Step4_RecallTemplate(
 			finalAnchor,
 			input.CustomerTags,
 			input.TVector,
-			e.templates,
+			tenantTemplates,
 		)
 
 		if template != nil {
 			output.TemplateID = template.ID
 			output.TemplateName = template.Name
+			// KB继承链：跨部门回退命中的内容打标（🌐跨部门·来自X部门库）
+			if template.DepartmentID != nil && recallScope.CrossDepts[*template.DepartmentID] {
+				output.TemplateName += " " + recallScope.CrossTags[*template.DepartmentID]
+			}
 
-			// 动态填充卖点
+			// 动态填充卖点（M1: 同规则过滤卖点库，防跨租户卖点串入）
 			customer := &model.Customer{
 				ID:            input.CustomerID,
 				InterestModel: modelFromTVector(tVector),
 				Name:          "客户", // 这里简化，实际应从DB获取
 			}
-			promptText, hookText, _ := FillTemplate(template, customer, e.features)
+			promptText, hookText, _ := FillTemplate(template, customer, featuresForTenant(e.features, input.TenantID, recallScope))
 			output.PromptText = promptText
 			output.HookText = hookText
 

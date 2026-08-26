@@ -1,0 +1,567 @@
+[
+  {
+    "anchor_type": 3,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "对比锚",
+    "hook_fields": [
+      "budget_range"
+    ],
+    "hook_template": "您的购车预算大概是多少呀？我帮您算算哪个配置最划算。",
+    "id": "tpl_compare_price_001",
+    "max_intent": 0,
+    "min_intent": 0.3,
+    "name": "对比锚-性价比",
+    "priority": 7,
+    "prompt_template": "说实话，极石这个价位能买到这个配置的车，真的挺值的。您算一笔账：ADAMAS 34.99万起步，空气悬架、电吸门全车+尾门、8.5L冰箱全系标配；同样的钱买坦克500只能买中配，买理想L8这些配置都得选装。极石01更划算，29.99万起步，增程免购置税再省3万+，落地比同级便宜一大截。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "spec",
+    "trigger_tags": [
+      "价格敏感",
+      "年轻首购"
+    ]
+  },
+  {
+    "anchor_type": 3,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "对比锚",
+    "hook_fields": [
+      "aftersales_concern"
+    ],
+    "hook_template": "您之前的车保养维修方便吗？对售后这一块是不是挺看重的？",
+    "id": "tpl_compare_service_001",
+    "max_intent": 0,
+    "min_intent": 0.4,
+    "name": "对比锚-服务对比",
+    "priority": 6,
+    "prompt_template": "买车其实只是开始，售后才是关键。极石的服务您完全不用担心，{{feature_desc}}增程器结构简单可靠，保养成本比插混低，这一点很多老客户都特别认可。",
+    "required_features": [
+      "feat_warranty"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "service",
+    "trigger_tags": [
+      "对比中",
+      "老客户"
+    ]
+  },
+  {
+    "anchor_type": 3,
+    "applicable_models": [
+      "极石ADAMAS"
+    ],
+    "category": "对比锚",
+    "hook_fields": [
+      "test_drive_experience"
+    ],
+    "hook_template": "您对比的那几款车试驾过了吗？实际开起来感觉怎么样？",
+    "id": "tpl_compare_spec_001",
+    "max_intent": 0,
+    "min_intent": 0.4,
+    "name": "对比锚-规格对比",
+    "priority": 7,
+    "prompt_template": "说到对比，我给您客观分析一下。看坦克500的话，ADAMAS是承载式全铝车身，公路好开太多了，非承载式大梁车颠得慌；看理想L8的话，ADAMAS能真越野，272mm离地间隙+L3越野认证，L8只是加高的MPV；看方程豹豹8的话，ADAMAS便宜3-7万，配置反而更全——空气悬架、电吸门、车载冰箱全系标配。{{feature_desc}}",
+    "required_features": [
+      "feat_engine_power",
+      "feat_offroad_4x4"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "spec",
+    "trigger_tags": [
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 3,
+    "applicable_models": [
+      "极石ADAMAS"
+    ],
+    "category": "对比锚",
+    "hook_fields": [
+      "competitor_offroad"
+    ],
+    "hook_template": "您有没有去试驾过对比的那款车？越野能力怎么样？",
+    "id": "tpl_compare_spec_002",
+    "max_intent": 0,
+    "min_intent": 0.4,
+    "name": "对比锚-越野能力对比",
+    "priority": 6,
+    "prompt_template": "您要是喜欢越野，那可得好好比比四驱系统。坦克500是非承载式车身，大梁颠得慌，公路开着像开船；而ADAMAS是全铝承载式+空气悬架，公路舒适越野也硬核。豹8虽然越野参数也不错，但贵了3-7万，配置还不如ADAMAS全。{{feature_desc}}",
+    "required_features": [
+      "feat_offroad_4x4"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "spec",
+    "trigger_tags": [
+      "越野爱好者",
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 2,
+    "applicable_models": null,
+    "category": "拆解锚",
+    "hook_fields": [
+      "driving_style"
+    ],
+    "hook_template": "您平时开车是偏激烈一点还是稳一点呀？对纯电续航和油耗在意吗？",
+    "id": "tpl_disassemble_001",
+    "max_intent": 0,
+    "min_intent": 0.2,
+    "name": "拆解锚-动力系统详解",
+    "priority": 8,
+    "prompt_template": "说到买车，动力肯定是您最关心的吧？我给您好好讲讲极石的动力系统。{{feature_desc}}简单说就是：增程器只发电不直接驱动，效率高还省油，纯电215-306km日常通勤不烧油，综合续航最长1405km长途无焦虑。",
+    "required_features": [
+      "feat_engine_power"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "对比中",
+      "年轻首购"
+    ]
+  },
+  {
+    "anchor_type": 2,
+    "applicable_models": null,
+    "category": "拆解锚",
+    "hook_fields": [
+      "safety_concern"
+    ],
+    "hook_template": "家里有小朋友吧？极石6/7座布局带老人孩子都方便，您对安全配置还有什么特别关注的吗？",
+    "id": "tpl_disassemble_002",
+    "max_intent": 0,
+    "min_intent": 0.2,
+    "name": "拆解锚-安全配置",
+    "priority": 8,
+    "prompt_template": "家用的话，安全肯定是第一位的。极石在安全上从来不打折扣——{{feature_desc}}全铝承载式车身轻量化高刚性，空气悬架保障行驶稳定，还有7种全地形模式应对各种路况。",
+    "required_features": [
+      "feat_safety_pro"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "家庭用户"
+    ]
+  },
+  {
+    "anchor_type": 2,
+    "applicable_models": null,
+    "category": "拆解锚",
+    "hook_fields": [
+      "interior_preference"
+    ],
+    "hook_template": "您对内饰的材质和做工要求高吗？有没有特别喜欢的内饰颜色呀？",
+    "id": "tpl_disassemble_003",
+    "max_intent": 0,
+    "min_intent": 0.3,
+    "name": "拆解锚-内饰品质",
+    "priority": 7,
+    "prompt_template": "其实一辆车好不好，坐进去开一下就知道了。极石的座舱质感真的没话说——{{feature_desc}}电吸门轻轻一推就优雅闭合，8.5L车载冰箱夏天冰饮料冬天热奶茶，这种豪华感真的是同价位独一份。",
+    "required_features": [
+      "feat_luxury_interior"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "企业主",
+      "品牌忠诚"
+    ]
+  },
+  {
+    "anchor_type": 2,
+    "applicable_models": [
+      "极石ADAMAS"
+    ],
+    "category": "拆解锚",
+    "hook_fields": [
+      "drivetrain_experience"
+    ],
+    "hook_template": "您之前开的是两驱还是四驱呀？有没有去试过越野？",
+    "id": "tpl_disassemble_004",
+    "max_intent": 0,
+    "min_intent": 0.3,
+    "name": "拆解锚-四驱系统",
+    "priority": 8,
+    "prompt_template": "说到越野能力，四驱系统是核心。极石ADAMAS这套双电机全时四驱真的很厉害——{{feature_desc}}前后双电机独立驱动，综合功率350kW、扭矩740N·m，272mm离地间隙、770mm涉水深度，7种全地形模式，中汽研L3级越野认证。不是那种城市SUV的假四驱，是真能带你去野的。",
+    "required_features": [
+      "feat_offroad_4x4"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "越野爱好者",
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 4,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "损失锚",
+    "hook_fields": [
+      "visit_intention"
+    ],
+    "hook_template": "您要是真看好了，这两天定下来最划算。您看这周方便来店里看看吗？",
+    "id": "tpl_loss_001",
+    "max_intent": 0,
+    "min_intent": 0.5,
+    "name": "损失锚-错过优惠",
+    "priority": 6,
+    "prompt_template": "跟您说个实在话，现在极石的购车权益真的是今年最大的了——金融免息、置换补贴、终身质保选装权，这些权益过了这月就回收了。很多客户就是因为犹豫了一下，后来再买就少了好几万的权益，都挺后悔的。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "高意向",
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 4,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "损失锚",
+    "hook_fields": [
+      "car_availability"
+    ],
+    "hook_template": "您是想提现车还是愿意等呀？现车的话我建议您早点定。",
+    "id": "tpl_loss_002",
+    "max_intent": 0,
+    "min_intent": 0.5,
+    "name": "损失锚-现车紧张",
+    "priority": 6,
+    "prompt_template": "您看中的这个配置这个颜色，现在现车真的不多了。极石最近卖得特别好，这个月已经走了十几台，库里就剩最后两台了。您要是再等等，说不定就得等下一批车，那得等一两个月呢。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "高意向",
+      "已到店"
+    ]
+  },
+  {
+    "anchor_type": 4,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "损失锚",
+    "hook_fields": [
+      "maintenance_cost"
+    ],
+    "hook_template": "您之前那辆车保养贵吗？一年养车大概花多少钱？",
+    "id": "tpl_loss_003",
+    "max_intent": 0,
+    "min_intent": 0.4,
+    "name": "损失锚-保养费用",
+    "priority": 5,
+    "prompt_template": "很多人买车只看车价，不看后期养车成本，其实这才是大头。极石是增程式，增程器只发电不驱动，结构简单故障率低，保养比插混和油车便宜很多。纯电通勤每公里一毛钱，馈电油耗才6.76L，5年下来油费保养费能省好几万。买别的车看似便宜几万，后期油费保养都给你挣回去。",
+    "required_features": [
+      "feat_warranty"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "价格敏感"
+    ]
+  },
+  {
+    "anchor_type": 0,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "不抛",
+    "hook_fields": [
+      "interest_area"
+    ],
+    "hook_template": "您现在对极石哪方面还想多了解一些呀？",
+    "id": "tpl_nothrow_001",
+    "max_intent": 0.2,
+    "min_intent": 0,
+    "name": "不抛锚-安抚倾听",
+    "priority": 5,
+    "prompt_template": "好的，我明白了。您先慢慢了解极石，有什么问题随时问我。不管您最后买不买，能帮到您我就很开心了。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": []
+  },
+  {
+    "anchor_type": 0,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "不抛",
+    "hook_fields": [
+      "top_concern"
+    ],
+    "hook_template": "您现在最关心的是什么问题呀？",
+    "id": "tpl_nothrow_002",
+    "max_intent": 0.15,
+    "min_intent": 0,
+    "name": "不抛锚-纯粹解答",
+    "priority": 4,
+    "prompt_template": "没问题，您有什么关于极石的问题尽管问，我知道的都告诉您。买车是大事，多了解了解没错的。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": []
+  },
+  {
+    "anchor_type": 1,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "同类锚",
+    "hook_fields": [
+      "usage",
+      "offroad_interest"
+    ],
+    "hook_template": "请问您是自己开还是家里用呀？平时会开车去户外玩吗？",
+    "id": "tpl_same_001",
+    "max_intent": 0.4,
+    "min_intent": 0,
+    "name": "入门破冰-车型推荐",
+    "priority": 10,
+    "prompt_template": "您好呀~ 欢迎关注极石！我看您对我们的{{model}}挺感兴趣的对吧？极石是做全地形新能源SUV的品牌，增程式动力、全系标配豪华配置，很多像您这样的客户都特别喜欢，现在关注的人越来越多了。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": []
+  },
+  {
+    "anchor_type": 1,
+    "applicable_models": null,
+    "category": "同类锚",
+    "hook_fields": [
+      "comparing_models"
+    ],
+    "hook_template": "您现在在看哪几款车呀？我帮您分析分析~",
+    "id": "tpl_same_002",
+    "max_intent": 0,
+    "min_intent": 0,
+    "name": "同类锚-同价位推荐",
+    "priority": 8,
+    "prompt_template": "您在对比车型是吧？很正常，买车是大事，多对比对比没错。跟您说，这个价位的新能源SUV里，极石的性价比真的很高——全系标配空气悬架、电吸门、车载冰箱，别的品牌这些都要选装。很多客户对比完最后还是选了极石。",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 1,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "同类锚",
+    "hook_fields": [
+      "old_car_years",
+      "new_budget"
+    ],
+    "hook_template": "您之前那辆车开了几年了？这次想换个什么价位的？",
+    "id": "tpl_same_003",
+    "max_intent": 0,
+    "min_intent": 0,
+    "name": "同类锚-老客户推荐",
+    "priority": 8,
+    "prompt_template": "您是我们的老客户了，那您肯定知道极石的品质。全铝车身+空气悬架+增程长续航，很多老客户换车还是选极石，就是因为开着放心、用着省心。您这次是想换个更大的ADAMAS还是不同配置的呀？",
+    "required_features": [],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "老客户"
+    ]
+  },
+  {
+    "anchor_type": 5,
+    "applicable_models": [
+      "极石ADAMAS"
+    ],
+    "category": "稀缺锚",
+    "hook_fields": [
+      "limited_edition_interest"
+    ],
+    "hook_template": "您对限定版这种感兴趣吗？我把配置单发给您看看？",
+    "id": "tpl_scarcity_001",
+    "max_intent": 0,
+    "min_intent": 0.6,
+    "name": "稀缺锚-限量版",
+    "priority": 5,
+    "prompt_template": "跟您说个消息，极石ADAMAS马上要出一个高配限定版，配置拉满还有专属标识和配色，全国配额有限，特别有收藏价值。这个消息我只跟几个重点客户说了，您要是感兴趣我帮您预留个名额。",
+    "required_features": [
+      "feat_offroad_package"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "高意向",
+      "企业主"
+    ]
+  },
+  {
+    "anchor_type": 5,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "稀缺锚",
+    "hook_fields": [
+      "deal_today_intention"
+    ],
+    "hook_template": "您看这个福利怎么样？今天定下来真的很划算。",
+    "id": "tpl_scarcity_002",
+    "max_intent": 0,
+    "min_intent": 0.6,
+    "name": "稀缺锚-专属福利",
+    "priority": 5,
+    "prompt_template": "您今天来得真是时候！我们店刚好有个极石店长特批的名额，能额外送您一个大礼包——全车贴膜、脚垫、还有三次保养，加上极石官方的金融免息和置换补贴，综合算下来能省好几万。这个名额一天就一个，您要是今天定我帮您申请。",
+    "required_features": [],
+    "required_tags": [
+      "已到店"
+    ],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "高意向",
+      "已到店"
+    ]
+  },
+  {
+    "anchor_type": 1,
+    "applicable_models": null,
+    "category": "场景锚",
+    "hook_fields": [
+      "weekend_activity"
+    ],
+    "hook_template": "您平时周末会带家人出去玩吗？一般都去什么地方呀？",
+    "id": "tpl_scene_001",
+    "max_intent": 0,
+    "min_intent": 0,
+    "name": "场景锚-周末自驾",
+    "priority": 9,
+    "prompt_template": "现在周末自驾游越来越流行了，一家人开个极石SUV出去玩特别舒服。6/7座布局，二排零重力航空座椅，老人孩子坐长途都不累。后备箱放婴儿车、行李什么的都没问题，还有8.5L车载冰箱，夏天冰饮料冬天热奶茶，一路都是享受。",
+    "required_features": [
+      "feat_luxury_interior"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "家庭用户"
+    ]
+  },
+  {
+    "anchor_type": 1,
+    "applicable_models": null,
+    "category": "场景锚",
+    "hook_fields": [
+      "offroad_place",
+      "offroad_level"
+    ],
+    "hook_template": "您平时都去哪里越野呀？是玩沙漠还是山地？",
+    "id": "tpl_scene_002",
+    "max_intent": 0,
+    "min_intent": 0,
+    "name": "场景锚-越野爱好者",
+    "priority": 9,
+    "prompt_template": "听说您喜欢越野？那您可找对车了！极石ADAMAS就是为越野而生的——双电机全时四驱350kW、272mm离地间隙、770mm涉水深度，中汽研L3级越野认证，7种全地形模式。很多越野圈的朋友都开它去穿越，口碑特别好。",
+    "required_features": [
+      "feat_offroad_4x4"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "越野爱好者"
+    ]
+  },
+  {
+    "anchor_type": 6,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "代价自担锚",
+    "hook_fields": [
+      "safety_importance"
+    ],
+    "hook_template": "您说是不是这个理儿？安全真的不能省。",
+    "id": "tpl_selfpay_001",
+    "max_intent": 0,
+    "min_intent": 0.6,
+    "name": "代价自担锚-安全代价",
+    "priority": 4,
+    "prompt_template": "我跟您说句掏心窝子的话，买车千万别图便宜省那几万。安全这东西，平时觉得没用，真出事的时候就是保命的。极石全系全铝承载式车身，轻量化高刚性，碰撞安全性远超同级别；高阶版还有3颗激光雷达+508TOPS智驾算力，主动安全拉满。您想想，家人的安全，能用钱衡量吗？",
+    "required_features": [
+      "feat_safety_pro"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "家庭用户",
+      "对比中"
+    ]
+  },
+  {
+    "anchor_type": 6,
+    "applicable_models": [
+      "极石ADAMAS",
+      "极石01"
+    ],
+    "category": "代价自担锚",
+    "hook_fields": [
+      "old_car_problems"
+    ],
+    "hook_template": "您之前的车开了几年？是不是后期各种加装花了好多钱？",
+    "id": "tpl_selfpay_002",
+    "max_intent": 0,
+    "min_intent": 0.5,
+    "name": "代价自担锚-品质代价",
+    "priority": 4,
+    "prompt_template": "很多客户一开始也觉得别的品牌更便宜，但是对比完配置都说极石值。为什么？因为极石全系标配空气悬架、电吸门、车载冰箱，别的品牌这些都要选装加钱。您要是买个看起来便宜的，后面选装加一起反而更贵，配置还不如极石全。这个账您可得算明白。",
+    "required_features": [
+      "feat_warranty"
+    ],
+    "required_tags": [],
+    "status": 1,
+    "sub_type": "",
+    "trigger_tags": [
+      "价格敏感"
+    ]
+  }
+]

@@ -41,10 +41,22 @@ type Tenant struct {
 	MaxKnowledgeModels int             `json:"max_knowledge_models"`                                    // 配额：车型数
 	UsedAICalls        int             `gorm:"column:used_ai_calls" json:"used_ai_calls"`               // 当月已用 AI 调用数
 	AICallBalance      int             `gorm:"column:ai_call_balance" json:"ai_call_balance"`           // AI增量包余额（买断资产，不随月重置，商业化M2）
+	// ---- Token 三桶（P1.5 Token统一计费 + M-R 邀请推广，2026-08-25）----
+	// 扣减优先级（P1.5 生效）：③免费体验桶(未过期) → ①月度订阅额度(月底清零) → ②预充值余额(永久) → 降级规则话术
+	MonthlyTokenQuota  int64           `gorm:"default:0" json:"monthly_token_quota"`                    // ①月度订阅额度(paid套餐)：每月发放
+	MonthlyTokenUsed   int64           `gorm:"default:0" json:"monthly_token_used"`                     // ①当月已用（月底随重置清零）
+	TokenBalance       int64           `gorm:"default:0" json:"token_balance"`                          // ②预充值余额：付费充值包 + 永久邀请奖励，买断不过期
+	FreeTokenBalance   int64           `gorm:"default:0" json:"free_token_balance"`                     // ③免费体验桶：注册赠送 + 邀请注册奖励，有有效期
+	FreeTokenExpiresAt *time.Time      `json:"free_token_expires_at"`                                   // ③到期时间（邀请叠加顺延；过期后整桶不可用）
+	// ---- 邀请推广（M-R，2026-08-25）：多邀多得、单邀单个 ----
+	InviteCode         string          `gorm:"size:12;uniqueIndex" json:"invite_code"`                  // 邀请码（signup 时生成；存量租户首次调用 EnsureInviteCode 补发）
+	InvitedByTenantID  *uint           `gorm:"index" json:"invited_by_tenant_id"`                       // 邀请人租户ID——首绑唯一：仅注册时写入一次，重复邀请无效
+	ReferralPaidRewarded bool          `gorm:"default:false" json:"referral_paid_rewarded"`             // 该受邀租户的首笔 paid 套餐奖励已发放给邀请人（幂等闸门）
 	UsedCustomers      int             `json:"used_customers"`                                          // 当前客户总数
 	UsedStorageBytes   int64           `json:"used_storage_bytes"`                                      // 当前存储占用
 	UsageResetAt       *time.Time      `json:"usage_reset_at"`                                          // 用量重置时间（每月 1 日）
 	Status             string          `gorm:"size:20;default:active" json:"status"`                    // 状态：trial/active/suspended/expired/cancelled
+	CancelAt           *time.Time      `json:"cancel_at"`                                               // 账号注销申请时间（P4：次日零点生效禁登录；数据保留）
 	FeaturesOverride   json.RawMessage `json:"features_override"`                                       // 功能覆盖（定制版额外开关）
 	WhiteLabelConfig   json.RawMessage `json:"white_label_config"`                                      // 白标配置 JSON（站点名、CSS、脚本等）
 	CreatedAt          time.Time       `json:"created_at"`                                              // 创建时间
