@@ -1,5 +1,8 @@
 package api
 
+// 流程引擎API：流程定义列表/详情查询，以及流程实例的启动(StartFlow)、推进(AdvanceFlow)与查询。
+// 所有查询走db.PQ(c)确保租户隔离。
+
 import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"

@@ -51,6 +51,7 @@ func packKeys() (*industrypack.Keys, error) {
 	return industrypack.LoadKeysFromPaths(privPath, pubPath)
 }
 
+// packStoreDir 行业包落盘目录（data/packs），与 DB 中的 file_path 对应，供后续开包读取
 const packStoreDir = "data/packs"
 
 // notifyPackChange 绑定/解绑后发布 tenant_cfg_event → 热加载钩子刷新引擎模板池
@@ -67,6 +68,7 @@ func SuperPackUpload(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "缺少 file 字段（.aipack 文件）"})
 		return
 	}
+	// 20<<20 = 20MB 硬上限，防止超大恶意包撑爆磁盘（multipart 体积预校验在落盘前拦截）
 	if fh.Size > 20<<20 {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "包体超过 20MB 上限"})
 		return
@@ -290,7 +292,7 @@ func TenantPackBind(c *gin.Context) {
 	} else {
 		db.DB.Create(&model.TenantPackBinding{
 			TenantID: ti.ID, PackID: ipack.ID, PackCode: ipack.Code,
-			AppliedVersion: ipack.Version,
+			AppliedVersion:   ipack.Version,
 			EnterprisePackID: entID, EnterpriseCode: entCode, EnterpriseVersion: entVer,
 		})
 	}
@@ -423,7 +425,7 @@ func TenantPackBindDept(c *gin.Context) {
 	}
 	notifyPackChange(c, ti.ID, "upgrade")
 	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
+		"code": 0,
 		"message": fmt.Sprintf("部门[%s] 已绑定「%s」v%s：模板 %d / 卖点 %d 生效（仅该部门链可见）",
 			dept.Name, pack.Name, pack.Version, res.Templates, res.Features),
 		"data": res,

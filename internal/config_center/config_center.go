@@ -1,3 +1,4 @@
+// Package configcenter 系统配置中心：Seed/Upgrade/Rollback 生命周期与 tenant_cfg_event 热加载。
 package configcenter
 
 import (
@@ -128,4 +129,21 @@ func publish(tenantID uint, action string, scope string, affected int) {
 	if err != nil {
 		log.Printf("[ConfigCenter] tenant_cfg_event 发布失败: %v", err)
 	}
+}
+
+// BroadcastReload 发布配置变更广播（K7，2026-08-27）：跨实例热重载
+// 经 tenant_cfg_event 主题；MQ_TYPE=kafka 时其他实例消费者触发本地重载，
+// log 模式仅本实例进程内总线分发。各实例独立重载本地缓存，避免重复处理风暴。
+func BroadcastReload(tenantID uint) {
+	publish(tenantID, "cfg_changed", "params", 0)
+	log.Printf("[ConfigCenter] 已广播配置变更事件 tenant=%d", tenantID)
+}
+
+// init 注册热加载钩子：收到 tenant_cfg_event 后重载本实例系统配置缓存
+// 注册于包加载期，早于 main 的 StartCfgEventConsumer，确保事件抵达即有钩子
+func init() {
+	RegisterHotReloadHook(func(tenantID uint, action string, scope string) {
+		service.DefaultSystemConfigService.Reload()
+		log.Printf("[ConfigCenter] 配置热重载钩子执行：tenant=%d action=%s scope=%s", tenantID, action, scope)
+	})
 }

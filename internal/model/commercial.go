@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -21,19 +22,19 @@ const (
 
 // Package AI 商业包表
 type Package struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`              // 主键
-	Code         string    `gorm:"size:50;uniqueIndex" json:"code"`   // 标识：trial_500/starter_1000/std_5000/booster_1000
-	Name         string    `gorm:"size:100;not null" json:"name"`     // 显示名：试用包/入门包月/标准包月/AI加油包
-	PType        string    `gorm:"size:20;not null" json:"p_type"`    // 类型：free/paid/increment
-	AICalls      int       `json:"ai_calls"`                          // 包内含 AI 调用次数（对外话术统一叫"次"）
-	TokenAmount      int64  `json:"token_amount"`        // P1.5(2026-08-26)：包含token数——paid=月度订阅额度；increment=永久余额；free=免费桶
-	PriceCents   int       `json:"price_cents"`                       // 售价（分）
-	DurationDays int       `json:"duration_days"`                     // 有效期天（paid=30；increment=0 买断；free=0 随租户试用）
-	Description  string    `gorm:"type:text" json:"description"`      // 包描述（定价页展示）
-	Enabled      bool      `gorm:"default:true" json:"enabled"`       // 是否上架
-	SortOrder    int       `json:"sort_order"`                        // 排序
-	CreatedAt    time.Time `json:"created_at"`                        // 创建时间
-	UpdatedAt    time.Time `json:"updated_at"`                        // 更新时间
+	ID           uint      `gorm:"primaryKey" json:"id"`            // 主键
+	Code         string    `gorm:"size:50;uniqueIndex" json:"code"` // 标识：trial_500/starter_1000/std_5000/booster_1000
+	Name         string    `gorm:"size:100;not null" json:"name"`   // 显示名：试用包/入门包月/标准包月/AI加油包
+	PType        string    `gorm:"size:20;not null" json:"p_type"`  // 类型：free/paid/increment
+	AICalls      int       `json:"ai_calls"`                        // 包内含 AI 调用次数（对外话术统一叫"次"）
+	TokenAmount  int64     `json:"token_amount"`                    // P1.5(2026-08-26)：包含token数——paid=月度订阅额度；increment=永久余额；free=免费桶
+	PriceCents   int       `json:"price_cents"`                     // 售价（分）
+	DurationDays int       `json:"duration_days"`                   // 有效期天（paid=30；increment=0 买断；free=0 随租户试用）
+	Description  string    `gorm:"type:text" json:"description"`    // 包描述（定价页展示）
+	Enabled      bool      `gorm:"default:true" json:"enabled"`     // 是否上架
+	SortOrder    int       `json:"sort_order"`                      // 排序
+	CreatedAt    time.Time `json:"created_at"`                      // 创建时间
+	UpdatedAt    time.Time `json:"updated_at"`                      // 更新时间
 }
 
 // TableName 指定表名
@@ -45,14 +46,14 @@ func (Package) TableName() string {
 // 安全要点：code 存 SHA-256 哈希（库泄露不暴露验证码）；10 分钟有效；used 一次性；
 // 同账号 60s 限发由服务层校验 last_sent_at 实现
 type PasswordReset struct {
-	ID          uint       `gorm:"primaryKey" json:"id"`                    // 主键
-	Username    string     `gorm:"size:50;index" json:"username"`           // 目标账号
-	CodeHash    string     `gorm:"size:200;index" json:"-"`                 // SHA256(6位随机码)
-	ExpiredAt   time.Time  `json:"expired_at"`                              // 过期时间（签发+10分钟）
-	Used        bool       `gorm:"default:false" json:"used"`               // 一次性标记（验证成功即置 true）
-	LastSentAt  time.Time  `json:"last_sent_at"`                            // 最近发送时间（限频锚点）
-	CreatedAt   time.Time  `json:"created_at"`                              // 创建时间
-	ConsumedAt  *time.Time `json:"consumed_at"`                             // 消费时间（审计）
+	ID         uint       `gorm:"primaryKey" json:"id"`          // 主键
+	Username   string     `gorm:"size:50;index" json:"username"` // 目标账号
+	CodeHash   string     `gorm:"size:200;index" json:"-"`       // SHA256(6位随机码)
+	ExpiredAt  time.Time  `json:"expired_at"`                    // 过期时间（签发+10分钟）
+	Used       bool       `gorm:"default:false" json:"used"`     // 一次性标记（验证成功即置 true）
+	LastSentAt time.Time  `json:"last_sent_at"`                  // 最近发送时间（限频锚点）
+	CreatedAt  time.Time  `json:"created_at"`                    // 创建时间
+	ConsumedAt *time.Time `json:"consumed_at"`                   // 消费时间（审计）
 }
 
 // TableName 指定表名

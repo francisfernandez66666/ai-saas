@@ -171,6 +171,7 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 		// 特殊规则：高意向持续轮数多，推高aggressive锚
 		if state.HighIntentRounds >= 2 {
 			if a == AnchorScarcity || a == AnchorSelfPay {
+				// 每多一轮高意向，稀缺/代价自担锚加0.3分，持续高热度逐步推高促单锚
 				score += float64(state.HighIntentRounds) * 0.3
 			}
 		}

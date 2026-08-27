@@ -1,3 +1,4 @@
+// Package mq 消息中心：Kafka/Log 双实现、事件信封、Inbox 幂等、审计落库
 package mq
 
 import (

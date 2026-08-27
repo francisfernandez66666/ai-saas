@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -13,22 +14,22 @@ import (
 // Role 定义（四级+只读）：super_admin(平台超管)/tenant_admin(租户管理员)/dept_admin(部门管理员)/user(普通用户)/readonly(只读)
 // tenant_id 为 NULL 时表示超级管理员，非 NULL 时表示某租户下用户
 type TenantUser struct {
-	ID           uint       `gorm:"primaryKey" json:"id"`                         // 主键
-	Username     string     `gorm:"size:50;uniqueIndex;not null" json:"username"` // 登录名
-	PasswordHash string     `gorm:"size:255;not null" json:"-"`                   // 密码哈希（不返回给前端）
-	RealName     string     `gorm:"size:50" json:"real_name"`                     // 真实姓名
-	TenantID     *uint      `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
-	Role         string     `gorm:"size:20;not null;default:sales" json:"role"`   // 角色：super_admin/tenant_admin/dept_admin/user/readonly（四级+只读）
-	Phone        string     `gorm:"size:20" json:"phone"`                         // 手机号
-	Email        string     `gorm:"size:100" json:"email"`                        // 邮箱
-	Avatar       string     `gorm:"size:255" json:"avatar"`                       // 头像URL
-	Department   string     `gorm:"size:50" json:"department"`                    // 部门
-	Status             int        `gorm:"default:1" json:"status"`                      // 状态：1=正常 0=禁用
+	ID                 uint       `gorm:"primaryKey" json:"id"`                                                  // 主键
+	Username           string     `gorm:"size:50;uniqueIndex:idx_tu_tenant_username;not null" json:"username"`   // 登录名（租户级唯一，J12-2026-08-26）
+	PasswordHash       string     `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
+	RealName           string     `gorm:"size:50" json:"real_name"`                                              // 真实姓名
+	TenantID           *uint      `gorm:"uniqueIndex:idx_tu_tenant_username" json:"-"`                           // 租户ID，NULL=超级管理员，非NULL=某租户下用户（与Username复合唯一）
+	Role               string     `gorm:"size:20;not null;default:sales" json:"role"`                            // 角色：super_admin/tenant_admin/dept_admin/user/readonly（四级+只读）
+	Phone              string     `gorm:"size:20" json:"phone"`                                                  // 手机号
+	Email              string     `gorm:"size:100" json:"email"`                                                 // 邮箱
+	Avatar             string     `gorm:"size:255" json:"avatar"`                                                // 头像URL
+	Department         string     `gorm:"size:50" json:"department"`                                             // 部门
+	Status             int        `gorm:"default:1" json:"status"`                                               // 状态：1=正常 0=禁用
 	MustChangePassword bool       `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
-	LastLoginAt  *time.Time `json:"last_login_at"`                                // 最后登录时间
-	LastLoginIP  string     `gorm:"size:45" json:"last_login_ip"`                 // 最后登录IP
-	CreatedAt    time.Time  `json:"created_at"`                                   // 创建时间
-	UpdatedAt    time.Time  `json:"updated_at"`                                   // 更新时间
+	LastLoginAt        *time.Time `json:"last_login_at"`                                                         // 最后登录时间
+	LastLoginIP        string     `gorm:"size:45" json:"last_login_ip"`                                          // 最后登录IP
+	CreatedAt          time.Time  `json:"created_at"`                                                            // 创建时间
+	UpdatedAt          time.Time  `json:"updated_at"`                                                            // 更新时间
 }
 
 // TableName 指定表名

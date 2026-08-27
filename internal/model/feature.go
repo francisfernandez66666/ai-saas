@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -26,14 +27,14 @@ type Feature struct {
 	// ApplicableTags 适用标签约束(JSON数组)
 	ApplicableTags string `gorm:"type:text" json:"applicable_tags"`
 	// ApplicableModels 适用车型(JSON数组)
-	ApplicableModels string    `gorm:"type:text" json:"applicable_models"`
+	ApplicableModels string `gorm:"type:text" json:"applicable_models"`
 	// DepartmentID 部门维度（三级包架构 2026-08-26）：NULL=租户级（行业/企业包物化）；
 	// 非空=部门专属（部门包物化），仅该部门链上的顾问语境可见
-	DepartmentID *uint `gorm:"index" json:"department_id"`
-	Priority         int       `gorm:"default:0" json:"priority"` // 优先级
-	Status           int       `gorm:"default:1" json:"status"`   // 状态
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	DepartmentID *uint     `gorm:"index" json:"department_id"`
+	Priority     int       `gorm:"default:0" json:"priority"` // 优先级
+	Status       int       `gorm:"default:1" json:"status"`   // 状态
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名

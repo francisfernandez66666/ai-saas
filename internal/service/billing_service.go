@@ -1,8 +1,9 @@
+// 收银台商业化服务：pay_mode 三态分发、订单幂等发放/到账、超时扫描关闭。
 package service
 
 import (
-	"crypto/rand"
 	"context"
+	"crypto/rand"
 	"fmt"
 	"log"
 	"time"

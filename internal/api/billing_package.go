@@ -96,10 +96,10 @@ func MyPackage(c *gin.Context) {
 		"expired_at":       t.ExpiredAt,
 		"max_ai_calls":     maxMonthly,
 		"used_ai_calls":    used,
-		"ai_call_balance":  balance, // 增量包买断余额（不随月重置）
+		"ai_call_balance":  balance, // 三桶之一：增量包买断余额（次，不随月重置，用完即停）
 		"billing_enforced": enforced,
 		"pay_mode":         service.GetPayMode(),
-		// P1.5 Token三桶展示（2026-08-26）
+		// P1.5 Token三桶展示（2026-08-26）：月额度桶(monthly_token_*) / 买断余额桶(token_balance) / 赠送桶(free_token_*)
 		"token_billing_enabled": service.TokenBillingEnabled(),
 		"monthly_token_quota":   t.MonthlyTokenQuota,
 		"monthly_token_used":    t.MonthlyTokenUsed,
@@ -111,6 +111,7 @@ func MyPackage(c *gin.Context) {
 
 // ---- 超管商业包管理 ----
 
+// pkgUpsertReq 超管商业包新增/更新请求；指针字段用于支持「仅传部分字段」的启停场景
 type pkgUpsertReq struct {
 	Code         string `json:"code" binding:"required"`
 	Name         string `json:"name" binding:"required"`
@@ -123,6 +124,7 @@ type pkgUpsertReq struct {
 	SortOrder    int    `json:"sort_order"`
 }
 
+// validPkgTypes 合法商业包类型白名单（free 试用 / paid 包月 / increment 买断余额）
 var validPkgTypes = map[string]bool{model.PackageTypeFree: true, model.PackageTypePaid: true, model.PackageTypeIncrement: true}
 
 // SuperPackageList GET /api/v1/super/packages —— 全量列表（含下架）

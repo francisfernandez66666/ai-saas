@@ -10,8 +10,8 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 
-	"github.com/gin-gonic/gin"
 	"ai-scrm/internal/service"
+	"github.com/gin-gonic/gin"
 )
 
 // ============================================================
@@ -36,6 +36,7 @@ func SuperRequired() gin.HandlerFunc {
 
 // SuperTenantList GET /api/v1/super/tenants —— 全平台租户列表（含用量与套餐）
 func SuperTenantList(c *gin.Context) {
+	// row 全平台租户列表聚合行：LEFT JOIN subscription_plans 带出套餐名，便于超管运营视图
 	type row struct {
 		ID            uint    `json:"id"`
 		Name          string  `json:"name"`

@@ -1,6 +1,14 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import "time"
+
+// ============================================================
+// CDP 数据底座模型（Phase P4 真实化）
+// 画像/标签/事件/ID映射四件套，承载 OneID 真实身份归并与行为摄入。
+// 所有表 TenantID 默认 0 并建索引：fail-closed 隔离，跨租户读取由业务层
+// 携带生效租户条件过滤；ID映射的 internal_type 键用于 OneID 锚点重指向。
+// ============================================================
 
 // CdpProfile CDP客户画像表
 // 用于存储客户在CDP系统中的统一画像信息
@@ -62,7 +70,7 @@ type EventLog struct {
 type IdMapping struct {
 	ID           uint   `gorm:"primaryKey;autoIncrement"`
 	TenantID     uint   `gorm:"default:0;index"`
-	InternalType string `gorm:"size:32"` // 如: customer, conversation, message
+	InternalType string `gorm:"size:32;index" json:"internal_type"` // 如: customer, conversation, message（J13-2026-08-27 补索引）
 	InternalID   uint   // 内部系统ID
 	CdpEntityId  string `gorm:"size:64"` // CDP系统实体ID
 	MappingType  string // 映射类型：one2one, one2many

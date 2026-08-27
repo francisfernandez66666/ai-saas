@@ -1,9 +1,0 @@
-{
-  "appId": "com.lexicorn.scrm",
-  "appName": "AI-SCRM",
-  "webDir": "dist",
-  "server": {
-    "url": "https://YOUR-DOMAIN.com/app/",
-    "cleartext": true
-  }
-}

@@ -1,3 +1,4 @@
+// 邀请推广：注册/邀请/付费三档奖励发放，三桶 token 与幂等闸门防重。
 package service
 
 // ============================================================
@@ -118,8 +119,8 @@ func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, invitee
 	if err := tx.Model(&model.Tenant{}).
 		Where("id = ? AND invited_by_tenant_id IS NULL", newTenant.ID). // 首绑唯一：并发重复邀请只有第一次生效
 		Updates(map[string]interface{}{
-			"invited_by_tenant_id": inviter.ID,
-			"free_token_balance":   trialTokens,
+			"invited_by_tenant_id":  inviter.ID,
+			"free_token_balance":    trialTokens,
 			"free_token_expires_at": newExp,
 		}).Error; err != nil {
 		log.Printf("[Referral] 受邀绑定失败 new=%d: %v（不阻断注册）", newTenant.ID, err)
@@ -148,7 +149,8 @@ func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, invitee
 	if err := tx.Create(&model.RewardClaim{
 		GrantType: "referral_signup", TenantID: inviter.ID,
 		Email: strings.ToLower(strings.TrimSpace(inviteeEmail)), RefID: &newTenant.ID,
-	}).Error; err == nil { /* 台账失败不阻断已发放的权益 */ }
+	}).Error; err == nil { /* 台账失败不阻断已发放的权益 */
+	}
 
 	log.Printf("[Referral] 绑定成功 受邀=%d(%s) ← 邀请人=%d | 新客+%dtoken/%d天 | 邀请人+%dtoken/顺延%d天",
 		newTenant.ID, newTenant.Code, inviter.ID, trialTokens, trialDays, bonusTokens, extendDays)
@@ -200,17 +202,17 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 
 // ReferralInfo 邀请信息聚合出参
 type ReferralInfo struct {
-	InviteCode        string     `json:"invite_code"`
-	InvitedCount      int64      `json:"invited_count"`       // 累计成功绑定数
-	PaidCount         int64      `json:"paid_count"`          // 其中已完成首笔付费数
-	BonusPerSignup    int64      `json:"bonus_per_signup"`    // 参数快照：每邀1人token
-	ExtDaysPerSignup  int        `json:"ext_days_per_signup"` // 参数快照：每邀1人延长天数
-	BonusOnPaid       int64      `json:"bonus_on_paid"`       // 参数快照：受邀人付费后得永久token
-	TrialTokenAmount  int64      `json:"trial_token_amount"`  // 参数快照：注册赠送
-	TrialValidDays    int        `json:"trial_valid_days"`    // 参数快照：免费有效天数
-	FreeTokenBalance  int64      `json:"free_token_balance"`  // 我的③桶现状
-	FreeTokenExpires  *time.Time `json:"free_token_expires_at"`
-	TokenBalance      int64      `json:"token_balance"` // 我的②桶现状
+	InviteCode       string     `json:"invite_code"`
+	InvitedCount     int64      `json:"invited_count"`       // 累计成功绑定数
+	PaidCount        int64      `json:"paid_count"`          // 其中已完成首笔付费数
+	BonusPerSignup   int64      `json:"bonus_per_signup"`    // 参数快照：每邀1人token
+	ExtDaysPerSignup int        `json:"ext_days_per_signup"` // 参数快照：每邀1人延长天数
+	BonusOnPaid      int64      `json:"bonus_on_paid"`       // 参数快照：受邀人付费后得永久token
+	TrialTokenAmount int64      `json:"trial_token_amount"`  // 参数快照：注册赠送
+	TrialValidDays   int        `json:"trial_valid_days"`    // 参数快照：免费有效天数
+	FreeTokenBalance int64      `json:"free_token_balance"`  // 我的③桶现状
+	FreeTokenExpires *time.Time `json:"free_token_expires_at"`
+	TokenBalance     int64      `json:"token_balance"` // 我的②桶现状
 }
 
 // GetReferralInfo 聚合当前租户的邀请信息（EnsureInviteCode 幂等补码）

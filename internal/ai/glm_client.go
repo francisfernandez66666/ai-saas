@@ -1,3 +1,4 @@
+// Package ai LLM 调用统一入口：Prompt 构建、智谱/硅基流动双客户端、多模型降级路由与 Token 计量。
 package ai
 
 import (

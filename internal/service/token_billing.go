@@ -1,3 +1,4 @@
+// Token 三桶扣减引擎：③免费→①订阅→②余额优先级，灰度双开关与防薅双唯一。
 package service
 
 // ============================================================
@@ -124,9 +125,9 @@ func DeductTokensActual(tenantID uint, tokens int64) {
 			return nil // 不产生负余额；前置检查本应拦截，此处兜底
 		}
 		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
-			"free_token_balance":  t.FreeTokenBalance - r.FromFree,
-			"monthly_token_used":  t.MonthlyTokenUsed + r.FromMonthly,
-			"token_balance":       t.TokenBalance - r.FromBalance,
+			"free_token_balance": t.FreeTokenBalance - r.FromFree,
+			"monthly_token_used": t.MonthlyTokenUsed + r.FromMonthly,
+			"token_balance":      t.TokenBalance - r.FromBalance,
 		})
 		if res.Error != nil {
 			return res.Error
@@ -145,8 +146,10 @@ func DeductTokensActual(tenantID uint, tokens int64) {
 // GrantTrialBucket 注册赠送免费桶 —— 防薅v2 双唯一版（2026-08-26）
 //
 // 领取语义（撞库即拒）：
-//   账号维度：同一 tenant_id 一生仅一次
-//   邮箱维度：同一 email 一生仅一次（换绑新邮箱无法重领；旧邮箱释放后他人也无法重领）
+//
+//	账号维度：同一 tenant_id 一生仅一次
+//	邮箱维度：同一 email 一生仅一次（换绑新邮箱无法重领；旧邮箱释放后他人也无法重领）
+//
 // 内测态(无邮箱)仅账号维度兜底。台账 reward_claims + 部分唯一索引硬约束双保险。
 func GrantTrialBucket(tx *gorm.DB, tenantID uint, email string) {
 	if tx == nil {
@@ -192,7 +195,7 @@ func GrantTrialBucket(tx *gorm.DB, tenantID uint, email string) {
 	log.Printf("[TokenBilling] 注册赠送 %d token(%d天有效) → 租户%d", amount, days, tenantID)
 }
 
-// minInt64
+// minInt64 取两 int64 较小值（三桶扣减分配时限制单次扣减上限用）
 func minInt64(a, b int64) int64 {
 	if a < b {
 		return a
@@ -202,27 +205,33 @@ func minInt64(a, b int64) int64 {
 
 // ReportAuditIncrement 把 lastID 之后的租户调参/包操作审计增量回传云端 collector
 // （数据飞轮：所有租户实际把参数往哪调 = 行业包迭代的免费标注数据）
-func ReportAuditIncrement(lastID uint) {
+// 返回是否成功上报（成功才推进 lastID，失败保留以重试，避免增量审计数据漏传）
+func ReportAuditIncrement(lastID uint) bool {
 	if DefaultSystemConfigService == nil {
-		return
+		return false
 	}
 	url := DefaultSystemConfigService.GetString("feedback_collector_url", "")
 	if url == "" {
-		return // 未配置云端地址：关闭
+		return false // 未配置云端地址：关闭
 	}
 	var rows []map[string]any
 	if err := db.DB.Table("tenant_audit_logs").
 		Where("id > ? AND (action LIKE ? OR action LIKE ? OR action LIKE ?)",
 			lastID, "config%", "rollback", "pack%").
 		Limit(500).Find(&rows).Error; err != nil || len(rows) == 0 {
-		return
+		return false
 	}
 	payload, _ := json.Marshal(map[string]any{"type": "audit_increment", "items": rows})
 	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("[Feedback] 回流上报失败: %v", err)
-		return
+		return false
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		log.Printf("[Feedback] 回流上报非成功状态码: %d", resp.StatusCode)
+		return false
+	}
 	log.Printf("[Feedback] 调参/包操作审计增量已回传 %d 条 → %s", len(rows), url)
+	return true
 }

@@ -1,3 +1,4 @@
+// Package cache 知识库与标签内存缓存，热更新加速高频读取、降低 DB 压力。
 package cache
 
 import (

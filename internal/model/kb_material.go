@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 // ============================================================
@@ -23,14 +24,14 @@ type KbFeedbackMaterial struct {
 	TenantID     uint      `gorm:"index" json:"tenant_id"`
 	Conversation uint      `gorm:"index" json:"conversation_id"`
 	MessageID    uint      `gorm:"index" json:"message_id"`
-	Source       string    `gorm:"size:10;index" json:"source"`   // ai / human
-	Content      string    `gorm:"type:text" json:"content"`      // 脱敏后的回复内容
-	HumanScore   *int      `json:"human_score"`                   // 人工评分1-5（结果导向）
-	DealClosed   bool      `gorm:"default:false" json:"deal_closed"` // 关联成交结果标记
-	AiScore      *float64  `json:"ai_score"`                      // AI evals 评分0-5
-	AiEvalNote   string    `gorm:"size:500" json:"ai_eval_note"`  // AI 评估摘要
+	Source       string    `gorm:"size:10;index" json:"source"`                 // ai / human
+	Content      string    `gorm:"type:text" json:"content"`                    // 脱敏后的回复内容
+	HumanScore   *int      `json:"human_score"`                                 // 人工评分1-5（结果导向）
+	DealClosed   bool      `gorm:"default:false" json:"deal_closed"`            // 关联成交结果标记
+	AiScore      *float64  `json:"ai_score"`                                    // AI evals 评分0-5
+	AiEvalNote   string    `gorm:"size:500" json:"ai_eval_note"`                // AI 评估摘要
 	Status       string    `gorm:"size:20;default:pending;index" json:"status"` // pending/approved/rejected
-	PackCode     string    `gorm:"size:32;index" json:"pack_code"` // 审核通过时归入的行业包code
+	PackCode     string    `gorm:"size:32;index" json:"pack_code"`              // 审核通过时归入的行业包code
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }

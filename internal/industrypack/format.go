@@ -1,3 +1,4 @@
+// Package industrypack 行业包打包/加密/开包/物化：templates/features 按 pk_{code}_ 前缀写入租户私有层。
 package industrypack
 
 // ============================================================
@@ -30,14 +31,14 @@ const FormatVersion = 1
 
 // 文件名常量（八件套）
 const (
-	FileManifest   = "manifest.json"
-	FileScripts    = "scripts.json"
-	FileProductKB  = "product_kb.json"
-	FilePrompts    = "prompts.json"
-	FileFlows      = "flows.json"
-	FileTags       = "tags.json"
-	FileParams     = "params.json"
-	FileMindset    = "mindset.json"
+	FileManifest  = "manifest.json"
+	FileScripts   = "scripts.json"
+	FileProductKB = "product_kb.json"
+	FilePrompts   = "prompts.json"
+	FileFlows     = "flows.json"
+	FileTags      = "tags.json"
+	FileParams    = "params.json"
+	FileMindset   = "mindset.json"
 )
 
 // Manifest 包元数据（明文存放，整体被平台私钥签名）
@@ -112,18 +113,21 @@ type KbFeature struct {
 
 // ProductKB product_kb.json 顶层结构（本批消费 features；其余 P2）
 type ProductKB struct {
-	Features []KbFeature        `json:"features"`
-	Faqs     []map[string]any   `json:"faqs"`    // P2: knowledge_fragments
-	Products []map[string]any   `json:"products"` // P2
-	Notes    string             `json:"notes"`
+	Features []KbFeature      `json:"features"`
+	Faqs     []map[string]any `json:"faqs"`     // P2: knowledge_fragments
+	Products []map[string]any `json:"products"` // P2
+	Notes    string           `json:"notes"`
 }
 
 // ---- 确定性输出工具（同内容同哈希） ----
 
+// timeNow 打包时间戳：截断到秒并取 UTC，保证跨时区/跨次打包同内容同哈希
 func timeNow() time.Time { return time.Now().UTC().Truncate(time.Second) }
 
+// timeZero tar 条目固定零时间，避免打包环境本地时间污染导致哈希漂移
 func timeZero() time.Time { return time.Unix(0, 0).UTC() }
 
+// sortStrings 插入排序文件名，保证 tar.gz 内容确定性（同输入同输出）
 func sortStrings(s []string) {
 	for i := 1; i < len(s); i++ {
 		for j := i; j > 0 && s[j] < s[j-1]; j-- {

@@ -1,3 +1,4 @@
+// Package state_machine 流程状态机：实例进度、乐观锁、心跳、超时巡检回收
 package state_machine
 
 import (

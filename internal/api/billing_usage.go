@@ -33,8 +33,8 @@ func AdminUsageSummary(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
-		"days":        days,
-		"total_calls": totalCalls,
+		"days":         days,
+		"total_calls":  totalCalls,
 		"total_tokens": totalTokens,
 		// 微元→元保留4位小数展示
 		"total_cost_yuan": microToYuan(totalCost),
@@ -58,12 +58,13 @@ func SuperUsageCost(c *gin.Context) {
 		totalTokens += r.Tokens
 		totalCalls += r.Calls
 	}
+	// costRow 单模型成本聚合行，按 provider/model 维度归因（含占比便于定位高成本模型）
 	type costRow struct {
-		Provider    string  `json:"provider"`
-		Model       string  `json:"model"`
-		Calls       int64   `json:"calls"`
-		Tokens      int64   `json:"tokens"`
-		CostYuan    float64 `json:"cost_yuan"`
+		Provider     string  `json:"provider"`
+		Model        string  `json:"model"`
+		Calls        int64   `json:"calls"`
+		Tokens       int64   `json:"tokens"`
+		CostYuan     float64 `json:"cost_yuan"`
 		CostSharePct float64 `json:"cost_share_pct"`
 	}
 	list := make([]costRow, 0, len(rows))

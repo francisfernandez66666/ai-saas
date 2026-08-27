@@ -1,5 +1,8 @@
 package api
 
+// 顾问工作台API（销售端）：客户管理、工作台数据统计、跟进提醒、试驾单、对话接管、AI回复触发与策略话术推荐。
+// 写操作均经四级组织数据范围门禁(canOperateCustomer/customerInDataScope)防越权。
+
 import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
@@ -1265,7 +1268,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		ConversationID: conversation.ID,
 		CanPromote:     customer.CanPromote(),
 		JourneyStage:   customer.JourneyStage,
-		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		TenantID:       customer.TenantID,                          // M1租户隔离修复：模板/卖点召回按此过滤
 		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：登录顾问部门链
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
@@ -1351,7 +1354,7 @@ func GetStrategyRecommend(c *gin.Context) {
 		CustomerTags:   customerTags,
 		CustomerID:     customer.ID,
 		ConversationID: uint(conversationID),
-		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		TenantID:       customer.TenantID,                          // M1租户隔离修复：模板/卖点召回按此过滤
 		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：登录顾问部门链
 	}
 

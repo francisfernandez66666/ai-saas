@@ -1,3 +1,4 @@
+// 组织架构：四级用户体系、作用域门禁、部门树与用户管理（fail-closed 权限矩阵 + 配额）
 package api
 
 import (
@@ -53,7 +54,8 @@ type orgScope struct {
 	DeptPath string // 形如 "/1/5/"；tenant_admin 为 ""
 }
 
-// getOrgScope 解析组织数据范围查询参数
+// getOrgScope 从 gin.Context 解析操作者作用域（角色/用户ID/部门ID/部门物化路径）
+// 入参：c 请求上下文；出参：orgScope（租户隔离基石，后续所有门禁判断均依赖它）
 func getOrgScope(c *gin.Context) orgScope {
 	s := orgScope{TenantID: db.EffectiveTenantIDFromGin(c)}
 	if v, ok := c.Get("role"); ok {
@@ -126,6 +128,7 @@ func canAssignRole(operator orgScope, targetRole string) bool {
 func GetDepartmentTree(c *gin.Context) {
 	s := getOrgScope(c)
 	var depts []model.Department
+	// db.RQ(c) 自动按当前租户盖章 tenant_id，保证部门查询不跨租户
 	q := db.RQ(c).Order("path ASC, sort_order ASC, id ASC")
 	if err := q.Find(&depts).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})

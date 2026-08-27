@@ -1,3 +1,4 @@
+// Package chatflow 聊天流模块：延迟取消/留资检测与 OneID 合并/会话状态维护/业务驱动消费
 package chatflow
 
 // ============================================================
@@ -17,8 +18,8 @@ import (
 	"time"
 
 	"ai-scrm/internal/db"
-	"ai-scrm/internal/mq"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 )
 
 // StartDriveConsumer 注册 flow_drive 消费者（main 启动调用一次）

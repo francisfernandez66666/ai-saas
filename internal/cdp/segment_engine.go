@@ -1,3 +1,4 @@
+// Package cdp CDP 数据底座：OneID 身份归并、画像/标签/事件写收口与分群引擎（四维标签体系）。
 package cdp
 
 import (
@@ -10,8 +11,10 @@ type SegmentEngine interface {
 	SegmentByTag(tenantID uint, tagCode string) ([]string, error) // 按原子标签圈选 OneID 列表（租户隔离）
 }
 
+// segmentEngine 分群引擎默认实现（CDP 写收口之上的只读查询层）
 type segmentEngine struct{}
 
+// NewSegmentEngine 构造分群引擎默认实现（CDP 写收口之上的只读查询层入口）
 func NewSegmentEngine() SegmentEngine { return &segmentEngine{} }
 
 // SegmentByTag 圈选持有指定标签的全部 OneID

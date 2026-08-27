@@ -1,3 +1,4 @@
+// Package db 数据库连接、自动迁移、租户上下文注入与写入自动盖章（RQ/PQ/T/WithPreset/DataScope）。
 package db
 
 import (
@@ -20,6 +21,7 @@ import (
 // 好处：28+ 个 Create 调用点零改动即获得租户归属；新增模型默认生效
 // ============================================================
 
+// tenantCtxKey 租户上下文键类型（私有空结构体，避免与其他包的 context key 冲突）
 type tenantCtxKey struct{}
 
 // WithTenant 把租户ID写入 context（中间件调用）

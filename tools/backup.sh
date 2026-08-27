@@ -13,6 +13,7 @@
 #
 # 环境变量：BACKUP_DIR / PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
 #           KEEP_DAYS(默认7) / BACKUP_REMOTE_CMD(异地推送,可选)
+#           BACKUP_NOTIFY_WEBHOOK(企微机器人 webhook，可选；配置后成败均通知)
 #
 # 异地推送（批次三·防单点，2026-08-23）：
 #   配置 BACKUP_REMOTE_CMD 后，本地备份+完整性校验通过即自动推远端；
@@ -37,6 +38,27 @@ export PGDATABASE="${PGDATABASE:-ai_scrm}"
 # PGPASSWORD 从环境或 ~/.pgpass 读取；也可用 pg_service.conf
 
 mkdir -p "$BACKUP_DIR"
+
+# L8修复(2026-08-27)：flock 互斥，防止 cron 重叠并发 dump 互相冲掉（同实例串行）
+LOCK_FILE="$BACKUP_DIR/.backup.lock"
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "[$(date '+%F %T')] [WARN] 已有备份进程在运行（锁 $LOCK_FILE 被占用），本次跳过" >&2
+  exit 0
+fi
+
+# 企微通知（可选）：BACKUP_NOTIFY_WEBHOOK 配置后，成败均推送
+notify() {
+  local level="$1"; local msg="$2"
+  [ -z "${BACKUP_NOTIFY_WEBHOOK:-}" ] && return 0
+  local content
+  content=$(printf '**AI-SCRM 备份%s**\n时间: %s\n实例: %s\n%s' "$level" "$(date '+%F %T')" "${PGDATABASE}" "$msg")
+  curl -s -m 5 -H "Content-Type: application/json" -X POST "$BACKUP_NOTIFY_WEBHOOK" \
+    -d "{\"msgtype\":\"markdown\",\"markdown\":{\"content\":$(printf '%s' "$content" | python3 -c 'import sys,json;print(json.dumps(sys.stdin.read()))')}}" >/dev/null 2>&1 || true
+}
+
+# 失败即通知并退出（set -e 下任何一步失败触发）
+trap 'notify "失败" "备份中断，请检查日志 $(pwd)/backups" >&2; echo "[$(date "+%F %T")] [ERROR] 备份失败" >&2' ERR
 
 echo "[$(date '+%F %T')] 开始备份 $PGDATABASE → $FILE"
 pg_dump --format=custom --compress=6 --no-owner --file="$FILE"
@@ -65,3 +87,4 @@ find "$BACKUP_DIR" -name "ai_scrm_*.dump" -mtime +"$KEEP_DAYS" -print -delete |
   while read -r f; do echo "[$(date '+%F %T')] 清理过期备份: $f"; done
 
 echo "[$(date '+%F %T')] 全部完成"
+notify "成功" "备份完成: $FILE ($SIZE)"

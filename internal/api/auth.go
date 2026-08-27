@@ -1,3 +1,4 @@
+// 认证接口：登录/注册/当前用户（含防爆破守卫、租户隔离、首登强改密、注销闸门）
 package api
 
 import (
@@ -5,7 +6,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
-		"time"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -25,7 +26,7 @@ type loginRequest struct {
 type registerRequest struct {
 	Username  string `json:"username" binding:"required"`
 	Password  string `json:"password" binding:"required"`
-	Email     string `json:"email"`     // 绑定邮箱（验证码目的地）
+	Email     string `json:"email"`      // 绑定邮箱（验证码目的地）
 	EmailCode string `json:"email_code"` // 邮箱验证码
 }
 
@@ -88,6 +89,7 @@ func Login(c *gin.Context) {
 	if user.TenantID != nil {
 		var ct model.Tenant
 		if err := db.DB.Select("id, cancel_at").First(&ct, *user.TenantID).Error; err == nil && ct.CancelAt != nil {
+			// 用 Go 参考时间格式 "2006-01-02" 按自然日比较：注销次日零点起才拦截
 			if time.Now().Format("2006-01-02") != ct.CancelAt.Format("2006-01-02") {
 				service.RecordLoginFailure(req.Username, clientIP)
 				c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "账号已注销，不可登录（数据保留期请联系平台处理）", "data": nil})
@@ -97,7 +99,7 @@ func Login(c *gin.Context) {
 	}
 
 	// 3. 生成 JWT Token
-	tenantID := uint(0)
+	tenantID := uint(0) // 默认租户（tenant_id=0），无租户归属时回落平台层
 	if user.TenantID != nil {
 		tenantID = *user.TenantID
 	}
@@ -109,7 +111,7 @@ func Login(c *gin.Context) {
 	}
 
 	c.JSON(200, gin.H{
-		"code":  0,
+		"code": 0,
 		"data": gin.H{
 			"token": token,
 			// M3：返回用户信息供前端按角色分流 + must_change_password 触发强改密引导
@@ -182,6 +184,9 @@ func Register(c *gin.Context) {
 		c.JSON(500, gin.H{"code": 500, "message": "注册失败: " + result.Error.Error(), "data": nil})
 		return
 	}
+
+	// 注册即视为同意《用户协议》《隐私政策》，落签署记录（时间+状态供超管审计）
+	RecordAgreementSignatures(*newUser.TenantID, newUser.ID)
 
 	// 4. 生成 JWT Token
 	token, err := middleware.GenerateToken(newUser.ID, newUser.Username, newUser.Role, *newUser.TenantID)

@@ -1,3 +1,4 @@
+// Package chatflow 聊天流模块：延迟取消/留资检测与 OneID 合并/会话状态维护/业务驱动消费
 package chatflow
 
 import (
@@ -13,6 +14,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -29,8 +32,8 @@ import (
 // DetectLeadCapture 留资检测 + OneID合并
 // 返回值：0=未留资, -1=已留资但无需合并, >0=合并后的老客户ID（前端需切换）
 func DetectLeadCapture(customerInput string, customer *model.Customer) int {
-	// 正则匹配1开头11位手机号
-	phoneRegex := regexp.MustCompile(`1[3-9]\d{9}`)
+	// I1修复(2026-08-26)：加单词边界\b，避免长数字串子串误命中（如订单号/身份证片段触发真分配顾问+企微推送）
+	phoneRegex := regexp.MustCompile(`\b1[3-9]\d{9}\b`)
 	phoneMatch := phoneRegex.FindString(customerInput)
 
 	if phoneMatch == "" {
@@ -97,8 +100,9 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			}
 			updates["assigned_user_id"] = bestUserID
 		} else {
-			// 修复Bug1：兜底值必须显式 uint，防下方 v.(uint) 断言 panic 中断留资链路
-			updates["assigned_user_id"] = uint(2) // 兜底：无销售用户时默认分配2号（张伟）
+			// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，
+			// 改为 assigned_user_id=0，由后台人工池认领
+			updates["assigned_user_id"] = uint(0)
 		}
 	}
 
@@ -334,9 +338,10 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 			existingCustomer.AssignedUserID = bestUserID
 			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，轮询分配给顾问%d", existingCustomer.ID, bestUserID)
 		} else {
-			db.DB.Model(&existingCustomer).Update("assigned_user_id", uint(2)) // 修复Bug1：显式 uint
-			existingCustomer.AssignedUserID = 2
-			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，兜底分配给顾问2", existingCustomer.ID)
+			// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，置 assigned_user_id=0 待人工池认领
+			db.DB.Model(&existingCustomer).Update("assigned_user_id", uint(0))
+			existingCustomer.AssignedUserID = 0
+			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，置 assigned_user_id=0 待人工池认领", existingCustomer.ID)
 		}
 	}
 
@@ -350,10 +355,72 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 		fmt.Sprintf("c:%d", guestCustomer.ID),
 		fmt.Sprintf("c:%d", existingCustomer.ID))
 
+	// 9.6 L3：身份标识落库（增量补 identity，不重写现有合并逻辑）
+	// 把合并双方(访客+老客户)的手机号/微信号等身份锚点写入 customer_identities，
+	// 统一指向最终保留的老客户(identity.customer_id=existingCustomer.ID)，
+	// 并清理被合并访客遗留的 identity 行。事务包裹，失败整体回滚。
+	if err := persistMergedIdentities(tid, &existingCustomer, guestCustomer); err != nil {
+		log.Printf("[OneID合并-告警] 身份标识落库失败(不影响主流程): %v", err)
+	}
+
 	log.Printf("[OneID合并] 合并完成: 访客%d(status=0) → 老客户%d, 标签数=%d, 阶段=%s",
 		guestCustomer.ID, existingCustomer.ID, len(mergedTags), existingCustomer.JourneyStage)
 
 	return existingCustomer.ID
+}
+
+// persistMergedIdentities L3：OneID 合并时把双方身份锚点统一落 customer_identities
+// 规则：
+//   - 取双方(老客户+访客)的非空身份(phone/wechat)，逐条 upsert 到 customer_identities，
+//     customer_id 统一指向 survivor（最终保留的自然人），冲突(同租户同类型同值)说明已归属
+//     survivor，忽略即可；
+//   - 删除被合并访客(guest)遗留的全部 identity 行（避免脏锚点指向无效客户）。
+//
+// 用 db.DB.Transaction 包裹（参照 I2 事务化改法），任一步失败整体回滚，不污染身份表。
+func persistMergedIdentities(tid uint, survivor, guest *model.Customer) error {
+	// 收集双方身份锚点（类型→值），去空
+	identities := map[string]string{}
+	add := func(typ, val string) {
+		if val == "" {
+			return
+		}
+		identities[typ] = val
+	}
+	add(model.IdentityTypePhone, survivor.Phone)
+	add(model.IdentityTypeWechat, survivor.WechatID)
+	add(model.IdentityTypePhone, guest.Phone)
+	add(model.IdentityTypeWechat, guest.WechatID)
+
+	return db.DB.Transaction(func(tx *gorm.DB) error {
+		for typ, val := range identities {
+			// upsert：冲突(uniq_tenant_identity)说明该锚点已归属 survivor，忽略
+			var cnt int64
+			if err := tx.Model(&model.CustomerIdentity{}).
+				Where("tenant_id = ? AND identity_type = ? AND identity_value = ?", tid, typ, val).
+				Count(&cnt).Error; err != nil {
+				return err
+			}
+			if cnt > 0 {
+				continue
+			}
+			rec := model.CustomerIdentity{
+				TenantID:      tid,
+				CustomerID:    survivor.ID,
+				IdentityType:  typ,
+				IdentityValue: val,
+				Verified:      typ == model.IdentityTypePhone, // 留资手机号视为已验证
+			}
+			if err := tx.Create(&rec).Error; err != nil {
+				return err
+			}
+		}
+		// 清理被合并访客遗留的 identity 行
+		if err := tx.Where("tenant_id = ? AND customer_id = ?", tid, guest.ID).
+			Delete(&model.CustomerIdentity{}).Error; err != nil {
+			return err
+		}
+		return nil
+	})
 }
 
 // ============================================================

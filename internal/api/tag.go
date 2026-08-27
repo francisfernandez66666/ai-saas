@@ -1,3 +1,4 @@
+// 标签体系管理：标签/打标规则/权重映射 CRUD + 缓存热更新 + 客户打标（冗余标签名/编码）
 package api
 
 import (
@@ -103,6 +104,7 @@ func CreateTag(c *gin.Context) {
 		Description: req.Description,
 		Status:      req.Status,
 	}
+	// 缺省权重 1.0、状态 1（启用），避免零值导致权重失效
 	if tag.Weight == 0 {
 		tag.Weight = 1.0
 	}

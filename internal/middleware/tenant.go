@@ -1,3 +1,4 @@
+// Package middleware Gin 中间件链：TenantResolver(fail-closed)→JWTAuth→TenantConsistency→OrgResolve 等安全闸。
 package middleware
 
 import (
@@ -254,6 +255,17 @@ func resolveTenant(c *gin.Context) *model.Tenant {
 }
 
 // ============================================================
+// 导出给公开接口：按 Host 解析租户（可能返回 nil，由调用方决定兜底）
+// 注意：此函数仅做查库解析，不做 fail-closed 拦截，供 /api/v1/public/branding 等
+// 需要"解析但不拒绝"的场景使用
+// ============================================================
+
+// ResolveTenantFromHost 按当前请求 Host 解析租户（白标自定义域名 / 子域名 code / 默认租户）
+func ResolveTenantFromHost(c *gin.Context) *model.Tenant {
+	return resolveTenant(c)
+}
+
+// ============================================================
 // 中间件本体
 // ============================================================
 
@@ -277,6 +289,8 @@ var skipTenantPaths = map[string]bool{
 	"/api/v1/tenant/signup":     true,
 	"/api/v1/tenant/check-code": true,
 	"/api/v1/plans":             true,
+	// 公开品牌配置下发（按 Host 解析租户白标；平台域无租户时返回平台默认品牌）
+	"/api/v1/public/branding": true,
 }
 
 // skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）

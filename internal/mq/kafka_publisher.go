@@ -1,3 +1,4 @@
+// Package mq 消息中心：Kafka/Log 双实现、事件信封、Inbox 幂等、审计落库
 package mq
 
 import (
@@ -27,6 +28,7 @@ type KafkaCenter struct {
 	handlers map[string][]EventHandler
 }
 
+// newKafkaCenter 构造 Kafka 生产者（无 broker 配置时返回错误，由 Init 降级 log 模式）
 func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
 	if len(cfg.Brokers) == 0 {
 		return nil, fmt.Errorf("KAFKA_BROKERS 未配置")
@@ -36,7 +38,7 @@ func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
 		Balancer:               &kafka.Hash{}, // 按 key(one_id) 哈希分区
 		AllowAutoTopicCreation: true,
 		RequiredAcks:           kafka.RequireOne,
-		BatchTimeout:           50 * time.Millisecond,
+		BatchTimeout:           50 * time.Millisecond, // 攒批 50ms 降低小消息写放大
 	}
 	return &KafkaCenter{cfg: cfg, w: w, handlers: map[string][]EventHandler{}}, nil
 }
@@ -107,30 +109,54 @@ func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string) {
 			continue
 		}
 
-		// Inbox 幂等抢占：event_id 已处理过则直接提交跳过
+		// Inbox 幂等抢占：event_id 已处理(done)则直接提交跳过；pending(首次)则执行
 		processed, err := EnsureProcessed(env.Header.EventID, env.Header.TenantID, env.Header.OneID, topic)
 		if err != nil {
 			log.Printf("[MQ-Kafka] Inbox 抢占失败 event=%s: %v", env.Header.EventID, err)
 			// 不提交，等待重投
 			continue
 		}
-		if !processed {
-			handled := true
-			for i, h := range c.handlers[topic] {
-				if err := h(ctx, env); err != nil {
-					log.Printf("[MQ-Kafka] 处理失败 event=%s consumer#%d: %v（标记待重试）",
-						env.Header.EventID, i, err)
-					handled = false
-				}
-			}
-			if !handled {
-				MarkInboxFailed(env.Header.EventID)
-				_ = reader.CommitMessages(ctx, msg) // 防卡死；重试依赖审计表回放
-				continue
-			}
+		if processed {
+			_ = reader.CommitMessages(ctx, msg)
+			continue
+		}
+		// H2修复(2026-08-27)：处理失败走进程内重试队列（指数退避，最多5次），不进DLQ
+		if c.processWithRetry(ctx, env, topic) {
+			_ = MarkInboxDone(env.Header.EventID)
+		} else {
+			MarkInboxFailed(env.Header.EventID) // 超限放弃，仅记日志，无死信队列
 		}
 		_ = reader.CommitMessages(ctx, msg)
 	}
+}
+
+// processWithRetry 消费失败重试（H2，2026-08-27）：指数退避最多5次，全部失败返回 false。
+// 各 handler 自身应幂等（Inbox 已防重复事件），此处重试仅应对瞬时失败。
+func (c *KafkaCenter) processWithRetry(ctx context.Context, env Envelope, topic string) bool {
+	const maxRetry = 5
+	delay := time.Second
+	for attempt := 0; attempt <= maxRetry; attempt++ {
+		if attempt > 0 {
+			time.Sleep(delay)
+			delay *= 2
+			if delay > 30*time.Second {
+				delay = 30 * time.Second
+			}
+			log.Printf("[MQ-Kafka] 事件%s 第%d次重试", env.Header.EventID, attempt)
+		}
+		failed := false
+		for i, h := range c.handlers[topic] {
+			if err := h(ctx, env); err != nil {
+				log.Printf("[MQ-Kafka] 处理失败 event=%s consumer#%d: %v", env.Header.EventID, i, err)
+				failed = true
+			}
+		}
+		if !failed {
+			return true
+		}
+	}
+	log.Printf("[MQ-Kafka] 事件%s 重试%d次仍失败，放弃(无DLQ)", env.Header.EventID, maxRetry)
+	return false
 }
 
 // fromKafkaMessage kafka 消息 → 信封（Header 校验：铁律字段缺失即拒收）

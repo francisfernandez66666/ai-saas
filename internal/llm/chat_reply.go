@@ -1,3 +1,4 @@
+// Package llm LLM 调用唯一入口：构建 Prompt、多模型降级路由（智谱GLM→硅基流动）、计量与兜底
 package llm
 
 import (

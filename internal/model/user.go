@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -11,21 +12,21 @@ import (
 // User 系统用户表
 // SaaS 化改造：指向 tenant_users 表，sys_users 已废弃。
 type User struct {
-	ID           uint      `gorm:"primaryKey" json:"id"`
-	Username     string    `gorm:"size:50;uniqueIndex;not null" json:"username"` // 用户名
-	PasswordHash string    `gorm:"size:255;not null" json:"-"`                   // 密码哈希（不返回给前端）
-	RealName     string    `gorm:"size:50" json:"real_name"`                     // 真实姓名
-	Role         string    `gorm:"size:20;not null;default:sales" json:"role"`   // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
-	Phone        string    `gorm:"size:20" json:"phone"`                         // 手机号
-	Email        string    `gorm:"size:100" json:"email"`                        // 邮箱
-	Avatar       string    `gorm:"size:255" json:"avatar"`                       // 头像URL
-	Status       int       `gorm:"default:1" json:"status"`                      // 状态: 1-正常 0-禁用
-	MustChangePassword bool  `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
-	Department   string    `gorm:"size:50" json:"department"`                    // 部门
-	TenantID     *uint     `gorm:"index" json:"-"`                               // 租户ID，NULL=超级管理员，非NULL=某租户下用户
-	DepartmentID *uint     `gorm:"index" json:"department_id"`                   // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID                 uint      `gorm:"primaryKey" json:"id"`
+	Username           string    `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名
+	PasswordHash       string    `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
+	RealName           string    `gorm:"size:50" json:"real_name"`                                              // 真实姓名
+	Role               string    `gorm:"size:20;not null;default:sales" json:"role"`                            // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+	Phone              string    `gorm:"size:20" json:"phone"`                                                  // 手机号
+	Email              string    `gorm:"size:100" json:"email"`                                                 // 邮箱
+	Avatar             string    `gorm:"size:255" json:"avatar"`                                                // 头像URL
+	Status             int       `gorm:"default:1" json:"status"`                                               // 状态: 1-正常 0-禁用
+	MustChangePassword bool      `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
+	Department         string    `gorm:"size:50" json:"department"`                                             // 部门
+	TenantID           *uint     `gorm:"index" json:"-"`                                                        // 租户ID，NULL=超级管理员，非NULL=某租户下用户
+	DepartmentID       *uint     `gorm:"index" json:"department_id"`                                            // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 // TableName 指定表名

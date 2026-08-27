@@ -1,3 +1,4 @@
+// 邮箱验证码接口：注册发码/换绑发码/换绑完成（防枚举、防薅、Turnstile 前置）
 package api
 
 import (
@@ -46,16 +47,21 @@ func SendRegisterEmailCode(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "当前未开启邮箱验证"})
 		return
 	}
-	// 已被占用的邮箱拒绝再发（防枚举已有账号+防抢占）
+	// 防枚举（J6）：已注册邮箱不返回冲突，统一返回“成功”且不发码，
+	// 攻击者无法借响应差异判断某邮箱是否已注册，杜绝邮箱枚举
 	var dup int64
 	db.DB.Model(&model.User{}).Where("email = ?", service.NormalizeEmail(req.Email)).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换或直接登录"})
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"message": "若该邮箱可注册，验证码将发送至该邮箱（10分钟内有效）",
+		})
 		return
 	}
 	if err := service.SendEmailCode(req.Email, model.EmailPurposeRegister, c.ClientIP()); err != nil {
 		status := http.StatusInternalServerError
 		msg := err.Error()
+		// 按 service 层错误消息前缀判定限流/格式错误类型（约定式，非结构化错误码）
 		if msg[:6] == "发送太频" || msg[:12] == "今日验证码发送" || msg[:6] == "邮箱格式" {
 			status = http.StatusTooManyRequests
 			if msg[:6] == "邮箱格式" {
@@ -81,6 +87,12 @@ func SendBindEmailCode(c *gin.Context) {
 	}
 	newEmail := service.NormalizeEmail(req.NewEmail)
 	uid, _, _ := middleware.CurrentUser(c)
+
+	// L5修复(2026-08-27)：与注册发码路径对齐，关闭邮箱验证时换绑链路同样禁用
+	if !service.EmailVerifyEnabled() {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "当前未开启邮箱验证"})
+		return
+	}
 
 	// 新邮箱不得与他人/自己现有绑定冲突
 	var dup int64

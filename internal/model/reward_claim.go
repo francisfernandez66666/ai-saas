@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 // ============================================================
@@ -20,10 +21,10 @@ import (
 // RewardClaim 奖励领取记录
 type RewardClaim struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`
-	GrantType string    `gorm:"size:30;index:idx_reward_type" json:"grant_type"`   // signup_trial / referral_signup / referral_paid
-	TenantID  uint      `gorm:"index" json:"tenant_id"`                            // 受益账户
-	Email     string    `gorm:"size:100;index:idx_reward_email" json:"email"`      // 参与邮箱（外键维度；内测态可空）
-	RefID     *uint     `gorm:"index" json:"ref_id"`                               // 关联对方（受邀人ID）——referral类防重锚
+	GrantType string    `gorm:"size:30;index:idx_reward_type" json:"grant_type"` // signup_trial / referral_signup / referral_paid
+	TenantID  uint      `gorm:"index" json:"tenant_id"`                          // 受益账户
+	Email     string    `gorm:"size:100;index:idx_reward_email" json:"email"`    // 参与邮箱（外键维度；内测态可空）
+	RefID     *uint     `gorm:"index" json:"ref_id"`                             // 关联对方（受邀人ID）——referral类防重锚
 	Note      string    `gorm:"size:255" json:"note"`
 	CreatedAt time.Time `json:"created_at"`
 }

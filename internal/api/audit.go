@@ -1,5 +1,8 @@
 package api
 
+// 审计日志查询API：超管全平台(SuperAuditLogs)与租户本租户(AdminAuditLogs)的只读分页查询。
+// 只读不写审计，避免自我激励写入死循环。
+
 import (
 	"net/http"
 	"strconv"
@@ -31,10 +34,10 @@ type auditLogRow struct {
 }
 
 type auditQueryResult struct {
-	Total    int64          `json:"total"`
-	Page     int            `json:"page"`
-	PageSize int            `json:"page_size"`
-	List     []auditLogRow  `json:"list"`
+	Total    int64         `json:"total"`
+	Page     int           `json:"page"`
+	PageSize int           `json:"page_size"`
+	List     []auditLogRow `json:"list"`
 }
 
 // queryAuditLogs 审计查询公共实现（分页 + action/from/to 筛选）

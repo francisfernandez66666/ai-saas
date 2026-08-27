@@ -1,9 +1,17 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
 	"time"
 )
 
+// ============================================================
+// 试驾预约模型 - 客户到店试驾的预约与结果记录
+// 已留资/到店客户由顾问或 AI 协助预约试驾；结果反馈供转化分析
+// ============================================================
+
+// TestDrive 试驾预约表
+// TenantID 租户归属：SaaS 多租户隔离（fail-closed），读取经 db.RQ(c) 自动带 tenant_id 过滤
 type TestDrive struct {
 	ID           uint      `gorm:"primaryKey" json:"id"`
 	TenantID     uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
@@ -21,6 +29,7 @@ type TestDrive struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// TableName 指定表名
 func (TestDrive) TableName() string {
 	return "test_drives"
 }

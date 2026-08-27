@@ -1,5 +1,8 @@
 package api
 
+// 租户自定义知识库API（P2双层KB）：企业自有资料上传(自动切片入库)、本租户片段查询与删除。
+// 复用knowledge_fragments(category=企业知识,tenant盖章私有)，上传/删除后触发知识缓存Reload多实例广播。
+
 // ============================================================
 // 租户自定义知识库（P2 双层KB，2026-08-26）
 //
@@ -78,7 +81,9 @@ func splitKBChunks(content string) []string {
 }
 
 // isHanOrWord 判断是否值得参与关键词的字符
-func isHanOrWord(r rune) bool { return unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r) }
+func isHanOrWord(r rune) bool {
+	return unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r)
+}
 
 // TenantKBUpload POST /api/v1/admin/kb/upload
 func TenantKBUpload(c *gin.Context) {

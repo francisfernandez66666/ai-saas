@@ -1,3 +1,4 @@
+// 组织上下文与 KB 可见域：角色/部门实时加载、双层缓存、召回继承链解析。
 package service
 
 import (
@@ -195,10 +196,10 @@ func DeptChainForUser(userID uint) []uint {
 
 // RecallScope 召回可见域：三级包自底向上继承 + 可选跨部门回退
 type RecallScope struct {
-	OwnDepts   map[uint]bool          // ①链内部门（自身→祖先）
-	CrossDepts map[uint]bool          // ④跨部门候选（策略开∧包共享才进入）
-	CrossTags  map[uint]string        // deptID → 「🌐跨部门·来自X部门库」打标文案
-	Distances  map[uint]int           // 链内距离（0=本部门，参数类就近覆盖 P2 用）
+	OwnDepts   map[uint]bool   // ①链内部门（自身→祖先）
+	CrossDepts map[uint]bool   // ④跨部门候选（策略开∧包共享才进入）
+	CrossTags  map[uint]string // deptID → 「🌐跨部门·来自X部门库」打标文案
+	Distances  map[uint]int    // 链内距离（0=本部门，参数类就近覆盖 P2 用）
 }
 
 // ResolveRecallScope 解析指定顾问部门链的召回可见域

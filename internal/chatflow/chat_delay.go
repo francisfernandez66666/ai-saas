@@ -1,3 +1,4 @@
+// Package chatflow 聊天流模块：延迟取消/留资检测与 OneID 合并/会话状态维护/业务驱动消费
 package chatflow
 
 import (
@@ -62,6 +63,7 @@ func CancelDelay(customerID uint) {
 // GetConversationMutex 获取客户级别的会话创建互斥锁
 // 同一客户共享一把锁，不同客户互不阻塞
 func GetConversationMutex(customerID uint) *sync.Mutex {
+	// 函数级会话互斥表（每次调用新建，作用于本次获取流程，不同客户互不阻塞）
 	var conversationMu sync.Map // key: customerID(uint), value: *sync.Mutex
 
 	mu, _ := conversationMu.LoadOrStore(customerID, &sync.Mutex{})

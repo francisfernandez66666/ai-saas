@@ -22,14 +22,16 @@ import (
 	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/strategy"
-	"ai-scrm/internal/mq"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 	statemachine "ai-scrm/internal/state_machine"
 )
 
 // OrchestrateReply 编排层统一话术入口（业务层唯一合法的大脑调用通道）
 // 职责：解析 OneID → 刷新状态表心跳（真实活动）→ 拉 CDP 标签摘要注入决策上下文
-//       → 单线调用策略引擎生成话术 → 返回
+//
+//	→ 单线调用策略引擎生成话术 → 返回
+//
 // 输入输出签名与 strategy.GenerateReply 完全一致，调用点零成本切换
 func (e *Engine) OrchestrateReply(customer *model.Customer, conversationID uint, userInput string, out *strategy.StrategyOutput, deptIDs []uint) string {
 	tid := customer.TenantID
@@ -142,8 +144,8 @@ func StartOrchestrationConsumers() {
 			return nil
 		}
 		flowCtx := &FlowContext{
-			TenantID:      inst.TenantID,
-			CustomerID:    inst.CustomerID,
+			TenantID:       inst.TenantID,
+			CustomerID:     inst.CustomerID,
 			ConversationID: inst.ConversationID,
 		}
 		newInst, err := DefaultEngine.AdvanceFlow(inst.ID, evt.Result, flowCtx)

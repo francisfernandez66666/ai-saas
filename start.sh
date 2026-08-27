@@ -8,7 +8,12 @@
 
 PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BINARY="$PROJECT_DIR/ai-scrm"
+# L6修复(2026-08-27)：启动端口读 .env 的 SERVER_PORT，缺省 8080（避免硬编码与 .env 不一致）
 PORT=8080
+if [ -f "$PROJECT_DIR/.env" ]; then
+  ENV_PORT=$(grep -E '^[[:space:]]*SERVER_PORT=' "$PROJECT_DIR/.env" | head -1 | cut -d= -f2 | tr -d ' "')
+  [ -n "$ENV_PORT" ] && PORT="$ENV_PORT"
+fi
 LOG_FILE="$PROJECT_DIR/ai-scrm.log"
 PID_FILE="$PROJECT_DIR/.pid"
 

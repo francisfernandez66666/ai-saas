@@ -1,3 +1,4 @@
+// 打标服务：手动/自动打标、标签权重累加、打标驱动 T 向量策略。
 package service
 
 import (

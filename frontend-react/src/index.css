@@ -1,0 +1,18 @@
+/* Tailwind 三件套指令；下方 :root 注入品牌主色，覆盖 TDesign React 默认主题变量 */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 品牌主题（原 Vue --pri:#4f46e5）。统一注入 TDesign 与全局主色 */
+:root {
+  --pri: #4f46e5;
+  --pri-ink: #ffffff;
+  /* TDesign React 主题变量（覆盖默认蓝为品牌紫） */
+  --td-brand-color: #4f46e5;
+  --td-brand-color-hover: #6366f1;
+  --td-brand-color-active: #4338ca;
+  --td-brand-color-light: #eef2ff;
+  --td-brand-color-light-hover: #e0e7ff;
+  --td-brand-color-focus: #c7d2fe;
+  --td-brand-color-disabled: #c7d2fe;
+}

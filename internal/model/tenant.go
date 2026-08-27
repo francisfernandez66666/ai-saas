@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -12,56 +13,58 @@ import (
 // Tenant 租户表
 // SaaS 化改造：系统层一等实体，非业务字段，而是整个系统的组织单元
 type Tenant struct {
-	ID                 uint            `gorm:"primaryKey" json:"id"`                                    // 主键
-	Name               string          `gorm:"size:100;not null" json:"name"`                           // 企业/个人名称
-	Code               string          `gorm:"size:50;uniqueIndex;not null" json:"code"`                // 子域名标识，注册后不可改
-	CustomDomain       *string         `gorm:"size:200;uniqueIndex" json:"custom_domain"`               // 白标自定义域名（指针：NULL可多条，唯一索引不冲突）
-	Tier               string          `gorm:"size:20;default:personal" json:"tier"`                    // 版本：personal/enterprise/custom
-	PlanID             uint            `gorm:"index;default:0" json:"plan_id"`                          // 当前套餐ID
-	LogoURL            string          `gorm:"size:255" json:"logo_url"`                                // 白标 logo
-	FaviconURL         string          `gorm:"size:255" json:"favicon_url"`                             // 浏览器图标
-	PrimaryColor       string          `gorm:"size:7" json:"primary_color"`                             // 主题色 #hex
-	SecondaryColor     string          `gorm:"size:7" json:"secondary_color"`                           // 辅助色
-	ContactName        string          `gorm:"size:50" json:"contact_name"`                             // 联系人
-	ContactPhone       string          `gorm:"size:20" json:"contact_phone"`                            // 联系手机
-	ContactEmail       string          `gorm:"size:100" json:"contact_email"`                           // 联系邮箱
-	Industry           string          `gorm:"size:50" json:"industry"`                                 // 行业
-	Scale              string          `gorm:"size:20" json:"scale"`                                    // 规模：个人/小型/中型/大型
-	TrialStartAt       *time.Time      `json:"trial_start_at"`                                          // 试用开始
-	TrialEndAt         *time.Time      `json:"trial_end_at"`                                            // 试用结束
-	SubscribedAt       *time.Time      `json:"subscribed_at"`                                           // 首次订阅时间
-	ExpiredAt          *time.Time      `json:"expired_at"`                                              // 当前套餐到期时间
-	GracePeriodEndAt   *time.Time      `json:"grace_period_end_at"`                                     // 宽限期截止
-	MaxUsers           int             `json:"max_users"`                                               // 配额：最大用户数
-	MaxCustomers       int             `json:"max_customers"`                                           // 配额：最大客户数
-	MaxDepartments     int             `json:"max_departments"`                                         // 配额：最大部门数
-	MaxAICalls         int             `gorm:"column:max_ai_calls_monthly" json:"max_ai_calls_monthly"` // 配额：每月 AI 调用次数
-	MaxStorageMB       int             `json:"max_storage_mb"`                                          // 配额：存储空间 MB
-	MaxKnowledgeBrands int             `json:"max_knowledge_brands"`                                    // 配额：品牌数
-	MaxKnowledgeModels int             `json:"max_knowledge_models"`                                    // 配额：车型数
-	UsedAICalls        int             `gorm:"column:used_ai_calls" json:"used_ai_calls"`               // 当月已用 AI 调用数
-	AICallBalance      int             `gorm:"column:ai_call_balance" json:"ai_call_balance"`           // AI增量包余额（买断资产，不随月重置，商业化M2）
+	ID                 uint       `gorm:"primaryKey" json:"id"`                                    // 主键
+	Name               string     `gorm:"size:100;not null" json:"name"`                           // 企业/个人名称
+	Code               string     `gorm:"size:50;uniqueIndex;not null" json:"code"`                // 子域名标识，注册后不可改
+	CustomDomain       *string    `gorm:"size:200;uniqueIndex" json:"custom_domain"`               // 白标自定义域名（指针：NULL可多条，唯一索引不冲突）
+	Tier               string     `gorm:"size:20;default:personal" json:"tier"`                    // 版本：personal/enterprise/custom
+	PlanID             uint       `gorm:"index;default:0" json:"plan_id"`                          // 当前套餐ID
+	LogoURL            string     `gorm:"size:255" json:"logo_url"`                                // 白标 logo
+	FaviconURL         string     `gorm:"size:255" json:"favicon_url"`                             // 浏览器图标
+	BrandName          string     `gorm:"size:100" json:"brand_name"`                              // 自定义显示品牌名（白标）
+	BrandLink          string     `gorm:"size:255" json:"brand_link"`                              // 品牌外链（点击品牌名跳转）
+	PrimaryColor       string     `gorm:"size:7" json:"primary_color"`                             // 主题色 #hex
+	SecondaryColor     string     `gorm:"size:7" json:"secondary_color"`                           // 辅助色
+	ContactName        string     `gorm:"size:50" json:"contact_name"`                             // 联系人
+	ContactPhone       string     `gorm:"size:20" json:"contact_phone"`                            // 联系手机
+	ContactEmail       string     `gorm:"size:100" json:"contact_email"`                           // 联系邮箱
+	Industry           string     `gorm:"size:50" json:"industry"`                                 // 行业
+	Scale              string     `gorm:"size:20" json:"scale"`                                    // 规模：个人/小型/中型/大型
+	TrialStartAt       *time.Time `json:"trial_start_at"`                                          // 试用开始
+	TrialEndAt         *time.Time `json:"trial_end_at"`                                            // 试用结束
+	SubscribedAt       *time.Time `json:"subscribed_at"`                                           // 首次订阅时间
+	ExpiredAt          *time.Time `json:"expired_at"`                                              // 当前套餐到期时间
+	GracePeriodEndAt   *time.Time `json:"grace_period_end_at"`                                     // 宽限期截止
+	MaxUsers           int        `json:"max_users"`                                               // 配额：最大用户数
+	MaxCustomers       int        `json:"max_customers"`                                           // 配额：最大客户数
+	MaxDepartments     int        `json:"max_departments"`                                         // 配额：最大部门数
+	MaxAICalls         int        `gorm:"column:max_ai_calls_monthly" json:"max_ai_calls_monthly"` // 配额：每月 AI 调用次数
+	MaxStorageMB       int        `json:"max_storage_mb"`                                          // 配额：存储空间 MB
+	MaxKnowledgeBrands int        `json:"max_knowledge_brands"`                                    // 配额：品牌数
+	MaxKnowledgeModels int        `json:"max_knowledge_models"`                                    // 配额：车型数
+	UsedAICalls        int        `gorm:"column:used_ai_calls" json:"used_ai_calls"`               // 当月已用 AI 调用数
+	AICallBalance      int        `gorm:"column:ai_call_balance" json:"ai_call_balance"`           // AI增量包余额（买断资产，不随月重置，商业化M2）
 	// ---- Token 三桶（P1.5 Token统一计费 + M-R 邀请推广，2026-08-25）----
 	// 扣减优先级（P1.5 生效）：③免费体验桶(未过期) → ①月度订阅额度(月底清零) → ②预充值余额(永久) → 降级规则话术
-	MonthlyTokenQuota  int64           `gorm:"default:0" json:"monthly_token_quota"`                    // ①月度订阅额度(paid套餐)：每月发放
-	MonthlyTokenUsed   int64           `gorm:"default:0" json:"monthly_token_used"`                     // ①当月已用（月底随重置清零）
-	TokenBalance       int64           `gorm:"default:0" json:"token_balance"`                          // ②预充值余额：付费充值包 + 永久邀请奖励，买断不过期
-	FreeTokenBalance   int64           `gorm:"default:0" json:"free_token_balance"`                     // ③免费体验桶：注册赠送 + 邀请注册奖励，有有效期
-	FreeTokenExpiresAt *time.Time      `json:"free_token_expires_at"`                                   // ③到期时间（邀请叠加顺延；过期后整桶不可用）
+	MonthlyTokenQuota  int64      `gorm:"default:0" json:"monthly_token_quota"` // ①月度订阅额度(paid套餐)：每月发放
+	MonthlyTokenUsed   int64      `gorm:"default:0" json:"monthly_token_used"`  // ①当月已用（月底随重置清零）
+	TokenBalance       int64      `gorm:"default:0" json:"token_balance"`       // ②预充值余额：付费充值包 + 永久邀请奖励，买断不过期
+	FreeTokenBalance   int64      `gorm:"default:0" json:"free_token_balance"`  // ③免费体验桶：注册赠送 + 邀请注册奖励，有有效期
+	FreeTokenExpiresAt *time.Time `json:"free_token_expires_at"`                // ③到期时间（邀请叠加顺延；过期后整桶不可用）
 	// ---- 邀请推广（M-R，2026-08-25）：多邀多得、单邀单个 ----
-	InviteCode         string          `gorm:"size:12;uniqueIndex" json:"invite_code"`                  // 邀请码（signup 时生成；存量租户首次调用 EnsureInviteCode 补发）
-	InvitedByTenantID  *uint           `gorm:"index" json:"invited_by_tenant_id"`                       // 邀请人租户ID——首绑唯一：仅注册时写入一次，重复邀请无效
-	ReferralPaidRewarded bool          `gorm:"default:false" json:"referral_paid_rewarded"`             // 该受邀租户的首笔 paid 套餐奖励已发放给邀请人（幂等闸门）
-	UsedCustomers      int             `json:"used_customers"`                                          // 当前客户总数
-	UsedStorageBytes   int64           `json:"used_storage_bytes"`                                      // 当前存储占用
-	UsageResetAt       *time.Time      `json:"usage_reset_at"`                                          // 用量重置时间（每月 1 日）
-	Status             string          `gorm:"size:20;default:active" json:"status"`                    // 状态：trial/active/suspended/expired/cancelled
-	CancelAt           *time.Time      `json:"cancel_at"`                                               // 账号注销申请时间（P4：次日零点生效禁登录；数据保留）
-	FeaturesOverride   json.RawMessage `json:"features_override"`                                       // 功能覆盖（定制版额外开关）
-	WhiteLabelConfig   json.RawMessage `json:"white_label_config"`                                      // 白标配置 JSON（站点名、CSS、脚本等）
-	CreatedAt          time.Time       `json:"created_at"`                                              // 创建时间
-	UpdatedAt          time.Time       `json:"updated_at"`                                              // 更新时间
-	DeletedAt          *time.Time      `json:"deleted_at"`                                              // 软删除
+	InviteCode           string          `gorm:"size:12;uniqueIndex" json:"invite_code"`      // 邀请码（signup 时生成；存量租户首次调用 EnsureInviteCode 补发）
+	InvitedByTenantID    *uint           `gorm:"index" json:"invited_by_tenant_id"`           // 邀请人租户ID——首绑唯一：仅注册时写入一次，重复邀请无效
+	ReferralPaidRewarded bool            `gorm:"default:false" json:"referral_paid_rewarded"` // 该受邀租户的首笔 paid 套餐奖励已发放给邀请人（幂等闸门）
+	UsedCustomers        int             `json:"used_customers"`                              // 当前客户总数
+	UsedStorageBytes     int64           `json:"used_storage_bytes"`                          // 当前存储占用
+	UsageResetAt         *time.Time      `json:"usage_reset_at"`                              // 用量重置时间（每月 1 日）
+	Status               string          `gorm:"size:20;default:active" json:"status"`        // 状态：trial/active/suspended/expired/cancelled
+	CancelAt             *time.Time      `json:"cancel_at"`                                   // 账号注销申请时间（P4：次日零点生效禁登录；数据保留）
+	FeaturesOverride     json.RawMessage `json:"features_override"`                           // 功能覆盖（定制版额外开关）
+	WhiteLabelConfig     json.RawMessage `json:"white_label_config"`                          // 白标配置 JSON（站点名、CSS、脚本等）
+	CreatedAt            time.Time       `json:"created_at"`                                  // 创建时间
+	UpdatedAt            time.Time       `json:"updated_at"`                                  // 更新时间
+	DeletedAt            *time.Time      `json:"deleted_at"`                                  // 软删除
 }
 
 // TableName 指定表名
@@ -209,18 +212,22 @@ type MessageEvent struct {
 func (ApiKey) TableName() string {
 	return "api_keys"
 }
+
 // TableName 指定表名：billing_orders
 func (BillingOrder) TableName() string {
 	return "billing_orders"
 }
+
 // TableName 指定表名：usage_records
 func (UsageRecord) TableName() string {
 	return "usage_records"
 }
+
 // TableName 指定表名：tenant_audit_logs
 func (TenantAuditLog) TableName() string {
 	return "tenant_audit_logs"
 }
+
 // TableName 指定表名：message_events
 func (MessageEvent) TableName() string {
 	return "message_events"

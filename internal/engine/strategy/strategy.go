@@ -82,6 +82,7 @@ func (e *Engine) LoadData() {
 //   - DepartmentID 非空为部门专属内容（部门包物化）→ 仅当 deptIDs 含该部门时可见
 //     （deptIDs = 顾问所属部门的完整继承链：自身→父→…→根，自底向上查起语义）
 //   - 入参 tenantId=0 时 fail-closed 只见预置
+//
 // templatesForTenant 三集合过滤（租户隔离 + KB继承链可见域）
 func templatesForTenant(all []model.Template, tenantID uint, scope *service.RecallScope) []model.Template {
 	filtered := make([]model.Template, 0, len(all))

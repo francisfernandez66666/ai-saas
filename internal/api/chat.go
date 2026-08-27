@@ -1,5 +1,8 @@
 package api
 
+// 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
+// 含会话竞态保护、三层分流(硬边界/到店快速通道/简单消息)、合并队列、延迟清零、留资检测与OneID合并。
+
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
@@ -414,7 +417,7 @@ func Chat(c *gin.Context) {
 					}
 				}
 			}
-			log.Printf("[到店倾向-已留资线索] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
+			log.Printf("[到店倾向-已留资线索][留资检测] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
 				customer.ID, phoneMatch, customer.AssignedUserID)
 
 			// P3：到店分支留资事件上行（与 DetectLeadCapture 主路径埋点对齐）
@@ -566,6 +569,8 @@ skipStoreVisitFast:
 
 	// 修复：简单消息（"在吗"/"那我撤了"等）直接走快速回复，20-45秒随机延迟
 	if isSimple {
+		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
+		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
 		// 修复问题2：instant模式下简单消息跳过延迟直接回复
 		replyDelayModeSimple := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 		if replyDelayModeSimple != "instant" {
@@ -677,7 +682,7 @@ skipStoreVisitFast:
 		JourneyStage:   customer.JourneyStage,
 		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
 		// 三级包架构：归属顾问的部门继承链（未指派=C端纯租户语境，只见行业+企业层）
-		DeptIDs:        service.DeptChainForUser(conversation.AssignedUserID),
+		DeptIDs: service.DeptChainForUser(conversation.AssignedUserID),
 	}
 
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
@@ -1454,6 +1459,8 @@ skipStoreVisitFastTest:
 	// cachedReply 不再使用（Bug 1 修复后 merged 请求只返回状态标记）
 	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
 	if isSimple {
+		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
+		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
 		// 修复问题2：instant模式下简单消息跳过延迟直接回复
 		replyDelayMode := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 		if replyDelayMode != "instant" {
@@ -1701,7 +1708,7 @@ skipStoreVisitFastTest:
 		JourneyStage:   customer.JourneyStage,
 		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
 		// 三级包架构：归属顾问的部门继承链（未指派=C端纯租户语境，只见行业+企业层）
-		DeptIDs:        service.DeptChainForUser(conversation.AssignedUserID),
+		DeptIDs: service.DeptChainForUser(conversation.AssignedUserID),
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
@@ -2006,6 +2013,9 @@ func Welcome(c *gin.Context) {
 // POST /api/v1/chat/guest
 // publishConversationMsg 发布会话消息事件（缺口4修复，2026-08-22）
 // 激活 CDP beh_msg_active 标签；注意：聊天内容不送 CDP（SAAS_PLAN §15.4 边界），只传事件事实
+// publishConversationMsg 发布会话消息事件（缺口4修复，2026-08-22）
+// 激活 CDP beh_msg_active 标签；聊天内容不送 CDP（SAAS_PLAN §15.4 边界），只传事件事实。
+// 入参：tenantID 生效租户、customerID 客户、route 路由结果，供CDP按事件聚合。
 func publishConversationMsg(tenantID uint, customerID uint, route string) {
 	if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
 		fmt.Sprintf("c:%d", customerID), "conversation_msg",

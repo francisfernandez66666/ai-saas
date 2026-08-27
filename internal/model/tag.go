@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -13,13 +14,13 @@ import (
 // Tag 标签表
 type Tag struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
-	TenantID    uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（0=系统预置，全租户可见；>0=租户私有）SaaS多租户隔离
-	Name        string    `gorm:"size:50;uniqueIndex;not null" json:"name"`  // 标签名称
-	Code        string    `gorm:"size:50;uniqueIndex" json:"code"`           // 标签编码
-	Category    string    `gorm:"size:30" json:"category"`                   // 分类: 意向/属性/行为/来源等
-	Weight      float64   `gorm:"default:1.0" json:"weight"`                 // 标签权重
-	Description string    `gorm:"size:255" json:"description"`               // 描述
-	Status      int       `gorm:"default:1" json:"status"`                   // 状态
+	TenantID    uint      `gorm:"not null;default:0;uniqueIndex:idx_tag_tenant_name;uniqueIndex:idx_tag_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置，全租户可见；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
+	Name        string    `gorm:"size:50;uniqueIndex:idx_tag_tenant_name;not null" json:"name"`                                        // 标签名称（租户级唯一）
+	Code        string    `gorm:"size:50;uniqueIndex:idx_tag_tenant_code" json:"code"`                                                 // 标签编码（租户级唯一）
+	Category    string    `gorm:"size:30" json:"category"`                                                                             // 分类: 意向/属性/行为/来源等
+	Weight      float64   `gorm:"default:1.0" json:"weight"`                                                                           // 标签权重
+	Description string    `gorm:"size:255" json:"description"`                                                                         // 描述
+	Status      int       `gorm:"default:1" json:"status"`                                                                             // 状态
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }

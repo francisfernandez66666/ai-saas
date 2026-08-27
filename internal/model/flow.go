@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -26,10 +27,10 @@ const (
 // FlowDefinition 流程定义表
 type FlowDefinition struct {
 	ID          uint   `gorm:"primaryKey" json:"id"`
-	TenantID    uint   `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（0=系统预置流程；>0=租户私有）SaaS多租户隔离
-	Name        string `gorm:"size:100;not null" json:"name"`             // 流程名称
-	Code        string `gorm:"size:50;uniqueIndex" json:"code"`           // 流程编码
-	Description string `gorm:"size:255" json:"description"`               // 描述
+	TenantID    uint   `gorm:"not null;default:0;uniqueIndex:idx_flow_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置流程；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
+	Name        string `gorm:"size:100;not null" json:"name"`                                        // 流程名称
+	Code        string `gorm:"size:50;uniqueIndex:idx_flow_tenant_code" json:"code"`                 // 流程编码（租户级唯一）
+	Description string `gorm:"size:255" json:"description"`                                          // 描述
 	// NodesJSON 节点定义JSON数组
 	// 每个节点: {id, type, name, config, next_nodes}
 	NodesJSON string `gorm:"column:nodes;type:text" json:"nodes_json"`

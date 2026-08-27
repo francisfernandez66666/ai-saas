@@ -1,5 +1,8 @@
 package api
 
+// 后台系统配置管理API：查询/批量更新/恢复默认/强制初始化/可用模型列表/租户配置回滚。
+// 平台级键(pay_mode/billing_enforced等)仅super_admin可改且强制写系统默认层，其余写租户覆盖层。
+
 import (
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/config_center"
@@ -115,6 +118,9 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 		}
 	}
 
+	// K7修复(2026-08-27)：跨实例广播配置变更，其他实例收到后本地重载
+	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
+
 	c.JSON(http.StatusOK, schema.Response{
 		Code:    0,
 		Message: "更新成功，已热加载到内存",
@@ -134,6 +140,9 @@ func ResetSystemConfig(c *gin.Context) {
 		})
 		return
 	}
+
+	// K7修复(2026-08-27)：跨实例广播配置变更
+	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
 	c.JSON(http.StatusOK, schema.Response{
 		Code:    0,
@@ -159,6 +168,9 @@ func ForceInitSystemConfig(c *gin.Context) {
 		})
 		return
 	}
+
+	// K7修复(2026-08-27)：跨实例广播配置变更
+	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
 	c.JSON(http.StatusOK, schema.Response{
 		Code:    0,

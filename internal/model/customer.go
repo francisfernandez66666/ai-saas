@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -40,7 +41,7 @@ type Customer struct {
 	Tags             string    `gorm:"type:text" json:"tags"`                             // 标签列表(JSON数组)
 	TVectorJSON      string    `gorm:"column:t_vector;type:text" json:"t_vector_json"`    // T向量原始JSON(32维)
 	Remark           string    `gorm:"type:text" json:"remark"`                           // 备注
-	AssignedUserID   uint      `json:"assigned_user_id"`                                  // 归属销售ID
+	AssignedUserID   uint      `gorm:"index" json:"assigned_user_id"`                     // 归属销售ID（J13-2026-08-27 补索引，支撑数据范围分级查询）
 	TenantID         uint      `gorm:"default:0;index" json:"-"`                          // 租户ID，0=超级管理员全局可见，非0=某租户隔离
 	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
 	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效

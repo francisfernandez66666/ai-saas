@@ -1,3 +1,4 @@
+// 客户管理 CRUD：分页筛选、SaaS 配额上限、T 向量初始化、软删除
 package api
 
 import (
@@ -124,6 +125,7 @@ func CreateCustomer(c *gin.Context) {
 	}
 
 	// 设置默认初始值
+	// 新客默认值：意向分 0.2 / 信任度 0.3 / 价格敏感度 0.5（模型初始基线）
 	if customer.IntentScore == 0 {
 		customer.IntentScore = 0.2
 	}

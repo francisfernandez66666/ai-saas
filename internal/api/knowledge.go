@@ -1,5 +1,8 @@
 package api
 
+// 车型品牌知识库API：管理端品牌/车型/规格/竞品对比/知识片段的CRUD与删除后缓存热更新，
+// 客户端品牌/车型/详情/竞品对比/知识搜索（读缓存DefaultKnowledgeCache）。
+
 import (
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/db"

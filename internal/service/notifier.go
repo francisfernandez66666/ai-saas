@@ -1,3 +1,4 @@
+// 通知触达：重置码/验证码邮件通道（log/SMTP）+ 企微/钉钉群机器人推送。
 package service
 
 import (
@@ -92,9 +93,9 @@ func NewSMTPSenderFromEnv() *SMTPSender {
 // SendResetCode 实现：发验证码邮件
 // 双通道：587 STARTTLS（net/smtp 自动升级）/ 465 隐式TLS（tls.Dial 先握手）
 func (s *SMTPSender) SendResetCode(to string, code string) error {
-	subject := "AI-SCRM 密码重置验证码"
+	subject := "跨山 LexCross 密码重置验证码"
 	body := fmt.Sprintf(
-		"您正在重置 AI-SCRM 账号密码。\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。",
+		"您正在重置跨山 LexCross 账号密码。\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。",
 		code)
 	return sendMailTLS(s, []string{to}, subject, body)
 }
@@ -202,6 +203,7 @@ type wecomReq struct {
 	Markdown wecomMarkdown `json:"markdown"`
 }
 
+// wecomMarkdown 企微 markdown 消息正文（content 为 markdown 文本）
 type wecomMarkdown struct {
 	Content string `json:"content"`
 }
@@ -231,11 +233,13 @@ func NotifyWecom(content string) {
 }
 
 // dingtalkReq 钉钉机器人 markdown 消息体（格式与企微不同：title+text 双字段）
+// dingtalkReq 钉钉机器人消息体（msgtype 固定 markdown）
 type dingtalkReq struct {
 	MsgType  string           `json:"msgtype"`
 	Markdown dingtalkMarkdown `json:"markdown"`
 }
 
+// dingtalkMarkdown 钉钉 markdown 内容（title+text 双字段，与企微格式不同）
 type dingtalkMarkdown struct {
 	Title string `json:"title"`
 	Text  string `json:"text"`
@@ -253,7 +257,7 @@ func NotifyDingtalk(content string) {
 	go func() {
 		defer func() { _ = recover() }()
 		body, _ := json.Marshal(dingtalkReq{MsgType: "markdown",
-			Markdown: dingtalkMarkdown{Title: "AI-SCRM 通知", Text: content}})
+			Markdown: dingtalkMarkdown{Title: "跨山 LexCross 通知", Text: content}})
 		resp, err := httpClient.Post(url, "application/json", bytes.NewReader(body))
 		if err != nil {
 			log.Printf("[Dingtalk] 推送失败: %v", err)

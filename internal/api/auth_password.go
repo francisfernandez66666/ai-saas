@@ -1,3 +1,4 @@
+// 账号安全三件套：改密、首登强改密、重置密码去演示化（随机码+SHA256哈希+一次性+限频）
 package api
 
 import (
@@ -134,12 +135,17 @@ func SendResetCode(c *gin.Context) {
 	}
 
 	var user model.User
+	exists := true
 	if err := db.DB.Select("id, username, phone, email").Where("username = ?", req.Username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "用户不存在"})
-		return
+		exists = false
 	}
-	if strings.TrimSpace(user.Email) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "该账号未绑定邮箱，请联系管理员重置密码"})
+	// 防枚举（J6）：账号不存在或未绑定邮箱时，统一返回“成功”且不发码，
+	// 攻击者无法借响应差异判断某用户名是否注册，从而杜绝账号枚举
+	if !exists || strings.TrimSpace(user.Email) == "" {
+		c.JSON(http.StatusOK, gin.H{
+			"code":    0,
+			"message": "若该账号存在且已绑定邮箱，验证码将发送至其绑定邮箱（10分钟内有效）",
+		})
 		return
 	}
 

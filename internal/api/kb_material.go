@@ -1,5 +1,8 @@
 package api
 
+// 数据飞轮素材池管理API（P3）：素材列表、人工评审(approved/rejected/pending)、AI evals自动评分。
+// 两层评分互不干扰(human_score人工/ai_score自动)，入库以人工审核为准，approved且pack_code非空进入行业包。
+
 // ============================================================
 // 数据飞轮：素材池管理 + AI evals 评分（P3，2026-08-26）
 //
@@ -19,6 +22,7 @@ import (
 
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/llm"
 	"ai-scrm/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -54,10 +58,10 @@ func SuperMaterialList(c *gin.Context) {
 func SuperMaterialReview(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
-		Status     string  `json:"status" binding:"required"` // approved/rejected/pending
-		HumanScore *int    `json:"human_score"`
-		PackCode   string  `json:"pack_code"`
-		DealClosed *bool   `json:"deal_closed"`
+		Status     string `json:"status" binding:"required"` // approved/rejected/pending
+		HumanScore *int   `json:"human_score"`
+		PackCode   string `json:"pack_code"`
+		DealClosed *bool  `json:"deal_closed"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil ||
 		(req.Status != "approved" && req.Status != "rejected" && req.Status != "pending") {
@@ -98,7 +102,8 @@ func SuperMaterialEvals(c *gin.Context) {
 	prompt := "你是销售话术质量评估器。对下面这条汽车销售回复打分(0-5，支持一位小数)，并给出不超过50字的理由。" +
 		"评估维度：口语自然度、需求针对性、推进有效性。只输出 JSON：{\"score\":数字,\"note\":\"理由\"}\n\n回复内容：\n" + m.Content
 	messages := []ai.ChatMessage{{Role: "user", Content: prompt}}
-	reply, _, _, _, err := ai.Router.GenerateTextForStage("evals", messages, 0.2)
+	// H5修复(2026-08-27)：归位 llm 层唯一入口，按素材所属租户落 usage 计量，不计次配额
+	reply, err := llm.GenerateEvalsText(m.TenantID, messages, 0.2)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "evals 模型调用失败: " + err.Error()})
 		return

@@ -1,3 +1,4 @@
+// 系统配置中心：CRUD + 内存热加载、租户覆盖层、平台级键隔离。
 package service
 
 import (
@@ -135,9 +136,9 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "referral_paid_bonus_tokens", Value: "500000", ValueType: "int", Description: "受邀好友购买paid套餐首笔到账后，邀请人获永久token数(入②余额桶)；单受邀限一次", DefaultValue: "500000", SortOrder: 9},
 	// KB继承链改造（2026-08-26）：跨部门回退租户策略——租户级可调（非平台键）
 	{Category: "notify", Key: "feedback_collector_url", Value: "", ValueType: "string", Description: "数据飞轮回流collector地址(HTTPS,空=关闭)；调参行为/包操作审计增量每小时上报", DefaultValue: "", SortOrder: 11},
-		{Category: "billing", Key: "register_email_daily_limit", Value: "3", ValueType: "int", Description: "防薅v2：同一邮箱每日注册提交上限(生产态主锚；IP限流仅内测兜底)", DefaultValue: "3", SortOrder: 12},
-		{Category: "billing", Key: "token_billing_enabled", Value: "false", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "false", SortOrder: 10},
-		{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
+	{Category: "billing", Key: "register_email_daily_limit", Value: "3", ValueType: "int", Description: "防薅v2：同一邮箱每日注册提交上限(生产态主锚；IP限流仅内测兜底)", DefaultValue: "3", SortOrder: 12},
+	{Category: "billing", Key: "token_billing_enabled", Value: "false", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "false", SortOrder: 10},
+	{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// 注册试用包额度：新租户注册自动发放 free 包时的 AI 调用次数
 	{Category: "billing", Key: "trial_ai_calls", Value: "500", ValueType: "number", Description: "注册试用包AI调用次数(次)", DefaultValue: "500", SortOrder: 4},
 

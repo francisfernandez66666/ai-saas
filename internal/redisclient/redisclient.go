@@ -1,3 +1,4 @@
+// Package redisclient Redis 封装：分布式锁(看门狗续期)、KV/列表/版本戳、未启用时内存降级
 package redisclient
 
 import (
@@ -25,6 +26,7 @@ import (
 // 所有调用方走纯内存路径（单实例模式，行为与改造前一致）
 // ============================================================
 
+// rdb 全局 Redis 客户端（nil 表示未启用，所有方法自动降级为单实例内存路径）
 var rdb *redis.Client
 
 // instanceID 本实例标识（锁值，安全解锁用：只删自己的锁）

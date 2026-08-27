@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -25,15 +26,15 @@ const (
 type UsageLedger struct {
 	ID               uint      `gorm:"primaryKey" json:"id"`
 	TenantID         uint      `gorm:"index:idx_ul_tenant_time" json:"tenant_id"`
-	CustomerID       uint      `json:"customer_id"`                                 // 可0（平台内部调用）
-	UserID           uint      `json:"user_id"`                                     // 触发人（AI自动=0）
-	Stage            string    `gorm:"size:20" json:"stage"`                        // intent|strategy|reply|fallback
-	Provider         string    `gorm:"size:30" json:"provider"`                     // zhipu|siliconflow
-	Model            string    `gorm:"size:80" json:"model"`                        // 具体模型名
+	CustomerID       uint      `json:"customer_id"`             // 可0（平台内部调用）
+	UserID           uint      `json:"user_id"`                 // 触发人（AI自动=0）
+	Stage            string    `gorm:"size:20" json:"stage"`    // intent|strategy|reply|fallback
+	Provider         string    `gorm:"size:30" json:"provider"` // zhipu|siliconflow
+	Model            string    `gorm:"size:80" json:"model"`    // 具体模型名
 	PromptTokens     int       `json:"prompt_tokens"`
 	CompletionTokens int       `json:"completion_tokens"`
 	TotalTokens      int       `json:"total_tokens"`
-	CostMicro        int64     `json:"cost_micro"`                                  // 微元=total_tokens/1000×单价×markup（展示口径，不扣费）
+	CostMicro        int64     `json:"cost_micro"` // 微元=total_tokens/1000×单价×markup（展示口径，不扣费）
 	LatencyMs        int       `json:"latency_ms"`
 	CreatedAt        time.Time `gorm:"index:idx_ul_tenant_time" json:"created_at"`
 }

@@ -1,3 +1,4 @@
+// Package configcenter 系统配置中心：Seed/Upgrade/Rollback 生命周期与 tenant_cfg_event 热加载。
 package configcenter
 
 // ============================================================

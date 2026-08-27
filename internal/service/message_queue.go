@@ -1,3 +1,4 @@
+// 消息合并队列：25s 滑动窗口/batchID 防跨批/processing 锁 90s 自愈，多实例 Redis 协调。
 package service
 
 import (
@@ -48,6 +49,7 @@ type CustomerQueue struct {
 	lastReply           string                  // 最近一次生成的回复（用于后续请求直接取）
 	lastReplyAt         time.Time               // 最近回复时间（判断是否是本次合并的回复）
 	mergeCount          int                     // 当前合并批次已合并几条
+	simpleProcessing    bool                    // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
 	deadlineExpired     bool                    // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
 	currentBatch        uint64                  // 当前批次ID，每次新批次递增，防止跨批次消息混合
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
@@ -97,6 +99,16 @@ func (s *MessageQueueService) ActiveQueueCount() int {
 	return n
 }
 
+// SimpleMessageDone 简单消息处理完毕，释放同客户串行锁（H7）
+func (s *MessageQueueService) SimpleMessageDone(tenantID uint, customerID uint) {
+	k := queueKey(tenantID, customerID)
+	q := s.getQueue(k)
+	q.mu.Lock()
+	q.simpleProcessing = false
+	q.cond.Signal()
+	q.mu.Unlock()
+}
+
 // NewMessageQueueService 创建服务
 func NewMessageQueueService() *MessageQueueService {
 	return &MessageQueueService{
@@ -140,6 +152,14 @@ func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, con
 
 	// 简单消息快速通道（不合并、不等窗口；跨实例也不需要协调——它本来就不进批次）
 	if IsSimpleMessage(content) {
+		// H7修复(2026-08-26)：实例内同客户简单消息串行，防止并发乱序/重复回复
+		q := s.getQueue(k)
+		q.mu.Lock()
+		for q.simpleProcessing {
+			q.cond.Wait()
+		}
+		q.simpleProcessing = true
+		q.mu.Unlock()
 		log.Printf("[合并队列] 客户%s 简单消息快速通道: %q", k, content)
 		return content, true, "", 0, true, 1
 	}

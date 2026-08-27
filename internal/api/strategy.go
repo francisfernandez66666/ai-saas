@@ -1,5 +1,8 @@
 package api
 
+// 策略中心管理API：话术模板的列表/详情/增删改、卖点列表、锚类型统计与策略测试(StrategyTest)。
+// 模板变更后调用strategy.DefaultEngine.ReloadData()热加载；测试接口按租户/部门链召回模板与卖点。
+
 import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/strategy"
@@ -304,7 +307,7 @@ func StrategyTest(c *gin.Context) {
 		CustomerTags:   customerTags,
 		CustomerID:     customer.ID,
 		ConversationID: req.ConversationID,
-		TenantID:       customer.TenantID, // M1租户隔离修复：模板/卖点召回按此过滤
+		TenantID:       customer.TenantID,                          // M1租户隔离修复：模板/卖点召回按此过滤
 		DeptIDs:        service.DeptChainForUser(currentUserID(c)), // 三级包：当前用户部门链
 	}
 

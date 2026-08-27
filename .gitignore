@@ -24,10 +24,9 @@ CHANGES.diff
 *.part6
 backups/
 
-# ---- P-FE Vue 工程（构建产物与平台工程不入库，npx cap add 可再生）----
-frontend-app/node_modules/
-frontend-app/dist/
-frontend-app/android/
+# ---- P-FE React 工程（构建产物与依赖不入库）----
+frontend-react/node_modules/
+frontend-react/dist/
 
 # ---- 行业包密钥与打包产物（涉密/二进制）----
 keys/

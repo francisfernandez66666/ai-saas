@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -21,15 +22,15 @@ import (
 // Brand 品牌表
 type Brand struct {
 	ID          uint      `gorm:"primaryKey" json:"id"`
-	TenantID    uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（0=系统预置品牌；>0=租户私有）SaaS多租户隔离
-	Name        string    `gorm:"size:50;uniqueIndex;not null" json:"name"`  // 品牌名称
-	Code        string    `gorm:"size:30;uniqueIndex" json:"code"`           // 品牌编码
-	Logo        string    `gorm:"size:255" json:"logo"`                      // 品牌Logo URL
-	Description string    `gorm:"type:text" json:"description"`              // 品牌描述
-	Country     string    `gorm:"size:30" json:"country"`                    // 品牌所属国家
-	FoundedYear int       `json:"founded_year"`                              // 创立年份
-	Status      int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
-	Sort        int       `gorm:"default:0" json:"sort"`                     // 排序（数字越小越靠前）
+	TenantID    uint      `gorm:"not null;default:0;uniqueIndex:idx_brand_tenant_name;uniqueIndex:idx_brand_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置品牌；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
+	Name        string    `gorm:"size:50;uniqueIndex:idx_brand_tenant_name;not null" json:"name"`                                          // 品牌名称（租户级唯一）
+	Code        string    `gorm:"size:30;uniqueIndex:idx_brand_tenant_code" json:"code"`                                                   // 品牌编码（租户级唯一）
+	Logo        string    `gorm:"size:255" json:"logo"`                                                                                    // 品牌Logo URL
+	Description string    `gorm:"type:text" json:"description"`                                                                            // 品牌描述
+	Country     string    `gorm:"size:30" json:"country"`                                                                                  // 品牌所属国家
+	FoundedYear int       `json:"founded_year"`                                                                                            // 创立年份
+	Status      int       `gorm:"default:1;index" json:"status"`                                                                           // 状态: 1启用 0禁用
+	Sort        int       `gorm:"default:0" json:"sort"`                                                                                   // 排序（数字越小越靠前）
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 }
@@ -47,17 +48,17 @@ func (Brand) TableName() string {
 // CarModel 车型表
 type CarModel struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	TenantID   uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（0=系统预置车型；>0=租户私有）SaaS多租户隔离
-	BrandID    uint      `gorm:"index;not null" json:"brand_id"`            // 所属品牌ID
-	BrandName  string    `gorm:"size:50" json:"brand_name"`                 // 品牌名称（冗余）
-	Name       string    `gorm:"size:100;not null" json:"name"`             // 车型名称
-	Code       string    `gorm:"size:50;uniqueIndex" json:"code"`           // 车型编码
-	PriceRange string    `gorm:"size:50" json:"price_range"`                // 价格区间，如"25-35万"
-	Level      string    `gorm:"size:20" json:"level"`                      // 级别: 紧凑/中型/中大型/全尺寸
-	BodyType   string    `gorm:"size:20" json:"body_type"`                  // 车身类型: SUV/轿车/皮卡/MPV
-	FuelType   string    `gorm:"size:20" json:"fuel_type"`                  // 燃油类型: 燃油/混动/纯电
-	Status     int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
-	Sort       int       `gorm:"default:0" json:"sort"`                     // 排序
+	TenantID   uint      `gorm:"not null;default:0;uniqueIndex:idx_carmodel_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置车型；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
+	BrandID    uint      `gorm:"index;not null" json:"brand_id"`                                           // 所属品牌ID
+	BrandName  string    `gorm:"size:50" json:"brand_name"`                                                // 品牌名称（冗余）
+	Name       string    `gorm:"size:100;not null" json:"name"`                                            // 车型名称
+	Code       string    `gorm:"size:50;uniqueIndex:idx_carmodel_tenant_code" json:"code"`                 // 车型编码（租户级唯一）
+	PriceRange string    `gorm:"size:50" json:"price_range"`                                               // 价格区间，如"25-35万"
+	Level      string    `gorm:"size:20" json:"level"`                                                     // 级别: 紧凑/中型/中大型/全尺寸
+	BodyType   string    `gorm:"size:20" json:"body_type"`                                                 // 车身类型: SUV/轿车/皮卡/MPV
+	FuelType   string    `gorm:"size:20" json:"fuel_type"`                                                 // 燃油类型: 燃油/混动/纯电
+	Status     int       `gorm:"default:1;index" json:"status"`                                            // 状态: 1启用 0禁用
+	Sort       int       `gorm:"default:0" json:"sort"`                                                    // 排序
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 }

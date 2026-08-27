@@ -1,3 +1,4 @@
+// 统计看板接口：概览指标（租户隔离经 db.RQ + DataScope 自动盖章）
 package api
 
 import (
@@ -40,6 +41,7 @@ func GetOverview(c *gin.Context) {
 
 	// 转化率（意向分>0.8的视为转化）
 	var convertedCustomers int64
+	// 转化率：意向分 ≥ 0.8（业务转化阈值）视为转化
 	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Customer{}).Where("status = ? AND intent_score >= ?", 1, 0.8).Count(&convertedCustomers)
 	var conversionRate float64
 	if totalCustomers > 0 {

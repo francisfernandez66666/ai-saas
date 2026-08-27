@@ -1,3 +1,4 @@
+// 用量计量底座：AI 调用计数/配额判定/月度重置 + usage_ledger 落账与分级看板。
 package service
 
 import (

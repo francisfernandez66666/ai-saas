@@ -41,8 +41,8 @@ func openAPIBalance(c *gin.Context) gin.H {
 		enforced = service.DefaultSystemConfigService.GetBool("billing_enforced", false)
 	}
 	return gin.H{
-		"quota_remaining":  maxMonthly - used, // 月配额剩余（次）
-		"ai_call_balance":  balance,           // 增量买断余额（次）
+		"quota_remaining":  maxMonthly - used, // 三桶之月配额桶剩余（次），客户侧自助对账
+		"ai_call_balance":  balance,           // 三桶之增量买断余额桶（次），不随月重置
 		"billing_enforced": enforced,
 	}
 }
@@ -195,6 +195,7 @@ func OpenAPIUsage(c *gin.Context) {
 //   DELETE /api/v1/admin/apikeys/:id
 // ============================================================
 
+// validPerms API Key 权限白名单；create 时据此校验入参合法性（默认最小权限，拒绝越权 perm）
 var validPerms = map[string]bool{
 	middleware.PermChatRead: true, middleware.PermCustomerRead: true,
 	middleware.PermCDPRead: true, middleware.PermAll: true,
@@ -254,6 +255,7 @@ func AdminListAPIKeys(c *gin.Context) {
 	var keys []model.ApiKey
 	db.RQ(c).Select("id, name, key_prefix, permissions, last_used_at, call_count, is_active, created_at").
 		Order("id DESC").Find(&keys)
+	// call_count / last_used_at 为 Key 计量（api_calls）的对外展示字段；鉴权+perm+计量统一在 middleware.OpenAPIAuth 裁决
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": keys})
 }
 

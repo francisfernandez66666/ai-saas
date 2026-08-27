@@ -1,3 +1,4 @@
+// 商业包服务：free/paid/increment 三态发放语义、配额查询与到期巡检提醒。
 package service
 
 import (

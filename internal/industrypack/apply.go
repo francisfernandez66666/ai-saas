@@ -1,3 +1,4 @@
+// Package industrypack 行业包打包/加密/开包/物化：templates/features 按 pk_{code}_ 前缀写入租户私有层。
 package industrypack
 
 // ============================================================

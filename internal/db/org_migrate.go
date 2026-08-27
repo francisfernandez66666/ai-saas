@@ -1,3 +1,4 @@
+// Package db 数据库连接、自动迁移、租户上下文注入与写入自动盖章（RQ/PQ/T/WithPreset/DataScope）。
 package db
 
 import (

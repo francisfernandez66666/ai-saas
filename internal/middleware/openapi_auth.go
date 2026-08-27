@@ -1,3 +1,4 @@
+// Package middleware Gin 中间件链：TenantResolver(fail-closed)→JWTAuth→TenantConsistency→OrgResolve 等安全闸。
 package middleware
 
 import (

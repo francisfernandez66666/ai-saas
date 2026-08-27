@@ -30,6 +30,7 @@ import (
 //   - 订单查询限定本租户，跨租户单号一律 404 不泄露存在性
 // ============================================================
 
+// createOrderReq 创建订单请求体：仅传 package_id（必填），其余金额/渠道由服务端从商业包表推导
 type createOrderReq struct {
 	PackageID uint `json:"package_id" binding:"required"`
 }
@@ -84,7 +85,7 @@ func ListBillingOrders(c *gin.Context) {
 	}
 	orders := []model.BillingOrder{}
 	if err := db.DB.Where("tenant_id = ?", tid).
-		Select("id, order_no, package_id, amount_cents, period, channel, status,"+
+		Select("id, order_no, package_id, amount_cents, period, channel, status," +
 			"manual_confirm, paid_at, created_at").
 		Order("id DESC").Limit(limit).Find(&orders).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})

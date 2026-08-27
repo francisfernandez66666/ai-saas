@@ -11,9 +11,24 @@ import (
 )
 
 // ============================================================
-// 种子数据初始化
-// 系统首次启动时插入默认数据，保证开箱即用
-// 包含：用户、话术模板、卖点、流程定义、模拟客户
+// 种子数据初始化（seed 包）
+// 系统首次启动时由 InitSeedData 统一写入默认数据，保证开箱即用。
+// 全部 seed 函数均为幂等设计：先按表计数，已有数据则跳过，避免重复插入。
+// 数据分类（按写入顺序）：
+//   1) 租户 Tenant              —— SaaS 系统层一等实体，必须先于一切业务数据
+//   2) 订阅套餐 SubscriptionPlan —— 商业化套餐档位（个人/企业/定制）
+//   3) 商业包 Package           —— 注册试用/包月/增量买断包（M2 商业化）
+//   4) 用户 User                —— 1 个超级管理员 + 3 个销售（含出厂弱密码强改密）
+//   5) 标签 Tag                 —— 意向/属性/抗性/价值/行为五大类
+//   6) 打标规则 TagRule         —— 关键词→自动打标签的匹配规则
+//   7) 权重映射 TagWeightMapping —— 标签→T向量维度的驱动映射
+//   8) 卖点 Feature             —— 车型核心卖点话术
+//   9) 话术模板 Template         —— 8 类锚（同类/拆解/对比/损失/稀缺/代价/不抛）话术
+//  10) 流程定义 FlowDefinition   —— 默认对话流程（策略中心→AI/人工/养鱼循环）
+//  11) 品牌 Brand / 车型 CarModel / 规格 ModelSpec —— 极石+竞品车型参数库
+//  12) 竞品对比 CompetitorCompare —— 极石 vs 坦克/理想/方程豹/仰望 话术对比
+//  13) 知识片段 KnowledgeFragment —— 营销/技术/竞品话术知识库
+//  14) 模拟客户 Customer         —— 10 个演示客户（含标签与 T 向量）
 // ============================================================
 
 // InitSeedData 初始化种子数据
@@ -66,8 +81,8 @@ func seedTenants() {
 		Status:         "active",
 		MaxUsers:       100,
 		MaxCustomers:   10000,
-		MaxAICalls:    10000,
-		UsedAICalls:   0,
+		MaxAICalls:     10000,
+		UsedAICalls:    0,
 		UsedCustomers:  0,
 	}
 	if err := db.DB.Create(defaultTenant).Error; err != nil {
@@ -112,6 +127,9 @@ func seedPackages() {
 	}
 }
 
+// seedUsers 写入 users 表（幂等：已有用户则跳过，仅做旧账户兼容升级）。
+// 副作用：创建 1 个 tenant_id=NULL 的超级管理员 admin + 3 个归属默认租户的销售；
+// 若已有数据，则尝试将老 role='admin' 升级为 super_admin，并给仍用出厂弱密码的账号补置首登强改密标记。
 func seedUsers() {
 	var count int64
 	db.DB.Model(&model.User{}).Count(&count)
@@ -153,15 +171,15 @@ func seedUsers() {
 	// M3：默认演示账号 must_change_password=true（首登强制改密）
 	adminPwd, _ := utils.HashPassword("admin123")
 	admin := &model.User{
-		Username:     "admin",
-		PasswordHash: adminPwd,
-		RealName:     "系统管理员",
-		Role:         "super_admin",
-		Phone:        "13800000000",
-		Email:        "admin@autoscrm.com",
-		Department:   "运营部",
-		TenantID:     nil, // NULL 表示超级管理员
-		Status:       1,
+		Username:           "admin",
+		PasswordHash:       adminPwd,
+		RealName:           "系统管理员",
+		Role:               "super_admin",
+		Phone:              "13800000000",
+		Email:              "admin@autoscrm.com",
+		Department:         "运营部",
+		TenantID:           nil, // NULL 表示超级管理员
+		Status:             1,
 		MustChangePassword: true,
 	}
 	db.DB.Create(admin)
@@ -174,14 +192,14 @@ func seedUsers() {
 
 	for i := 0; i < 3; i++ {
 		sales := &model.User{
-			Username:     "sales" + string(rune('1'+i)),
-			PasswordHash: salesPwd,
-			RealName:     salesNames[i],
-			Role:         model.RoleUser,
-			Phone:        salesPhones[i],
-			Department:   "销售部",
-			TenantID:     &defaultTenantID, // 归属默认租户
-			Status:       1,
+			Username:           "sales" + string(rune('1'+i)),
+			PasswordHash:       salesPwd,
+			RealName:           salesNames[i],
+			Role:               model.RoleUser,
+			Phone:              salesPhones[i],
+			Department:         "销售部",
+			TenantID:           &defaultTenantID, // 归属默认租户
+			Status:             1,
 			MustChangePassword: true, // M3：演示账号同样首登强改密
 		}
 		db.DB.Create(sales)
@@ -195,6 +213,8 @@ func seedUsers() {
 // 2. 种子标签
 // ============================================================
 
+// seedTags 写入 tags 表（幂等：已有标签则整块跳过）。
+// 作用：预置五大类标签（意向/属性/抗性/价值/行为），供打标规则与权重映射引用。
 func seedTags() {
 	var count int64
 	db.DB.Model(&model.Tag{}).Count(&count)
@@ -239,6 +259,9 @@ func seedTags() {
 // 3. 种子卖点数据（5-8条）
 // ============================================================
 
+// seedFeatures 写入 features 表（幂等：已有卖点则跳过）。
+// 作用：预置极石各车型核心卖点话术（增程动力/越野/座舱/质保/金融/户外生态），
+// 被话术模板的 RequiredFeatures 关联引用，用于话术生成时注入卖点描述。
 func seedFeatures() {
 	var count int64
 	db.DB.Model(&model.Feature{}).Count(&count)
@@ -345,6 +368,9 @@ func seedFeatures() {
 // 4. 种子话术模板（20+条，覆盖8类锚）
 // ============================================================
 
+// seedTemplates 写入 templates 表（幂等：已有模板则跳过）。
+// 作用：预置 8 类锚（aggressiveness 0~6）话术模板，是 AI 销售话术生成的素材库；
+// 按意向分区间(MinIntent/MaxIntent)、触发标签、适用车型匹配，输出 PromptTemplate 与追问 HookTemplate。
 func seedTemplates() {
 	var count int64
 	db.DB.Model(&model.Template{}).Count(&count)
@@ -751,6 +777,9 @@ func seedTemplates() {
 // 5. 种子流程定义（默认对话流程）
 // ============================================================
 
+// seedFlowDefinition 写入 flow_definitions 表（幂等：已有流程定义则跳过）。
+// 作用：预置默认对话流程 default_chat_flow（策略中心决策→AI对话/人工介入/养鱼模式→循环打标）；
+// 流程节点与连线以 JSON 存储于 NodesJSON/EdgesJSON，作为会话编排引擎的默认蓝图。
 func seedFlowDefinition() {
 	var count int64
 	db.DB.Model(&model.FlowDefinition{}).Count(&count)
@@ -852,6 +881,9 @@ func seedFlowDefinition() {
 // 6. 种子模拟客户（10个）
 // ============================================================
 
+// seedCustomers 写入 customers 表（幂等：已有客户则跳过）。
+// 副作用：除写入 10 个演示客户外，还按 tagMap 为每个客户调用 SetTags 打标签，
+// 并通过 GetTVector/SaveTVector 计算并落库其 T 向量（策略中心打标驱动的载体）。
 func seedCustomers() {
 	var count int64
 	db.DB.Model(&model.Customer{}).Count(&count)
@@ -975,6 +1007,9 @@ func seedCustomers() {
 // 关键词匹配规则：客户说了什么 → 自动打上对应标签
 // ============================================================
 
+// seedTagRules 写入 tag_rules 表（幂等：已有规则则跳过）。
+// 作用：预置关键词/抗性/意向三类匹配规则，命中客户消息即自动打对应标签并加权重；
+// 通过 getTagID 关联标签表的 code，WeightBonus 为命中后叠加的标签权重。
 func seedTagRules() {
 	var count int64
 	db.DB.Model(&model.TagRule{}).Count(&count)
@@ -1063,6 +1098,10 @@ func seedTagRules() {
 // 打标驱动策略的核心：客户打上某标签，T向量对应维度自动变化
 // ============================================================
 
+// seedTagWeightMappings 写入 tag_weight_mappings 表（幂等：已有映射则跳过）。
+// 作用：建立「标签 → T向量维度」的驱动关系；客户被打上某标签时，按 TVectorIndex 指定的
+// T向量维度(Direction/WeightDelta)自动调整分值。例如抗性类标签影响 T[14]抗性类型维度，
+// 意向类标签影响 T[0]意向分——这是打标驱动策略引擎的核心数据。
 func seedTagWeightMappings() {
 	var count int64
 	db.DB.Model(&model.TagWeightMapping{}).Count(&count)
@@ -1126,6 +1165,9 @@ func seedTagWeightMappings() {
 // 9. 种子品牌数据（极石+竞品5品牌）
 // ============================================================
 
+// seedBrands 写入 brands 表（幂等：已有品牌则跳过）。
+// 作用：预置极石及竞品品牌（坦克/理想/方程豹/仰望），供车型表通过 brand_code 关联；
+// 竞品品牌用于话术模板与竞品对比数据的对比口径。
 func seedBrands() {
 	var count int64
 	db.DB.Model(&model.Brand{}).Count(&count)
@@ -1182,6 +1224,9 @@ func seedBrands() {
 // 10. 种子车型数据（极石2款+竞品11款）
 // ============================================================
 
+// seedCarModels 写入 car_models 表（幂等：已有车型则整块跳过）。
+// 作用：预置极石 2 款（ADAMAS/极石01）+ 竞品 11 款车型，含价格/级别/能源类型等；
+// 通过 getBrandID 关联品牌，code 为后续规格参数与竞品对比的外键查找键。
 func seedCarModels() {
 	var count int64
 	db.DB.Model(&model.CarModel{}).Count(&count)
@@ -1230,6 +1275,10 @@ func seedCarModels() {
 // 11. 种子规格参数（361条，覆盖13款车型）
 // ============================================================
 
+// seedModelSpecs 写入 model_specs 表（幂等：已有规格则整块跳过）。
+// 作用：为 13 款车型逐条写入核心规格参数（动力/车身/电池/底盘/越野/智驾/座舱/舒适/户外），
+// 按 Category 分组、Sort 排序；被车型详情页与 AI 对比话术检索使用。
+// 注意：getModelID 查不到车型时回退返回 1，避免外键空值导致整条写入失败。
 func seedModelSpecs() {
 	var count int64
 	db.DB.Model(&model.ModelSpec{}).Count(&count)
@@ -3070,6 +3119,10 @@ func seedModelSpecs() {
 // 12. 种子竞品对比数据（58组对比）
 // ============================================================
 
+// seedCompetitorCompares 写入 competitor_compares 表（幂等：已有对比则跳过）。
+// 作用：预置极石 vs 坦克/理想/方程豹/仰望 的多组对比话术（58 组），每组 Content 为
+// JSON 数组（aspect/our_value/their_value/conclusion 多维对比），ContainsPrice 标记是否含价格。
+// 供 AI 对比锚话术与销售对比物料使用；getModelID 同样以 1 作为查不到时的兜底。
 func seedCompetitorCompares() {
 	var count int64
 	db.DB.Model(&model.CompetitorCompare{}).Count(&count)
@@ -3511,6 +3564,9 @@ func seedCompetitorCompares() {
 // 13. 种子知识片段（42条营销话术）
 // ============================================================
 
+// seedKnowledgeFragments 写入 knowledge_fragments 表（幂等：已有片段则跳过）。
+// 作用：预置 42 条营销/技术/竞品/ FAQ 知识片段（含 Tags 与 ApplicableModels 的 JSON 数组），
+// 作为 AI 话术生成与知识问答的素材库，按分类(Category)与 Sort 排序展示。
 func seedKnowledgeFragments() {
 	var count int64
 	db.DB.Model(&model.KnowledgeFragment{}).Count(&count)
@@ -3785,11 +3841,13 @@ func seedKnowledgeFragments() {
 // 辅助函数
 // ============================================================
 
+// jsonArr 将字符串切片序列化为 JSON 字符串，用于写入模型的 []string 类型字段（如 TriggerTags/ApplicableModels）
 func jsonArr(arr []string) string {
 	data, _ := json.Marshal(arr)
 	return string(data)
 }
 
+// jsonParams 将键值对 map 序列化为 JSON 字符串，用于写入卖点/知识的 Params 等结构化字段
 func jsonParams(params map[string]string) string {
 	data, _ := json.Marshal(params)
 	return string(data)

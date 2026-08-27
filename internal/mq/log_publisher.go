@@ -1,3 +1,4 @@
+// Package mq 消息中心：Kafka/Log 双实现、事件信封、Inbox 幂等、审计落库
 package mq
 
 import (
@@ -20,6 +21,7 @@ type LogCenter struct {
 	handlers map[string][]EventHandler
 }
 
+// newLogCenter 构造进程内事件总线（默认降级实现，不依赖 Kafka，订阅方异步 fan-out）
 func newLogCenter(cfg config.MQConfig) *LogCenter {
 	return &LogCenter{cfg: cfg, handlers: map[string][]EventHandler{}}
 }

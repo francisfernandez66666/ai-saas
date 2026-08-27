@@ -94,16 +94,15 @@ func currentUserID(c *gin.Context) uint {
 	return 0
 }
 
-
 // InviteeRecord 单条邀请记录（前台展示口径）
 type InviteeRecord struct {
-	TenantID     uint   `json:"tenant_id"`      // 被邀请人账户ID
+	TenantID     uint   `json:"tenant_id"` // 被邀请人账户ID
 	CompanyName  string `json:"company_name"`
-	Email        string `json:"email"`          // 被邀请人绑定邮箱（外键身份锚）
-	InvitedOK    bool   `json:"invited_ok"`     // 邀请成功（首绑完成即成功）
-	PaidOK       bool   `json:"paid_ok"`        // 好友已支付（存在paid订单）
-	PaidRewarded bool   `json:"paid_rewarded"`  // 邀请付费奖励已发放
-	SignupReward bool   `json:"signup_reward"`  // 邀请注册奖励已发放
+	Email        string `json:"email"`         // 被邀请人绑定邮箱（外键身份锚）
+	InvitedOK    bool   `json:"invited_ok"`    // 邀请成功（首绑完成即成功）
+	PaidOK       bool   `json:"paid_ok"`       // 好友已支付（存在paid订单）
+	PaidRewarded bool   `json:"paid_rewarded"` // 邀请付费奖励已发放
+	SignupReward bool   `json:"signup_reward"` // 邀请注册奖励已发放
 	RegisteredAt string `json:"registered_at"`
 }
 

@@ -1,3 +1,4 @@
+// Package db 数据库连接、自动迁移、租户上下文注入与写入自动盖章（RQ/PQ/T/WithPreset/DataScope）。
 package db
 
 import (
@@ -5,6 +6,7 @@ import (
 	"ai-scrm/internal/model"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -26,8 +28,14 @@ func Init() error {
 	var err error
 	// 连接PostgreSQL数据库
 	// SaaS 化改造：从 SQLite 单文件切换为 PostgreSQL，支持多租户 + 并发写入
+	// J10修复(2026-08-26)：生产(release)降级为 Warn，避免 SQL 日志泄露密码哈希/手机号等 PII；
+	// 非 release 仍输出 Info 便于调试
+	dbLogLevel := logger.Info
+	if os.Getenv("GIN_MODE") == "release" {
+		dbLogLevel = logger.Warn
+	}
 	DB, err = gorm.Open(postgres.Open(config.GlobalConfig.Database.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Info), // 输出SQL日志，方便调试
+		Logger: logger.Default.LogMode(dbLogLevel),
 	})
 	if err != nil {
 		log.Printf("数据库连接失败: %v", err)
@@ -123,10 +131,10 @@ func autoMigrate() error {
 		&model.TenantAuditLog{},
 		&model.BillingOrder{},
 		&model.IndustryPack{},
-		&model.TenantPackBinding{}, // P1 行业包地基（2026-08-25）
-		&model.DeptPackBinding{},   // 三级包架构：部门↔部门包绑定（2026-08-26）
+		&model.TenantPackBinding{},  // P1 行业包地基（2026-08-25）
+		&model.DeptPackBinding{},    // 三级包架构：部门↔部门包绑定（2026-08-26）
 		&model.KbFeedbackMaterial{}, // P3 数据飞轮素材池（2026-08-26）
-		&model.RewardClaim{},         // P1.5 防薅v2：奖励领取台账（2026-08-26）
+		&model.RewardClaim{},        // P1.5 防薅v2：奖励领取台账（2026-08-26）
 		&model.UsageRecord{},
 		&model.ApiKey{},
 		// ---- CDP 数据底座（Phase P4 真实化前表先就位）
@@ -150,6 +158,10 @@ func autoMigrate() error {
 		&model.UsageLedger{},
 		// ---- 邮箱验证码（注册/换绑邮箱）
 		&model.EmailVerify{},
+		// ---- L3：OneID 身份标识拆表
+		&model.CustomerIdentity{},
+		// ---- 协议签署台账（注册即同意《用户协议》《隐私政策》，超管审计）
+		&model.AgreementSignature{},
 	)
 }
 
@@ -222,7 +234,16 @@ func ensureRewardClaimIndexes() {
 	stmts := []string{
 		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_trial_tenant ON reward_claims(tenant_id) WHERE grant_type = 'signup_trial'",
 		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_trial_email ON reward_claims(email) WHERE grant_type = 'signup_trial' AND email <> ''",
-		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_ref ON reward_claims(grant_type, ref_id) WHERE ref_id IS NOT NULL",
+		// P0修复(2026-08-26)：原 ux_reward_ref(grant_type,ref_id) 是全局唯一——free_package 行
+		// 复用 ref_id 存包ID后会跨租户误撞（租户1领过包1，其他租户全被拒）。
+		// 收窄为仅 referral 类；free_package 由下方按租户索引接管。旧索引存在则替换。
+		"DROP INDEX IF EXISTS ux_reward_ref",
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_ref_v2 ON reward_claims(grant_type, ref_id) WHERE ref_id IS NOT NULL AND grant_type LIKE 'referral%'",
+		// P0修复(2026-08-26)：free 包直发去重——同租户对同包一生一次（原实现可无限叠加配额）
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_free_pkg ON reward_claims(tenant_id, ref_id) WHERE grant_type = 'free_package'",
+		// P0修复(2026-08-26)：订单权益发放台账——每笔订单发放一生一次，
+		// 兼作「改单成功但发放失败」的自愈判定锚（重复 confirm 时台账缺行即补发）
+		"CREATE UNIQUE INDEX IF NOT EXISTS ux_reward_order_grant ON reward_claims(ref_id) WHERE grant_type = 'order_entitlement'",
 	}
 	for _, q := range stmts {
 		if err := DB.Exec(q).Error; err != nil {

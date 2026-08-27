@@ -1,3 +1,4 @@
+// 双层 KB 与行业包 Prompt 消费、租户资料二元组融合检索（pgvector 前朴素方案）。
 package service
 
 // ============================================================
@@ -54,6 +55,7 @@ func GetBoundPackPrompts(tenantID uint) []string {
 	return out
 }
 
+// isHanOrWordR 判断是否为汉字/字母/数字（用于关键词切分，过滤标点空格）
 func isHanOrWordR(r rune) bool {
 	return unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
@@ -79,6 +81,7 @@ func extractKeywords(input string) []string {
 	return tokens
 }
 
+// bigramSet 生成字符串的二元组集合（相邻两字片段），用于关键词相似度打分
 func bigramSet(s string) map[string]bool {
 	r := []rune(strings.ToLower(s))
 	out := map[string]bool{}

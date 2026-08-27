@@ -1,3 +1,4 @@
+// Package model 业务领域模型与 GORM 表结构定义（SaaS 多租户，tenant_id 隔离，写入经自动盖章回调）。
 package model
 
 import (
@@ -15,21 +16,21 @@ import (
 
 // 验证码用途常量
 const (
-	EmailPurposeRegister = "register"  // 注册验证
+	EmailPurposeRegister = "register"   // 注册验证
 	EmailPurposeBind     = "bind_email" // 换绑新邮箱（登录态）
 )
 
 // EmailVerify 邮箱验证码表
 type EmailVerify struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
-	Email      string    `gorm:"size:100;index" json:"email"`   // 目标邮箱（小写）
-	Purpose    string    `gorm:"size:20;index" json:"purpose"`  // register|bind_email
-	CodeHash   string    `gorm:"size:200" json:"-"`             // SHA256(6位码)
-	ExpiredAt  time.Time `json:"expired_at"`                    // 签发+10分钟
-	Used       bool      `gorm:"default:false" json:"used"`     // 一次性消费标记
-	Attempts   int       `json:"attempts"`                      // 错误尝试次数（≥5作废）
-	SentIP     string    `gorm:"size:45" json:"-"`              // 发送请求来源IP（日限额锚点）
-	LastSentAt time.Time `json:"last_sent_at"`                  // 冷却锚点
+	Email      string    `gorm:"size:100;index" json:"email"`  // 目标邮箱（小写）
+	Purpose    string    `gorm:"size:20;index" json:"purpose"` // register|bind_email
+	CodeHash   string    `gorm:"size:200" json:"-"`            // SHA256(6位码)
+	ExpiredAt  time.Time `json:"expired_at"`                   // 签发+10分钟
+	Used       bool      `gorm:"default:false" json:"used"`    // 一次性消费标记
+	Attempts   int       `json:"attempts"`                     // 错误尝试次数（≥5作废）
+	SentIP     string    `gorm:"size:45" json:"-"`             // 发送请求来源IP（日限额锚点）
+	LastSentAt time.Time `json:"last_sent_at"`                 // 冷却锚点
 	CreatedAt  time.Time `json:"created_at"`
 }
 

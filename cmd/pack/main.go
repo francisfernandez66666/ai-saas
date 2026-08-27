@@ -14,6 +14,8 @@
 //                 引擎侧私钥解封——即部署物需同时带 pub(验签)+priv(解密)。
 //                 单对密钥两用属本期务实取舍（防抽取/防篡改已达成）。
 // ============================================================
+
+// 行业包打包工具 CLI 入口包：分发 build/keygen/inspect 三个子命令
 package main
 
 import (
@@ -26,6 +28,8 @@ import (
 	"ai-scrm/internal/industrypack"
 )
 
+// main 解析首个子命令参数并分发到对应的子命令处理函数
+// 入参：来自 os.Args 的命令行参数；无返回值，按子命令执行或打印用法退出
 func main() {
 	if len(os.Args) < 2 {
 		usage()
@@ -42,6 +46,7 @@ func main() {
 	}
 }
 
+// usage 打印工具用法说明并以退出码 1 结束进程（参数缺失或子命令非法时调用）
 func usage() {
 	fmt.Println(`行业包打包工具
   keygen  -dir keys                                    生成 RSA 密钥对到指定目录
@@ -51,6 +56,8 @@ func usage() {
 	os.Exit(1)
 }
 
+// keygenCmd 生成 RSA 密钥对并写入指定目录（pack_priv.pem 平台保管 / pack_pub.pem 随部署分发）
+// 入参 args 为子命令后的 flag 参数（-dir 输出目录 / -bits RSA 位数，默认 2048）
 func keygenCmd(args []string) {
 	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
 	dir := fs.String("dir", "keys", "密钥输出目录")
@@ -74,6 +81,9 @@ func keygenCmd(args []string) {
 	fmt.Printf("✓ 私钥: %s （平台侧保管，勿入 git/勿分发）\n✓ 公钥: %s\n", privPath, pubPath)
 }
 
+// buildCmd 将源目录打包为 .aipack 行业包：校验三级树层级与父子关系后签名加密输出
+// 入参 args 含 -src/-out/-keys/-code/-name/-version/-industry/-publisher/-level/-parent
+// 副作用：按三级包树（行业→企业→部门）强制校验 parent 归属，写盘产出签名包文件
 func buildCmd(args []string) {
 	fs := flag.NewFlagSet("build", flag.ExitOnError)
 	src := fs.String("src", "", "源目录（含八件套 json）")
@@ -124,6 +134,8 @@ func buildCmd(args []string) {
 		*out, len(data), *code, *version, *level, *parent)
 }
 
+// inspectCmd 打开并校验 .aipack：验签解密后打印 Manifest、模板/知识库条目与文件清单
+// 入参 args 含 -f 包文件路径 / -keys 密钥目录；失败（验签不过/解密失败）直接退出
 func inspectCmd(args []string) {
 	fs := flag.NewFlagSet("inspect", flag.ExitOnError)
 	file := fs.String("f", "", ".aipack 文件")
@@ -161,6 +173,7 @@ func inspectCmd(args []string) {
 	}
 }
 
+// die 统一错误出口：向标准错误打印带 ✗ 前缀的格式化错误并退出码 1
 func die(f string, a ...any) {
 	fmt.Fprintf(os.Stderr, "✗ "+f+"\n", a...)
 	os.Exit(1)

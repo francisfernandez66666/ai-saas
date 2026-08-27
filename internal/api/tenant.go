@@ -1,3 +1,4 @@
+// 租户入驻与套餐：SaaS 注册闭环、子域名占用检查、套餐公开查询、行业兜底、注册防薅护栏
 package api
 
 import (
@@ -35,10 +36,10 @@ type signupReq struct {
 	Password     string `json:"password" binding:"required"`
 	ContactName  string `json:"contact_name"`
 	ContactPhone string `json:"contact_phone"`
-	AdminEmail   string `json:"admin_email"`      // 管理员邮箱（email_verify_enabled 时必填+验证码校验）
-	EmailCode    string `json:"email_code"`       // 邮箱验证码
-	Ref          string `json:"ref"`              // 邀请码（M-R 邀请推广，选填；首绑唯一）
-	Industry     string `json:"industry"`         // 行业（选填；未知行业自动兜底为通用行业 general）
+	AdminEmail   string `json:"admin_email"` // 管理员邮箱（email_verify_enabled 时必填+验证码校验）
+	EmailCode    string `json:"email_code"`  // 邮箱验证码
+	Ref          string `json:"ref"`         // 邀请码（M-R 邀请推广，选填；首绑唯一）
+	Industry     string `json:"industry"`    // 行业（选填；未知行业自动兜底为通用行业 general）
 }
 
 // TenantSignup POST /api/v1/tenant/signup （免登录）
@@ -83,7 +84,7 @@ func TenantSignup(c *gin.Context) {
 	var dup int64
 	db.DB.Model(&model.Tenant{}).Where("code = ?", req.Code).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该标识已被使用，请更换"})
+		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该标识暂不可用，请更换"})
 		return
 	}
 	db.DB.Model(&model.User{}).Where("username = ?", req.Username).Count(&dup)
@@ -160,7 +161,7 @@ func TenantSignup(c *gin.Context) {
 	// 行业兜底（UAT定稿②）：未填或未知行业不拒绝，回落通用行业(general)
 	industry = resolveIndustry(industry)
 
-	// 默认套餐：personal（不存在则置空由超管补配）
+	// 默认套餐：personal（不存在则置空由超管补配）；Max* 字段用于新建租户配额上限
 	var plan model.SubscriptionPlan
 	db.DB.Where("code = ?", "personal").First(&plan)
 
@@ -171,7 +172,7 @@ func TenantSignup(c *gin.Context) {
 	}
 
 	now := time.Now()
-	trialEnd := now.AddDate(0, 0, 7)
+	trialEnd := now.AddDate(0, 0, 7) // 试用 7 天（trial 周期业务固定值）
 	// 注册审核开关（M1）：开启时新租户进入 review 状态——不发试用包、业务接口全拦，
 	// 超管在平台后台执行「发放试用」后转 trial 放行
 	reviewMode := svc.GetBool("registration_review", false)
@@ -259,6 +260,9 @@ func TenantSignup(c *gin.Context) {
 		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 
+	// 注册即视为同意《用户协议》《隐私政策》，落签署记录（时间+状态供超管审计）
+	RecordAgreementSignatures(ten.ID, adminID)
+
 	// OneID 关联（防薅v2，2026-08-26）：注册成功即以邮箱为身份锚之一写 CDP
 	_ = mq.Publish(c.Request.Context(), mq.TopicUserEvent, ten.ID,
 		fmt.Sprintf("sys:t%d", ten.ID), "guest_created",
@@ -315,7 +319,7 @@ func CheckTenantCode(c *gin.Context) {
 	db.DB.Model(&model.Tenant{}).Where("code = ?", code).Count(&dup)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
 		"available": dup == 0,
-		"reason":    map[bool]string{true: "可用", false: "已被使用"}[dup == 0],
+		"reason":    map[bool]string{true: "可用", false: "该标识暂不可用"}[dup == 0],
 	}})
 }
 

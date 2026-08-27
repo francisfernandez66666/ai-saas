@@ -1,3 +1,4 @@
+// Package mq 消息中心：Kafka/Log 双实现、事件信封、Inbox 幂等、审计落库
 package mq
 
 import (
@@ -18,6 +19,7 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// eventSeq 进程内事件序号（newEventID 用作 event_id 后缀，保证同秒不重复）
 var eventSeq atomic.Uint64
 
 // DefaultCenter 全局消息中心实例
@@ -100,6 +102,7 @@ func buildEnvelope(topic string, tenantID uint, oneID string, eventType string, 
 func recordAudit(env Envelope, status string) {
 	go func() {
 		defer func() { _ = recover() }()
+		// 审计落库 3s 超时，best-effort 不阻塞业务主流程
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		rec := model.MessageEventRecord{

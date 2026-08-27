@@ -1,3 +1,4 @@
+// 邮箱验证码服务：注册/换绑场景验证码发送与一次性校验，含防薅四件套。
 package service
 
 import (
@@ -133,11 +134,11 @@ func EmailVerifyEnabled() bool {
 func buildEmailCodeContent(purpose, code string) (string, string) {
 	switch purpose {
 	case model.EmailPurposeBind:
-		return "AI-SCRM 绑定新邮箱验证码",
+		return "跨山 LexCross 绑定新邮箱验证码",
 			fmt.Sprintf("您正在将账号绑定到本邮箱。\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。", code)
 	default: // register
-		return "AI-SCRM 注册验证码",
-			fmt.Sprintf("欢迎注册 AI-SCRM！\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。", code)
+		return "跨山 LexCross 注册验证码",
+			fmt.Sprintf("欢迎注册跨山 LexCross！\n\n验证码：%s\n\n10 分钟内有效，仅可使用一次。若非本人操作请忽略本邮件。", code)
 	}
 }
 
