@@ -29,8 +29,11 @@ func T(c *gin.Context) func(db *gorm.DB) *gorm.DB {
 		}
 		id, ok := v.(uint)
 		if !ok || id == 0 {
-			// 正常业务路由不会出现 0（中间件链保证）；出现则视为异常调用方，
-			// 防御式放行但由调用方自担数据越界责任
+			// H2：正常业务路由不会出现 0（中间件链保证）。出现且非平台超管，
+			// 视为漏挂 TenantResolver 的异常调用方，fail-closed 返回空结果集。
+			if failClosedOnMissingTenant(c) {
+				return tx.Where("1 = 0")
+			}
 			return tx
 		}
 		return tx.Where("tenant_id = ?", id)

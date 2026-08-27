@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { Tabs, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, setToken } from '../lib/api'
+import { getToken, setToken, apiJSON } from '../lib/api'
 
 const TabPanel = Tabs.TabPanel
 
@@ -174,6 +174,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
 }
 
 // 租户后台管理：登录后按分类 Tab 编辑系统配置（热加载）、查看客户线索/流程/标签/品牌/审计/开放平台/用量/邀请
+// 标签体系 Tab 已接入后端 /admin/tags CRUD（按 category 分组增删），自动打标规则为只读展示
 // 依赖 /api/v1/admin/config（读写重置）、/api/v1/auth/login、/api/v1/admin/audit-logs、/api/v1/admin/apikeys、/api/v1/admin/usage/summary、/api/v1/admin/referral/*
 export default function Admin() {
   const brand = useBrand()
@@ -515,14 +516,15 @@ function FlowEngineTab({ configs }: { configs: Cfg[] }) {
   )
 }
 
-// ------------------------- 标签体系（前端态，只读自动规则） -------------------------
-const TAG_SYSTEM = {
-  意向等级: { catKey: 'intent', tags: ['高意向', '中意向', '低意向', '无意向'] },
-  来源渠道: { catKey: 'source', tags: ['线上广告', '朋友推荐', '到店咨询', 'IG', '小红书'] },
-  兴趣车型: { catKey: 'car', tags: ['ADAMAS', '01', '其他'] },
-  客户类型: { catKey: 'type', tags: ['首次咨询', '回头客', '转介绍'] },
-  跟进状态: { catKey: 'status', tags: ['待跟进', '跟进中', '已试驾', '已到店', '已战败'] },
-}
+// ------------------------- 标签体系（接后端 /admin/tags） -------------------------
+// 标签分类与后端 tag.category 字段对齐：展示用中文，存储用英文 key
+const TAG_CATS = [
+  { key: 'intent', name: '意向等级', tags: ['高意向', '中意向', '低意向', '无意向'] },
+  { key: 'source', name: '来源渠道', tags: ['线上广告', '朋友推荐', '到店咨询', 'IG', '小红书'] },
+  { key: 'car', name: '兴趣车型', tags: ['ADAMAS', '01', '其他'] },
+  { key: 'type', name: '客户类型', tags: ['首次咨询', '回头客', '转介绍'] },
+  { key: 'status', name: '跟进状态', tags: ['待跟进', '跟进中', '已试驾', '已到店', '已战败'] },
+]
 const AUTO_TAG_RULES = [
   { trigger: '消息中出现手机号', tag: '已留资', category: '跟进状态' },
   { trigger: '消息中提到试驾', tag: '高意向', category: '意向等级' },
@@ -534,36 +536,56 @@ const AUTO_TAG_RULES = [
   { trigger: '客户首次发送消息', tag: '首次咨询', category: '客户类型' },
 ]
 const CAT_COLOR: Record<string, string> = { intent: 'bg-indigo-50 text-indigo-600', source: 'bg-emerald-50 text-emerald-600', car: 'bg-cyan-50 text-cyan-600', type: 'bg-amber-50 text-amber-600', status: 'bg-rose-50 text-rose-600' }
-// 标签体系 Tab：前端态管理标签分类与值（仅本地态），自动打标规则为只读展示
+// 标签体系 Tab：接后端 /admin/tags CRUD（按 category 分组）；自动打标规则只读
 function TagSystemTab() {
-  const [data, setData] = useState<any>(TAG_SYSTEM)
-  const add = (cat: string) => {
+  const [byCat, setByCat] = useState<Record<string, any[]>>({})
+  const [loading, setLoading] = useState(true)
+  const load = async () => {
+    setLoading(true)
+    const { res, json } = await apiJSON('/api/v1/admin/tags?page_size=500')
+    if (res.ok && json?.code === 0) {
+      const list: any[] = json.data?.list || []
+      const grouped: Record<string, any[]> = {}
+      for (const c of TAG_CATS) grouped[c.key] = list.filter((t) => t.category === c.key)
+      setByCat(grouped)
+    } else {
+      MessagePlugin.error(json?.message || '标签加载失败')
+    }
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+  const add = async (catKey: string) => {
     const text = prompt('请输入新标签名称')
     if (!text || !text.trim()) return
-    const t = text.trim()
-    if (data[cat].tags.includes(t)) { MessagePlugin.error('标签已存在'); return }
-    setData({ ...data, [cat]: { ...data[cat], tags: [...data[cat].tags, t] } })
-    MessagePlugin.success('已添加')
+    const name = text.trim()
+    const code = name.toLowerCase().replace(/\s+/g, '_')
+    const { json } = await apiJSON('/api/v1/admin/tags', {
+      method: 'POST',
+      body: JSON.stringify({ name, code, category: catKey, status: 1 }),
+    })
+    if (json?.code !== 0) { MessagePlugin.error(json?.message || '添加失败'); return }
+    MessagePlugin.success('已添加'); load()
   }
-  const remove = (cat: string, idx: number) => {
-    const name = data[cat].tags[idx]
-    if (!confirm(`确定删除标签"${name}"吗？`)) return
-    const tags = data[cat].tags.filter((_: any, i: number) => i !== idx)
-    setData({ ...data, [cat]: { ...data[cat], tags } })
-    MessagePlugin.success('已删除')
+  const remove = async (catKey: string, tag: any) => {
+    if (!confirm(`确定删除标签"${tag.name}"吗？`)) return
+    const { json } = await apiJSON('/api/v1/admin/tags/' + tag.id, { method: 'DELETE' })
+    if (json?.code !== 0) { MessagePlugin.error(json?.message || '删除失败'); return }
+    MessagePlugin.success('已删除'); load()
   }
   return (
     <div className="space-y-8">
       <div className="bg-white rounded-xl border border-gray-200 p-6">
-        <div className="flex items-center gap-2 mb-5"><span className="text-lg">📁</span><div><h3 className="text-base font-bold text-gray-800">标签分类管理</h3><p className="text-xs text-gray-400 mt-0.5">管理标签分类及分类下的标签值（仅前端态）</p></div></div>
+        <div className="flex items-center gap-2 mb-5"><span className="text-lg">📁</span><div><h3 className="text-base font-bold text-gray-800">标签分类管理</h3><p className="text-xs text-gray-400 mt-0.5">管理标签分类及分类下的标签值（已接入后端）</p></div></div>
+        {loading && <p className="text-xs text-gray-400">加载中…</p>}
         <div className="space-y-4">
-          {Object.keys(data).map((cat) => (
-            <div key={cat} className="border border-gray-100 rounded-lg p-4">
-              <div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><span className="text-sm font-semibold text-gray-700">{cat}</span><span className="text-[10px] px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{data[cat].tags.length} 个标签</span></div><Button size="small" theme="primary" variant="outline" onClick={() => add(cat)}>+ 添加标签</Button></div>
+          {TAG_CATS.map((cat) => (
+            <div key={cat.key} className="border border-gray-100 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><span className="text-sm font-semibold text-gray-700">{cat.name}</span><span className="text-[10px] px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{(byCat[cat.key] || []).length} 个标签</span></div><Button size="small" theme="primary" variant="outline" onClick={() => add(cat.key)}>+ 添加标签</Button></div>
               <div className="flex flex-wrap gap-2">
-                {data[cat].tags.map((tag: string, idx: number) => (
-                  <span key={tag} className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${CAT_COLOR[data[cat].catKey] || 'bg-gray-100 text-gray-600'}`}>{tag}<button className="opacity-60 hover:opacity-100" onClick={() => remove(cat, idx)}>✕</button></span>
+                {(byCat[cat.key] || []).map((tag: any) => (
+                  <span key={tag.id} className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${CAT_COLOR[cat.key] || 'bg-gray-100 text-gray-600'}`}>{tag.name}<button className="opacity-60 hover:opacity-100" onClick={() => remove(cat.key, tag)}>✕</button></span>
                 ))}
+                {(byCat[cat.key] || []).length === 0 && <span className="text-xs text-gray-300">暂无标签</span>}
               </div>
             </div>
           ))}

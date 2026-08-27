@@ -42,7 +42,12 @@ func TokenBillingEnabled() bool {
 }
 
 // billingEnforced 计费强制（false=超额不停服仅留痕，沿用商业化M5灰度语义）
+// H4 双开关合一：计费强制必须同时开启 token 引擎总闸，避免"开了 billing_enforced
+// 却忘了开 token_billing_enabled"导致三桶从不扣减、灰度语义形同虚设。
 func billingEnforced() bool {
+	if !TokenBillingEnabled() {
+		return false
+	}
 	return DefaultSystemConfigService.GetBool("billing_enforced", false)
 }
 

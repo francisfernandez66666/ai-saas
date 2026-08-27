@@ -50,6 +50,22 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 		sb.WriteString("\n\n")
 	}
 
+	// P2 行业包参数约束 + 话术心态（params.json / mindset.json → pack_params_/pack_mindset_{code} 键）
+	if params := service.GetBoundPackParams(tenantID); len(params) > 0 {
+		sb.WriteString("【行业包参数约束】\n")
+		for _, p := range params {
+			sb.WriteString("· " + p + "\n")
+		}
+		sb.WriteString("\n")
+	}
+	if mindsets := service.GetBoundPackMindset(tenantID); len(mindsets) > 0 {
+		sb.WriteString("【行业包话术心态】\n")
+		for _, m := range mindsets {
+			sb.WriteString("· " + m + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
 	sb.WriteString("【语气铁律】\n")
 	sb.WriteString("1. 用口语，不用书面语。说「你」不说「您」，说「咱」不说「我们」\n")
 	sb.WriteString("2. 短句为主，一句不超过15个字，不用逗号连长句\n")

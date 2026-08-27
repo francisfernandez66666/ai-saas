@@ -23,17 +23,14 @@ import (
 //   - 记录失败仅告警不阻断业务（计量是旁路，不能影响对话主链路）
 // ============================================================
 
-// RecordAICall 记一次 AI 调用：租户累计计数 + 当日明细双写
+// RecordAICall 记一次 AI 调用的当日明细（仅 usage_records 聚合，不含累计计数）。
+// 累计计数 used_ai_calls 的原子预留改由 ConsumeAIQuota 统一负责，避免"读判+后增"竞态。
 func RecordAICall(tenantID uint) {
 	if tenantID == 0 {
 		return
 	}
 	go func() {
 		defer func() { _ = recover() }()
-		if err := db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
-			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1")).Error; err != nil {
-			log.Printf("[Usage] 累计计数失败 tenant=%d: %v", tenantID, err)
-		}
 		today := time.Now().Format("2006-01-02")
 		err := db.DB.Exec(`INSERT INTO usage_records (tenant_id, date, metric, value, created_at)
 			VALUES (?, ?, 'ai_calls', 1, NOW())
@@ -45,23 +42,23 @@ func RecordAICall(tenantID uint) {
 	}()
 }
 
-// CheckAIQuota 判定租户 AI 调用是否超配额
-// 返回 false 表示已超限（调用方应降级为规则话术，不发起模型请求）
+// ConsumeAIQuota H4：原子地"判定+预留+计量"一次 AI 调用，替代原 CheckAIQuota(读判)
+// 与 RecordAICall(后增) 两步分离写法造成的并发超额。
+// 返回 false 表示配额已满（调用方应降级为规则话术，不发起模型请求）。
 //
-// 商业化 M5 灰度（2026-08-23）：billing_enforced=false 时恒放行（照常记 usage_records），
-// 仅日志提示超额——上线初期防误伤；true 时走完整配额逻辑。
-// 扣减优先级（实施文档 §二）：
+// 关键修复：在 enforced 且 used<max 时，用条件 UPDATE
 //
-//	月配额未超(used<max) → 直接用
-//	月配额已超 且 ai_call_balance>0 → 原子扣增量余额（买断资产）
-//	都没有 → 返回 false 降级规则话术
-func CheckAIQuota(tenantID uint) bool {
+//	UPDATE tenants SET used_ai_calls=used_ai_calls+1 WHERE id=? AND used_ai_calls<?
+//
+// 原子地完成"判定+预留"，并发请求不会再出现 used_ai_calls 超过 max 仍被放行。
+func ConsumeAIQuota(tenantID uint) bool {
 	if tenantID == 0 {
 		return true // 无租户语境（平台内部）不限
 	}
 	used, max, balance, err := GetTenantQuotaView(tenantID)
 	if err != nil {
 		log.Printf("[Usage] 配额查询失败 tenant=%d: %v", tenantID, err)
+		RecordAICall(tenantID)
 		return true // 查询异常放行（fail-open，避免计量故障影响客户对话）
 	}
 
@@ -70,30 +67,47 @@ func CheckAIQuota(tenantID uint) bool {
 		if max != 0 && used >= max && balance <= 0 {
 			log.Printf("[Usage] [灰度] 租户%d 已超配额(used=%d max=%d)，billing_enforced=false 放行仅留痕", tenantID, used, max)
 		}
+		// 仍累计计数 + 明细，供看板
+		db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
+			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
+		RecordAICall(tenantID)
 		return true
 	}
 
 	if max == 0 {
-		return true // 0=不限
+		// 0=不限，仍计数 + 明细
+		db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
+			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
+		RecordAICall(tenantID)
+		return true
 	}
 	if used < max {
-		return true // 月配额内直接用
+		// 原子预留一个名额：仅当仍 < max 时 +1，避免并发超额
+		res := db.DB.Model(&model.Tenant{}).Where("id = ? AND COALESCE(used_ai_calls,0) < ?", tenantID, max).
+			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
+		if res.RowsAffected == 1 {
+			RecordAICall(tenantID)
+			return true
+		}
+		// 竞态落空（被其他并发抢先占满），转增量余额
 	}
-	// 月配额已超：尝试扣增量余额（原子 UPDATE ... WHERE balance>0，防并发超扣）
+	// 月配额已超 或 竞态落空：尝试扣增量余额（原子 UPDATE ... WHERE balance>0，防并发超扣）
 	if DeductBalance(tenantID) {
-		log.Printf("[Usage] 租户%d 月配额已超，本次走增量余额（扣1次）", tenantID)
+		log.Printf("[Usage] 租户%d 月配额已超/满，本次走增量余额（扣1次）", tenantID)
+		RecordAICall(tenantID)
 		return true
 	}
 	return false
 }
 
-// ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（缺口5修复，2026-08-22）
+// ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（H4 修复，2026-08-22 初版）
 //
 // 根因：used_ai_calls 此前永不重置（usage_reset_at 字段零引用），累计值比对月配额，
-// 租户用满后永久降级规则话术。
+// 租户用满后永久降级规则话术。H4 补充：订阅 token 桶(monthly_token_used) 当初同样
+// 只会在发放付费包时重置，月底从不自动清零，导致付费租户第二月 token 配额永久耗尽。
 // 规则：
-//   - usage_reset_at 为空 或 早于本月（< 本月1日0点）→ used_ai_calls 清零、usage_reset_at=执行日
-//     （比较锚点是"评估时刻的本月起点"，记录执行日与记录1号语义等价）
+//   - usage_reset_at 为空 或 早于本月（< 本月1日0点）→ ① used_ai_calls 清零
+//     ② monthly_token_used 清零（订阅桶月底清零）、usage_reset_at=执行日
 //   - 单条 UPDATE 带条件判定，天然幂等；多实例并发执行安全（同月内第二次执行命中 0 行）
 //
 // 由 main.go 每小时 ticker 调用（Redis 选主，多实例仅主节点执行；未启用 Redis 各实例直跑亦幂等）
@@ -102,17 +116,17 @@ func ResetAllTenantsMonthlyUsageIfDue() int {
 	monthStart := time.Now().Format("2006-01-02") + " 00:00:00"
 	res := db.DB.Exec(`UPDATE tenants SET
 		used_ai_calls = 0,
+		monthly_token_used = 0,
 		usage_reset_at = ?::timestamp,
 		updated_at = NOW()
-		WHERE (usage_reset_at IS NULL OR usage_reset_at < ?::timestamp)
-		  AND COALESCE(used_ai_calls, 0) > 0`,
+		WHERE (usage_reset_at IS NULL OR usage_reset_at < ?::timestamp)`,
 		monthStart, monthStart)
 	if res.Error != nil {
 		log.Printf("[Usage] 月度重置执行失败: %v", res.Error)
 		return 0
 	}
 	if res.RowsAffected > 0 {
-		log.Printf("[Usage] 月度用量重置完成：%d 个租户 used_ai_calls 清零（reset_at→%s）",
+		log.Printf("[Usage] 月度用量重置完成：%d 个租户 used_ai_calls/monthly_token_used 清零（reset_at→%s）",
 			res.RowsAffected, monthStart)
 	}
 	return int(res.RowsAffected)

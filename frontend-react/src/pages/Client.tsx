@@ -1,9 +1,13 @@
+// C 端客户对话页：访客身份以 visitor_key 标识（避免凭客户 ID 越权读取对话）
+// 首次进入若无 visitor_key 则向后端申请，后续会话持久化复用，保证同一访客身份连续
 import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 
 const API = '/api/v1'
 // 本地持久化客户身份 ID，避免刷新后会话丢失（匿名访客态）
 const LS_ID = 'scrm_customer_id'
+// C3：访客密钥，匿名访问 /chat/history、/chat/welcome 必须携带，防横向越权
+const LS_KEY = 'scrm_visitor_key'
 
 type Msg = { id?: number | string; conversation_id?: number; sender_type: string; content: string; created_at?: string }
 
@@ -33,7 +37,7 @@ export default function Client() {
   function scrollBottom() { setTimeout(() => { if (listRef.current) listRef.current.scrollTop = listRef.current.scrollHeight }, 50) }
 
   async function loadHistory() {
-    const r = await fetch(`${API}/chat/history?customer_id=${custId.current}&limit=50`)
+    const r = await fetch(`${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`)
     const j = await r.json()
     if (j.code === 0 && j.data) {
       setMsgs(j.data)
@@ -42,19 +46,19 @@ export default function Client() {
     }
   }
   async function callWelcome() {
-    const r = await fetch(`${API}/chat/welcome`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current }) })
+    const r = await fetch(`${API}/chat/welcome`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current, visitor_key: localStorage.getItem(LS_KEY) || '' }) })
     const j = await r.json()
     if (j.code === 0 && j.data) {
       setConvId(j.data.conversation_id || 0)
       const w = j.data.welcome_message
       if (w) { setMsgs((m) => [...m, w]); localIds.current.add(String(w.id)) }
     } else {
-      setMsgs((m) => [...m, { sender_type: 'system', content: '你好，欢迎咨询！我正在为你匹配专属顾问，请稍等~' }])
+      setMsgs((m) => [...m, { sender_type: 'system', content: '你好，欢迎咨询！我正在为你匹配专属顾问，请稍候~' }])
     }
     scrollBottom()
   }
   async function poll() {
-    let url = convId ? `${API}/chat/history?conversation_id=${convId}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&limit=50`
+    let url = convId ? `${API}/chat/history?conversation_id=${convId}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
     try {
       const r = await fetch(url); const j = await r.json()
       if (j.code === 0 && j.data && j.data.length) {
@@ -89,6 +93,8 @@ export default function Client() {
         // 身份合并（OneID）：服务端可能将本次访客合并到已有客户，需同步更新本地 ID 与持久化
         const merged = j.data.merged_customer_id || j.data.mergedCustomerId
         if (merged && merged > 0 && merged !== custId.current) { custId.current = merged; localStorage.setItem(LS_ID, String(merged)) }
+        // C3：服务端下发的访客密钥持久化，供 history/welcome 携带
+        if (j.data.visitor_key) localStorage.setItem(LS_KEY, j.data.visitor_key)
         const dbId = j.data.customer_msg_id
         if (dbId) setMsgs((m) => m.map((x) => x.id === temp.id ? { ...x, id: dbId } : x))
         let replies: Msg[] = []
@@ -134,7 +140,7 @@ export default function Client() {
     const stored = localStorage.getItem(LS_ID)
     if (override) custId.current = parseInt(override)
     else if (stored) custId.current = parseInt(stored)
-    else { (async () => { try { const r = await fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }); const j = await r.json(); if (j.code === 0 && j.customer_id) { custId.current = j.customer_id; localStorage.setItem(LS_ID, String(custId.current)) } } catch {} })() }
+    else { (async () => { try { const r = await fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }); const j = await r.json(); if (j.code === 0 && j.customer_id) { custId.current = j.customer_id; localStorage.setItem(LS_ID, String(custId.current)); if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key) } } catch {} })() }
     initTurnstile()
     loadHistory().then(() => { if (convId === 0 && custId.current) callWelcome() })
     setOnline(isWork())

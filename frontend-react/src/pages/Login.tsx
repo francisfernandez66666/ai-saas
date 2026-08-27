@@ -7,9 +7,13 @@ type Mode = 'login' | 'change' | 'resetReq' | 'resetConfirm'
 
 // 登录/改密/找回密码页：支持租户码登录、首登强改密、验证码找回；
 // 依赖 /api/v1/auth/login、/api/v1/auth/change-password、/api/v1/auth/reset-password、/api/v1/auth/verify-reset-code
+// 后端 MustChangePasswordGuard 拦截后由 api.ts 跳转 /login?mcp=1，本页据此直接进入改密表单
 export default function Login() {
   const brand = useBrand()
-  const [mode, setMode] = useState<Mode>('login')
+  // 后端 MustChangePasswordGuard 拦截后由 api.ts 跳转 /login?mcp=1，直接进入改密表单
+  const [mode, setMode] = useState<Mode>(
+    new URLSearchParams(location.search).get('mcp') === '1' ? 'change' : 'login',
+  )
   const [login, setLogin] = useState({ tenant_code: '', username: '', password: '' })
   const [change, setChange] = useState({ old_password: '', new_password: '', confirm: '' })
   const [reset, setReset] = useState({ username: '', contact: '', code: '', new_password: '' })

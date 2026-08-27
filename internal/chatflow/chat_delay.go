@@ -16,6 +16,11 @@ import (
 
 var delayCancelMap sync.Map // key: customerID(uint), value: chan struct{}
 
+// conversationMu 客户级会话创建互斥锁表（包级单例，跨请求共享）
+// 修复 C4：原实现每次调用 new 一个 sync.Map，锁完全不生效，导致并发同客户请求
+// 各自创建重复会话/重复 FlowStateMachine 行。改为包级 sync.Map，同一客户共享一把锁。
+var conversationMu sync.Map // key: customerID(uint), value: *sync.Mutex
+
 // RegisterDelayCancel 注册一个延迟取消通道，返回通道
 // 在time.Sleep前调用，用于替代不可取消的sleep
 func RegisterDelayCancel(customerID uint) chan struct{} {
@@ -63,9 +68,6 @@ func CancelDelay(customerID uint) {
 // GetConversationMutex 获取客户级别的会话创建互斥锁
 // 同一客户共享一把锁，不同客户互不阻塞
 func GetConversationMutex(customerID uint) *sync.Mutex {
-	// 函数级会话互斥表（每次调用新建，作用于本次获取流程，不同客户互不阻塞）
-	var conversationMu sync.Map // key: customerID(uint), value: *sync.Mutex
-
 	mu, _ := conversationMu.LoadOrStore(customerID, &sync.Mutex{})
 	return mu.(*sync.Mutex)
 }

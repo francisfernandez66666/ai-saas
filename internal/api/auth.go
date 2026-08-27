@@ -171,12 +171,20 @@ func Register(c *gin.Context) {
 		return
 	}
 
-	// 3. 写入数据库（默认 role=sales，tenant_id=0，即默认租户）
+	// 3. 写入数据库（默认 role=sales，绑定到当前生效租户）
+	// H3 修复：原为 TenantID: new(uint)=0，导致自注册账号 tenant_id=0，
+	// 被 TenantConsistency 全接口 403，账号完全不可用且 Backfill 用 IS NULL 救不回。
+	// 现改为绑定到由 Host 解析出的生效租户（全局 TenantResolver 已保证存在，否则已 403）。
+	tid := db.EffectiveTenantIDFromGin(c)
+	if tid == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无法解析所属租户，注册失败", "data": nil})
+		return
+	}
 	newUser := model.User{
 		Username:     req.Username,
 		PasswordHash: string(hashedPassword),
-		Role:         "sales",   // 新账号默认为销售权限
-		TenantID:     new(uint), // 默认租户，可后台分配不同tid
+		Role:         "sales",  // 新账号默认为销售权限
+		TenantID:     &tid,      // 绑定到生效租户
 		Email:        req.Email, // 绑定邮箱（已验证）
 	}
 	result := db.DB.Create(&newUser)

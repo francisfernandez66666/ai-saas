@@ -116,6 +116,7 @@ func CreateCustomer(c *gin.Context) {
 		DecisionCycle:  req.DecisionCycle,
 		AssignedUserID: req.AssignedUserID,
 		Remark:         req.Remark,
+		VisitorKey:     model.GenerateVisitorKey(), // C3：创建即下发访客密钥
 		Status:         1,
 	}
 

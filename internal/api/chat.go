@@ -95,6 +95,12 @@ func Chat(c *gin.Context) {
 		return
 	}
 
+	// C3：懒下发访客密钥（历史客户可能没有），供客户端持久化并在 history/welcome 携带
+	if customer.VisitorKey == "" {
+		customer.VisitorKey = model.GenerateVisitorKey()
+		db.RQ(c).Model(&customer).Update("visitor_key", customer.VisitorKey)
+	}
+
 	// 2. 获取或创建会话（竞态保护：先查再建，防止并发请求重复创建）
 	//
 	// 原Bug：客户连发多条消息时，多个并发请求都看到 conversation_id=0，
@@ -894,6 +900,7 @@ skipStoreVisitFast:
 			NewTags:          newTags,                     // 本轮新打上的标签
 			PendingHandoff:   conversation.PendingHandoff, // 软接管状态
 			MergedCustomerID: uint(leadCapturedResult),    // OneID合并：>0表示前端需切换customer_id
+			VisitorKey:       customer.VisitorKey,         // C3：返回访客密钥
 		},
 	})
 }
@@ -1928,7 +1935,23 @@ func Welcome(c *gin.Context) {
 	if result.Error != nil {
 		c.JSON(http.StatusNotFound, gin.H{
 			"code":    404,
-			"message": "客户不存在，可用customer_id=1测试",
+			"message": "客户不存在",
+		})
+		return
+	}
+
+	// C3：懒下发访客密钥（历史客户可能没有），但匿名访问必须携带匹配密钥
+	if customer.VisitorKey == "" {
+		customer.VisitorKey = model.GenerateVisitorKey()
+		db.RQ(c).Model(&customer).Update("visitor_key", customer.VisitorKey)
+	}
+	// 横向越权校验：登录用户(顾问/管理员)放行；匿名必须 ?visitor_key= 与目标一致。
+	// 注意：Welcome 不向匿名返回 visitor_key（密钥只在 /chat/guest、/chat 创建/加载时下发），
+	// 避免凭 customer_id 即可窃取的密钥导致防线失效。
+	if !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+		c.JSON(http.StatusForbidden, gin.H{
+			"code":    403,
+			"message": "无权访问该客户会话",
 		})
 		return
 	}
@@ -2049,6 +2072,7 @@ func CreateGuest(c *gin.Context) {
 		BrandAwareness:   0.3,
 		ResistanceType:   "none",
 		AssignedUserID:   assignedUserID, // 0=未分配顾问，留资后才分配
+		VisitorKey:       model.GenerateVisitorKey(), // C3：创建即下发访客密钥
 		Status:           1,
 	}
 
@@ -2073,10 +2097,11 @@ func CreateGuest(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"code":        0,
-		"customer_id": customer.ID,
-		"name":        customer.Name,
-		"message":     "访客创建成功",
+		"code":         0,
+		"customer_id":  customer.ID,
+		"name":         customer.Name,
+		"visitor_key":  customer.VisitorKey, // C3: 返回密钥供客户端持久化并在 history/welcome 携带
+		"message":      "访客创建成功",
 	})
 }
 

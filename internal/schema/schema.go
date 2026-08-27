@@ -139,6 +139,7 @@ type ChatResponse struct {
 	MergedNote        string      `json:"merged_note"`        // Bug 1 修复：合并说明文案（merged=true 时才有值）
 	MergedCustomerID  uint        `json:"merged_customer_id"` // OneID合并：留资时手机号匹配到老客户，返回老客户ID（前端切换）
 	CustomerMsgID     uint        `json:"customer_msg_id"`    // 客户本条消息的真实DB ID（相似消息合并等分支用，供前端替换temp ID）
+	VisitorKey        string      `json:"visitor_key"`        // C3：访客密钥，客户端应持久化并在 /chat/history、/chat/welcome 携带以通过横向越权校验
 }
 
 // StrategyInfo 策略信息（返回给前端的策略决策详情）

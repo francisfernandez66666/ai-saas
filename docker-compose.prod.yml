@@ -2,12 +2,14 @@
 # AI-SCRM 生产部署编排（P4 本地交付，2026-08-26）
 #
 # 用法：
-#   1. 准备 .env（参考 .env.example，重点 DB_/REDIS_/SMTP_）
+#   1. 准备 .env（参考 .env.example，重点 DB_/REDIS_/SMTP_/JWT_SECRET/AI_MOCK_MODE）
 #   2. 放置行业包到 ./packs/*.aipack（可选，启动后也可通过超管后台上传）
 #   3. docker compose -f docker-compose.prod.yml up -d --build
 #
-# 架构提示：AI 调用统一走平台 AI 网关（LLM_GATEWAY_URL），
-# 本地部署无需任何大模型厂商密钥——token 消耗按三桶计费。
+# 注意：
+#   - 生产必须显式设置 JWT_SECRET（未设置启动直接失败）与 AI_MOCK_MODE=false。
+#   - 图片/语音/微信 inbound 消息当前不支持（对话管线仅处理文本 MessageType:"text"），
+#     未集成 OCR（tessdata 已移除）。
 # ============================================================
 services:
   postgres:
@@ -43,6 +45,10 @@ services:
     environment:
       SERVER_PORT: "8080"
       GIN_MODE: release
+      # C2：生产必须显式关闭模拟模式，否则不会调用真实 AI
+      AI_MOCK_MODE: "false"
+      # C1：生产必须配置强随机 JWT 密钥（未设置则启动直接失败）
+      JWT_SECRET: ${JWT_SECRET}
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: ${DB_USER:-ai_scrm}

@@ -11,6 +11,7 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"unicode"
 
@@ -18,11 +19,8 @@ import (
 	"ai-scrm/internal/model"
 )
 
-// GetBoundPackPrompts 收集租户绑定包（行业+企业）的定制系统指令
-func GetBoundPackPrompts(tenantID uint) []string {
-	if tenantID == 0 {
-		return nil
-	}
+// boundPackCodes 取租户绑定包的行业+企业 code（去重）
+func boundPackCodes(tenantID uint) []string {
 	var bind model.TenantPackBinding
 	if err := db.DB.Where("tenant_id = ?", tenantID).First(&bind).Error; err != nil {
 		return nil
@@ -31,6 +29,15 @@ func GetBoundPackPrompts(tenantID uint) []string {
 	if bind.EnterpriseCode != "" && bind.EnterpriseCode != bind.PackCode {
 		codes = append(codes, bind.EnterpriseCode)
 	}
+	return codes
+}
+
+// GetBoundPackPrompts 收集租户绑定包（行业+企业）的定制系统指令
+func GetBoundPackPrompts(tenantID uint) []string {
+	if tenantID == 0 {
+		return nil
+	}
+	codes := boundPackCodes(tenantID)
 	var out []string
 	for _, c := range codes {
 		var cfg model.SystemConfig
@@ -52,6 +59,104 @@ func GetBoundPackPrompts(tenantID uint) []string {
 			out = append(out, s)
 		}
 	}
+	return out
+}
+
+// GetBoundPackParams 收集租户绑定包（行业+企业）的 params.json 参数约束
+// 支持 {"params": {...}} 或裸对象；扁平化为可读 "key: value" 行
+func GetBoundPackParams(tenantID uint) []string {
+	if tenantID == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range boundPackCodes(tenantID) {
+		var cfg model.SystemConfig
+		if err := db.DB.Where("tenant_id = ? AND \"key\" = ?", tenantID, "pack_params_"+c).
+			First(&cfg).Error; err != nil {
+			continue
+		}
+		out = append(out, flattenJSONLines(cfg.Value, "")...)
+	}
+	return out
+}
+
+// GetBoundPackMindset 收集租户绑定包（行业+企业）的 mindset.json 心态/策略指引
+// 支持 {"mindset": ["...","..."]} / {"guidance": "..."} / 字符串数组
+func GetBoundPackMindset(tenantID uint) []string {
+	if tenantID == 0 {
+		return nil
+	}
+	var out []string
+	for _, c := range boundPackCodes(tenantID) {
+		var cfg model.SystemConfig
+		if err := db.DB.Where("tenant_id = ? AND \"key\" = ?", tenantID, "pack_mindset_"+c).
+			First(&cfg).Error; err != nil {
+			continue
+		}
+		var raw any
+		if json.Unmarshal([]byte(cfg.Value), &raw) != nil {
+			continue
+		}
+		switch v := raw.(type) {
+		case []any:
+			for _, it := range v {
+				if s := strings.TrimSpace(fmt.Sprint(it)); s != "" {
+					out = append(out, s)
+				}
+			}
+		case map[string]any:
+			if arr, ok := v["mindset"].([]any); ok {
+				for _, it := range arr {
+					if s := strings.TrimSpace(fmt.Sprint(it)); s != "" {
+						out = append(out, s)
+					}
+				}
+			}
+			if g, ok := v["guidance"].(string); ok && strings.TrimSpace(g) != "" {
+				out = append(out, strings.TrimSpace(g))
+			}
+		}
+	}
+	return out
+}
+
+// flattenJSONLines 将 JSON 值扁平化为 "k: v" 行（嵌套以 parent.k 表达）
+func flattenJSONLines(raw, prefix string) []string {
+	var v any
+	if err := json.Unmarshal([]byte(raw), &v); err != nil {
+		// 非 JSON 则原样返回
+		if s := strings.TrimSpace(raw); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+	var out []string
+	var walk func(val any, p string)
+	walk = func(val any, p string) {
+		switch t := val.(type) {
+		case map[string]any:
+			for k, sub := range t {
+				key := k
+				if p != "" {
+					key = p + "." + k
+				}
+				walk(sub, key)
+			}
+		case []any:
+			for i, sub := range t {
+				walk(sub, fmt.Sprintf("%s[%d]", p, i))
+			}
+		default:
+			out = append(out, fmt.Sprintf("%s: %v", p, t))
+		}
+	}
+	if m, ok := v.(map[string]any); ok {
+		if inner, ok := m["params"].(map[string]any); ok {
+			walk(inner, "")
+			return out
+		}
+	}
+	walk(v, prefix)
 	return out
 }
 

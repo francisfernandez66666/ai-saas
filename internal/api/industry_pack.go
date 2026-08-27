@@ -24,6 +24,7 @@ package api
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -219,6 +220,91 @@ func openActivePack(packID uint) (*industrypack.PackContent, *model.IndustryPack
 	return pc, &pack, nil
 }
 
+// openActivePackByCode 按 code 取已上架包并开包（继承链回溯用）
+func openActivePackByCode(code string) (*industrypack.PackContent, *model.IndustryPack, error) {
+	var pack model.IndustryPack
+	if err := db.DB.Where("code = ? AND status = ?", code, "active").First(&pack).Error; err != nil {
+		return nil, nil, fmt.Errorf("祖先包 %s 不存在或未上架", code)
+	}
+	pc, _, err := openActivePack(pack.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return pc, &pack, nil
+}
+
+// applyAncestorChain 沿 ParentCode 向上物化全部祖先包到租户级（department_id=NULL），
+// 保证部门语境下内容继承可见。祖先缺失/开包失败仅告警跳过（不阻断部门包绑定），
+// 但企业级祖先必须成功——否则部门包失去依托。
+func applyAncestorChain(tenantID uint, startParentCode string) error {
+	code := startParentCode
+	visited := map[string]bool{}
+	for code != "" && !visited[code] {
+		visited[code] = true
+		pc, pack, err := openActivePackByCode(code)
+		if err != nil {
+			log.Printf("[IndustryPack] 继承链回溯 %s 失败: %v（跳过）", code, err)
+			break
+		}
+		if _, err := industrypack.ApplyToTenant(pc, tenantID, 0); err != nil {
+			return fmt.Errorf("祖先包 %s 物化失败: %w", code, err)
+		}
+		code = pack.ParentCode
+	}
+	return nil
+}
+
+// AutoApplyDefaultIndustryPack 启动期自动应用默认行业包（auto_rox 落地）
+// 对所有尚未绑定任何包的租户，绑定 DEFAULT_INDUSTRY_PACK_CODE（默认 "auto"）行业包，
+// 可选叠加 DEFAULT_ENTERPRISE_PACK_CODE 企业包。幂等：已绑定租户跳过。
+// 前提：对应 .aipack 已由超管上传并上架（data/packs 落盘）；未上传则静默跳过。
+func AutoApplyDefaultIndustryPack() {
+	indCode := os.Getenv("DEFAULT_INDUSTRY_PACK_CODE")
+	if indCode == "" {
+		indCode = "auto"
+	}
+	var tenants []model.Tenant
+	if err := db.DB.Find(&tenants).Error; err != nil {
+		log.Printf("[IndustryPack] 自动应用：列举租户失败 %v", err)
+		return
+	}
+	for _, t := range tenants {
+		var cnt int64
+		db.DB.Model(&model.TenantPackBinding{}).Where("tenant_id = ?", t.ID).Count(&cnt)
+		if cnt > 0 {
+			continue
+		}
+		ipc, ipack, err := openActivePackByCode(indCode)
+		if err != nil || ipack.PackLevel != industrypack.LevelIndustry {
+			continue
+		}
+		if _, err := industrypack.ApplyToTenant(ipc, t.ID, 0); err != nil {
+			log.Printf("[IndustryPack] 自动应用：租户 %d 行业包物化失败 %v", t.ID, err)
+			continue
+		}
+		entID := (*uint)(nil)
+		entCodeS, entVerS := "", ""
+		if entCode := os.Getenv("DEFAULT_ENTERPRISE_PACK_CODE"); entCode != "" {
+			if epc, epack, e2 := openActivePackByCode(entCode); e2 == nil && epack.PackLevel == industrypack.LevelEnterprise {
+				if _, e3 := industrypack.ApplyToTenant(epc, t.ID, 0); e3 == nil {
+					id := epack.ID
+					entID = &id
+					entCodeS, entVerS = epack.Code, epack.Version
+				}
+			}
+		}
+		if err := db.DB.Create(&model.TenantPackBinding{
+			TenantID: t.ID, PackID: ipack.ID, PackCode: ipack.Code,
+			AppliedVersion:   ipack.Version,
+			EnterprisePackID: entID, EnterpriseCode: entCodeS, EnterpriseVersion: entVerS,
+		}).Error; err != nil {
+			log.Printf("[IndustryPack] 自动应用：租户 %d 绑定写入失败 %v", t.ID, err)
+			continue
+		}
+		log.Printf("[IndustryPack] 自动应用默认行业包 %s 到租户 %d（企业包 %s）", ipack.Code, t.ID, entCodeS)
+	}
+}
+
 // TenantPackBind POST /api/v1/admin/packs/bind
 // {industry_pack_id 必填, enterprise_pack_id 可选}——两级组合绑定并物化
 func TenantPackBind(c *gin.Context) {
@@ -398,6 +484,13 @@ func TenantPackBindDept(c *gin.Context) {
 			"code":    400,
 			"message": fmt.Sprintf("部门包[%s]挂靠企业[%s]，与本租户企业包[%s]不匹配", pack.Code, pack.ParentCode, bind.EnterpriseCode),
 		})
+		return
+	}
+	// 继承链物化：部门包仅写入本部门层；其企业包/行业包祖先内容必须落到租户级
+	// （department_id=NULL）才能被本部门语境召回（strategy 查询按 NULL+本部门并集）。
+	// 否则仅绑部门包会导致祖先内容完全缺失（P2 修复： advertised 继承但未实现）。
+	if err := applyAncestorChain(ti.ID, pack.ParentCode); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "祖先包物化失败: " + err.Error()})
 		return
 	}
 	res, err := industrypack.ApplyToTenant(pc, ti.ID, req.DepartmentID)

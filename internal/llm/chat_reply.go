@@ -84,12 +84,12 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	canPromote := customer.CanPromote()
 
 	// ---- 计量与配额（SaaS 计费）：硬边界拦截不消耗配额，走到这里才算一次 AI 回复 ----
+	// H4：ConsumeAIQuota 原子地完成"判定+预留+计量"，消除并发超额
 	tenantID := customer.TenantID
-	if !service.CheckAIQuota(tenantID) {
+	if !service.ConsumeAIQuota(tenantID) {
 		log.Printf("[Usage] 租户%d AI 配额已超限，本次降级为规则话术（不发起模型请求）", tenantID)
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
-	service.RecordAICall(tenantID)
 
 	// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
 	// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）

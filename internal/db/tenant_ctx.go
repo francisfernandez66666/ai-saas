@@ -4,6 +4,7 @@ package db
 import (
 	"context"
 	"log"
+	"net/http"
 
 	"ai-scrm/internal/model"
 	"github.com/gin-gonic/gin"
@@ -88,6 +89,26 @@ func EffectiveTenantIDFromGin(c *gin.Context) uint {
 	return 0
 }
 
+// failClosedOnMissingTenant H2：当业务路由缺少生效租户且非平台超管时 fail-closed，
+// 返回 true 表示已终止请求。平台超管(tid=0 + role=super_admin)的全局视图是预期行为，放行。
+// 设计：普通角色出现 tid==0 说明路由漏挂 TenantResolver（如原 C3 的 /chat/history），
+// 绝不能退回"不过滤全量查询"，否则跨租户泄露；此处直接拒绝。无 role 键的内部/白名单调用不受影响。
+func failClosedOnMissingTenant(c *gin.Context) bool {
+	if c == nil {
+		return false
+	}
+	if v, ok := c.Get("role"); ok {
+		if r, _ := v.(string); r != model.RoleSuperAdmin {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+				"code":    500,
+				"message": "租户上下文缺失，拒绝访问（疑似路由未挂载租户解析中间件）",
+			})
+			return true
+		}
+	}
+	return false
+}
+
 // PQ 预置可见读会话：租户私有(tenant_id=tid) + 系统预置(tenant_id=0) 联合可见
 // 仅用于预置语义表的"读"：tags/templates/features/brands/car_models/
 // model_specs/competitor_compares/knowledge_fragments/flow_definitions/tag_rules 等
@@ -134,6 +155,11 @@ func RQ(c *gin.Context) *gorm.DB {
 	q := DB.WithContext(ctx)
 	if tid > 0 {
 		q = q.Where("tenant_id = ?", tid)
+	} else {
+		// H2：tid==0 且非超管 → fail-closed（绝不退回全量查询）
+		if failClosedOnMissingTenant(c) {
+			return q.Where("1 = 0")
+		}
 	}
 	return q
 }

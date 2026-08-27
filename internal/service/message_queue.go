@@ -57,11 +57,14 @@ type CustomerQueue struct {
 }
 
 // getProcessingLockTimeout 获取processing锁超时时间
-// 修复：改为从后台配置读取(processing_lock_timeout)，无需发版即可调节
+// 修复 C5：改为从后台配置读取(processing_lock_timeout)，无需发版即可调节
 // 根因：前一个请求卡死时，新请求不会无限等待
-// 默认90秒——正常处理最长~106秒(25s合并+6sAI+75s延迟)，超过90秒说明异常卡死
+// 默认600秒——正常处理在最坏情况下（双供应商全失败重试 + 25s合并 + 75s模拟延迟）
+// 可能达到 ~5 分钟，原默认值 90s 会误触发自愈，把正常在途批次当成卡死清空。
+// 上调到 600s 后，自愈仅在 goroutine 真正死掉（如连接断开但 sleep 未结束）时触发，
+// 触发后清空残留消息是安全回收（死 goroutine 不会再处理它们），避免重复/乱序回复。
 func getProcessingLockTimeout(tenantID uint) time.Duration {
-	sec := DefaultSystemConfigService.GetIntForTenant(tenantID, "processing_lock_timeout", 90)
+	sec := DefaultSystemConfigService.GetIntForTenant(tenantID, "processing_lock_timeout", 600)
 	return time.Duration(sec) * time.Second
 }
 

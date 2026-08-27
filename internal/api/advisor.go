@@ -1441,6 +1441,31 @@ func GetChatHistory(c *gin.Context) {
 		limit = 200
 	}
 
+	// C3：横向越权防线。匿名请求必须携带与目标客户一致的 visitor_key；
+	// 登录用户（顾问/管理员）直接放行（其数据范围由各自接口门禁控制）。
+	// 解析出目标 customerID 后做一次校验。
+	targetCustomerID := uint(customerID)
+	if conversationID > 0 {
+		var conv model.Conversation
+		db.RQ(c).Where("id = ?", conversationID).Limit(1).Find(&conv)
+		if conv.ID > 0 {
+			targetCustomerID = conv.CustomerID
+		}
+	}
+	if targetCustomerID > 0 {
+		var cust model.Customer
+		if db.RQ(c).First(&cust, targetCustomerID).Error == nil {
+			if !middleware.CheckVisitorKey(c, cust.VisitorKey) {
+				c.JSON(http.StatusForbidden, schema.Response{
+					Code:    403,
+					Message: "无权访问该客户聊天记录",
+					Data:    nil,
+				})
+				return
+			}
+		}
+	}
+
 	query := db.RQ(c).Model(&model.Message{})
 
 	// 优先按会话ID查询

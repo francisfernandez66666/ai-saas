@@ -291,6 +291,11 @@ var skipTenantPaths = map[string]bool{
 	"/api/v1/plans":             true,
 	// 公开品牌配置下发（按 Host 解析租户白标；平台域无租户时返回平台默认品牌）
 	"/api/v1/public/branding": true,
+	// 支付网关异步回调：服务端到服务端，靠签名校验而非租户上下文，跳过 Host 解析
+	"/api/v1/billing/webhook/mock":    true,
+	"/api/v1/billing/webhook/gateway": true,
+	"/api/v1/billing/webhook/wechat":  true,
+	"/api/v1/billing/webhook/alipay":  true,
 }
 
 // skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"time"
 
@@ -273,6 +274,92 @@ func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) 
 	writeOrderAudit(c, *fresh.TenantID, action, fresh)
 	service.PublishPaymentEvent(fresh)
 	return true, nil
+}
+
+// BillingWebhook POST /api/v1/billing/webhook/:channel —— 支付网关异步回调（无需鉴权）
+// 校验签名 → 定位订单 → 幂等到账 → 发放权益。PSP 到账后由服务端到服务端调用，
+// 故不可依赖登录态；安全性来自网关签名校验（VerifyGatewaySign）。
+func BillingWebhook(c *gin.Context) {
+	channel := c.Param("channel")
+	var cb struct {
+		OutTradeNo  string `json:"out_trade_no"`
+		OrderNo     string `json:"order_no"`
+		TradeStatus string `json:"trade_status"` // TRADE_SUCCESS / SUCCESS
+		Sign        string `json:"sign"`
+	}
+	if err := c.ShouldBindJSON(&cb); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "回调参数错误"})
+		return
+	}
+	orderNo := cb.OrderNo
+	if orderNo == "" {
+		orderNo = cb.OutTradeNo
+	}
+	if orderNo == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "缺少订单号"})
+		return
+	}
+	// 网关签名密钥（与 CreatePayment 对称）
+	key := ""
+	if service.DefaultSystemConfigService != nil {
+		key = service.DefaultSystemConfigService.GetString("pay_gateway_key", "")
+	}
+	if key == "" {
+		key = os.Getenv("PAY_GATEWAY_KEY")
+	}
+	if !service.VerifyGatewaySign(key, orderNo, cb.TradeStatus, cb.Sign) {
+		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "签名校验失败"})
+		return
+	}
+	if cb.TradeStatus != "TRADE_SUCCESS" && cb.TradeStatus != "SUCCESS" {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "非成功状态，忽略"})
+		return
+	}
+	order, flowed, err := service.ConfirmOrderByChannel(orderNo, channel)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"code":    0,
+		"message": map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed],
+		"data":    gin.H{"order_no": order.OrderNo, "flowed": flowed},
+	})
+}
+
+// RefundOrder POST /api/v1/billing/orders/:id/refund —— 管理员发起退款（幂等）
+func RefundOrder(c *gin.Context) {
+	tid := tenantIDOf(c)
+	var order model.BillingOrder
+	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		return
+	}
+	o, flowed, err := service.MarkOrderRefunded(order.ID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		return
+	}
+	writeOrderAudit(c, tid, "order_refund", o)
+	msg := map[bool]string{true: "退款成功（已支付→已退款）", false: "订单当前状态不可退款或已退过"}[flowed]
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg, "data": o})
+}
+
+// RequestInvoice POST /api/v1/billing/orders/:id/invoice —— 申请发票
+func RequestInvoice(c *gin.Context) {
+	tid := tenantIDOf(c)
+	var order model.BillingOrder
+	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		return
+	}
+	o, err := service.RequestInvoice(order.ID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		return
+	}
+	writeOrderAudit(c, tid, "order_invoice_request", o)
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "发票申请已提交", "data": o})
 }
 
 // writeOrderAudit 订单链路审计（异步写，失败不影响主流程）

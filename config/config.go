@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -305,6 +306,18 @@ func LoadConfig() *Config {
 			ExpireHours: getEnvInt("JWT_EXPIRE_HOURS", 24),
 		},
 	}
+
+	// 安全底线（C1）：非 debug 环境下禁止保留默认/空 JWT 密钥，否则任何人可伪造 super_admin 令牌接管平台
+	if GlobalConfig.Server.Mode != "debug" {
+		if GlobalConfig.JWT.Secret == "" || GlobalConfig.JWT.Secret == "ai-scrm-secret-key-change-in-production" {
+			log.Fatalf("[安全] 非 debug 环境下 JWT_SECRET 未配置或仍为默认值，拒绝启动；请在 .env / 部署环境变量中设置强随机密钥")
+		}
+	}
+	// 安全警告（C2）：生产环境若仍走模拟模式将不会调用真实 AI
+	if GlobalConfig.Server.Mode == "release" && GlobalConfig.AI.MockMode {
+		log.Printf("[安全警告] 生产环境(GIN_MODE=release)下 AI_MOCK_MODE=true，将不会调用真实 AI，请确认配置")
+	}
+
 	return GlobalConfig
 }
 

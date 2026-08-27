@@ -4,7 +4,8 @@ import { AUTH, getToken } from '../lib/api'
 type Kb = { id: number; title: string; category?: string }
 
 // /app 账号设置：改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
-// 依赖 /api/v1/auth/change-password、/api/v1/auth/email-code、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
+// 依赖 /api/v1/auth/change-password、/api/v1/auth/email/code（注意端点应为 email/code）、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
+
 export default function AppSettings() {
   const [must, setMust] = useState(false)
   // 改密
@@ -38,7 +39,9 @@ export default function AppSettings() {
   }
   async function sendCode() {
     if (!newEmail) return
-    await AUTH('/api/v1/auth/email-code', { method: 'POST', body: { email: newEmail } })
+    // H6 修复：换绑邮箱应调用绑定专用验证码接口 /auth/email/code，
+    // 原 /auth/email-code 是注册验证码接口，导致换绑验证码校验失败、换绑永久坏掉。
+    await AUTH('/api/v1/auth/email/code', { method: 'POST', body: { email: newEmail } })
     // 发送后进入 60s 倒计时，禁止重复点击
     setCd(60)
     const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)

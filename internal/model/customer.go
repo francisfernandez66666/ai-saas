@@ -2,6 +2,8 @@
 package model
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"time"
 )
@@ -43,10 +45,22 @@ type Customer struct {
 	Remark           string    `gorm:"type:text" json:"remark"`                           // 备注
 	AssignedUserID   uint      `gorm:"index" json:"assigned_user_id"`                     // 归属销售ID（J13-2026-08-27 补索引，支撑数据范围分级查询）
 	TenantID         uint      `gorm:"default:0;index" json:"-"`                          // 租户ID，0=超级管理员全局可见，非0=某租户隔离
+	VisitorKey       string    `gorm:"size:64;index" json:"visitor_key"`                 // 访客密钥（C3）：匿名访问本人聊天记录/欢迎接口的横向越权防线
 	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
 	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效
 	CreatedAt        time.Time `json:"created_at"`
 	UpdatedAt        time.Time `json:"updated_at"`
+}
+
+// GenerateVisitorKey 生成 32 字节随机十六进制访客密钥（C3 横向越权防线）
+// 用于匿名客户端证明对某个 customer 的归属，避免凭 customer_id 遍历他人聊天记录
+func GenerateVisitorKey() string {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		// 极小概率：rand 失败则用时间兜底（安全性弱但保证可用）
+		return hex.EncodeToString([]byte(time.Now().Format("20060102150405.000000000")))
+	}
+	return hex.EncodeToString(b)
 }
 
 // TableName 指定表名

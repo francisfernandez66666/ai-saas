@@ -56,7 +56,7 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "reply_speed", Key: "simple_msg_delay", Value: "8", ValueType: "number", Description: "简单消息延迟(秒)-固定值", DefaultValue: "8", SortOrder: 11},
 	{Category: "reply_speed", Key: "store_visit_first_delay", Value: "[10,15]", ValueType: "json", Description: "到店倾向第一段延迟区间(秒)[min,max]", DefaultValue: "[10,15]", SortOrder: 12},
 	{Category: "reply_speed", Key: "store_visit_second_delay", Value: "[25,45]", ValueType: "json", Description: "到店倾向第二段延迟区间(秒)[min,max]", DefaultValue: "[25,45]", SortOrder: 13},
-	{Category: "reply_speed", Key: "processing_lock_timeout", Value: "90", ValueType: "number", Description: "processing锁超时(秒)-防卡死", DefaultValue: "90", SortOrder: 14},
+	{Category: "reply_speed", Key: "processing_lock_timeout", Value: "600", ValueType: "number", Description: "processing锁超时(秒)-防卡死(C5:原90s会误杀正常在途批次)", DefaultValue: "600", SortOrder: 14},
 	{Category: "reply_speed", Key: "offline_offset_work_simple", Value: "30", ValueType: "number", Description: "线下偏移-工作/简单(秒)", DefaultValue: "30", SortOrder: 15},
 	{Category: "reply_speed", Key: "offline_offset_work_medium", Value: "60", ValueType: "number", Description: "线下偏移-工作/中等(秒)", DefaultValue: "60", SortOrder: 16},
 	{Category: "reply_speed", Key: "offline_offset_work_complex", Value: "90", ValueType: "number", Description: "线下偏移-工作/复杂(秒)", DefaultValue: "90", SortOrder: 17},
