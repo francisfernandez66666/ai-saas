@@ -20,7 +20,7 @@ import (
 
 // Department 部门表
 type Department struct {
-	ID        uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID        uint      `gorm:"primaryKey" json:"id"`                                                                   // 注释：主键ID
 	TenantID  uint      `gorm:"not null;default:0;uniqueIndex:idx_dept_tenant_name_parent,priority:1" json:"tenant_id"` // 租户ID
 	ParentID  *uint     `gorm:"uniqueIndex:idx_dept_tenant_name_parent,priority:3" json:"parent_id"`                    // 父部门ID（NULL=根部门；指针使 NULL 不参与唯一冲突）
 	Name      string    `gorm:"size:100;not null;uniqueIndex:idx_dept_tenant_name_parent,priority:2" json:"name"`       // 部门名称
@@ -28,8 +28,8 @@ type Department struct {
 	Depth     int       `gorm:"not null;default:1" json:"depth"`                                                        // 层级深度（根=1）
 	SortOrder int       `gorm:"not null;default:0" json:"sort_order"`                                                   // 同级排序
 	Status    int       `gorm:"not null;default:1" json:"status"`                                                       // 1=启用 0=停用
-	CreatedAt time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt time.Time `json:"created_at"`                                                                             // 注释：创建时间
+	UpdatedAt time.Time `json:"updated_at"`                                                                             // 注释：更新时间
 }
 
 // TableName 指定表名

@@ -13,7 +13,7 @@ import (
 
 // Tag 标签表
 type Tag struct {
-	ID          uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID          uint      `gorm:"primaryKey" json:"id"`                                                                                // 注释：主键ID
 	TenantID    uint      `gorm:"not null;default:0;uniqueIndex:idx_tag_tenant_name;uniqueIndex:idx_tag_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置，全租户可见；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
 	Name        string    `gorm:"size:50;uniqueIndex:idx_tag_tenant_name;not null" json:"name"`                                        // 标签名称（租户级唯一）
 	Code        string    `gorm:"size:50;uniqueIndex:idx_tag_tenant_code" json:"code"`                                                 // 标签编码（租户级唯一）
@@ -21,8 +21,8 @@ type Tag struct {
 	Weight      float64   `gorm:"default:1.0" json:"weight"`                                                                           // 标签权重
 	Description string    `gorm:"size:255" json:"description"`                                                                         // 描述
 	Status      int       `gorm:"default:1" json:"status"`                                                                             // 状态
-	CreatedAt   time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt   time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt   time.Time `json:"created_at"`                                                                                          // 注释：创建时间
+	UpdatedAt   time.Time `json:"updated_at"`                                                                                          // 注释：更新时间
 }
 
 // TableName 指定表名
@@ -32,7 +32,7 @@ func (Tag) TableName() string {
 
 // CustomerTag 客户标签关联表
 type CustomerTag struct {
-	ID         uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID         uint      `gorm:"primaryKey" json:"id"`                                     // 注释：主键ID
 	TenantID   uint      `gorm:"index;not null;default:0" json:"tenant_id"`                // 租户ID（SaaS多租户隔离，防跨租户打标）
 	CustomerID uint      `gorm:"uniqueIndex:idx_customer_tag;not null" json:"customer_id"` // 客户ID（联合唯一索引）
 	TagID      uint      `gorm:"uniqueIndex:idx_customer_tag;not null" json:"tag_id"`      // 标签ID（联合唯一索引）
@@ -40,7 +40,7 @@ type CustomerTag struct {
 	Source     string    `gorm:"size:30" json:"source"`                                    // 标签来源: manual/auto/ai
 	Weight     float64   `gorm:"default:1.0" json:"weight"`                                // 标签权重（单客户维度，默认1.0）
 	ExpireAt   time.Time `json:"expire_at"`                                                // 过期时间（可选，零值表示永不过期）
-	CreatedAt  time.Time `json:"created_at"` // 注释：创建时间
+	CreatedAt  time.Time `json:"created_at"`                                               // 注释：创建时间
 }
 
 // TableName 指定表名
@@ -59,7 +59,7 @@ func (CustomerTag) TableName() string {
 
 // TagRule 自动打标规则表
 type TagRule struct {
-	ID            uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID            uint      `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
 	TenantID      uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	Name          string    `gorm:"size:100;not null" json:"name"`             // 规则名称
 	RuleType      string    `gorm:"size:30;index;not null" json:"rule_type"`   // 规则类型: keyword/intent/resistance
@@ -68,8 +68,8 @@ type TagRule struct {
 	TargetTagName string    `gorm:"size:50" json:"target_tag_name"`            // 目标标签名（冗余）
 	WeightBonus   float64   `gorm:"default:1.0" json:"weight_bonus"`           // 命中后给T向量加多少权重
 	Status        int       `gorm:"default:1" json:"status"`                   // 状态: 1启用 0禁用
-	CreatedAt     time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt     time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt     time.Time `json:"created_at"`                                // 注释：创建时间
+	UpdatedAt     time.Time `json:"updated_at"`                                // 注释：更新时间
 }
 
 // TableName 指定表名
@@ -98,7 +98,7 @@ func (r *TagRule) SetMatchPatterns(patterns []string) {
 
 // TagWeightMapping 标签→T向量权重映射表
 type TagWeightMapping struct {
-	ID           uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID           uint      `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
 	TenantID     uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	TagID        uint      `gorm:"index;not null" json:"tag_id"`              // 标签ID
 	TagCode      string    `gorm:"size:50;index" json:"tag_code"`             // 标签编码（冗余）
@@ -106,8 +106,8 @@ type TagWeightMapping struct {
 	WeightDelta  float64   `gorm:"default:0.1" json:"weight_delta"`           // 权重变化量
 	Direction    string    `gorm:"size:10;default:up" json:"direction"`       // 变化方向: up(增加)/down(减少)
 	Status       int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用(软删除)
-	CreatedAt    time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt    time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt    time.Time `json:"created_at"`                                // 注释：创建时间
+	UpdatedAt    time.Time `json:"updated_at"`                                // 注释：更新时间
 }
 
 // TableName 指定表名

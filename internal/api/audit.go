@@ -79,12 +79,12 @@ func queryAuditLogs(c *gin.Context, tenantID uint) {
 
 	rows := []auditLogRow{}
 	if err := q.Order("a.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": auditQueryResult{
+	RespOK(c, "", auditQueryResult{
 		Total: total, Page: page, PageSize: pageSize, List: rows,
-	}})
+	})
 }
 
 // SuperAuditLogs GET /api/v1/super/audit-logs —— 全平台（可按租户筛选）

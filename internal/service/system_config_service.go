@@ -110,13 +110,13 @@ var DefaultConfigs = []model.SystemConfig{
 	// 修复问题5：知识库盲点兜底开关，关闭引导式提问改用查一下话术
 	{Category: "ai_chain", Key: "knowledge_blindspot_fallback_enabled", Value: "true", ValueType: "bool", Description: "知识库盲点兜底开关(true=盲点时用查一下话术)", DefaultValue: "true", SortOrder: 6},
 	// 修复问题7：注入AI的对话历史轮数，0=关闭(改用核心摘要注入)
-	{Category: "ai_chain", Key: "chat_history_rounds", Value: "0", ValueType: "number", Description: "注入AI的对话历史轮数(0=关闭改用核心摘要)", DefaultValue: "0", SortOrder: 7},
+	{Category: "ai_chain", Key: "chat_history_rounds", Value: "3", ValueType: "number", Description: "注入AI的对话历史轮数(0=关闭改用核心摘要)", DefaultValue: "3", SortOrder: 7},
 	// 修复问题2：回复延迟模式，instant=秒回无延迟，normal=正常模拟真人延迟
 	// 用途：测试/演示场景可切到instant秒回，正式环境用normal
 	{Category: "reply_speed", Key: "reply_delay_mode", Value: "normal", ValueType: "string", Description: "回复延迟模式：normal=正常延迟，instant=秒回无延迟", DefaultValue: "normal", SortOrder: 99},
 
 	// M3 分阶段模型覆盖：便宜模型跑意图识别、强模型跑话术生成；空=走全局降级链
-	{Category: "ai_chain", Key: "stage_models", Value: "{}", ValueType: "json", Description: "分阶段模型覆盖(reply/intent/strategy各选provider+model,留空走降级链)", DefaultValue: "{}", SortOrder: 8},
+	{Category: "ai_chain", Key: "stage_models", Value: "{\"evals\":{\"provider\":\"siliconflow\",\"model\":\"THUDM/GLM-4-9B-0414\"}}", ValueType: "json", Description: "分阶段模型覆盖(reply/intent/strategy/evals各选provider+model,留空走降级链)", DefaultValue: "{\"evals\":{\"provider\":\"siliconflow\",\"model\":\"THUDM/GLM-4-9B-0414\"}}", SortOrder: 8},
 	// ---- 分类5：human_takeover（人工接管类）----
 	{Category: "human_takeover", Key: "assigned_lead_ai_auto_reply", Value: "true", ValueType: "bool", Description: "已分配线索AI自动回复开关(true=顾问超时未回时AI自动回复)", DefaultValue: "true", SortOrder: 1},
 	{Category: "human_takeover", Key: "assigned_lead_ai_timeout", Value: "300", ValueType: "number", Description: "已分配线索顾问超时时间(秒)，超时后AI自动回复", DefaultValue: "300", SortOrder: 2},

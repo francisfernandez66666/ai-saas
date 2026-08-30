@@ -42,11 +42,11 @@ type feedbackReq struct {
 func CreateFeedback(c *gin.Context) {
 	var req feedbackReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "意见内容不能为空"})
+		RespErr(c, http.StatusBadRequest, 400, "意见内容不能为空")
 		return
 	}
 	if len([]rune(req.Content)) > 1000 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "意见最多1000字"})
+		RespErr(c, http.StatusBadRequest, 400, "意见最多1000字")
 		return
 	}
 	if req.TargetType == "" {
@@ -58,11 +58,11 @@ func CreateFeedback(c *gin.Context) {
 
 	// 限流：同用户每日 20 条（查表实现，免新表）
 	var today int64
-	db.DB.Model(&model.Feedback{}).
+	db.RQ(c).Model(&model.Feedback{}).
 		Where("user_id = ? AND created_at >= CURRENT_DATE", uid).
 		Count(&today)
 	if today >= feedbackDailyLimit {
-		c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "今日反馈已达上限（20条），请明日再试"})
+		RespErr(c, http.StatusTooManyRequests, 429, "今日反馈已达上限（20条），请明日再试")
 		return
 	}
 
@@ -78,13 +78,13 @@ func CreateFeedback(c *gin.Context) {
 		fb.Context = buildFeedbackContext(req.RefID)
 	}
 	if err := db.DB.Create(&fb).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "提交失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "提交失败")
 		return
 	}
 
 	service.NotifyWecom(fmt.Sprintf("【用户反馈】%s：%s「%s」",
 		username, targetTypeLabel(req.TargetType), truncateRunes(req.Content, 60)))
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "反馈已提交，感谢你的意见", "data": fb})
+	RespOK(c, "反馈已提交，感谢你的意见", fb)
 }
 
 // SuperFeedbackList GET /api/v1/super/feedbacks?status=&page=
@@ -116,12 +116,12 @@ func SuperFeedbackList(c *gin.Context) {
 	rows := []map[string]interface{}{}
 	if err := q.Order("f.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).
 		Scan(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"total": total, "page": page, "page_size": pageSize, "list": rows,
-	}})
+	})
 }
 
 // SuperResolveFeedback POST /api/v1/super/feedbacks/resolve {id, note}
@@ -131,11 +131,12 @@ func SuperResolveFeedback(c *gin.Context) {
 		Note string `json:"note"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：id 必填")
 		return
 	}
 	now := time.Now()
 	uidV, _ := c.Get("user_id")
+	// TODO-RLS: verify tenant scope (super/platform cross-tenant path)
 	res := db.DB.Model(&model.Feedback{}).
 		Where("id = ? AND status = 'open'", req.ID).
 		Updates(map[string]interface{}{
@@ -143,11 +144,11 @@ func SuperResolveFeedback(c *gin.Context) {
 			"handled_by": toUintSafe(uidV), "handled_at": now,
 		})
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "反馈不存在或已处理"})
+		RespErr(c, http.StatusNotFound, 404, "反馈不存在或已处理")
 		return
 	}
 	writeAuditSimple(c, 0, "feedback_resolve", fmt.Sprintf("feedback:%d", req.ID))
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已标记处理完成"})
+	RespOK(c, "已标记处理完成", nil)
 }
 
 // buildFeedbackContext 反馈上下文采集（脱敏）：AI回复摘要 + 客户掩码手机

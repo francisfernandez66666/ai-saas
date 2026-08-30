@@ -1,3 +1,4 @@
+// AI商业包API：定价/订阅/我的包及超管包管理接口。
 package api
 
 import (
@@ -29,10 +30,10 @@ func tenantIDOf(c *gin.Context) uint {
 func ListPackages(c *gin.Context) {
 	var pkgs []model.Package
 	if err := db.DB.Where("enabled = ?", true).Order("sort_order ASC, id ASC").Find(&pkgs).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": pkgs})
+	RespOK(c, "", pkgs)
 }
 
 // SubscribePackage POST /api/v1/billing/subscribe {package_id}
@@ -42,35 +43,35 @@ func SubscribePackage(c *gin.Context) {
 		PackageID uint `json:"package_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：package_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：package_id 必填")
 		return
 	}
 	tid := tenantIDOf(c)
 
 	var pkg model.Package
 	if err := db.DB.Where("id = ? AND enabled = ?", req.PackageID, true).First(&pkg).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "商业包不存在或已下架"})
+		RespErr(c, http.StatusNotFound, 404, "商业包不存在或已下架")
 		return
 	}
 
 	if pkg.PType == model.PackageTypeFree {
 		if err := service.GrantPackage(nil, tid, &pkg); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "发放失败：" + err.Error()})
+			RespErr(c, http.StatusInternalServerError, 500, "发放失败："+err.Error())
 			return
 		}
 		writeOrderAudit(c, tid, "package_grant_free", &model.BillingOrder{PackageID: pkg.ID})
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "试用包已到账", "data": gin.H{"granted": true, "package": pkg}})
+		RespOK(c, "试用包已到账", gin.H{"granted": true, "package": pkg})
 		return
 	}
 
 	// paid/increment：创建订单进收银台流程
 	order, err := service.CreateOrderForPackage(tid, &pkg)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	writeOrderAudit(c, tid, "order_create", order)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "订单已创建，请完成支付", "data": gin.H{"order": order, "pay_mode": service.GetPayMode()}})
+	RespOK(c, "订单已创建，请完成支付", gin.H{"order": order, "pay_mode": service.GetPayMode()})
 }
 
 // MyPackage GET /api/v1/billing/my-package —— 当前包+剩余额度（顶栏展示）
@@ -81,7 +82,7 @@ func MyPackage(c *gin.Context) {
 	if err := db.DB.Select("id, name, status, expired_at, max_ai_calls_monthly, used_ai_calls, ai_call_balance, "+
 		"monthly_token_quota, monthly_token_used, token_balance, free_token_balance, free_token_expires_at").
 		First(&t, tid).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "租户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "租户不存在")
 		return
 	}
 
@@ -90,7 +91,7 @@ func MyPackage(c *gin.Context) {
 	if service.DefaultSystemConfigService != nil {
 		enforced = service.DefaultSystemConfigService.GetBool("billing_enforced", false)
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"tenant_name":      t.Name,
 		"status":           t.Status,
 		"expired_at":       t.ExpiredAt,
@@ -106,7 +107,7 @@ func MyPackage(c *gin.Context) {
 		"token_balance":         t.TokenBalance,
 		"free_token_balance":    t.FreeTokenBalance,
 		"free_token_expires_at": t.FreeTokenExpiresAt,
-	}})
+	})
 }
 
 // ---- 超管商业包管理 ----
@@ -131,14 +132,14 @@ var validPkgTypes = map[string]bool{model.PackageTypeFree: true, model.PackageTy
 func SuperPackageList(c *gin.Context) {
 	var pkgs []model.Package
 	db.DB.Order("sort_order ASC, id ASC").Find(&pkgs)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": pkgs})
+	RespOK(c, "", pkgs)
 }
 
 // SuperPackageCreate POST /api/v1/super/packages
 func SuperPackageCreate(c *gin.Context) {
 	var req pkgUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil || !validPkgTypes[req.PType] {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：code/name/p_type 必填且类型合法"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：code/name/p_type 必填且类型合法")
 		return
 	}
 	pkg := model.Package{
@@ -150,10 +151,10 @@ func SuperPackageCreate(c *gin.Context) {
 		pkg.Enabled = *req.Enabled
 	}
 	if err := db.DB.Create(&pkg).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "创建失败（code 重复?）：" + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "创建失败（code 重复?）："+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": pkg})
+	RespOK(c, "", pkg)
 }
 
 // SuperPackageUpdate PUT /api/v1/super/packages/:id
@@ -161,7 +162,7 @@ func SuperPackageCreate(c *gin.Context) {
 func SuperPackageUpdate(c *gin.Context) {
 	var pkg model.Package
 	if err := db.DB.First(&pkg, c.Param("id")).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "商业包不存在"})
+		RespErr(c, http.StatusNotFound, 404, "商业包不存在")
 		return
 	}
 	var req struct {
@@ -175,7 +176,7 @@ func SuperPackageUpdate(c *gin.Context) {
 		SortOrder    *int    `json:"sort_order"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 	updates := map[string]interface{}{}
@@ -184,7 +185,7 @@ func SuperPackageUpdate(c *gin.Context) {
 	}
 	if req.PType != nil {
 		if !validPkgTypes[*req.PType] {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "非法包类型"})
+			RespErr(c, http.StatusBadRequest, 400, "非法包类型")
 			return
 		}
 		updates["p_type"] = *req.PType
@@ -208,15 +209,15 @@ func SuperPackageUpdate(c *gin.Context) {
 		updates["sort_order"] = *req.SortOrder
 	}
 	if len(updates) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无可更新字段"})
+		RespErr(c, http.StatusBadRequest, 400, "无可更新字段")
 		return
 	}
 	if err := db.DB.Model(&pkg).Updates(updates).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}
 	db.DB.First(&pkg, pkg.ID)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": pkg})
+	RespOK(c, "", pkg)
 }
 
 // SuperPackageDelete DELETE /api/v1/super/packages/:id
@@ -224,16 +225,16 @@ func SuperPackageUpdate(c *gin.Context) {
 func SuperPackageDelete(c *gin.Context) {
 	var pkg model.Package
 	if err := db.DB.First(&pkg, c.Param("id")).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "商业包不存在"})
+		RespErr(c, http.StatusNotFound, 404, "商业包不存在")
 		return
 	}
 	var refCount int64
-	db.DB.Model(&model.BillingOrder{}).Where("package_id = ?", pkg.ID).Count(&refCount)
+	db.RQ(c).Model(&model.BillingOrder{}).Where("package_id = ?", pkg.ID).Count(&refCount)
 	if refCount > 0 {
 		db.DB.Model(&pkg).Update("enabled", false)
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "该包已有订单引用，已改为下架（保留审计）"})
+		RespOK(c, "该包已有订单引用，已改为下架（保留审计）", nil)
 		return
 	}
 	db.DB.Delete(&pkg)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已删除"})
+	RespOK(c, "已删除", nil)
 }

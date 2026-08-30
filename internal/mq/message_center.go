@@ -27,9 +27,9 @@ import (
 
 // 四类固定主题常量
 const (
-	TopicUserEvent    = "user_event"      // 上行行为事件：业务层/平台层 → 流程引擎 + CDP
-	TopicFlowDrive    = "flow_drive"      // 流程下行驱动：流程引擎 → 业务系统
-	TopicFlowResult   = "flow_result"     // 业务结果回流：业务系统 → 编排层 + CDP
+	TopicUserEvent    = "user_event"       // 上行行为事件：业务层/平台层 → 流程引擎 + CDP
+	TopicFlowDrive    = "flow_drive"       // 流程下行驱动：流程引擎 → 业务系统
+	TopicFlowResult   = "flow_result"      // 业务结果回流：业务系统 → 编排层 + CDP
 	TopicTenantCfgEvt = "tenant_cfg_event" // 配置流事件：配置中心 → 各引擎热加载
 )
 

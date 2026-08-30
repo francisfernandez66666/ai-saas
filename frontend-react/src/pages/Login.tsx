@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON, setToken, redirectByRole } from '../lib/api'
 import { useBrand } from '../lib/branding'
+import type { ApiResp, AuthResult } from '../types'
 
 type Mode = 'login' | 'change' | 'resetReq' | 'resetConfirm'
 
@@ -22,7 +23,7 @@ export default function Login() {
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const { res, json } = await apiJSON('/api/v1/auth/login', {
+    const { res, json } = await apiJSON<ApiResp<AuthResult>>('/api/v1/auth/login', {
       method: 'POST',
       body: JSON.stringify(login),
     })

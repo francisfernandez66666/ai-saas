@@ -30,20 +30,20 @@ const (
 
 // HealthCheck 单指标探测结果
 type HealthCheck struct {
-	Name   string      `json:"name"`
+	Name   string       `json:"name"`
 	Status HealthStatus `json:"status"`
-	Value  string      `json:"value"`
-	WarnAt string      `json:"warn_at"`
-	CritAt string      `json:"crit_at"`
-	Desc   string      `json:"desc"`
+	Value  string       `json:"value"`
+	WarnAt string       `json:"warn_at"`
+	CritAt string       `json:"crit_at"`
+	Desc   string       `json:"desc"`
 }
 
 // HealthSnapshot 一次完整探测
 type HealthSnapshot struct {
-	DBOK    bool         `json:"db_ok"`
+	DBOK    bool          `json:"db_ok"`
 	Checks  []HealthCheck `json:"checks"`
-	HasCrit bool         `json:"has_crit"`
-	HasWarn bool         `json:"has_warn"`
+	HasCrit bool          `json:"has_crit"`
+	HasWarn bool          `json:"has_warn"`
 }
 
 // alertCooldown 各指标通知冷却（避免每次探测都刷群），name -> 上次通知时间

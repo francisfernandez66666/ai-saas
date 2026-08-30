@@ -27,9 +27,9 @@ import (
 
 // RegisterConfig GET /api/v1/auth/register-config （免登录公开）
 func RegisterConfig(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"email_verify_enabled": service.EmailVerifyEnabled(),
-	}})
+	})
 }
 
 type emailCodeReq struct {
@@ -40,11 +40,11 @@ type emailCodeReq struct {
 func SendRegisterEmailCode(c *gin.Context) {
 	var req emailCodeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "邮箱不能为空"})
+		RespErr(c, http.StatusBadRequest, 400, "邮箱不能为空")
 		return
 	}
 	if !service.EmailVerifyEnabled() {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "当前未开启邮箱验证"})
+		RespErr(c, http.StatusBadRequest, 400, "当前未开启邮箱验证")
 		return
 	}
 	// 防枚举（J6）：已注册邮箱不返回冲突，统一返回“成功”且不发码，
@@ -52,10 +52,7 @@ func SendRegisterEmailCode(c *gin.Context) {
 	var dup int64
 	db.DB.Model(&model.User{}).Where("email = ?", service.NormalizeEmail(req.Email)).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "若该邮箱可注册，验证码将发送至该邮箱（10分钟内有效）",
-		})
+		RespOK(c, "若该邮箱可注册，验证码将发送至该邮箱（10分钟内有效）", nil)
 		return
 	}
 	if err := service.SendEmailCode(req.Email, model.EmailPurposeRegister, c.ClientIP()); err != nil {
@@ -68,10 +65,10 @@ func SendRegisterEmailCode(c *gin.Context) {
 				status = http.StatusBadRequest
 			}
 		}
-		c.JSON(status, gin.H{"code": status, "message": msg})
+		RespErr(c, status, status, msg)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "验证码已发送至邮箱，10分钟内有效"})
+	RespOK(c, "验证码已发送至邮箱，10分钟内有效", nil)
 }
 
 type bindEmailCodeReq struct {
@@ -82,7 +79,7 @@ type bindEmailCodeReq struct {
 func SendBindEmailCode(c *gin.Context) {
 	var req bindEmailCodeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "新邮箱不能为空"})
+		RespErr(c, http.StatusBadRequest, 400, "新邮箱不能为空")
 		return
 	}
 	newEmail := service.NormalizeEmail(req.NewEmail)
@@ -90,7 +87,7 @@ func SendBindEmailCode(c *gin.Context) {
 
 	// L5修复(2026-08-27)：与注册发码路径对齐，关闭邮箱验证时换绑链路同样禁用
 	if !service.EmailVerifyEnabled() {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "当前未开启邮箱验证"})
+		RespErr(c, http.StatusBadRequest, 400, "当前未开启邮箱验证")
 		return
 	}
 
@@ -98,14 +95,14 @@ func SendBindEmailCode(c *gin.Context) {
 	var dup int64
 	db.DB.Model(&model.User{}).Where("email = ? AND id <> ?", newEmail, uid).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被其他账号使用"})
+		RespErr(c, http.StatusConflict, 409, "该邮箱已被其他账号使用")
 		return
 	}
 	if err := service.SendEmailCode(newEmail, model.EmailPurposeBind, c.ClientIP()); err != nil {
-		c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": err.Error()})
+		RespErr(c, http.StatusTooManyRequests, 429, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "验证码已发送至新邮箱，10分钟内有效"})
+	RespOK(c, "验证码已发送至新邮箱，10分钟内有效", nil)
 }
 
 type changeEmailReq struct {
@@ -118,7 +115,7 @@ type changeEmailReq struct {
 func ChangeEmail(c *gin.Context) {
 	var req changeEmailReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 	newEmail := service.NormalizeEmail(req.NewEmail)
@@ -129,27 +126,27 @@ func ChangeEmail(c *gin.Context) {
 	// 奖励双唯一语义（ID主键维度+邮箱外键维度）：放行"被奖励过的邮箱"换入=二次套利入口；
 	// 置于验码之前——撞库邮箱不值得消耗一次真实发信。
 	var rc int64
-	db.DB.Model(&model.RewardClaim{}).Where("email = ?", newEmail).Count(&rc)
+	db.RQ(c).Model(&model.RewardClaim{}).Where("email = ?", newEmail).Count(&rc)
 	if rc > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱涉及历史奖励记录，不可用于换绑"})
+		RespErr(c, http.StatusConflict, 409, "该邮箱涉及历史奖励记录，不可用于换绑")
 		return
 	}
 	if err := service.VerifyEmailCode(newEmail, model.EmailPurposeBind, req.Code); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	// 二次校验唯一性（发码与消费之间可能被他人抢注）
 	var dup int64
 	db.DB.Model(&model.User{}).Where("email = ? AND id <> ?", newEmail, uid).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱刚被其他账号绑定，请更换"})
+		RespErr(c, http.StatusConflict, 409, "该邮箱刚被其他账号绑定，请更换")
 		return
 	}
 	if err := db.DB.Model(&model.User{}).Where("id = ?", uid).
 		Update("email", newEmail).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}
 	writeAuditSimple(c, tid, "email_change", "user:"+username+"→"+service.MaskEmailAddr(newEmail))
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "邮箱绑定成功：" + service.MaskEmailAddr(newEmail)})
+	RespOK(c, "邮箱绑定成功："+service.MaskEmailAddr(newEmail), nil)
 }

@@ -2,7 +2,6 @@
 package api
 
 import (
-	"net/http"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -41,6 +40,7 @@ func RecordAgreementSignatures(tenantID uint, userID uint) {
 // 平台超管"协议签署"tab 数据：列出已签署用户、协议类型、版本、状态与签署时间
 func SuperAgreementList(c *gin.Context) {
 	atype := c.Query("type") // user|privacy 可空
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	q := db.DB.Model(&model.AgreementSignature{})
 	if atype != "" {
 		q = q.Where("agreement_type = ?", atype)
@@ -62,5 +62,5 @@ func SuperAgreementList(c *gin.Context) {
 		db.DB.Model(&model.Tenant{}).Where("id = ?", r.TenantID).Pluck("name", &it.TenantName)
 		items = append(items, it)
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"list": items, "total": total}})
+	RespOK(c, "", gin.H{"list": items, "total": total})
 }

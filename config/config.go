@@ -117,9 +117,10 @@ type AIConfig struct {
 	// ---- AI 网关（云端枢纽）：本地部署/SaaS实例统一转发，持有平台厂商Key ----
 	// 启用后本进程不直接持有厂商Key，所有reply阶段请求经网关转发（持有平台Key出网）
 	// 网关做鉴权+余额fail-closed+上游多模型降级；本地仍按租户三桶计费（计费权在租户侧）
-	GatewayURL   string // AI网关地址（OpenAI兼容 /v1/chat/completions），非空即启用网关转发
-	GatewayToken string // 网关鉴权凭证（Bearer），由平台签发
-	GatewayModel string // 网关默认模型名（缺省由网关侧决定）
+	GatewayURL    string // AI网关地址（OpenAI兼容 /v1/chat/completions），非空即启用网关转发
+	GatewayToken  string // 网关共享密钥（HMAC 签名/验签），本地实例与网关服务端须一致
+	GatewayModel  string // 网关默认模型名（缺省由网关侧决定）
+	GatewayListen string // AI网关独立服务监听地址（如 :9091）；非空即在本进程内嵌启动网关（亦可独立 cmd/gateway 部署）
 
 	// ---- 向量检索 Embedding（P0-4 双层KB）：配置即点亮，未配置回退关键词 ----
 	EmbeddingURL   string // Embedding 端点（OpenAI兼容 /v1/embeddings），非空启用向量检索
@@ -265,9 +266,10 @@ func LoadConfig() *Config {
 				Temperature: getEnvFloat("SILICONFLOW_TEMPERATURE", 0.7),
 			},
 			// AI网关（云端枢纽）：本地部署无厂商Key时统一转发
-			GatewayURL:   getEnv("LLM_GATEWAY_URL", ""),
-			GatewayToken: getEnv("LLM_GATEWAY_TOKEN", ""),
-			GatewayModel: getEnv("LLM_GATEWAY_MODEL", ""),
+			GatewayURL:    getEnv("LLM_GATEWAY_URL", ""),
+			GatewayToken:  getEnv("LLM_GATEWAY_TOKEN", ""),
+			GatewayModel:  getEnv("LLM_GATEWAY_MODEL", ""),
+			GatewayListen: getEnv("LLM_GATEWAY_LISTEN", ""),
 			// 向量检索 Embedding
 			EmbeddingURL:   getEnv("EMBEDDING_API_URL", ""),
 			EmbeddingKey:   getEnv("EMBEDDING_API_KEY", ""),
@@ -366,6 +368,7 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+// getEnvInt 从环境变量读取 int，转换失败或缺失时返回默认值
 func getEnvInt(key string, defaultValue int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		if intValue, err := strconv.Atoi(value); err == nil {
@@ -375,6 +378,7 @@ func getEnvInt(key string, defaultValue int) int {
 	return defaultValue
 }
 
+// getEnvFloat 从环境变量读取 float64，转换失败或缺失时返回默认值
 func getEnvFloat(key string, defaultValue float64) float64 {
 	if value, exists := os.LookupEnv(key); exists {
 		if floatValue, err := strconv.ParseFloat(value, 64); err == nil {
@@ -384,6 +388,7 @@ func getEnvFloat(key string, defaultValue float64) float64 {
 	return defaultValue
 }
 
+// getEnvBool 从环境变量读取 bool，转换失败或缺失时返回默认值
 func getEnvBool(key string, defaultValue bool) bool {
 	if value, exists := os.LookupEnv(key); exists {
 		if boolValue, err := strconv.ParseBool(value); err == nil {

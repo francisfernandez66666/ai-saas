@@ -21,7 +21,7 @@ import (
 
 // Brand 品牌表
 type Brand struct {
-	ID          uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID          uint      `gorm:"primaryKey" json:"id"`                                                                                    // 注释：主键ID
 	TenantID    uint      `gorm:"not null;default:0;uniqueIndex:idx_brand_tenant_name;uniqueIndex:idx_brand_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置品牌；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
 	Name        string    `gorm:"size:50;uniqueIndex:idx_brand_tenant_name;not null" json:"name"`                                          // 品牌名称（租户级唯一）
 	Code        string    `gorm:"size:30;uniqueIndex:idx_brand_tenant_code" json:"code"`                                                   // 品牌编码（租户级唯一）
@@ -31,8 +31,8 @@ type Brand struct {
 	FoundedYear int       `json:"founded_year"`                                                                                            // 创立年份
 	Status      int       `gorm:"default:1;index" json:"status"`                                                                           // 状态: 1启用 0禁用
 	Sort        int       `gorm:"default:0" json:"sort"`                                                                                   // 排序（数字越小越靠前）
-	CreatedAt   time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt   time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt   time.Time `json:"created_at"`                                                                                              // 注释：创建时间
+	UpdatedAt   time.Time `json:"updated_at"`                                                                                              // 注释：更新时间
 }
 
 // TableName 指定表名
@@ -47,7 +47,7 @@ func (Brand) TableName() string {
 
 // CarModel 车型表
 type CarModel struct {
-	ID         uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID         uint      `gorm:"primaryKey" json:"id"`                                                     // 注释：主键ID
 	TenantID   uint      `gorm:"not null;default:0;uniqueIndex:idx_carmodel_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置车型；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
 	BrandID    uint      `gorm:"index;not null" json:"brand_id"`                                           // 所属品牌ID
 	BrandName  string    `gorm:"size:50" json:"brand_name"`                                                // 品牌名称（冗余）
@@ -59,8 +59,8 @@ type CarModel struct {
 	FuelType   string    `gorm:"size:20" json:"fuel_type"`                                                 // 燃油类型: 燃油/混动/纯电
 	Status     int       `gorm:"default:1;index" json:"status"`                                            // 状态: 1启用 0禁用
 	Sort       int       `gorm:"default:0" json:"sort"`                                                    // 排序
-	CreatedAt  time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt  time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt  time.Time `json:"created_at"`                                                               // 注释：创建时间
+	UpdatedAt  time.Time `json:"updated_at"`                                                               // 注释：更新时间
 }
 
 // TableName 指定表名
@@ -76,7 +76,7 @@ func (CarModel) TableName() string {
 
 // ModelSpec 车型规格参数表
 type ModelSpec struct {
-	ID         uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID         uint      `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
 	TenantID   uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	ModelID    uint      `gorm:"index;not null" json:"model_id"`            // 车型ID
 	ParamName  string    `gorm:"size:50;not null" json:"param_name"`        // 参数名称
@@ -86,7 +86,7 @@ type ModelSpec struct {
 	IsPrice    bool      `gorm:"default:false" json:"is_price"`             // 是否价格类参数（用于价格管控过滤）
 	Status     int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
 	Sort       int       `gorm:"default:0" json:"sort"`                     // 排序
-	CreatedAt  time.Time `json:"created_at"` // 注释：创建时间
+	CreatedAt  time.Time `json:"created_at"`                                // 注释：创建时间
 }
 
 // TableName 指定表名
@@ -110,7 +110,7 @@ type CompareItem struct {
 
 // CompetitorCompare 竞品对比表
 type CompetitorCompare struct {
-	ID              uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID              uint      `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
 	TenantID        uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	OurModelID      uint      `gorm:"index;not null" json:"our_model_id"`        // 我方车型ID
 	CompetitorBrand string    `gorm:"size:50;index" json:"competitor_brand"`     // 竞品品牌
@@ -119,8 +119,8 @@ type CompetitorCompare struct {
 	Content         string    `gorm:"type:text" json:"content"`                  // 对比内容（JSON数组 CompareItem）
 	ContainsPrice   bool      `gorm:"default:false" json:"contains_price"`       // 是否含价格信息（用于价格管控过滤）
 	Status          int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
-	CreatedAt       time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt       time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt       time.Time `json:"created_at"`                                // 注释：创建时间
+	UpdatedAt       time.Time `json:"updated_at"`                                // 注释：更新时间
 }
 
 // TableName 指定表名
@@ -154,7 +154,7 @@ func (c *CompetitorCompare) SetCompareItems(items []CompareItem) {
 
 // KnowledgeFragment 知识片段表
 type KnowledgeFragment struct {
-	ID               uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID               uint      `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
 	TenantID         uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	Category         string    `gorm:"size:20;index" json:"category"`             // 分类: 品牌/车型/技术/服务/活动
 	Title            string    `gorm:"size:200;not null" json:"title"`            // 标题
@@ -163,9 +163,9 @@ type KnowledgeFragment struct {
 	ApplicableModels string    `gorm:"type:text" json:"applicable_models"`        // 适用车型（JSON数组）
 	Status           int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
 	Sort             int       `gorm:"default:0" json:"sort"`                     // 排序
-	EmbeddingJSON    string    `gorm:"type:text" json:"embedding_json"`         // 向量检索：内容+标题embedding（JSON数组，PG无pgvector时按内存余弦混合）
-	CreatedAt        time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt        time.Time `json:"updated_at"` // 注释：更新时间
+	EmbeddingJSON    string    `gorm:"type:text" json:"embedding_json"`           // 向量检索：内容+标题embedding（JSON数组，PG无pgvector时按内存余弦混合）
+	CreatedAt        time.Time `json:"created_at"`                                // 注释：创建时间
+	UpdatedAt        time.Time `json:"updated_at"`                                // 注释：更新时间
 }
 
 // TableName 指定表名

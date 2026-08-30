@@ -1,3 +1,4 @@
+// 超管后台API：平台运营接口，仅 super_admin 可访问，操作全留审计。
 package api
 
 import (
@@ -57,10 +58,10 @@ func SuperTenantList(c *gin.Context) {
 		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id").
 		Order("t.id ASC").Limit(500).Scan(&rows).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rows})
+	RespOK(c, "", rows)
 }
 
 // SuperTenantStatus PUT /api/v1/super/tenants/:id/status {status}
@@ -70,18 +71,18 @@ func SuperTenantStatus(c *gin.Context) {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, 400, 400, "参数错误")
 		return
 	}
 	valid := map[string]bool{"active": true, "suspended": true, "expired": true, "cancelled": true, "trial": true}
 	if !valid[req.Status] {
-		c.JSON(400, gin.H{"code": 400, "message": "非法状态"})
+		RespErr(c, 400, 400, "非法状态")
 		return
 	}
 	id := c.Param("id")
 	res := db.DB.Model(&model.Tenant{}).Where("id = ?", id).Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(404, gin.H{"code": 404, "message": "租户不存在"})
+		RespErr(c, 404, 404, "租户不存在")
 		return
 	}
 
@@ -93,7 +94,7 @@ func SuperTenantStatus(c *gin.Context) {
 	})
 	// 租户解析缓存失效，封禁即时生效
 	middleware.InvalidateTenantCache()
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "状态已更新为 " + req.Status})
+	RespOK(c, "状态已更新为 "+req.Status, nil)
 }
 
 // SuperGrantTrial POST /api/v1/super/tenants/:id/grant-trial —— 审核模式放行（M1）
@@ -101,7 +102,7 @@ func SuperTenantStatus(c *gin.Context) {
 func SuperGrantTrial(c *gin.Context) {
 	var t model.Tenant
 	if err := db.DB.First(&t, c.Param("id")).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "租户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "租户不存在")
 		return
 	}
 	var granted int64
@@ -109,7 +110,7 @@ func SuperGrantTrial(c *gin.Context) {
 		Where("tenant_id = ? AND action = ?", t.ID, "trial_granted").
 		Count(&granted)
 	if granted > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该租户已发放过试用额度（幂等拦截）"})
+		RespErr(c, http.StatusConflict, 409, "该租户已发放过试用额度（幂等拦截）")
 		return
 	}
 	// P1.5(2026-08-26)：换用幂等的 GrantTrialBucket（双唯一防撞库；
@@ -129,7 +130,7 @@ func SuperGrantTrial(c *gin.Context) {
 		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 	log.Printf("[防薅] 超管为租户%d(%s)发放试用包，状态 review→trial", t.ID, t.Code)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "试用额度已发放，租户已激活"})
+	RespOK(c, "试用额度已发放，租户已激活", nil)
 }
 
 // toUintSafe 轻量转换

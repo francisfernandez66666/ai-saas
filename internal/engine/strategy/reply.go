@@ -1,6 +1,7 @@
 package strategy
 
 import (
+	"ai-scrm/internal/ai"
 	"ai-scrm/internal/llm"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
@@ -23,4 +24,10 @@ func GenerateReply(customer *model.Customer, conversationID uint, userInput stri
 	scope := service.ResolveRecallScope(customer.TenantID, deptIDs)
 	features := featuresForTenant(DefaultEngine.Features(), customer.TenantID, scope)
 	return llm.GenerateAIReply(customer, conversationID, userInput, out, features)
+}
+
+// GenerateEvals 知识库素材 AI 评分出口（架构红线：业务层经策略引擎桥接 llm，
+// 不直接调用 internal/llm）。evals 阶段专属模型由 ai.Router 按 stage_models 解析。
+func GenerateEvals(tenantID uint, messages []ai.ChatMessage, temperature float64) (string, error) {
+	return llm.GenerateEvalsText(tenantID, messages, temperature)
 }

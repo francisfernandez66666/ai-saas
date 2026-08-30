@@ -16,7 +16,7 @@ import (
 
 // Customer 客户表
 type Customer struct {
-	ID               uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID               uint      `gorm:"primaryKey" json:"id"`                              // 注释：主键ID
 	Name             string    `gorm:"size:50" json:"name"`                               // 客户姓名
 	Phone            string    `gorm:"size:20;index" json:"phone"`                        // 手机号
 	WechatID         string    `gorm:"size:50;index" json:"wechat_id"`                    // 微信号
@@ -45,12 +45,12 @@ type Customer struct {
 	Remark           string    `gorm:"type:text" json:"remark"`                           // 备注
 	AssignedUserID   uint      `gorm:"index" json:"assigned_user_id"`                     // 归属销售ID（J13-2026-08-27 补索引，支撑数据范围分级查询）
 	TenantID         uint      `gorm:"default:0;index" json:"-"`                          // 租户ID，0=超级管理员全局可见，非0=某租户隔离
-	VisitorKey       string    `gorm:"size:64;index" json:"visitor_key"`                 // 访客密钥（C3）：匿名访问本人聊天记录/欢迎接口的横向越权防线
+	VisitorKey       string    `gorm:"size:64;index" json:"visitor_key"`                  // 访客密钥（C3）：匿名访问本人聊天记录/欢迎接口的横向越权防线
 	ExternalUserID   string    `gorm:"size:64;index" json:"external_user_id"`             // 外部渠道用户ID（OpenAPI对话端点：douyin/tiktok/taobao等渠道嵌入映射）
 	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
 	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效
-	CreatedAt        time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt        time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt        time.Time `json:"created_at"`                                        // 注释：创建时间
+	UpdatedAt        time.Time `json:"updated_at"`                                        // 注释：更新时间
 }
 
 // GenerateVisitorKey 生成 32 字节随机十六进制访客密钥（C3 横向越权防线）

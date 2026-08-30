@@ -70,27 +70,27 @@ func validatePasswordStrength(pwd string) error {
 func ChangePassword(c *gin.Context) {
 	var req changePasswordReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 	userID, _, _ := middleware.CurrentUser(c)
 
 	var user model.User
 	if err := db.DB.First(&user, userID).Error; err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 401, "message": "登录态异常，请重新登录"})
+		RespErr(c, http.StatusUnauthorized, 401, "登录态异常，请重新登录")
 		return
 	}
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.OldPassword)); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "旧密码错误"})
+		RespErr(c, http.StatusBadRequest, 400, "旧密码错误")
 		return
 	}
 	if err := validatePasswordStrength(req.NewPassword); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "密码处理失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
 		return
 	}
 	// 改密成功同时清除首登强改密标记（中间件据此放行全量接口）
@@ -98,10 +98,10 @@ func ChangePassword(c *gin.Context) {
 		"password_hash":        string(hashed),
 		"must_change_password": false,
 	}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "密码修改成功"})
+	RespOK(c, "密码修改成功", nil)
 }
 
 type resetCodeReq struct {
@@ -130,7 +130,7 @@ func hashCode(code string) string {
 func SendResetCode(c *gin.Context) {
 	var req resetCodeReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -142,10 +142,7 @@ func SendResetCode(c *gin.Context) {
 	// 防枚举（J6）：账号不存在或未绑定邮箱时，统一返回“成功”且不发码，
 	// 攻击者无法借响应差异判断某用户名是否注册，从而杜绝账号枚举
 	if !exists || strings.TrimSpace(user.Email) == "" {
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "若该账号存在且已绑定邮箱，验证码将发送至其绑定邮箱（10分钟内有效）",
-		})
+		RespOK(c, "若该账号存在且已绑定邮箱，验证码将发送至其绑定邮箱（10分钟内有效）", nil)
 		return
 	}
 
@@ -154,7 +151,7 @@ func SendResetCode(c *gin.Context) {
 	// log 通道防薅：必须匹配注册手机号/邮箱才发码（smtp 通道下选填，不阻断）
 	if channel == "log" {
 		if req.Contact == "" || (req.Contact != user.Phone && req.Contact != user.Email) {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请提供注册时的手机号或邮箱以完成身份校验"})
+			RespErr(c, http.StatusBadRequest, 400, "请提供注册时的手机号或邮箱以完成身份校验")
 			return
 		}
 	}
@@ -163,7 +160,7 @@ func SendResetCode(c *gin.Context) {
 	var last model.PasswordReset
 	if err := db.DB.Where("username = ?", req.Username).Order("id DESC").First(&last).Error; err == nil {
 		if time.Since(last.LastSentAt) < resetCodeResend {
-			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "发送太频繁，请1分钟后再试"})
+			RespErr(c, http.StatusTooManyRequests, 429, "发送太频繁，请1分钟后再试")
 			return
 		}
 	}
@@ -176,14 +173,14 @@ func SendResetCode(c *gin.Context) {
 		LastSentAt: time.Now(),
 	}
 	if err := db.DB.Create(&rec).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "验证码生成失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "验证码生成失败")
 		return
 	}
 
 	// Sender 抽象分发：smtp=发到账号绑定邮箱；log=打日志（开发调试，仍要求contact校验）
 	if err := service.DefaultResetSender().SendResetCode(user.Email, code); err != nil {
 		log.Printf("[重置码] 发送失败 username=%s: %v", req.Username, err)
-		c.JSON(http.StatusBadGateway, gin.H{"code": 502, "message": "邮件发送失败，请稍后再试或联系管理员"})
+		RespErr(c, http.StatusBadGateway, 502, "邮件发送失败，请稍后再试或联系管理员")
 		return
 	}
 
@@ -191,7 +188,7 @@ func SendResetCode(c *gin.Context) {
 	if channel == "log" {
 		msg = "验证码已生成（当前为日志通道，请查看服务端日志），10分钟内有效"
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg})
+	RespOK(c, msg, nil)
 }
 
 type resetConfirmReq struct {
@@ -205,11 +202,11 @@ type resetConfirmReq struct {
 func VerifyResetCode(c *gin.Context) {
 	var req resetConfirmReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 	if err := validatePasswordStrength(req.NewPassword); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 
@@ -217,11 +214,11 @@ func VerifyResetCode(c *gin.Context) {
 	err := db.DB.Where("username = ? AND used = ? AND expired_at > ?",
 		req.Username, false, time.Now()).Order("id DESC").First(&rec).Error
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "验证码错误或已过期"})
+		RespErr(c, http.StatusBadRequest, 400, "验证码错误或已过期")
 		return
 	}
 	if rec.CodeHash != hashCode(req.Code) {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "验证码错误或已过期"})
+		RespErr(c, http.StatusBadRequest, 400, "验证码错误或已过期")
 		return
 	}
 
@@ -231,13 +228,13 @@ func VerifyResetCode(c *gin.Context) {
 		Where("id = ? AND used = ?", rec.ID, false).
 		Updates(map[string]interface{}{"used": true, "consumed_at": now})
 	if res.RowsAffected == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "验证码已被使用"})
+		RespErr(c, http.StatusBadRequest, 400, "验证码已被使用")
 		return
 	}
 
 	hashed, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), 12)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "密码处理失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
 		return
 	}
 	// 重置成功同样清除强改密标记（用户已证明账号所有权）
@@ -246,8 +243,8 @@ func VerifyResetCode(c *gin.Context) {
 		"must_change_password": false,
 	})
 	if result.Error != nil || result.RowsAffected == 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "重置失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "重置失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "密码重置成功，请使用新密码登录"})
+	RespOK(c, "密码重置成功，请使用新密码登录", nil)
 }

@@ -39,8 +39,8 @@ func IDPrefix(code string, tenantID uint) string {
 // ApplyResult 物化统计
 type ApplyResult struct {
 	Templates int `json:"templates"` // 注释：模板数
-	Features  int `json:"features"` // 注释：功能列表
-	Configs   int `json:"configs"` // 注释：配置数
+	Features  int `json:"features"`  // 注释：功能列表
+	Configs   int `json:"configs"`   // 注释：配置数
 }
 
 // ApplyToTenant 将包内容物化到指定层级（事务）

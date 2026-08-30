@@ -131,7 +131,7 @@ func GetDepartmentTree(c *gin.Context) {
 	// db.RQ(c) 自动按当前租户盖章 tenant_id，保证部门查询不跨租户
 	q := db.RQ(c).Order("path ASC, sort_order ASC, id ASC")
 	if err := q.Find(&depts).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
 
@@ -179,7 +179,7 @@ func GetDepartmentTree(c *gin.Context) {
 	if roots == nil {
 		roots = []*node{}
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": roots})
+	RespOK(c, "success", roots)
 }
 
 // ---- 部门创建/修改/删除 ----
@@ -195,13 +195,13 @@ func CreateDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	var req deptCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.Name) == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：name 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：name 必填")
 		return
 	}
 
 	// 根部门仅租户管理员可建
 	if req.ParentID == nil && s.Role != model.RoleTenantAdmin {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "仅租户管理员可创建根部门"})
+		RespErr(c, http.StatusForbidden, 403, "仅租户管理员可创建根部门")
 		return
 	}
 
@@ -211,11 +211,11 @@ func CreateDepartment(c *gin.Context) {
 	if req.ParentID != nil {
 		var p model.Department
 		if err := db.RQ(c).First(&p, *req.ParentID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "父部门不存在"})
+			RespErr(c, http.StatusNotFound, 404, "父部门不存在")
 			return
 		}
 		if !deptInScope(s, p.Path) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "父部门不在您的管辖范围内"})
+			RespErr(c, http.StatusForbidden, 403, "父部门不在您的管辖范围内")
 			return
 		}
 
@@ -229,7 +229,7 @@ func CreateDepartment(c *gin.Context) {
 		var cnt int64
 		db.RQ(c).Model(&model.Department{}).Count(&cnt)
 		if cnt >= int64(tenant.MaxDepartments) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "部门数已达套餐上限，请升级套餐"})
+			RespErr(c, http.StatusForbidden, 403, "部门数已达套餐上限，请升级套餐")
 			return
 		}
 	}
@@ -248,7 +248,7 @@ func CreateDepartment(c *gin.Context) {
 	}
 	dq.Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "同级下已存在同名部门"})
+		RespErr(c, http.StatusConflict, 409, "同级下已存在同名部门")
 		return
 	}
 
@@ -274,10 +274,10 @@ func CreateDepartment(c *gin.Context) {
 		return tx.Model(&dept).Update("path", newPath).Error
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "创建失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "创建成功"})
+	RespOK(c, "创建成功", nil)
 }
 
 type deptUpdateReq struct {
@@ -292,22 +292,22 @@ func UpdateDepartment(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	var dept model.Department
 	if err := db.RQ(c).First(&dept, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "部门不存在"})
+		RespErr(c, http.StatusNotFound, 404, "部门不存在")
 		return
 	}
 	// 操作者必须管辖该部门本身（且不能动根部门结构除非 tenant_admin）
 	if !deptInScope(s, dept.Path) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "部门不在您的管辖范围内"})
+		RespErr(c, http.StatusForbidden, 403, "部门不在您的管辖范围内")
 		return
 	}
 	if dept.ParentID == nil && s.Role != model.RoleTenantAdmin {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "根部门仅租户管理员可修改"})
+		RespErr(c, http.StatusForbidden, 403, "根部门仅租户管理员可修改")
 		return
 	}
 
 	var req deptUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -326,16 +326,16 @@ func UpdateDepartment(c *gin.Context) {
 		if newPID != dept.ID {
 			var np model.Department
 			if err := db.RQ(c).First(&np, newPID).Error; err != nil {
-				c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "目标父部门不存在"})
+				RespErr(c, http.StatusNotFound, 404, "目标父部门不存在")
 				return
 			}
 			if !deptInScope(s, np.Path) || !deptInScope(s, dept.Path) {
-				c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "移动范围超出管辖权限"})
+				RespErr(c, http.StatusForbidden, 403, "移动范围超出管辖权限")
 				return
 			}
 			// 防环：新父不能是自身或自身的后代（即其 path 以被移动部门 path 为前缀）
 			if np.ID == dept.ID || strings.HasPrefix(np.Path, dept.Path) {
-				c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "不能移动到自身或自己的子部门下（会形成环）"})
+				RespErr(c, http.StatusBadRequest, 400, "不能移动到自身或自己的子部门下（会形成环）")
 				return
 			}
 			if dept.ParentID == nil || *dept.ParentID != newPID {
@@ -377,10 +377,10 @@ func UpdateDepartment(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功"})
+	RespOK(c, "更新成功", nil)
 }
 
 // DeleteDepartment DELETE /org/departments/:id —— 仅允许删除空部门
@@ -389,28 +389,25 @@ func DeleteDepartment(c *gin.Context) {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	var dept model.Department
 	if err := db.RQ(c).First(&dept, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "部门不存在"})
+		RespErr(c, http.StatusNotFound, 404, "部门不存在")
 		return
 	}
 	if !deptInScope(s, dept.Path) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "部门不在您的管辖范围内"})
+		RespErr(c, http.StatusForbidden, 403, "部门不在您的管辖范围内")
 		return
 	}
 	var childCnt, userCnt int64
 	db.RQ(c).Model(&model.Department{}).Where("parent_id = ?", id).Count(&childCnt)
 	db.RQ(c).Model(&model.User{}).Where("department_id = ?", id).Count(&userCnt)
 	if childCnt > 0 || userCnt > 0 {
-		c.JSON(http.StatusConflict, gin.H{
-			"code":    409,
-			"message": fmt.Sprintf("部门非空（子部门 %d 个 / 成员 %d 人），请先清空", childCnt, userCnt),
-		})
+		RespErr(c, http.StatusConflict, 409, fmt.Sprintf("部门非空（子部门 %d 个 / 成员 %d 人），请先清空", childCnt, userCnt))
 		return
 	}
 	if err := db.RQ(c).Delete(&model.Department{}, id).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "删除失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "删除失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "删除成功"})
+	RespOK(c, "删除成功", nil)
 }
 
 // ---- 用户管理 ----
@@ -429,7 +426,7 @@ func CreateUser(c *gin.Context) {
 	s := getOrgScope(c)
 	var req userCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 	req.Username = strings.TrimSpace(req.Username)
@@ -437,20 +434,20 @@ func CreateUser(c *gin.Context) {
 	// 部门必须在操作者范围内
 	var dept model.Department
 	if err := db.RQ(c).First(&dept, req.DepartmentID).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "目标部门不存在"})
+		RespErr(c, http.StatusNotFound, 404, "目标部门不存在")
 		return
 	}
 	if !deptInScope(s, dept.Path) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "目标部门不在您的管辖范围内"})
+		RespErr(c, http.StatusForbidden, 403, "目标部门不在您的管辖范围内")
 		return
 	}
 	// dept_admin 不能在自己所在部门任命另一个管理员（决策口径：任命限子树内非本级）
 	if s.Role == model.RoleDeptAdmin && req.Role == model.RoleDeptAdmin && dept.ID == s.DeptID {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "不能在本部门任命部门管理员，请在子部门上操作"})
+		RespErr(c, http.StatusForbidden, 403, "不能在本部门任命部门管理员，请在子部门上操作")
 		return
 	}
 	if !canAssignRole(s, req.Role) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权分配该角色"})
+		RespErr(c, http.StatusForbidden, 403, "无权分配该角色")
 		return
 	}
 
@@ -458,7 +455,7 @@ func CreateUser(c *gin.Context) {
 	var dup int64
 	db.DB.Model(&model.User{}).Where("username = ?", req.Username).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "用户名已存在"})
+		RespErr(c, http.StatusConflict, 409, "用户名已存在")
 		return
 	}
 	// 用户数配额
@@ -467,14 +464,14 @@ func CreateUser(c *gin.Context) {
 		var cnt int64
 		db.RQ(c).Model(&model.User{}).Where("status = 1").Count(&cnt)
 		if cnt >= int64(tenant.MaxUsers) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "用户数已达套餐上限"})
+			RespErr(c, http.StatusForbidden, 403, "用户数已达套餐上限")
 			return
 		}
 	}
 
 	hashed, err := utils.HashPassword(req.Password)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "密码处理失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
 		return
 	}
 	did := req.DepartmentID
@@ -489,11 +486,11 @@ func CreateUser(c *gin.Context) {
 		DepartmentID: &did,
 	}
 	if err := db.DB.Create(&u).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "创建失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 	log.Printf("[Org] 用户创建: %s 角色=%s 部门=%d 操作者=%d", u.Username, u.Role, did, s.UserID)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "创建成功", "data": gin.H{"id": u.ID}})
+	RespOK(c, "创建成功", gin.H{"id": u.ID})
 }
 
 type userUpdateReq struct {
@@ -511,7 +508,7 @@ func UpdateUser(c *gin.Context) {
 
 	var target model.User
 	if err := db.RQ(c).First(&target, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "用户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "用户不存在")
 		return
 	}
 	// 目标必须在操作者范围内（dept_admin 校验其当前部门路径）
@@ -523,11 +520,11 @@ func UpdateUser(c *gin.Context) {
 		}
 	} else if s.Role != model.RoleTenantAdmin {
 		// 未挂部门的账号（直属租户层）只有租户管理员能动
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "该账号不在您的管辖范围内"})
+		RespErr(c, http.StatusForbidden, 403, "该账号不在您的管辖范围内")
 		return
 	}
 	if target.DepartmentID != nil && !deptInScope(s, targetPath) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "该账号不在您的管辖范围内"})
+		RespErr(c, http.StatusForbidden, 403, "该账号不在您的管辖范围内")
 		return
 	}
 	// 保护线：不能改自己角色（防误操作自锁）；不能动超管
@@ -535,30 +532,30 @@ func UpdateUser(c *gin.Context) {
 		// 占位：self 判断在下方用 UserID 比较
 	}
 	if target.ID == s.UserID {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "不能修改自己的组织信息"})
+		RespErr(c, http.StatusForbidden, 403, "不能修改自己的组织信息")
 		return
 	}
 	if target.Role == model.RoleSuperAdmin {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "平台超管账号不可在此修改"})
+		RespErr(c, http.StatusForbidden, 403, "平台超管账号不可在此修改")
 		return
 	}
 
 	var req userUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	updates := map[string]interface{}{}
 	if req.Role != nil && *req.Role != target.Role {
 		if !canAssignRole(s, *req.Role) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权分配该角色"})
+			RespErr(c, http.StatusForbidden, 403, "无权分配该角色")
 			return
 		}
 		// dept_admin 任命 dept_admin 时同样禁止落在自己所在部门
 		if s.Role == model.RoleDeptAdmin && *req.Role == model.RoleDeptAdmin &&
 			target.DepartmentID != nil && *target.DepartmentID == s.DeptID {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "不能在本部门任命部门管理员"})
+			RespErr(c, http.StatusForbidden, 403, "不能在本部门任命部门管理员")
 			return
 		}
 		updates["role"] = *req.Role
@@ -566,11 +563,11 @@ func UpdateUser(c *gin.Context) {
 	if req.DepartmentID != nil {
 		var nd model.Department
 		if err := db.RQ(c).First(&nd, *req.DepartmentID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "目标部门不存在"})
+			RespErr(c, http.StatusNotFound, 404, "目标部门不存在")
 			return
 		}
 		if !deptInScope(s, nd.Path) {
-			c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "目标部门不在您的管辖范围内"})
+			RespErr(c, http.StatusForbidden, 403, "目标部门不在您的管辖范围内")
 			return
 		}
 		updates["department_id"] = *req.DepartmentID
@@ -588,22 +585,22 @@ func UpdateUser(c *gin.Context) {
 	if req.Password != nil && *req.Password != "" {
 		hashed, herr := utils.HashPassword(*req.Password)
 		if herr != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "密码处理失败"})
+			RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
 			return
 		}
 		updates["password_hash"] = hashed
 	}
 	if len(updates) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无可更新字段"})
+		RespErr(c, http.StatusBadRequest, 400, "无可更新字段")
 		return
 	}
 	if err := db.RQ(c).Model(&model.User{}).Where("id = ?", target.ID).Updates(updates).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
 		return
 	}
 	service.InvalidateOrg(target.ID) // 即时生效
 	log.Printf("[Org] 用户更新 uid=%d 字段=%d 操作者=%d", target.ID, len(updates), s.UserID)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "更新成功"})
+	RespOK(c, "更新成功", nil)
 }
 
 // GetManagedUsers GET /org/users?keyword=&role=&department_id=
@@ -639,7 +636,7 @@ func GetManagedUsers(c *gin.Context) {
 				s.TenantID, s.TenantID, s.DeptPath+"%")
 		}
 	default:
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无权查看用户列表"})
+		RespErr(c, http.StatusForbidden, 403, "无权查看用户列表")
 		return
 	}
 	if kw := strings.TrimSpace(c.Query("keyword")); kw != "" {
@@ -654,10 +651,10 @@ func GetManagedUsers(c *gin.Context) {
 
 	rows := []row{}
 	if err := q.Order("u.id ASC").Limit(500).Scan(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "success", "data": rows})
+	RespOK(c, "success", rows)
 }
 
 var _ = gorm.ErrRecordNotFound

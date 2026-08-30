@@ -1,8 +1,9 @@
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
+import type { ApiResp, KbMaterial } from '../types'
 
-// 企业知识库条目（我的知识库列表）
-type Kb = { id: number; title: string; category?: string }
+// 企业知识库列表分页响应 data 结构（admin/kb/my）
+type KbListResp = { list: KbMaterial[]; total: number; page: number; page_size: number }
 
 // /app 账号设置：改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
 // 依赖 /api/v1/auth/change-password、/api/v1/auth/email/code（注意端点应为 email/code）、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
@@ -21,7 +22,7 @@ export default function AppSettings() {
   // 知识库
   const [kbTitle, setKbTitle] = useState('')
   const [kbContent, setKbContent] = useState('')
-  const [kbList, setKbList] = useState<Kb[]>([])
+  const [kbList, setKbList] = useState<KbMaterial[]>([])
   // 注销
   const [cancelPwd, setCancelPwd] = useState('')
   const [cMsg, setCMsg] = useState('')
@@ -35,7 +36,7 @@ export default function AppSettings() {
   }, [])
 
   async function changePwd() {
-    const j: any = await AUTH('/api/v1/auth/change-password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } })
+    const j: ApiResp<unknown> = await AUTH('/api/v1/auth/change-password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } })
     setPwdMsg(j.code === 0 ? '✓ 已修改' : (j.message || '失败'))
   }
   async function sendCode() {
@@ -48,15 +49,15 @@ export default function AppSettings() {
     const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)
   }
   async function bindEmail() {
-    const j: any = await AUTH('/api/v1/auth/email/change', { method: 'POST', body: { new_email: newEmail, code: emailCode } })
+    const j: ApiResp<unknown> = await AUTH('/api/v1/auth/email/change', { method: 'POST', body: { new_email: newEmail, code: emailCode } })
     setEmMsg(j.message || '')
   }
   async function loadKb() {
-    const j: any = await AUTH('/api/v1/admin/kb/my?page=1&page_size=50')
+    const j: ApiResp<KbListResp> = await AUTH('/api/v1/admin/kb/my?page=1&page_size=50')
     if (j.code === 0) setKbList(j.data?.list || [])
   }
   async function uploadKb() {
-    const j: any = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: '企业知识' } })
+    const j: ApiResp<unknown> = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: '企业知识' } })
     if (j.code === 0) { setKbTitle(''); setKbContent(''); loadKb() }
     alert(j.message)
   }
@@ -67,7 +68,7 @@ export default function AppSettings() {
   async function cancelAccount() {
     if (!confirm('确认注销？次日零点起账号停用（数据保留）')) return
     // 注销需二次确认密码；平台级动作，名下 API Key 同步禁用
-    const j: any = await AUTH('/api/v1/admin/account/cancel', { method: 'POST', body: { password: cancelPwd } })
+    const j: ApiResp<unknown> = await AUTH('/api/v1/admin/account/cancel', { method: 'POST', body: { password: cancelPwd } })
     setCMsg(j.message || '')
   }
 

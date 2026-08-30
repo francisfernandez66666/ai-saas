@@ -1,42 +1,28 @@
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import { useBrand } from '../lib/branding'
+import type { ApiResp, ReferralInfo, ReferralRecord } from '../types'
 
-// 邀请信息（码/链接/奖励余额）
-type RefInfo = {
-  invite_code?: string
-  invited_count?: number
-  paid_count?: number
-  free_token_balance?: number
-  token_balance?: number
-}
-// 单条邀请记录（被邀请企业）
-type Rec = {
-  tenant_id: number
-  company_name: string
-  email: string
-  invited_ok: boolean
-  paid_ok: boolean
-  paid_rewarded: boolean
-  signup_reward: boolean
-  registered_at: string
-}
+// 邀请信息响应 data（admin/referral/info）
+type RefInfoResp = { referral: ReferralInfo; invite_url?: string }
+// 邀请记录列表响应 data（admin/referral/records）
+type RecListResp = { list: ReferralRecord[] }
 
 // /app 邀请推广页：展示邀请码/链接/二维码与邀请记录，依赖 /api/v1/admin/referral/info、/records、/qrcode
 export default function AppReferral() {
   const brand = useBrand()
-  const [info, setInfo] = useState<RefInfo | null>(null)
+  const [info, setInfo] = useState<ReferralInfo | null>(null)
   const [inviteUrl, setInviteUrl] = useState('')
   const [qr, setQr] = useState('')
-  const [recs, setRecs] = useState<Rec[]>([])
+  const [recs, setRecs] = useState<ReferralRecord[]>([])
 
   useEffect(() => {
-    AUTH('/api/v1/admin/referral/info').then((j: any) => {
+    AUTH<ApiResp<RefInfoResp>>('/api/v1/admin/referral/info').then((j) => {
       if (j.code === 0) { setInfo(j.data.referral || {}); setInviteUrl(j.data.invite_url || '') }
     }).catch(() => {})
     setQr('/api/v1/admin/referral/qrcode?size=240')
-    AUTH('/api/v1/admin/referral/records').then((j: any) => {
-      if (j.code === 0) setRecs(j.data?.list || j.data || [])
+    AUTH<ApiResp<RecListResp>>('/api/v1/admin/referral/records').then((j) => {
+      if (j.code === 0) setRecs(j.data?.list || [])
     }).catch(() => {})
   }, [])
 

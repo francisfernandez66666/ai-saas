@@ -5,8 +5,8 @@ import "testing"
 func TestMaskPhone(t *testing.T) {
 	cases := map[string]string{
 		"13800001111": "138****1111",
-		"123":          "123", // 非11位原样
-		"":             "",
+		"123":         "123", // 非11位原样
+		"":            "",
 	}
 	for in, want := range cases {
 		if got := MaskPhone(in); got != want {
@@ -31,10 +31,10 @@ func TestMaskEmail(t *testing.T) {
 
 func TestMaskName(t *testing.T) {
 	cases := map[string]string{
-		"张三":   "*三",
+		"张三":  "*三",
 		"李四王": "李**王",
-		"王":     "王",
-		"":       "",
+		"王":   "王",
+		"":    "",
 	}
 	for in, want := range cases {
 		if got := MaskName(in); got != want {

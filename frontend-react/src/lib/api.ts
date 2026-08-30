@@ -50,12 +50,13 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
 }
 
 // 在 apiFetch 基础上解析 JSON 响应体（解析失败返回 null），返回 {res, json}
-export async function apiJSON(
+// 泛型 T 为后端 data 字段类型，便于调用点标注 ApiResp<T>
+export async function apiJSON<T = any>(
   url: string,
   opts: RequestInit = {},
-): Promise<{ res: Response; json: any }> {
+): Promise<{ res: Response; json: T }> {
   const res = await apiFetch(url, opts)
-  const json = await res.json().catch(() => null)
+  const json = (await res.json().catch(() => null)) as T
   return { res, json }
 }
 
@@ -67,11 +68,12 @@ export function redirectByRole(role: string) {
 }
 
 // 鉴权请求：自动带 token 与 JSON 头；body 传对象会自动 JSON.stringify
-export async function AUTH(
+// 泛型 T 标注后端返回的 data 类型
+export async function AUTH<T = any>(
   url: string,
   opts: { method?: string; body?: any; headers?: Record<string, string> } = {},
-): Promise<any> {
-  const { json } = await apiJSON(url, {
+): Promise<T> {
+  const { json } = await apiJSON<T>(url, {
     method: opts.method || 'GET',
     headers: opts.headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,

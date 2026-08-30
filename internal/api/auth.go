@@ -54,7 +54,7 @@ func Login(c *gin.Context) {
 	// 0. 防爆破守卫：锁定中直接拒绝（不消耗数据库查询）
 	clientIP := c.ClientIP()
 	if err := service.CheckLoginAllowed(req.Username, clientIP); err != nil {
-		c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": err.Error()})
+		RespErr(c, http.StatusTooManyRequests, 429, err.Error())
 		return
 	}
 
@@ -69,19 +69,19 @@ func Login(c *gin.Context) {
 	}
 	result := db.DB.Raw(userQuery, args...).Scan(&user)
 	if result.Error != nil {
-		c.JSON(500, gin.H{"code": 500, "message": "数据库错误", "data": nil})
+		RespErr(c, 500, 500, "数据库错误")
 		return
 	}
 	if result.RowsAffected == 0 {
 		service.RecordLoginFailure(req.Username, clientIP)
-		c.JSON(401, gin.H{"code": 401, "message": "用户名或密码错误", "data": nil})
+		RespErr(c, 401, 401, "用户名或密码错误")
 		return
 	}
 
 	// 2. bcrypt CompareHashAndPassword：检查明文密码与哈希是否匹配
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		service.RecordLoginFailure(req.Username, clientIP)
-		c.JSON(401, gin.H{"code": 401, "message": "用户名或密码错误", "data": nil})
+		RespErr(c, 401, 401, "用户名或密码错误")
 		return
 	}
 
@@ -92,7 +92,7 @@ func Login(c *gin.Context) {
 			// 用 Go 参考时间格式 "2006-01-02" 按自然日比较：注销次日零点起才拦截
 			if time.Now().Format("2006-01-02") != ct.CancelAt.Format("2006-01-02") {
 				service.RecordLoginFailure(req.Username, clientIP)
-				c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "账号已注销，不可登录（数据保留期请联系平台处理）", "data": nil})
+				RespErr(c, http.StatusForbidden, 403, "账号已注销，不可登录（数据保留期请联系平台处理）")
 				return
 			}
 		}
@@ -106,24 +106,20 @@ func Login(c *gin.Context) {
 	service.ClearLoginFailures(req.Username)
 	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role, tenantID)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "message": "Token生成失败", "data": nil})
+		RespErr(c, 500, 500, "Token生成失败")
 		return
 	}
 
-	c.JSON(200, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"token": token,
-			// M3：返回用户信息供前端按角色分流 + must_change_password 触发强改密引导
-			"user": gin.H{
-				"id":                   user.ID,
-				"username":             user.Username,
-				"role":                 user.Role,
-				"tenant_id":            tenantID,
-				"must_change_password": user.MustChangePassword,
-			},
+	RespOK(c, "登录成功", gin.H{
+		"token": token,
+		// M3：返回用户信息供前端按角色分流 + must_change_password 触发强改密引导
+		"user": gin.H{
+			"id":                   user.ID,
+			"username":             user.Username,
+			"role":                 user.Role,
+			"tenant_id":            tenantID,
+			"must_change_password": user.MustChangePassword,
 		},
-		"message": "登录成功",
 	})
 }
 
@@ -141,17 +137,17 @@ func Register(c *gin.Context) {
 	req.Email = service.NormalizeEmail(req.Email)
 	if service.EmailVerifyEnabled() {
 		if req.Email == "" || req.EmailCode == "" {
-			c.JSON(400, gin.H{"code": 400, "message": "请输入邮箱并获取验证码"})
+			RespErr(c, 400, 400, "请输入邮箱并获取验证码")
 			return
 		}
 		var dup int64
 		db.DB.Model(&model.User{}).Where("email = ?", req.Email).Count(&dup)
 		if dup > 0 {
-			c.JSON(409, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换或直接登录"})
+			RespErr(c, 409, 409, "该邮箱已被绑定，请更换或直接登录")
 			return
 		}
 		if err := service.VerifyEmailCode(req.Email, model.EmailPurposeRegister, req.EmailCode); err != nil {
-			c.JSON(400, gin.H{"code": 400, "message": err.Error()})
+			RespErr(c, 400, 400, err.Error())
 			return
 		}
 	}
@@ -160,14 +156,14 @@ func Register(c *gin.Context) {
 	var count int64
 	db.DB.Raw("SELECT count(*) FROM tenant_users WHERE username = ?", req.Username).Scan(&count)
 	if count > 0 {
-		c.JSON(400, gin.H{"code": 400, "message": "用户名已存在", "data": nil})
+		RespErr(c, 400, 400, "用户名已存在")
 		return
 	}
 
 	// 2. bcrypt 哈希密码 (Cost 12，耗时约 100ms，生产环境可根据服务器性能调整)
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "message": "密码加密失败", "data": nil})
+		RespErr(c, 500, 500, "密码加密失败")
 		return
 	}
 
@@ -177,19 +173,19 @@ func Register(c *gin.Context) {
 	// 现改为绑定到由 Host 解析出的生效租户（全局 TenantResolver 已保证存在，否则已 403）。
 	tid := db.EffectiveTenantIDFromGin(c)
 	if tid == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "无法解析所属租户，注册失败", "data": nil})
+		RespErr(c, http.StatusBadRequest, 400, "无法解析所属租户，注册失败")
 		return
 	}
 	newUser := model.User{
 		Username:     req.Username,
 		PasswordHash: string(hashedPassword),
-		Role:         "sales",  // 新账号默认为销售权限
+		Role:         "sales",   // 新账号默认为销售权限
 		TenantID:     &tid,      // 绑定到生效租户
 		Email:        req.Email, // 绑定邮箱（已验证）
 	}
 	result := db.DB.Create(&newUser)
 	if result.Error != nil {
-		c.JSON(500, gin.H{"code": 500, "message": "注册失败: " + result.Error.Error(), "data": nil})
+		RespErr(c, 500, 500, "注册失败: "+result.Error.Error())
 		return
 	}
 
@@ -199,15 +195,11 @@ func Register(c *gin.Context) {
 	// 4. 生成 JWT Token
 	token, err := middleware.GenerateToken(newUser.ID, newUser.Username, newUser.Role, *newUser.TenantID)
 	if err != nil {
-		c.JSON(500, gin.H{"code": 500, "message": "Token生成失败", "data": nil})
+		RespErr(c, 500, 500, "Token生成失败")
 		return
 	}
 
-	c.JSON(200, gin.H{
-		"code":    0,
-		"data":    gin.H{"token": token},
-		"message": "注册成功，请使用新账号登录",
-	})
+	RespOK(c, "注册成功，请使用新账号登录", gin.H{"token": token})
 }
 
 // ResetPassword / VerifyResetCodeAndReset 已重构至 auth_password.go（M3 去演示化）：
@@ -224,15 +216,12 @@ func GetCurrentUser(c *gin.Context) {
 	}
 	db.DB.Model(&model.User{}).Select("COALESCE(must_change_password,false) AS must_change_password, COALESCE(email,'') AS email").
 		Where("id = ?", userID).Scan(&row)
-	c.JSON(200, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"id":                   userID,
-			"username":             username,
-			"role":                 role,
-			"tenant_id":            tenantID,
-			"email":                row.Email,
-			"must_change_password": row.MustChangePassword,
-		},
+	RespOK(c, "", gin.H{
+		"id":                   userID,
+		"username":             username,
+		"role":                 role,
+		"tenant_id":            tenantID,
+		"email":                row.Email,
+		"must_change_password": row.MustChangePassword,
 	})
 }

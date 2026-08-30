@@ -1,3 +1,4 @@
+// 收银台API：商业化收银台，含下单/支付回调/退款/发票等接口。
 package api
 
 import (
@@ -40,28 +41,28 @@ type createOrderReq struct {
 func CreateBillingOrder(c *gin.Context) {
 	var req createOrderReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：package_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：package_id 必填")
 		return
 	}
 	tid := tenantIDOf(c)
 
 	var pkg model.Package
 	if err := db.DB.Where("id = ? AND enabled = ?", req.PackageID, true).First(&pkg).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "商业包不存在或已下架"})
+		RespErr(c, http.StatusNotFound, 404, "商业包不存在或已下架")
 		return
 	}
 	if pkg.PType == model.PackageTypeFree {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "试用包无需购买，注册后自动发放"})
+		RespErr(c, http.StatusBadRequest, 400, "试用包无需购买，注册后自动发放")
 		return
 	}
 
 	order, err := service.CreateOrderForPackage(tid, &pkg)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	writeOrderAudit(c, tid, "order_create", order)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": order})
+	RespOK(c, "", order)
 }
 
 // GetBillingOrder GET /api/v1/billing/orders/:id —— 收银台轮询
@@ -69,10 +70,10 @@ func GetBillingOrder(c *gin.Context) {
 	tid := tenantIDOf(c)
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": order})
+	RespOK(c, "", order)
 }
 
 // ListBillingOrders GET /api/v1/billing/orders —— 本租户订单列表（最新在前）
@@ -89,7 +90,7 @@ func ListBillingOrders(c *gin.Context) {
 		Select("id, order_no, package_id, amount_cents, period, channel, status," +
 			"manual_confirm, paid_at, created_at").
 		Order("id DESC").Limit(limit).Find(&orders).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
 	// 附带包名便于展示（一次 JOIN 查询比 N+1 查 packages 好）
@@ -117,38 +118,38 @@ func ListBillingOrders(c *gin.Context) {
 			rows = append(rows, row{BillingOrder: o, PackageName: nameMap[o.PackageID]})
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rows})
+	RespOK(c, "", rows)
 }
 
 // MockPayOrder POST /api/v1/billing/orders/mock-pay {order_id}
 // 仅 pay_mode=mock 可用；生产环境 403（双保险之接口侧）
 func MockPayOrder(c *gin.Context) {
 	if service.GetPayMode() != "mock" {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "非模拟模式禁止模拟支付"})
+		RespErr(c, http.StatusForbidden, 403, "非模拟模式禁止模拟支付")
 		return
 	}
 	var req struct {
 		OrderID uint `json:"order_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：order_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：order_id 必填")
 		return
 	}
 	tid := tenantIDOf(c)
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", req.OrderID, tid).First(&order).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
 
 	confirmed, err := confirmAndGrant(c, &order, "mock")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
-	db.DB.First(&order, order.ID)
+	db.RQ(c).First(&order, order.ID)
 	msg := map[bool]string{true: "模拟到账成功，权益已发放", false: "订单已处理过，勿重复操作"}[confirmed]
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg, "data": gin.H{"order": order, "granted": confirmed}})
+	RespOK(c, msg, gin.H{"order": order, "granted": confirmed})
 }
 
 // ManualConfirmPaid POST /api/v1/billing/manual-confirm {order_id}
@@ -159,24 +160,25 @@ func ManualConfirmPaid(c *gin.Context) {
 		OrderID uint `json:"order_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：order_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：order_id 必填")
 		return
 	}
 	tid := tenantIDOf(c)
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", req.OrderID, tid).First(&order).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
 	if order.Status == "paid" {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "订单已确认到账", "data": order})
+		RespOK(c, "订单已确认到账", order)
 		return
 	}
 
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	res := db.DB.Model(&model.BillingOrder{}).Where("id = ?", order.ID).
 		Update("manual_confirm", true)
 	if res.Error != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "标记失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "标记失败")
 		return
 	}
 
@@ -187,11 +189,7 @@ func ManualConfirmPaid(c *gin.Context) {
 	service.NotifyManualConfirmPaid(order.OrderNo, tName, order.AmountCents)
 
 	order.ManualConfirm = true
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "已提交，平台核实收款后将自动开通（通常10分钟内）",
-		"data":    order,
-	})
+	RespOK(c, "已提交，平台核实收款后将自动开通（通常10分钟内）", order)
 }
 
 // SuperPendingOrders GET /api/v1/super/orders/pending —— 待人工确认列表
@@ -220,10 +218,10 @@ func SuperPendingOrders(c *gin.Context) {
 		Where("o.status = 'pending' AND COALESCE(o.manual_confirm,false) = true").
 		Order("o.created_at ASC").Limit(200).Scan(&rows).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rows})
+	RespOK(c, "", rows)
 }
 
 // SuperConfirmOrder POST /api/v1/super/orders/:id/confirm —— 超管确认到账
@@ -231,22 +229,22 @@ func SuperPendingOrders(c *gin.Context) {
 func SuperConfirmOrder(c *gin.Context) {
 	var order model.BillingOrder
 	if err := db.DB.First(&order, c.Param("id")).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
 	if order.Channel == "" || order.Channel == "mock" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "模拟渠道订单无需人工确认"})
+		RespErr(c, http.StatusBadRequest, 400, "模拟渠道订单无需人工确认")
 		return
 	}
 
 	confirmed, err := confirmAndGrant(c, &order, "manual")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	db.DB.First(&order, order.ID)
 	msg := map[bool]string{true: "已确认到账，权益发放完成", false: "订单此前已确认过，未重复发放"}[confirmed]
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg, "data": order})
+	RespOK(c, msg, order)
 }
 
 // confirmAndGrant 确认到账统一落点：幂等改单 → 发放 → 审计 → MQ payment 事件
@@ -288,7 +286,7 @@ func BillingWebhook(c *gin.Context) {
 		Sign        string `json:"sign"`
 	}
 	if err := c.ShouldBindJSON(&cb); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "回调参数错误"})
+		RespErr(c, http.StatusBadRequest, 400, "回调参数错误")
 		return
 	}
 	orderNo := cb.OrderNo
@@ -296,7 +294,7 @@ func BillingWebhook(c *gin.Context) {
 		orderNo = cb.OutTradeNo
 	}
 	if orderNo == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "缺少订单号"})
+		RespErr(c, http.StatusBadRequest, 400, "缺少订单号")
 		return
 	}
 	// 网关签名密钥（与 CreatePayment 对称）
@@ -308,23 +306,19 @@ func BillingWebhook(c *gin.Context) {
 		key = os.Getenv("PAY_GATEWAY_KEY")
 	}
 	if !service.VerifyGatewaySign(key, orderNo, cb.TradeStatus, cb.Sign) {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "签名校验失败"})
+		RespErr(c, http.StatusForbidden, 403, "签名校验失败")
 		return
 	}
 	if cb.TradeStatus != "TRADE_SUCCESS" && cb.TradeStatus != "SUCCESS" {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "非成功状态，忽略"})
+		RespOK(c, "非成功状态，忽略", nil)
 		return
 	}
 	order, flowed, err := service.ConfirmOrderByChannel(orderNo, channel)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": err.Error()})
+		RespErr(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed],
-		"data":    gin.H{"order_no": order.OrderNo, "flowed": flowed},
-	})
+	RespOK(c, map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed], gin.H{"order_no": order.OrderNo, "flowed": flowed})
 }
 
 // RefundOrder POST /api/v1/billing/orders/:id/refund —— 管理员发起退款（幂等）
@@ -332,17 +326,17 @@ func RefundOrder(c *gin.Context) {
 	tid := tenantIDOf(c)
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
 	o, flowed, err := service.MarkOrderRefunded(order.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
 	writeOrderAudit(c, tid, "order_refund", o)
 	msg := map[bool]string{true: "退款成功（已支付→已退款）", false: "订单当前状态不可退款或已退过"}[flowed]
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg, "data": o})
+	RespOK(c, msg, o)
 }
 
 // RequestInvoice POST /api/v1/billing/orders/:id/invoice —— 申请发票
@@ -350,16 +344,16 @@ func RequestInvoice(c *gin.Context) {
 	tid := tenantIDOf(c)
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "订单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
 	o, err := service.RequestInvoice(order.ID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	writeOrderAudit(c, tid, "order_invoice_request", o)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "发票申请已提交", "data": o})
+	RespOK(c, "发票申请已提交", o)
 }
 
 // writeOrderAudit 订单链路审计（异步写，失败不影响主流程）

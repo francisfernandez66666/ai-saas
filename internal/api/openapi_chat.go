@@ -35,8 +35,8 @@ import (
 
 // openAPIChatReq OpenAI 兼容请求（扩展渠道字段）
 type openAPIChatReq struct {
-	Model           string `json:"model"`
-	Messages        []struct {
+	Model    string `json:"model"`
+	Messages []struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
@@ -82,13 +82,13 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	// 1. 解析/创建客户（external_user_id 租户内映射）
 	customer, err := resolveOpenAPICustomer(c, tenantID, channel, req.ExternalUserID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "客户解析失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "客户解析失败")
 		return
 	}
 	// 2. 解析/创建会话（external_user_id + session_id 隔离）
 	conversation, err := resolveOpenAPIConversation(c, tenantID, customer.ID, channel, req.SessionID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "会话解析失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "会话解析失败")
 		return
 	}
 
@@ -104,7 +104,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		CreatedAt:      now,
 	}
 	if err := db.RQ(c).Create(&customerMsg).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "消息落库失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "消息落库失败")
 		return
 	}
 	// P1-2 实时推送：外部渠道客户新消息通知本租户顾问端
@@ -237,8 +237,8 @@ func resolveOpenAPIConversation(c *gin.Context, tenantID, customerID uint, chann
 // applyOpenAPILeadCapture 留资标记 + 轮询分配顾问（与站内一致）
 func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone string) {
 	leadUpdates := map[string]interface{}{
-		"phone":            phone,
-		"journey_stage":    model.JourneyLeadCaptured,
+		"phone":             phone,
+		"journey_stage":     model.JourneyLeadCaptured,
 		"assignment_reason": "lead_captured",
 	}
 	if customer.AssignedUserID == 0 {
@@ -274,7 +274,7 @@ func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone str
 		customer.AssignedUserID = v
 	}
 	log.Printf("[OpenAPI] 客户%d 留资成功 channel 线索: phone=%s stage=lead_captured assigned=%d",
-		customer.ID, phone, customer.AssignedUserID)
+		customer.ID, service.MaskPhone(phone), customer.AssignedUserID)
 }
 
 // persistOpenAPIAIMessage 持久化 AI 回复并刷新会话

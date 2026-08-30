@@ -84,8 +84,8 @@ func SendEmailCode(email, purpose, ip string) error {
 	sender := DefaultResetSender() // 复用通道选择（smtp/log，配置驱动）
 	subject, body := buildEmailCodeContent(purpose, code)
 	if _, isLog := sender.(LogSender); isLog {
-		// log 通道：码直接落服务端日志（开发调试用）
-		log.Printf("[邮箱验证码] 用途=%s 邮箱=%s 验证码=%s（10分钟有效）", purpose, maskEmail(email), code)
+		// log 通道：码直接落服务端日志（开发调试用）；验证码属敏感凭据，脱敏不落明文
+		log.Printf("[邮箱验证码] 用途=%s 邮箱=%s 验证码=***(已脱敏,10分钟有效)", purpose, maskEmail(email))
 		return nil
 	}
 	if err := sender.SendRaw([]string{email}, subject, body); err != nil {

@@ -1,3 +1,4 @@
+// OpenAPI只读开放接口：对外只读数据开放与鉴权调用。
 package api
 
 import (
@@ -208,12 +209,12 @@ func AdminCreateAPIKey(c *gin.Context) {
 		Perms []string `json:"perms" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：name/perms 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：name/perms 必填")
 		return
 	}
 	for _, p := range req.Perms {
 		if !validPerms[p] {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "非法权限：" + p})
+			RespErr(c, http.StatusBadRequest, 400, "非法权限："+p)
 			return
 		}
 	}
@@ -237,17 +238,13 @@ func AdminCreateAPIKey(c *gin.Context) {
 		IsActive:    true,
 	}
 	if err := db.DB.Create(&key).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "签发失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "签发失败")
 		return
 	}
 	writeAuditSimple(c, tenantIDOf(c), "apikey_create", "apikey:"+prefix)
 
 	// 明文仅出现在本次响应中，之后任何接口只回前缀
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "API Key 已创建，明文仅显示这一次，请妥善保存",
-		"data":    gin.H{"id": key.ID, "name": key.Name, "key": raw, "perms": req.Perms},
-	})
+	RespOK(c, "API Key 已创建，明文仅显示这一次，请妥善保存", gin.H{"id": key.ID, "name": key.Name, "key": raw, "perms": req.Perms})
 }
 
 // AdminListAPIKeys GET /api/v1/admin/apikeys
@@ -256,7 +253,7 @@ func AdminListAPIKeys(c *gin.Context) {
 	db.RQ(c).Select("id, name, key_prefix, permissions, last_used_at, call_count, is_active, created_at").
 		Order("id DESC").Find(&keys)
 	// call_count / last_used_at 为 Key 计量（api_calls）的对外展示字段；鉴权+perm+计量统一在 middleware.OpenAPIAuth 裁决
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": keys})
+	RespOK(c, "", keys)
 }
 
 // AdminToggleAPIKey POST /api/v1/admin/apikeys/:id/disable | enable
@@ -271,7 +268,7 @@ func toggleAPIKey(c *gin.Context, active bool) {
 	res := db.RQ(c).Model(&model.ApiKey{}).Where("id = ?", c.Param("id")).
 		Update("is_active", active)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API Key 不存在"})
+		RespErr(c, http.StatusNotFound, 404, "API Key 不存在")
 		return
 	}
 	action := "apikey_enable"
@@ -279,18 +276,18 @@ func toggleAPIKey(c *gin.Context, active bool) {
 		action = "apikey_disable" // 停用即时生效（每请求查库无缓存窗口）
 	}
 	writeAuditSimple(c, tenantIDOf(c), action, "apikey:"+c.Param("id"))
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": map[bool]string{true: "已启用", false: "已停用"}[active]})
+	RespOK(c, map[bool]string{true: "已启用", false: "已停用"}[active], nil)
 }
 
 // AdminDeleteAPIKey DELETE /api/v1/admin/apikeys/:id
 func AdminDeleteAPIKey(c *gin.Context) {
 	res := db.RQ(c).Where("id = ?", c.Param("id")).Delete(&model.ApiKey{})
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API Key 不存在"})
+		RespErr(c, http.StatusNotFound, 404, "API Key 不存在")
 		return
 	}
 	writeAuditSimple(c, tenantIDOf(c), "apikey_delete", "apikey:"+c.Param("id"))
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已删除"})
+	RespOK(c, "已删除", nil)
 }
 
 // writeAuditSimple 轻量审计写入（异步，失败不影响主流程）

@@ -36,6 +36,7 @@ type OrgContext struct {
 	MustChangePassword bool   // 首登强制改密标记（M3，改密成功后清除）
 }
 
+// orgCacheEntry 进程内缓存条目：Redis 版本戳 + 上下文指针 + 过期时间（oc=nil 为负缓存）
 type orgCacheEntry struct {
 	ver      int64       // 加载时的 user_ver 版本（Redis 版本戳）
 	oc       *OrgContext // nil=负缓存（用户不存在）

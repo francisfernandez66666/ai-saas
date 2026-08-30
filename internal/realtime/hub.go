@@ -9,11 +9,11 @@ import "sync"
 
 // RealtimeEvent 推送事件（前端收到即触发对应拉取）
 type RealtimeEvent struct {
-	Type         string `json:"type"`           // new_message / typing / status
-	CustomerID   uint   `json:"customer_id"`    // 关联客户
-	ConversationID uint  `json:"conversation_id"`
-	SenderType   string `json:"sender_type"`    // customer / ai / human
-	TenantID     uint   `json:"tenant_id"`
+	Type           string `json:"type"`        // new_message / typing / status
+	CustomerID     uint   `json:"customer_id"` // 关联客户
+	ConversationID uint   `json:"conversation_id"`
+	SenderType     string `json:"sender_type"` // customer / ai / human
+	TenantID       uint   `json:"tenant_id"`
 }
 
 // Client 单个 WS 连接订阅者

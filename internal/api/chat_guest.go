@@ -11,6 +11,7 @@ import (
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/schema"
+	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
 	"context"
 	"fmt"
@@ -66,10 +67,7 @@ func Welcome(c *gin.Context) {
 		CustomerID uint `json:"customer_id"` // 客户ID，默认1号
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "参数错误: " + err.Error(),
-		})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -83,10 +81,7 @@ func Welcome(c *gin.Context) {
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, customerID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code":    404,
-			"message": "客户不存在",
-		})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -99,10 +94,7 @@ func Welcome(c *gin.Context) {
 	// 注意：Welcome 不向匿名返回 visitor_key（密钥只在 /chat/guest、/chat 创建/加载时下发），
 	// 避免凭 customer_id 即可窃取的密钥导致防线失效。
 	if !middleware.CheckVisitorKey(c, customer.VisitorKey) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"code":    403,
-			"message": "无权访问该客户会话",
-		})
+		RespErr(c, http.StatusForbidden, 403, "无权访问该客户会话")
 		return
 	}
 
@@ -165,14 +157,10 @@ func Welcome(c *gin.Context) {
 	log.Printf("[欢迎] 秒回消息已插入, 会话 %d", conversation.ID)
 
 	// 立刻返回（无AI处理，毫秒级响应）
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-		"data": gin.H{
-			"conversation_id":     conversation.ID,   // 会话ID（供后续 /chat/test 调用时传入）
-			"welcome_message":     welcomeMsg,        // 欢迎消息（前端直接渲染到聊天窗口）
-			"is_new_conversation": isNewConversation, // 是否新创建的会话（前端可据此做UI区分）
-		},
+	RespOK(c, "success", gin.H{
+		"conversation_id":     conversation.ID,   // 会话ID（供后续 /chat/test 调用时传入）
+		"welcome_message":     welcomeMsg,        // 欢迎消息（前端直接渲染到聊天窗口）
+		"is_new_conversation": isNewConversation, // 是否新创建的会话（前端可据此做UI区分）
 	})
 }
 
@@ -214,14 +202,11 @@ func CreateGuest(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(&customer).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{
-			"code":    500,
-			"message": "创建访客失败: " + err.Error(),
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "创建访客失败: "+err.Error())
 		return
 	}
 
-	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, customer.Name, customer.AssignedUserID)
+	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, service.MaskName(customer.Name), customer.AssignedUserID)
 
 	// 缺口4修复（2026-08-22）：guest_created 事件上行（激活 CDP idm_guest 标签）
 	// 此前 IngestConsumer 支持该事件但全仓无发布点，访客身份标签是死代码

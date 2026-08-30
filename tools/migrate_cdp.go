@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 // MigrateCDPData 迁移现有数据到CDP表
@@ -51,7 +51,7 @@ func MigrateCDPData() error {
 // migrateCustomers 迁移 customers → cdp_profiles
 func migrateCustomers() error {
 	db := db.DB
-	
+
 	// 查询所有客户
 	rows, err := db.Query("SELECT id, name, phone, wechat_id, gender, age, region, city, career, customer_type, interest_model, budget, decision_cycle, store_visited, trust_level, intent_score, price_sensitivity, brand_awareness, resistance_type, journey_stage, tags, t_vector, created_at, updated_at FROM customers")
 	if err != nil {

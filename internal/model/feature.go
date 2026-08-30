@@ -21,7 +21,7 @@ type Feature struct {
 	// DescTemplate 描述模板，支持占位符
 	// 如: "这款车搭载{{engine}}发动机，最大马力{{horsepower}}匹"
 	DescTemplate string `gorm:"type:text;not null" json:"desc_template"` // 注释：描述模板
-	ShortDesc    string `gorm:"type:text" json:"short_desc"` // 简短描述
+	ShortDesc    string `gorm:"type:text" json:"short_desc"`             // 简短描述
 	// Params 卖点参数(JSON对象)，用于填充描述模板
 	Params string `gorm:"type:text" json:"params"` // 注释：参数(json)
 	// ApplicableTags 适用标签约束(JSON数组)
@@ -31,10 +31,10 @@ type Feature struct {
 	// DepartmentID 部门维度（三级包架构 2026-08-26）：NULL=租户级（行业/企业包物化）；
 	// 非空=部门专属（部门包物化），仅该部门链上的顾问语境可见
 	DepartmentID *uint     `gorm:"index" json:"department_id"` // 注释：部门ID
-	Priority     int       `gorm:"default:0" json:"priority"` // 优先级
-	Status       int       `gorm:"default:1" json:"status"`   // 状态
-	CreatedAt    time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt    time.Time `json:"updated_at"` // 注释：更新时间
+	Priority     int       `gorm:"default:0" json:"priority"`  // 优先级
+	Status       int       `gorm:"default:1" json:"status"`    // 状态
+	CreatedAt    time.Time `json:"created_at"`                 // 注释：创建时间
+	UpdatedAt    time.Time `json:"updated_at"`                 // 注释：更新时间
 }
 
 // TableName 指定表名

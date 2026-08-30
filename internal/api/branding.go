@@ -86,55 +86,55 @@ func applyBrandingUpdate(tenantID uint, req brandingUpdateReq) (*model.Tenant, e
 func AdminUpdateBranding(c *gin.Context) {
 	var req brandingUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 	tid := middleware.EffectiveTenantID(c)
 	if tid == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无法识别租户"})
+		RespErr(c, http.StatusForbidden, 403, "无法识别租户")
 		return
 	}
 	t, err := applyBrandingUpdate(tid, req)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "更新失败（自定义域名可能已被占用）: " + err.Error()})
+		RespErr(c, http.StatusConflict, 409, "更新失败（自定义域名可能已被占用）: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "品牌配置已更新", "data": brandingData(t)})
+	RespOK(c, "品牌配置已更新", brandingData(t))
 }
 
 // SuperGetBranding GET /api/v1/super/tenants/:id/branding 超管读取任意租户白标
 func SuperGetBranding(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "租户ID非法"})
+		RespErr(c, http.StatusBadRequest, 400, "租户ID非法")
 		return
 	}
 	var t model.Tenant
 	if err := db.DB.First(&t, uint(id)).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "租户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "租户不存在")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": brandingData(&t)})
+	RespOK(c, "ok", brandingData(&t))
 }
 
 // SuperUpdateBranding PUT /api/v1/super/tenants/:id/branding 超管设置任意租户白标
 func SuperUpdateBranding(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "租户ID非法"})
+		RespErr(c, http.StatusBadRequest, 400, "租户ID非法")
 		return
 	}
 	var req brandingUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 	t, err := applyBrandingUpdate(uint(id), req)
 	if err != nil {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "更新失败（自定义域名可能已被占用）: " + err.Error()})
+		RespErr(c, http.StatusConflict, 409, "更新失败（自定义域名可能已被占用）: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "品牌配置已更新", "data": brandingData(t)})
+	RespOK(c, "品牌配置已更新", brandingData(t))
 }
 
 // brandingData 租户 → 对外品牌结构（缺省品牌名回退跨山 LexCross）

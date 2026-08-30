@@ -75,6 +75,44 @@ func ApplyTag(tenantID uint, profileID uint, code string, value string) {
 	})
 }
 
+// ApplyTagByCustomer 按 customerID 解析 OneID→画像后打标签（流程引擎节点/事件消费者便捷入口）
+// 解析不到画像时静默跳过（不影响主链路）
+func ApplyTagByCustomer(tenantID uint, customerID uint, code, value string) {
+	if tenantID == 0 || customerID == 0 {
+		return
+	}
+	oneID := ResolveOneID(tenantID, customerID)
+	if oneID == "" {
+		return
+	}
+	profile := EnsureProfile(tenantID, oneID, customerID)
+	if profile == nil {
+		return
+	}
+	ApplyTag(tenantID, profile.ID, code, value)
+}
+
+// RemoveTagByCustomer 按 customerID 移除标签（流程引擎 tag_update 节点 remove_tags 用）
+func RemoveTagByCustomer(tenantID uint, customerID uint, code string) {
+	if tenantID == 0 || customerID == 0 || code == "" {
+		return
+	}
+	oneID := ResolveOneID(tenantID, customerID)
+	if oneID == "" {
+		return
+	}
+	profile := EnsureProfile(tenantID, oneID, customerID)
+	if profile == nil {
+		return
+	}
+	var def model.CdpTagDefinition
+	if err := gdb().Where("code = ?", code).First(&def).Error; err != nil {
+		return
+	}
+	gdb().Where("cdp_profile_id = ? AND definition_id = ?", profile.ID, def.ID).
+		Delete(&model.CdpTagAssignment{})
+}
+
 // ---- ProfileStore：同步读 API（仅流程引擎/业务系统可调；超时降级由调用方控制）----
 
 // ProfileView 画像 360° 视图（只读聚合，供业务/流程引擎取用）
@@ -146,4 +184,5 @@ func GetProfileTagsSummary(tenantID uint, oneID string) map[string]string {
 	return view.Tags
 }
 
+// 保留 encoding/json 引用（本文件部分辅助函数签名依赖 json 编解码，导入防 unused）
 var _ = json.Marshal

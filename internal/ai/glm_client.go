@@ -51,8 +51,8 @@ type ChatRequest struct {
 
 // ChatResponse 响应结构
 type ChatResponse struct {
-	ID      string `json:"id"`          // 响应ID
-	Model   string `json:"model"`       // 实际使用的模型名
+	ID      string `json:"id"`    // 响应ID
+	Model   string `json:"model"` // 实际使用的模型名
 	Choices []struct {
 		Index        int         `json:"index"`
 		FinishReason string      `json:"finish_reason"` // stop/length/content_filter

@@ -40,20 +40,17 @@ func GetReferralInfo(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	tenantID := ti.ID
 	if tenantID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	info, err := service.GetReferralInfo(tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"data": gin.H{
-			"invite_url": buildInviteURL(c, info.InviteCode),
-			"referral":   info,
-		},
+	RespOK(c, "", gin.H{
+		"invite_url": buildInviteURL(c, info.InviteCode),
+		"referral":   info,
 	})
 }
 
@@ -63,12 +60,12 @@ func GetReferralQRCode(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	tenantID := ti.ID
 	if tenantID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	code, err := service.EnsureInviteCode(tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "邀请码生成失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "邀请码生成失败")
 		return
 	}
 	size := 320
@@ -79,7 +76,7 @@ func GetReferralQRCode(c *gin.Context) {
 	}
 	png, err := qrcode.Encode(buildInviteURL(c, code), qrcode.Medium, size)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "二维码生成失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "二维码生成失败")
 		return
 	}
 	c.Data(http.StatusOK, "image/png", png)
@@ -110,7 +107,7 @@ type InviteeRecord struct {
 func GetReferralRecords(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var rows []model.Tenant
@@ -137,5 +134,5 @@ func GetReferralRecords(c *gin.Context) {
 		rec.PaidOK = paidCnt > 0
 		out = append(out, rec)
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"list": out}})
+	RespOK(c, "", gin.H{"list": out})
 }

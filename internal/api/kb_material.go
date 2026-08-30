@@ -22,7 +22,7 @@ import (
 
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/db"
-	"ai-scrm/internal/llm"
+	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
 
@@ -39,6 +39,7 @@ func SuperMaterialList(c *gin.Context) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
+	// TODO-RLS: verify tenant scope (super/platform cross-tenant path)
 	q := db.DB.Model(&model.KbFeedbackMaterial{})
 	if st := c.Query("status"); st != "" {
 		q = q.Where("status = ?", st)
@@ -50,9 +51,9 @@ func SuperMaterialList(c *gin.Context) {
 	q.Count(&total)
 	var rows []model.KbFeedbackMaterial
 	q.Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"list": rows, "total": total, "page": page, "page_size": pageSize,
-	}})
+	})
 }
 
 // SuperMaterialReview POST /api/v1/super/materials/:id/review
@@ -66,11 +67,11 @@ func SuperMaterialReview(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil ||
 		(req.Status != "approved" && req.Status != "rejected" && req.Status != "pending") {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "status 必须为 approved/rejected/pending"})
+		RespErr(c, http.StatusBadRequest, 400, "status 必须为 approved/rejected/pending")
 		return
 	}
 	if req.HumanScore != nil && (*req.HumanScore < 1 || *req.HumanScore > 5) {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "human_score 取值 1-5"})
+		RespErr(c, http.StatusBadRequest, 400, "human_score 取值 1-5")
 		return
 	}
 	updates := map[string]interface{}{"status": req.Status}
@@ -85,10 +86,10 @@ func SuperMaterialReview(c *gin.Context) {
 	}
 	res := db.DB.Model(&model.KbFeedbackMaterial{}).Where("id = ?", id).Updates(updates)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "素材不存在"})
+		RespErr(c, http.StatusNotFound, 404, "素材不存在")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已更新"})
+	RespOK(c, "已更新", nil)
 }
 
 // SuperMaterialEvals POST /api/v1/super/materials/:id/evals
@@ -97,16 +98,16 @@ func SuperMaterialEvals(c *gin.Context) {
 	id := c.Param("id")
 	var m model.KbFeedbackMaterial
 	if err := db.DB.First(&m, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "素材不存在"})
+		RespErr(c, http.StatusNotFound, 404, "素材不存在")
 		return
 	}
 	prompt := "你是销售话术质量评估器。对下面这条汽车销售回复打分(0-5，支持一位小数)，并给出不超过50字的理由。" +
 		"评估维度：口语自然度、需求针对性、推进有效性。只输出 JSON：{\"score\":数字,\"note\":\"理由\"}\n\n回复内容：\n" + m.Content
 	messages := []ai.ChatMessage{{Role: "user", Content: prompt}}
-	// H5修复(2026-08-27)：归位 llm 层唯一入口，按素材所属租户落 usage 计量，不计次配额
-	reply, err := llm.GenerateEvalsText(m.TenantID, messages, 0.2)
+	// 架构红线修复(2026-08-30)：经策略引擎桥接 llm，业务层不再直连 internal/llm
+	reply, err := strategy.GenerateEvals(m.TenantID, messages, 0.2)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "evals 模型调用失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "evals 模型调用失败: "+err.Error())
 		return
 	}
 	// 宽松解析 JSON（截取首个 { 到末个 }）
@@ -136,6 +137,5 @@ func SuperMaterialEvals(c *gin.Context) {
 	})
 	// 离线评分（零成本护栏，与 LLM evals 阶段互补）
 	auto := service.ScoreReplyOffline(m.Content, nil, nil)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "AI 评分完成",
-		"data": gin.H{"score": out.Score, "note": out.Note, "auto_score": auto.Score, "auto_reasons": auto.Reasons}})
+	RespOK(c, "AI 评分完成", gin.H{"score": out.Score, "note": out.Note, "auto_score": auto.Score, "auto_reasons": auto.Reasons})
 }

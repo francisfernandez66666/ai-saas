@@ -90,7 +90,7 @@ func isHanOrWord(r rune) bool {
 func TenantKBUpload(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var req struct {
@@ -99,16 +99,16 @@ func TenantKBUpload(c *gin.Context) {
 		Category string `json:"category"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：title/content 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：title/content 必填")
 		return
 	}
 	if len([]rune(req.Content)) > kbMaxContentRunes {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": fmt.Sprintf("内容过长，上限 %d 字", kbMaxContentRunes)})
+		RespErr(c, http.StatusBadRequest, 400, fmt.Sprintf("内容过长，上限 %d 字", kbMaxContentRunes))
 		return
 	}
 	chunks := splitKBChunks(req.Content)
 	if len(chunks) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "内容为空"})
+		RespErr(c, http.StatusBadRequest, 400, "内容为空")
 		return
 	}
 	category := strings.TrimSpace(req.Category)
@@ -132,7 +132,7 @@ func TenantKBUpload(c *gin.Context) {
 		}
 		// P0-4 向量检索：上传即向量化（best-effort）。先落库拿 ID，再回写向量列
 		if err := db.DB.Create(&row).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": fmt.Sprintf("第%d片写入失败", i+1)})
+			RespErr(c, http.StatusInternalServerError, 500, fmt.Sprintf("第%d片写入失败", i+1))
 			return
 		}
 		service.EmbedAndSetFragment(&row)
@@ -141,18 +141,14 @@ func TenantKBUpload(c *gin.Context) {
 	if cache.DefaultKnowledgeCache != nil {
 		cache.DefaultKnowledgeCache.Reload() // 版本戳多实例广播
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": fmt.Sprintf("上传成功：%s 共 %d 字，切成 %d 个知识片段", title, len([]rune(req.Content)), inserted),
-		"data":    gin.H{"fragments": inserted},
-	})
+	RespOK(c, fmt.Sprintf("上传成功：%s 共 %d 字，切成 %d 个知识片段", title, len([]rune(req.Content)), inserted), gin.H{"fragments": inserted})
 }
 
 // TenantKBMy GET /api/v1/admin/kb/my?page=&page_size=
 func TenantKBMy(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	page, pageSize := 1, 20
@@ -170,26 +166,26 @@ func TenantKBMy(c *gin.Context) {
 	var rows []model.KnowledgeFragment
 	db.DB.Where("tenant_id = ? AND category = ?", ti.ID, "企业知识").
 		Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"list": rows, "total": total, "page": page, "page_size": pageSize,
-	}})
+	})
 }
 
 // TenantKBDelete DELETE /api/v1/admin/kb/my/:id （仅本租户的"企业知识"类片段可删）
 func TenantKBDelete(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	res := db.DB.Where("id = ? AND tenant_id = ? AND category = ?",
 		c.Param("id"), ti.ID, "企业知识").Delete(&model.KnowledgeFragment{})
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "片段不存在"})
+		RespErr(c, http.StatusNotFound, 404, "片段不存在")
 		return
 	}
 	if cache.DefaultKnowledgeCache != nil {
 		cache.DefaultKnowledgeCache.Reload()
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已删除"})
+	RespOK(c, "已删除", nil)
 }

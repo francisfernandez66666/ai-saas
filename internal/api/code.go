@@ -29,15 +29,15 @@ const (
 
 // respOK 成功响应
 func respOK(c *gin.Context, data any) {
-	c.JSON(200, gin.H{"code": int(CodeOK), "message": "ok", "data": data})
+	RespErr(c, 200, int(CodeOK), "ok")
 }
 
 // respFail 业务错误（默认 200 HTTP，由业务 code 区分；保持与前端既有约定一致）
 func respFail(c *gin.Context, code RespCode, msg string) {
-	c.JSON(200, gin.H{"code": int(code), "message": msg, "data": nil})
+	RespErr(c, 200, int(code), msg)
 }
 
 // respFailStatus 业务错误（携带准确 HTTP 状态码，用于新增鉴权/限流端点）
 func respFailStatus(c *gin.Context, httpStatus int, code RespCode, msg string) {
-	c.JSON(httpStatus, gin.H{"code": int(code), "message": msg, "data": nil})
+	RespErr(c, httpStatus, int(code), msg)
 }

@@ -73,6 +73,11 @@ func (e *Engine) LoadData() {
 	}
 	e.features = features
 	log.Printf("已加载 %d 条卖点数据 (tenant=%d)", len(features), e.TenantID)
+
+	// 动态装载车型注册表（modelFromTVector 依赖），仅全量引擎(TenantID=0)刷新一次即可
+	if e.TenantID == 0 {
+		refreshCarModelRegistry()
+	}
 }
 
 // templatesForTenant 按租户+部门链过滤话术模板（M1 租户隔离修复 + 三级包架构 2026-08-26）
@@ -441,17 +446,46 @@ afterAnchorSelection:
 // 辅助函数
 // ============================================================
 
+// carModelRegistry 车型注册表（按 Sort/ID 升序，1 起始索引对应 code=1）
+// 由 LoadData 从 car_models 表动态装载，替代原先硬编码的"越野SUV-X*"映射，
+// 使不同行业包（车型体系不同）不再被写死字符串绑死。
+var carModelRegistry []string
+
+// refreshCarModelRegistry 从 car_models 装载车型注册表（code=i 对应 registry[i-1]）
+func refreshCarModelRegistry() {
+	var models []model.CarModel
+	if err := db.DB.Where("status = ?", 1).Order("sort ASC, id ASC").Find(&models).Error; err != nil {
+		log.Printf("[策略引擎] 装载车型注册表失败: %v", err)
+		return
+	}
+	regs := make([]string, 0, len(models))
+	for i := range models {
+		regs = append(regs, models[i].Name)
+	}
+	carModelRegistry = regs
+	log.Printf("[策略引擎] 车型注册表已装载 %d 个车型", len(regs))
+}
+
 // modelFromTVector 从T向量获取车型
+// 优先走动态车型注册表（car_models 表）；注册表为空或越界时回退硬编码映射，保证不崩。
 func modelFromTVector(tVector [32]float64) string {
 	modelCode := int(tVector[3])
+	if modelCode == 0 {
+		return ""
+	}
+	if modelCode == 99 {
+		return "其他车型"
+	}
+	if modelCode > 0 && modelCode-1 < len(carModelRegistry) && carModelRegistry[modelCode-1] != "" {
+		return carModelRegistry[modelCode-1]
+	}
+	// 回退硬编码（兼容车型表未初始化场景）
 	modelMap := map[int]string{
-		0:  "",
-		1:  "越野SUV-X1",
-		2:  "越野SUV-X3",
-		3:  "越野SUV-X5",
-		4:  "越野SUV-X7",
-		5:  "皮卡系列",
-		99: "其他车型",
+		1: "越野SUV-X1",
+		2: "越野SUV-X3",
+		3: "越野SUV-X5",
+		4: "越野SUV-X7",
+		5: "皮卡系列",
 	}
 	if name, ok := modelMap[modelCode]; ok {
 		return name
@@ -489,14 +523,14 @@ func DetectResistance(text string) int {
 	text = strings.ToLower(text)
 
 	// 价格抗性关键词（最多）
-	// 疑点：下面 "比.*贵" 这类含正则通配符的写法，调用方用 strings.Contains 匹配，
-	// 字面量"比.*贵"几乎不可能出现在用户原文里——正则式永远不会命中，等于失效。
+	// 修复（2026-08-30）：原列表混入正则式字面量"比.*贵"，调用方用 strings.Contains 匹配，
+	// 该字面量几乎不可能出现在用户原文里导致永远不命中。改为纯关键词，并补"比X贵"类口语。
 	priceKeywords := []string{
 		"贵", "太贵", "价格高", "便宜点", "优惠", "降价", "贵了",
 		"不值", "性价比", "贵了点", "超出预算", "预算不够",
 		"多少钱", "价格", "能便宜", "再少", "再降",
-		"price", "expensive", "too much", "too expensive",
-		"比.*贵", "贵不少", "贵很多",
+		"比", "贵不少", "贵很多", "偏贵", "划算",
+		"price", "expensive", "too much", "too expensive", "costly",
 	}
 	for _, kw := range priceKeywords {
 		if strings.Contains(text, kw) {

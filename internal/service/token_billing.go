@@ -173,7 +173,7 @@ func GrantTrialBucket(tx *gorm.DB, tenantID uint, email string) {
 		tx.Model(&model.RewardClaim{}).
 			Where("grant_type = ? AND email = ?", model.RewardSignupTrial, email).Count(&cnt)
 		if cnt > 0 {
-			log.Printf("[TokenBilling] 邮箱%s 曾参与注册礼领取，撞库拦截(账号%d)", email, tenantID)
+			log.Printf("[TokenBilling] 邮箱%s 曾参与注册礼领取，撞库拦截(账号%d)", MaskEmail(email), tenantID)
 			return
 		}
 	}

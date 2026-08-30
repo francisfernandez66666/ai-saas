@@ -41,17 +41,19 @@ type httpEmbeddingClient struct {
 	http  *http.Client
 }
 
+// embeddingRequest OpenAI 兼容 /v1/embeddings 请求体（输入文本 + 模型名）
 type embeddingRequest struct {
-	Input string `json:"input"`
-	Model string `json:"model"`
+	Input string `json:"input"` // 待向量化文本
+	Model string `json:"model"` // 向量模型（如 text-embedding-3-small）
 }
 
+// embeddingResponse /v1/embeddings 响应体：data 含向量数组，error 含业务错误
 type embeddingResponse struct {
 	Data []struct {
-		Embedding []float32 `json:"embedding"`
+		Embedding []float32 `json:"embedding"` // 单条文本向量
 	} `json:"data"`
 	Error *struct {
-		Message string `json:"message"`
+		Message string `json:"message"` // 业务错误描述（如模型不存在）
 	} `json:"error"`
 }
 

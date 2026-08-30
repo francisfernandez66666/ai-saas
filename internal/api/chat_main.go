@@ -300,7 +300,7 @@ func Chat(c *gin.Context) {
 	// 在入口用原始消息检测，不依赖合并后的内容
 	if service.IsOffTopic(req.Content) {
 		reply := service.GetOffTopicReply(req.Content)
-		log.Printf("[硬边界] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, req.Content, reply)
+		log.Printf("[硬边界] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
 		// 保存AI拦截回复消息到DB
 		offTopicMsg := model.Message{
 			ConversationID: conversation.ID,
@@ -314,14 +314,10 @@ func Chat(c *gin.Context) {
 		db.RQ(c).Create(&offTopicMsg)
 		// 唤醒队列中可能等待的其他请求
 		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, reply)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id": conversation.ID,
-				"ai_reply":        reply,
-				"route_result":    "offtopic_hardbound",
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id": conversation.ID,
+			"ai_reply":        reply,
+			"route_result":    "offtopic_hardbound",
 		})
 		return
 	}
@@ -423,7 +419,7 @@ func Chat(c *gin.Context) {
 				}
 			}
 			log.Printf("[到店倾向-已留资线索][留资检测] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
-				customer.ID, phoneMatch, customer.AssignedUserID)
+				customer.ID, service.MaskPhone(phoneMatch), customer.AssignedUserID)
 
 			// P3：到店分支留资事件上行（与 DetectLeadCapture 主路径埋点对齐）
 			if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
@@ -486,15 +482,11 @@ func Chat(c *gin.Context) {
 			}
 			db.RQ(c).Create(&leadMsg)
 
-			c.JSON(http.StatusOK, gin.H{
-				"code":    0,
-				"message": "success",
-				"data": gin.H{
-					"conversation_id":    conversation.ID,
-					"ai_reply":           leadCapturedReply,
-					"route_result":       "lead_captured_confirmed",
-					"merged_customer_id": mergedTargetID, // OneID合并：>0表示前端需切换customer_id
-				},
+			RespOK(c, "success", gin.H{
+				"conversation_id":    conversation.ID,
+				"ai_reply":           leadCapturedReply,
+				"route_result":       "lead_captured_confirmed",
+				"merged_customer_id": mergedTargetID, // OneID合并：>0表示前端需切换customer_id
 			})
 			return
 		}
@@ -553,14 +545,10 @@ func Chat(c *gin.Context) {
 			log.Printf("[到店倾向-未留资线索] 客户%d 第二段追问已发送", cid)
 		}(customer.ID, conversation.ID, secondReply, goroutineTenantID)
 
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id": conversation.ID,
-				"ai_reply":        firstReply,
-				"route_result":    "store_visit_fast",
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id": conversation.ID,
+			"ai_reply":        firstReply,
+			"route_result":    "store_visit_fast",
 		})
 		return
 	}
@@ -609,14 +597,10 @@ skipStoreVisitFast:
 			}
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id": conversation.ID,
-				"ai_reply":        simpleReply,
-				"message":         simpleMsg,
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id": conversation.ID,
+			"ai_reply":        simpleReply,
+			"message":         simpleMsg,
 		})
 		return
 	}
@@ -845,7 +829,7 @@ skipStoreVisitFast:
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	// 放在SetReply之前，确保所有请求（主请求+合并等待请求）都经过延迟后再返回
 	isStoreVisit := strategy.IsStoreVisitIntent(mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
-	log.Printf("[Chat] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, mergedContent)
+	log.Printf("[Chat] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 
 	// 胡搅蛮缠：总非车话题>10且最近未恢复→回复速度降到3分钟一次

@@ -31,25 +31,25 @@ func CancelAccount(c *gin.Context) {
 	uid, _, _ := middleware.CurrentUser(c)
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var req struct {
 		Password string `json:"password" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：password 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：password 必填")
 		return
 	}
 
 	// 密码二次确认
 	var user model.User
 	if err := db.DB.Select("id, password_hash").First(&user, uid).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "用户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "用户不存在")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)) != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "密码错误"})
+		RespErr(c, http.StatusBadRequest, 400, "密码错误")
 		return
 	}
 
@@ -57,7 +57,7 @@ func CancelAccount(c *gin.Context) {
 	res := db.DB.Model(&model.Tenant{}).Where("id = ?", ti.ID).
 		Update("cancel_at", now)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "注销受理失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "注销受理失败")
 		return
 	}
 
@@ -71,8 +71,5 @@ func CancelAccount(c *gin.Context) {
 		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "注销已受理：今日内仍可登录，明日零点起账号停用（后台数据保留）",
-	})
+	RespOK(c, "注销已受理：今日内仍可登录，明日零点起账号停用（后台数据保留）", nil)
 }

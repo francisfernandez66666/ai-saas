@@ -24,6 +24,7 @@ import (
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
 )
 
@@ -160,4 +161,44 @@ func StartOrchestrationConsumers() {
 	})
 
 	log.Println("[编排] 事件消费者已注册：user_event(心跳) + flow_result(推进主干)")
+}
+
+// StartPaymentConsumer 注册「付费成功 → 开通欢迎流程」消费者（运营闭环 P1-2）
+// 说明：BillingOrder 与 customer 无外键关联（订单为租户级），故欢迎流程以租户维度启动；
+// 若未来订单补 CustomerID 关联，可在此解析并启动客户级流程。落地产物：
+//  1. 启动 welcome_paid 流程实例（状态机可见，便于运营追踪已付费待欢迎租户）
+//  2. 上报数据飞轮 payment_welcome 事件（供自动化触达系统消费）
+func StartPaymentConsumer() {
+	mq.Subscribe(mq.TopicUserEvent, func(ctx context.Context, env mq.Envelope) error {
+		var payload struct {
+			EventName string `json:"event_name"`
+			Data      struct {
+				OrderNo string `json:"order_no"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(env.Payload, &payload); err != nil {
+			return nil
+		}
+		if payload.EventName != "payment" {
+			// 仅处理 payment 子事件
+			return nil
+		}
+		tid := env.Header.TenantID
+		if tid == 0 {
+			return nil
+		}
+		// 1) 启动租户级欢迎流程（welcome_paid 定义不存在时优雅跳过，不报错）
+		ctxFlow := &FlowContext{TenantID: tid, CustomerID: 0, ConversationID: 0}
+		if _, err := DefaultEngine.StartFlow("welcome_paid", ctxFlow); err != nil {
+			log.Printf("[编排] welcome_paid 流程未配置或启动失败 tenant=%d: %v", tid, err)
+		} else {
+			log.Printf("[编排] 已为租户 %d 启动 welcome_paid 欢迎流程", tid)
+		}
+		// 2) 数据飞轮：付费欢迎事件（脱敏，供自动化触达）
+		service.Collect("payment_welcome", tid, map[string]any{
+			"order_no": payload.Data.OrderNo,
+		})
+		return nil
+	})
+	log.Println("[编排] payment 子事件消费者已注册（付费成功→开通欢迎流程）")
 }

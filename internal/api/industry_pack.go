@@ -66,67 +66,69 @@ func notifyPackChange(c *gin.Context, tenantID uint, action string) {
 func SuperPackUpload(c *gin.Context) {
 	fh, err := c.FormFile("file")
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "缺少 file 字段（.aipack 文件）"})
+		RespErr(c, http.StatusBadRequest, 400, "缺少 file 字段（.aipack 文件）")
 		return
 	}
 	// 20<<20 = 20MB 硬上限，防止超大恶意包撑爆磁盘（multipart 体积预校验在落盘前拦截）
 	if fh.Size > 20<<20 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "包体超过 20MB 上限"})
+		RespErr(c, http.StatusBadRequest, 400, "包体超过 20MB 上限")
 		return
 	}
 	if !strings.HasSuffix(strings.ToLower(fh.Filename), ".aipack") {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "仅接受 .aipack 文件"})
+		RespErr(c, http.StatusBadRequest, 400, "仅接受 .aipack 文件")
 		return
 	}
 	keys, err := packKeys()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "服务端密钥未就绪: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "服务端密钥未就绪: "+err.Error())
 		return
 	}
 	src, err := fh.Open()
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "文件读取失败"})
+		RespErr(c, http.StatusBadRequest, 400, "文件读取失败")
 		return
 	}
 	buf := make([]byte, fh.Size)
 	if _, err := src.Read(buf); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "文件读取失败"})
+		RespErr(c, http.StatusBadRequest, 400, "文件读取失败")
 		return
 	}
 	_ = src.Close()
 
 	pc, err := industrypack.Open(buf, keys)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "包校验失败: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "包校验失败: "+err.Error())
 		return
 	}
 	if !industrypack.ValidLevel(pc.Manifest.PackLevel) {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "manifest.pack_level 非法"})
+		RespErr(c, http.StatusBadRequest, 400, "manifest.pack_level 非法")
 		return
 	}
 	// 树形校验：企业包必须指到已存在的行业包；部门包必须指到已存在的企业包
 	if pc.Manifest.ParentCode != "" {
 		var parentCnt int64
+		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 		db.DB.Model(&model.IndustryPack{}).
 			Where("code = ? AND status = ?", pc.Manifest.ParentCode, "active").Count(&parentCnt)
 		if parentCnt == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "上级包不存在或未上架: " + pc.Manifest.ParentCode})
+			RespErr(c, http.StatusBadRequest, 400, "上级包不存在或未上架: "+pc.Manifest.ParentCode)
 			return
 		}
 	}
 
 	if err := os.MkdirAll(packStoreDir, 0o755); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "存储目录创建失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "存储目录创建失败")
 		return
 	}
 	storeName := fmt.Sprintf("%s_%s.aipack", pc.Manifest.Code, pc.Manifest.Version)
 	storePath := filepath.Join(packStoreDir, storeName)
 	if err := os.WriteFile(storePath, buf, 0o644); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "落盘失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "落盘失败")
 		return
 	}
 
 	var row model.IndustryPack
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	isNew := db.DB.Where("code = ? AND version = ?", pc.Manifest.Code, pc.Manifest.Version).
 		First(&row).Error != nil
 	row.Code = pc.Manifest.Code
@@ -143,14 +145,14 @@ func SuperPackUpload(c *gin.Context) {
 	if isNew {
 		row.Status = "disabled"
 		if err := db.DB.Create(&row).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "入库失败"})
+			RespErr(c, http.StatusInternalServerError, 500, "入库失败")
 			return
 		}
 	} else if err := db.DB.Save(&row).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "更新失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "上传成功（默认下架态）", "data": row})
+	RespOK(c, "上传成功（默认下架态）", row)
 }
 
 // SuperPackList GET /api/v1/super/packs
@@ -161,7 +163,7 @@ func SuperPackList(c *gin.Context) {
 		q = q.Where("pack_level = ?", lv)
 	}
 	q.Find(&rows)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rows})
+	RespOK(c, "", rows)
 }
 
 // SuperPackStatus PUT /api/v1/super/packs/:id/status
@@ -170,16 +172,17 @@ func SuperPackStatus(c *gin.Context) {
 		Status string `json:"status" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || (req.Status != "active" && req.Status != "disabled") {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "status 必须为 active/disabled"})
+		RespErr(c, http.StatusBadRequest, 400, "status 必须为 active/disabled")
 		return
 	}
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
 		Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "包不存在"})
+		RespErr(c, http.StatusNotFound, 404, "包不存在")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已更新"})
+	RespOK(c, "已更新", nil)
 }
 
 // TenantPackList GET /api/v1/admin/packs?level=&parent_code= 租户侧可选列表（仅 active）
@@ -193,7 +196,7 @@ func TenantPackList(c *gin.Context) {
 	}
 	var rows []model.IndustryPack
 	q.Find(&rows)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": rows})
+	RespOK(c, "", rows)
 }
 
 // openActivePack 读+开包公共实现
@@ -310,7 +313,7 @@ func AutoApplyDefaultIndustryPack() {
 func TenantPackBind(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var req struct {
@@ -318,17 +321,17 @@ func TenantPackBind(c *gin.Context) {
 		EnterprisePackID *uint `json:"enterprise_pack_id"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：industry_pack_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：industry_pack_id 必填")
 		return
 	}
 
 	ipc, ipack, err := openActivePack(req.IndustryPackID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if ipack.PackLevel != industrypack.LevelIndustry {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "industry_pack_id 必须是行业级包"})
+		RespErr(c, http.StatusBadRequest, 400, "industry_pack_id 必须是行业级包")
 		return
 	}
 
@@ -337,31 +340,28 @@ func TenantPackBind(c *gin.Context) {
 	if req.EnterprisePackID != nil && *req.EnterprisePackID > 0 {
 		epc, epack, err = openActivePack(*req.EnterprisePackID)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "企业包: " + err.Error()})
+			RespErr(c, http.StatusBadRequest, 400, "企业包: "+err.Error())
 			return
 		}
 		if epack.PackLevel != industrypack.LevelEnterprise {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "enterprise_pack_id 必须是企业级包"})
+			RespErr(c, http.StatusBadRequest, 400, "enterprise_pack_id 必须是企业级包")
 			return
 		}
 		if epack.ParentCode != ipack.Code {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"code":    400,
-				"message": fmt.Sprintf("企业包[%s]挂在行业[%s]下，与所选行业[%s]不匹配", epack.Code, epack.ParentCode, ipack.Code),
-			})
+			RespErr(c, http.StatusBadRequest, 400, fmt.Sprintf("企业包[%s]挂在行业[%s]下，与所选行业[%s]不匹配", epack.Code, epack.ParentCode, ipack.Code))
 			return
 		}
 	}
 
 	if _, err := industrypack.ApplyToTenant(ipc, ti.ID, 0); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "行业包物化失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "行业包物化失败: "+err.Error())
 		return
 	}
 	entCode, entVer := "", ""
 	var entID *uint
 	if epc != nil {
 		if _, err := industrypack.ApplyToTenant(epc, ti.ID, 0); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "企业包物化失败: " + err.Error()})
+			RespErr(c, http.StatusInternalServerError, 500, "企业包物化失败: "+err.Error())
 			return
 		}
 		id := epack.ID
@@ -388,19 +388,19 @@ func TenantPackBind(c *gin.Context) {
 	if epc != nil {
 		msg += fmt.Sprintf(" + 企业包「%s」v%s", epack.Name, epack.Version)
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg})
+	RespOK(c, msg, nil)
 }
 
 // TenantPackUnbind POST /api/v1/admin/packs/unbind —— 清除两层物化产物 + 删除绑定与部门绑定
 func TenantPackUnbind(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var bind model.TenantPackBinding
 	if err := db.DB.Where("tenant_id = ?", ti.ID).First(&bind).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "当前未绑定任何行业包"})
+		RespErr(c, http.StatusNotFound, 404, "当前未绑定任何行业包")
 		return
 	}
 	_ = industrypack.UnbindFromTenant(bind.PackCode, ti.ID, 0)
@@ -411,14 +411,14 @@ func TenantPackUnbind(c *gin.Context) {
 	db.DB.Where("tenant_id = ?", ti.ID).Delete(&model.DeptPackBinding{})
 	db.DB.Delete(&bind)
 	notifyPackChange(c, ti.ID, "rollback")
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已解绑并清除全部包内容"})
+	RespOK(c, "已解绑并清除全部包内容", nil)
 }
 
 // TenantPackCurrent GET /api/v1/admin/packs/current —— 三层视图
 func TenantPackCurrent(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	out := gin.H{"bound": false}
@@ -426,10 +426,12 @@ func TenantPackCurrent(c *gin.Context) {
 	if db.DB.Where("tenant_id = ?", ti.ID).First(&bind).Error == nil {
 		out["bound"] = true
 		var ind model.IndustryPack
+		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 		db.DB.Select("id,code,name,industry,version,pack_level").First(&ind, bind.PackID)
 		out["industry"] = ind
 		if bind.EnterprisePackID != nil {
 			var ent model.IndustryPack
+			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 			db.DB.Select("id,code,name,industry,version,pack_level").First(&ent, *bind.EnterprisePackID)
 			out["enterprise"] = ent
 		}
@@ -437,7 +439,7 @@ func TenantPackCurrent(c *gin.Context) {
 		db.DB.Where("tenant_id = ?", ti.ID).Find(&depts)
 		out["departments"] = depts
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": out})
+	RespOK(c, "", out)
 }
 
 // TenantPackBindDept POST /api/v1/admin/packs/bind-dept {department_id, pack_id}
@@ -445,7 +447,7 @@ func TenantPackCurrent(c *gin.Context) {
 func TenantPackBindDept(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var req struct {
@@ -453,49 +455,46 @@ func TenantPackBindDept(c *gin.Context) {
 		PackID       uint `json:"pack_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：department_id/pack_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：department_id/pack_id 必填")
 		return
 	}
 	var bind model.TenantPackBinding
 	if err := db.DB.Where("tenant_id = ?", ti.ID).First(&bind).Error; err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请先完成行业/企业两级绑定"})
+		RespErr(c, http.StatusBadRequest, 400, "请先完成行业/企业两级绑定")
 		return
 	}
 	if bind.EnterprisePackID == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "未绑定企业包，部门包必须挂在企业之下"})
+		RespErr(c, http.StatusBadRequest, 400, "未绑定企业包，部门包必须挂在企业之下")
 		return
 	}
 	var dept model.Department
 	if err := db.DB.Where("id = ? AND tenant_id = ?", req.DepartmentID, ti.ID).First(&dept).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "部门不存在或不属于本租户"})
+		RespErr(c, http.StatusNotFound, 404, "部门不存在或不属于本租户")
 		return
 	}
 	pc, pack, err := openActivePack(req.PackID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	if pack.PackLevel != industrypack.LevelDepartment {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "pack_id 必须是部门级包"})
+		RespErr(c, http.StatusBadRequest, 400, "pack_id 必须是部门级包")
 		return
 	}
 	if pack.ParentCode != bind.EnterpriseCode {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": fmt.Sprintf("部门包[%s]挂靠企业[%s]，与本租户企业包[%s]不匹配", pack.Code, pack.ParentCode, bind.EnterpriseCode),
-		})
+		RespErr(c, http.StatusBadRequest, 400, fmt.Sprintf("部门包[%s]挂靠企业[%s]，与本租户企业包[%s]不匹配", pack.Code, pack.ParentCode, bind.EnterpriseCode))
 		return
 	}
 	// 继承链物化：部门包仅写入本部门层；其企业包/行业包祖先内容必须落到租户级
 	// （department_id=NULL）才能被本部门语境召回（strategy 查询按 NULL+本部门并集）。
 	// 否则仅绑部门包会导致祖先内容完全缺失（P2 修复： advertised 继承但未实现）。
 	if err := applyAncestorChain(ti.ID, pack.ParentCode); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "祖先包物化失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "祖先包物化失败: "+err.Error())
 		return
 	}
 	res, err := industrypack.ApplyToTenant(pc, ti.ID, req.DepartmentID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "物化失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "物化失败: "+err.Error())
 		return
 	}
 	var b model.DeptPackBinding
@@ -503,7 +502,7 @@ func TenantPackBindDept(c *gin.Context) {
 		if err := db.DB.Model(&b).Updates(map[string]interface{}{
 			"pack_id": pack.ID, "pack_code": pack.Code, "applied_version": pack.Version,
 		}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "绑定更新失败: " + err.Error()})
+			RespErr(c, http.StatusInternalServerError, 500, "绑定更新失败: "+err.Error())
 			return
 		}
 	} else {
@@ -512,46 +511,42 @@ func TenantPackBindDept(c *gin.Context) {
 			TenantID: ti.ID, DepartmentID: req.DepartmentID,
 			PackID: pack.ID, PackCode: pack.Code, AppliedVersion: pack.Version,
 		}).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "绑定写入失败: " + err.Error()})
+			RespErr(c, http.StatusInternalServerError, 500, "绑定写入失败: "+err.Error())
 			return
 		}
 	}
 	notifyPackChange(c, ti.ID, "upgrade")
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"message": fmt.Sprintf("部门[%s] 已绑定「%s」v%s：模板 %d / 卖点 %d 生效（仅该部门链可见）",
-			dept.Name, pack.Name, pack.Version, res.Templates, res.Features),
-		"data": res,
-	})
+	RespOK(c, fmt.Sprintf("部门[%s] 已绑定「%s」v%s：模板 %d / 卖点 %d 生效（仅该部门链可见）",
+		dept.Name, pack.Name, pack.Version, res.Templates, res.Features), res)
 }
 
 // TenantPackUnbindDept POST /api/v1/admin/packs/unbind-dept {department_id}
 func TenantPackUnbindDept(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
-		c.JSON(http.StatusForbidden, gin.H{"code": 403, "message": "无租户语境"})
+		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
 	var req struct {
 		DepartmentID uint `json:"department_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数错误：department_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误：department_id 必填")
 		return
 	}
 	var b model.DeptPackBinding
 	if err := db.DB.Where("tenant_id = ? AND department_id = ?", ti.ID, req.DepartmentID).
 		First(&b).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "该部门未绑定部门包"})
+		RespErr(c, http.StatusNotFound, 404, "该部门未绑定部门包")
 		return
 	}
 	if err := industrypack.UnbindFromTenant(b.PackCode, ti.ID, req.DepartmentID); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "清除失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "清除失败: "+err.Error())
 		return
 	}
 	db.DB.Delete(&b)
 	notifyPackChange(c, ti.ID, "rollback")
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "部门包已解绑并清除"})
+	RespOK(c, "部门包已解绑并清除", nil)
 }
 
 // SuperPackShare PUT /api/v1/super/packs/:id/share {share:0|1}
@@ -561,14 +556,15 @@ func SuperPackShare(c *gin.Context) {
 		Share *int `json:"share" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || (*req.Share != 0 && *req.Share != 1) {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "share 必须为 0 或 1"})
+		RespErr(c, http.StatusBadRequest, 400, "share 必须为 0 或 1")
 		return
 	}
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
 		Update("share_cross_dept", *req.Share)
 	if res.Error != nil || res.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "包不存在"})
+		RespErr(c, http.StatusNotFound, 404, "包不存在")
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("跨部门共享已置为 %d", *req.Share)})
+	RespOK(c, fmt.Sprintf("跨部门共享已置为 %d", *req.Share), nil)
 }

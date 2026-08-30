@@ -13,7 +13,7 @@ import "ai-scrm/internal/model"
 // TenantID=0 表示查询所有租户数据（启动时默认），>0 则严格隔离
 type Engine struct {
 	TenantID uint // 当前租户ID
-	// 可以在这里缓存流程定义
+	// 可以在这里缓存流程定义（LoadDefinitions 从库加载启用中的流程）
 	definitions []model.FlowDefinition
 }
 

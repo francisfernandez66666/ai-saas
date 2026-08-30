@@ -29,4 +29,5 @@ func (s *segmentEngine) SegmentByTag(tenantID uint, tagCode string) ([]string, e
 	return oneIDs, err
 }
 
+// 保留 model 引用（分群结果联查 cdp_profiles 等表，导入防 unused）
 var _ = model.CdpProfile{}

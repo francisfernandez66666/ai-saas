@@ -22,7 +22,7 @@ const (
 
 // EmailVerify 邮箱验证码表
 type EmailVerify struct {
-	ID         uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	ID         uint      `gorm:"primaryKey" json:"id"`         // 注释：主键ID
 	Email      string    `gorm:"size:100;index" json:"email"`  // 目标邮箱（小写）
 	Purpose    string    `gorm:"size:20;index" json:"purpose"` // register|bind_email
 	CodeHash   string    `gorm:"size:200" json:"-"`            // SHA256(6位码)
@@ -31,7 +31,7 @@ type EmailVerify struct {
 	Attempts   int       `json:"attempts"`                     // 错误尝试次数（≥5作废）
 	SentIP     string    `gorm:"size:45" json:"-"`             // 发送请求来源IP（日限额锚点）
 	LastSentAt time.Time `json:"last_sent_at"`                 // 冷却锚点
-	CreatedAt  time.Time `json:"created_at"` // 注释：创建时间
+	CreatedAt  time.Time `json:"created_at"`                   // 注释：创建时间
 }
 
 // TableName 指定表名

@@ -89,7 +89,7 @@ func WSClient(c *gin.Context) {
 		return
 	}
 	var cust model.Customer
-	if err := db.DB.First(&cust, uint(cid)).Error; err != nil || cust.VisitorKey != vk {
+	if err := db.RQ(c).First(&cust, uint(cid)).Error; err != nil || cust.VisitorKey != vk {
 		respFailStatus(c, http.StatusForbidden, CodeForbidden, "客户身份校验失败")
 		return
 	}

@@ -24,18 +24,18 @@ var (
 func CollectorReceive(c *gin.Context) {
 	key := config.GlobalConfig.Collector.Key
 	if key == "" {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 40101, "message": "接收端未启用（未配置 COLLECTOR_KEY）"})
+		RespErr(c, http.StatusUnauthorized, 40101, "接收端未启用（未配置 COLLECTOR_KEY）")
 		return
 	}
 	if c.GetHeader("X-Collector-Key") != key {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 40101, "message": "鉴权失败"})
+		RespErr(c, http.StatusUnauthorized, 40101, "鉴权失败")
 		return
 	}
 	var req struct {
 		Events []service.CollectorEvent `json:"events"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil || len(req.Events) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 40001, "message": "参数错误: 需 events 数组"})
+		RespErr(c, http.StatusBadRequest, 40001, "参数错误: 需 events 数组")
 		return
 	}
 	accepted := 0
@@ -55,5 +55,5 @@ func CollectorReceive(c *gin.Context) {
 		accepted++
 	}
 	seenMu.Unlock()
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "ok", "data": gin.H{"accepted": accepted, "total": len(req.Events)}})
+	RespOK(c, "ok", gin.H{"accepted": accepted, "total": len(req.Events)})
 }

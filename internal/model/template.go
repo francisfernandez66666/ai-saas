@@ -65,13 +65,13 @@ type Template struct {
 	// ---- 元数据 ----
 	// DepartmentID 部门维度（三级包架构 2026-08-26）：NULL=租户级（行业/企业包物化）；
 	// 非空=部门专属（部门包物化），仅该部门链上的顾问语境可见
-	DepartmentID *uint     `gorm:"index" json:"department_id"` // 注释：部门ID
+	DepartmentID *uint     `gorm:"index" json:"department_id"`   // 注释：部门ID
 	Priority     int       `gorm:"default:0" json:"priority"`    // 优先级，越大越优先
 	UsageCount   int       `gorm:"default:0" json:"usage_count"` // 使用次数
 	Status       int       `gorm:"default:1" json:"status"`      // 状态: 1-启用 0-禁用
 	Version      string    `gorm:"size:20" json:"version"`       // 版本号
-	CreatedAt    time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt    time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt    time.Time `json:"created_at"`                   // 注释：创建时间
+	UpdatedAt    time.Time `json:"updated_at"`                   // 注释：更新时间
 }
 
 // TableName 指定表名

@@ -46,18 +46,18 @@ type signupReq struct {
 func TenantSignup(c *gin.Context) {
 	var req signupReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "参数不完整"})
+		RespErr(c, http.StatusBadRequest, 400, "参数不完整")
 		return
 	}
 	req.Code = strings.ToLower(strings.TrimSpace(req.Code))
 	req.Username = strings.TrimSpace(req.Username)
 
 	if !tenantCodeRe.MatchString(req.Code) {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "标识需为 3-20 位小写字母开头的小写字母/数字/连字符"})
+		RespErr(c, http.StatusBadRequest, 400, "标识需为 3-20 位小写字母开头的小写字母/数字/连字符")
 		return
 	}
 	if strings.TrimSpace(req.CompanyName) == "" || len(req.Password) < 6 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "企业名称必填且密码至少 6 位"})
+		RespErr(c, http.StatusBadRequest, 400, "企业名称必填且密码至少 6 位")
 		return
 	}
 
@@ -65,17 +65,17 @@ func TenantSignup(c *gin.Context) {
 	req.AdminEmail = service.NormalizeEmail(req.AdminEmail)
 	if service.EmailVerifyEnabled() {
 		if req.AdminEmail == "" || req.EmailCode == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": "请输入管理员邮箱并获取验证码"})
+			RespErr(c, http.StatusBadRequest, 400, "请输入管理员邮箱并获取验证码")
 			return
 		}
 		var dupMail int64
 		db.DB.Model(&model.User{}).Where("email = ?", req.AdminEmail).Count(&dupMail)
 		if dupMail > 0 {
-			c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换"})
+			RespErr(c, http.StatusConflict, 409, "该邮箱已被绑定，请更换")
 			return
 		}
 		if err := service.VerifyEmailCode(req.AdminEmail, model.EmailPurposeRegister, req.EmailCode); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+			RespErr(c, http.StatusBadRequest, 400, err.Error())
 			return
 		}
 	}
@@ -84,12 +84,12 @@ func TenantSignup(c *gin.Context) {
 	var dup int64
 	db.DB.Model(&model.Tenant{}).Where("code = ?", req.Code).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该标识暂不可用，请更换"})
+		RespErr(c, http.StatusConflict, 409, "该标识暂不可用，请更换")
 		return
 	}
 	db.DB.Model(&model.User{}).Where("username = ?", req.Username).Count(&dup)
 	if dup > 0 {
-		c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "管理员用户名已存在"})
+		RespErr(c, http.StatusConflict, 409, "管理员用户名已存在")
 		return
 	}
 
@@ -101,36 +101,39 @@ func TenantSignup(c *gin.Context) {
 	if service.EmailVerifyEnabled() && req.AdminEmail != "" {
 		daily := svc.GetInt("register_email_daily_limit", 3)
 		var cnt int64
+		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 		db.DB.Model(&model.TenantAuditLog{}).
 			Where("action = ? AND created_at >= CURRENT_DATE AND detail LIKE ?",
 				"tenant_signup", fmt.Sprintf(`%%"email":"%s"%%`, req.AdminEmail)).
 			Count(&cnt)
 		if cnt >= int64(daily) {
-			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", req.AdminEmail, daily)
-			c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该邮箱今日注册尝试已达上限，请明日再试或联系我们"})
+			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", service.MaskEmail(req.AdminEmail), daily)
+			RespErr(c, http.StatusTooManyRequests, 429, "该邮箱今日注册尝试已达上限，请明日再试或联系我们")
 			return
 		}
 	} else {
 		ip := c.ClientIP()
 		if dailyLimit := svc.GetInt("register_ip_daily_limit", 3); dailyLimit > 0 {
 			var cnt int64
+			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 			db.DB.Model(&model.TenantAuditLog{}).
 				Where("action = ? AND ip = ? AND created_at >= CURRENT_DATE", "tenant_signup", ip).
 				Count(&cnt)
 			if cnt >= int64(dailyLimit) {
 				log.Printf("[防薅] IP=%s 今日注册已达上限(%d)", ip, dailyLimit)
-				c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "该网络今日注册次数已达上限，请明日再试或联系我们"})
+				RespErr(c, http.StatusTooManyRequests, 429, "该网络今日注册次数已达上限，请明日再试或联系我们")
 				return
 			}
 		}
 		if minGap := svc.GetInt("register_ip_min_interval_sec", 60); minGap > 0 {
 			var last time.Time
+			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 			db.DB.Model(&model.TenantAuditLog{}).
 				Select("created_at").
 				Where("action = ? AND ip = ?", "tenant_signup", ip).
 				Order("id DESC").Limit(1).Scan(&last)
 			if !last.IsZero() && time.Since(last) < time.Duration(minGap)*time.Second {
-				c.JSON(http.StatusTooManyRequests, gin.H{"code": 429, "message": "注册过于频繁，请稍后再试"})
+				RespErr(c, http.StatusTooManyRequests, 429, "注册过于频繁，请稍后再试")
 				return
 			}
 		}
@@ -140,7 +143,7 @@ func TenantSignup(c *gin.Context) {
 
 	// ① 弱密码拒绝：与改密共用同一强度基线（≥8位含字母和数字）
 	if err := validatePasswordStrength(req.Password); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "message": err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 
@@ -150,7 +153,7 @@ func TenantSignup(c *gin.Context) {
 		var dupMail int64
 		db.DB.Model(&model.User{}).Where("email = ?", req.AdminEmail).Count(&dupMail)
 		if dupMail > 0 {
-			c.JSON(http.StatusConflict, gin.H{"code": 409, "message": "该邮箱已被绑定，请更换或直接登录"})
+			RespErr(c, http.StatusConflict, 409, "该邮箱已被绑定，请更换或直接登录")
 			return
 		}
 	}
@@ -163,11 +166,12 @@ func TenantSignup(c *gin.Context) {
 
 	// 默认套餐：personal（不存在则置空由超管补配）；Max* 字段用于新建租户配额上限
 	var plan model.SubscriptionPlan
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	db.DB.Where("code = ?", "personal").First(&plan)
 
 	hashed, err := utils.HashPassword(req.Password)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "密码处理失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
 		return
 	}
 
@@ -245,7 +249,7 @@ func TenantSignup(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "开通失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "开通失败: "+err.Error())
 		return
 	}
 
@@ -275,15 +279,11 @@ func TenantSignup(c *gin.Context) {
 	if reviewMode {
 		msg = "注册成功，账号审核中（通常1个工作日内完成）"
 	}
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": msg,
-		"data": gin.H{
-			"tenant_id":   ten.ID,
-			"tenant_code": req.Code,
-			"status":      ten.Status,
-			"login_url":   loginURL,
-		},
+	RespOK(c, msg, gin.H{
+		"tenant_id":   ten.ID,
+		"tenant_code": req.Code,
+		"status":      ten.Status,
+		"login_url":   loginURL,
 	})
 }
 
@@ -312,15 +312,15 @@ func grantTrialPackage(tenantID uint) {
 func CheckTenantCode(c *gin.Context) {
 	code := strings.ToLower(strings.TrimSpace(c.Query("code")))
 	if !tenantCodeRe.MatchString(code) {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{"available": false, "reason": "格式不符"}})
+		RespOK(c, "", gin.H{"available": false, "reason": "格式不符"})
 		return
 	}
 	var dup int64
 	db.DB.Model(&model.Tenant{}).Where("code = ?", code).Count(&dup)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"available": dup == 0,
 		"reason":    map[bool]string{true: "可用", false: "该标识暂不可用"}[dup == 0],
-	}})
+	})
 }
 
 // ListPlans GET /api/v1/plans （定价页公开查询）
@@ -328,8 +328,9 @@ func CheckTenantCode(c *gin.Context) {
 // packages 返回新商业包体系（试用/包月/增量），两者并存过渡
 func ListPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
+	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	if err := db.DB.Where("is_active = ?", true).Order("sort_order ASC, id ASC").Find(&plans).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
 	var pkgs []model.Package

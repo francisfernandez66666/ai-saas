@@ -51,13 +51,14 @@ type LogSender struct{}
 
 // SendResetCode 实现：打日志
 func (LogSender) SendResetCode(to string, code string) error {
-	log.Printf("[重置码] 账号=%s 验证码=%s（10分钟内有效，一次性）", to, code)
+	log.Printf("[重置码] 账号=%s 验证码=***(已脱敏,10分钟内有效,一次性)", MaskEmail(MaskPhoneInText(to)))
 	return nil
 }
 
 // SendRaw 实现：打日志
 func (LogSender) SendRaw(to []string, subject, body string) error {
-	log.Printf("[邮件-log通道] to=%s subject=%s body=%s", to, subject, strings.ReplaceAll(body, "\n", " | "))
+	// body 为外发邮件内容（可能含验证码），仅 log 通道开发态可见；此处脱敏收件人
+	log.Printf("[邮件-log通道] to=%s subject=%s body=%s", MaskEmail(MaskPhoneInText(strings.Join(to, ","))), subject, strings.ReplaceAll(body, "\n", " | "))
 	return nil
 }
 

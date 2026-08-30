@@ -32,7 +32,7 @@ func AdminUsageSummary(c *gin.Context) {
 		totalCalls += r.Calls
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"days":         days,
 		"total_calls":  totalCalls,
 		"total_tokens": totalTokens,
@@ -40,7 +40,7 @@ func AdminUsageSummary(c *gin.Context) {
 		"total_cost_yuan": microToYuan(totalCost),
 		"by_day":          days7,
 		"by_stage":        stages,
-	}})
+	})
 }
 
 // SuperUsageCost GET /api/v1/super/usage/cost?days=30 —— 全平台模型成本
@@ -49,7 +49,7 @@ func SuperUsageCost(c *gin.Context) {
 
 	rows, err := service.UsageCostByModel(days)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
 	var totalCost, totalTokens, totalCalls int64
@@ -78,13 +78,13 @@ func SuperUsageCost(c *gin.Context) {
 			Tokens: r.Tokens, CostYuan: microToYuan(r.CostMicro), CostSharePct: share,
 		})
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+	RespOK(c, "", gin.H{
 		"days":            days,
 		"total_calls":     totalCalls,
 		"total_tokens":    totalTokens,
 		"total_cost_yuan": microToYuan(totalCost),
 		"models":          list,
-	}})
+	})
 }
 
 // parseDays 解析 days 查询参数（限1~365，默认30）

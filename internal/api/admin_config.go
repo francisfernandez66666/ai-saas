@@ -272,8 +272,8 @@ func RollbackTenantConfig(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	n, err := configcenter.Rollback(db.EffectiveTenantIDFromGin(c), req.Keys)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": "回滚失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "回滚失败: "+err.Error())
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("已回滚 %d 项配置至系统默认", n)})
+	RespOK(c, fmt.Sprintf("已回滚 %d 项配置至系统默认", n), nil)
 }

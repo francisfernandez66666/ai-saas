@@ -128,30 +128,31 @@ func InitRouter() {
 // 自动按优先级尝试各模型，失败则降级
 // 返回：回复内容, 使用的模型名, 错误
 func (r *AIRouter) GenerateText(messages []ChatMessage, temperature float64) (string, string, error) {
-	reply, _, model, _, err := r.GenerateTextForStage("", messages, temperature)
+	reply, _, model, _, err := r.GenerateTextForStage("", 0, messages, temperature)
 	return reply, model, err
 }
 
 // GenerateTextForStage 带阶段语义的生成入口（M3）
 // stage_models 配置了该阶段专属模型时优先使用（失败自动回退全局降级链），
-// 并透传 token 用量供 usage_ledger 落账
+// 并透传 token 用量供 usage_ledger 落账。
+// tenantID 用于网关转发时还原租户做 fail-closed 计量（0=平台内部调用）。
 // 返回：回复内容, provider, 模型名, 用量, 错误
-func (r *AIRouter) GenerateTextForStage(stage string, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
+func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
 	// 阶段覆盖优先：配置的专属模型先行尝试
 	if provStr, model, ok := ResolveStageModel(stage); ok {
-		reply, usage, err := r.callProvider(ModelProvider(provStr), model, messages, temperature)
+		reply, usage, err := r.callProvider(ModelProvider(provStr), model, messages, temperature, tenantID, stage)
 		if err == nil && reply != "" {
 			log.Printf("[AI路由] 阶段[%s]使用stage_models覆盖模型: [%s] %s", stage, provStr, model)
 			return reply, provStr, model, usage, nil
 		}
 		log.Printf("[AI路由] 阶段[%s]覆盖模型调用失败(%v)，回退全局降级链", stage, err)
 	}
-	reply, provider, model, usage, err := r.GenerateTextWithUsage(messages, temperature)
+	reply, provider, model, usage, err := r.GenerateTextWithUsage(messages, temperature, tenantID, stage)
 	return reply, provider, model, usage, err
 }
 
 // callProvider 定向调用指定 provider+model（阶段覆盖专用）
-func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64) (string, Usage, error) {
+func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
 	switch provider {
 	case ProviderZhipu:
 		DefaultClient.SetModel(modelName)
@@ -163,14 +164,15 @@ func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messag
 		if DefaultGatewayClient == nil {
 			return "", Usage{}, fmt.Errorf("网关未初始化")
 		}
-		return DefaultGatewayClient.GenerateTextWithUsage(messages, temperature)
+		return DefaultGatewayClient.GenerateTextWithUsage(messages, temperature, tenantID, stage)
 	}
 	return "", Usage{}, fmt.Errorf("未知provider: %s", string(provider))
 }
 
 // GenerateTextWithUsage 生成并透传 token 用量（M3 计量底座）
+// tenantID/stage 透传网关（本地直连时忽略）。
 // 返回：回复内容, provider, 使用的模型名, 用量, 错误
-func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
+func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, string, string, Usage, error) {
 	r.mu.RLock()
 	models := make([]*ModelState, len(r.models))
 	copy(models, r.models)
@@ -206,7 +208,7 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 		triedCount++
 		log.Printf("[AI路由] → 尝试第%d个模型: [%s] %s", idx+1, model.Provider, model.ModelName)
 
-		reply, usage, err := r.callProvider(model.Provider, model.ModelName, messages, temperature)
+		reply, usage, err := r.callProvider(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
 
 		if err == nil && reply != "" {
 			// 成功，重置失败计数

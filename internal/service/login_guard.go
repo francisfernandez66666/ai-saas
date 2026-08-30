@@ -27,6 +27,7 @@ const (
 	lockDuration   = 15 * time.Minute // 触发后锁定时长
 )
 
+// attemptRec 内存版守卫记录：单键的失败计数 + 窗口起点 + 锁定截止（零值=未锁）
 type attemptRec struct {
 	count       int       // 窗口内失败次数
 	windowStart time.Time // 窗口起点
@@ -83,6 +84,7 @@ func CheckLoginAllowed(username, ip string) error {
 	return nil
 }
 
+// checkLoginAllowedRedis Redis 版锁定检查：读 lg:lock 键，按锁定生效时间戳推算剩余等待
 func checkLoginAllowedRedis(username, ip string) error {
 	_, lockKeys := loginRedisKeys(username, ip)
 	now := time.Now()
@@ -127,6 +129,7 @@ func RecordLoginFailure(username, ip string) {
 	}
 }
 
+// recordLoginFailureRedis Redis 版失败记账：INCR 计数+设窗口 TTL，达阈值写锁定键
 func recordLoginFailureRedis(username, ip string) {
 	countKeys, lockKeys := loginRedisKeys(username, ip)
 	now := time.Now()
@@ -166,6 +169,7 @@ func ClearLoginFailures(username string) {
 	_ = prefix
 }
 
+// clearLoginFailuresRedis 清用户名维度计数/锁键（IP 维度键无前缀删除，待 TTL 自然过期）
 func clearLoginFailuresRedis(username string) {
 	// 删除用户名维度的全部计数/锁键（含 IP 组合）
 	keys := []string{

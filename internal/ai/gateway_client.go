@@ -1,10 +1,13 @@
 // Package ai AI 网关客户端（云端枢纽转发）：本地部署/SaaS 实例无厂商 Key 时，
 // 所有 reply 阶段请求统一经网关出网，网关持有平台厂商 Key 并做鉴权+余额 fail-closed+上游降级。
-// 计费权仍在租户侧（本地三桶扣减不变），网关仅作转发与平台级审计采集。
+// 计费权统一上收网关（网关侧做三桶原子扣减+usage_ledger 落账），本地实例不再重复计量。
 package ai
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -21,7 +24,7 @@ var DefaultGatewayClient *GatewayClient
 // GatewayClient AI 网关转发客户端（OpenAI 兼容 /v1/chat/completions）
 type GatewayClient struct {
 	BaseURL string       // 网关根地址
-	Token   string       // 网关鉴权令牌
+	Secret  string       // 网关共享密钥（HMAC 签名用，与网关服务端一致）
 	Model   string       // 默认转发模型
 	http    *http.Client // 复用 HTTP 客户端
 }
@@ -38,7 +41,7 @@ type gatewayChatRequest struct {
 type gatewayUsage struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens       int `json:"total_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 // gatewayChatResponse OpenAI 兼容响应体（仅取回复与用量）
@@ -64,7 +67,7 @@ func InitGatewayClient() {
 	}
 	DefaultGatewayClient = &GatewayClient{
 		BaseURL: cfg.GatewayURL,
-		Token:   cfg.GatewayToken,
+		Secret:  cfg.GatewayToken,
 		Model:   cfg.GatewayModel,
 		http:    &http.Client{Timeout: 120 * time.Second},
 	}
@@ -78,8 +81,20 @@ func (g *GatewayClient) SetModel(modelName string) {
 	}
 }
 
+// signTenant 用共享密钥对 tenantID 签名，生成 <tenantID>.<sig> 形式的网关鉴权令牌
+// 网关服务端据此还原租户并做 fail-closed 计量；tenantID=0 视为平台内部调用（不签名）
+func (g *GatewayClient) signTenant(tenantID uint) string {
+	if tenantID == 0 || g.Secret == "" {
+		return ""
+	}
+	mac := hmac.New(sha256.New, []byte(g.Secret))
+	mac.Write([]byte(fmt.Sprintf("%d", tenantID)))
+	return fmt.Sprintf("%d.%s", tenantID, hex.EncodeToString(mac.Sum(nil)))
+}
+
 // GenerateTextWithUsage 经网关转发并透传 token 用量（与 SiliconFlow/GLM 客户端对齐签名）
-func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
+// tenantID 用于网关侧还原租户并做三桶计量；stage 透传供网关侧 stage_models 覆盖。
+func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
 	model := g.Model
 	if model == "" {
 		model = "default"
@@ -100,7 +115,12 @@ func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperatur
 		return "", Usage{}, fmt.Errorf("网关请求构建失败: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+g.Token)
+	if tok := g.signTenant(tenantID); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
+	if stage != "" {
+		req.Header.Set("X-Stage", stage)
+	}
 
 	resp, err := g.http.Do(req)
 	if err != nil {

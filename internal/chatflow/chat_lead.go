@@ -123,7 +123,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			}
 		}
 		log.Printf("[留资检测] 客户%d留资成功: phone=%s, stage=%v, assigned=%v",
-			customer.ID, phoneMatch, updates["journey_stage"], updates["assigned_user_id"])
+			customer.ID, service.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"])
 	}
 
 	// 修复：留资成功后生成线索记录（已留资线索，分配给顾问）
@@ -492,6 +492,48 @@ func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) 
 					content = content[:60] + "..."
 				}
 				sb.WriteString(fmt.Sprintf("  \"%s\"\n", content))
+			}
+		}
+	}
+
+	// 5. 历史交互语义焦点（增强：让 AI 知道对话走到哪了，避免重复引导）
+	// 取最近 6 条（客户+AI 混合）消息，提炼意图信号与最近一次 AI 回复
+	if conversationID > 0 {
+		var recentAll []model.Message
+		db.DB.Where("conversation_id = ?", conversationID).
+			Order("id DESC").Limit(6).Find(&recentAll)
+		if len(recentAll) > 0 {
+			intentFlags := map[string]bool{}
+			for i := len(recentAll) - 1; i >= 0; i-- {
+				t := strings.ToLower(recentAll[i].Content)
+				switch {
+				case strings.Contains(t, "试驾") || strings.Contains(t, "试乘"):
+					intentFlags["已提及试驾"] = true
+				case strings.Contains(t, "置换") || strings.Contains(t, "旧车") || strings.Contains(t, "二手车"):
+					intentFlags["已提及置换"] = true
+				case strings.Contains(t, "金融") || strings.Contains(t, "贷款") || strings.Contains(t, "分期") || strings.Contains(t, "首付"):
+					intentFlags["已提及金融"] = true
+				case strings.Contains(t, "优惠") || strings.Contains(t, "折扣") || strings.Contains(t, "便宜"):
+					intentFlags["已提及议价"] = true
+				}
+			}
+			if len(intentFlags) > 0 {
+				keys := make([]string, 0, len(intentFlags))
+				for k := range intentFlags {
+					keys = append(keys, k)
+				}
+				sb.WriteString("· 历史交互焦点：" + strings.Join(keys, "、") + "\n")
+			}
+			// 最近一次 AI 回复摘要（避免 AI 重复说刚说过的话）
+			for _, m := range recentAll {
+				if m.SenderType == "ai" || m.SenderType == "bot" || m.SenderType == "advisor" {
+					last := m.Content
+					if len(last) > 50 {
+						last = last[:50] + "..."
+					}
+					sb.WriteString(fmt.Sprintf("· AI 最近一次回复：%s\n", last))
+					break
+				}
 			}
 		}
 	}

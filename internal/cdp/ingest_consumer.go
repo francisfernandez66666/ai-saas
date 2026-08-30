@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"ai-scrm/internal/model"
@@ -34,8 +35,23 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	// 环境维：由事件携带的渠道/路由/发生时段时间派生（非行为硬推，属上下文信号）
 	{Code: "env_route", Name: "交互路由", Category: "environment"},
 	{Code: "env_time_slot", Name: "到访时段", Category: "environment"},
+	{Code: "env_channel", Name: "来源渠道", Category: "environment"},
+	{Code: "env_device", Name: "访问设备", Category: "environment"},
+	{Code: "env_referrer", Name: "引荐来源", Category: "environment"},
+	{Code: "env_geo", Name: "地理位置", Category: "environment"},
+	{Code: "env_language", Name: "语言偏好", Category: "environment"},
 	// 态度维：严禁由行为推导——仅当事件属性显式携带 NLP/零方情绪（emotion）时才打，否则不打
 	{Code: "att_emotion", Name: "情绪态度", Category: "attitude"},
+	{Code: "att_intent", Name: "表达意向", Category: "attitude"},
+	{Code: "att_satisfaction", Name: "满意度态度", Category: "attitude"},
+	{Code: "att_objection", Name: "异议态度", Category: "attitude"},
+	// P1-2（2026-08-30）运营闭环：付费成功→开通欢迎流程落标记
+	{Code: "mkt_welcome_sent", Name: "已付费待欢迎", Category: "behavior"},
+	// P3（2026-08-30）行为维补齐：到访/试驾/深度兴趣/价格探询（事件驱动，非行为硬推）
+	{Code: "beh_visit", Name: "到店到访", Category: "behavior"},
+	{Code: "beh_testdrive", Name: "已试驾", Category: "behavior"},
+	{Code: "beh_deep_interest", Name: "深度兴趣", Category: "behavior"},
+	{Code: "beh_price_inquiry", Name: "价格探询", Category: "behavior"},
 }
 
 // StartIngestConsumer 注册 user_event 订阅（main 启动时调用一次）
@@ -113,12 +129,30 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		ApplyTag(tid, profile.ID, "idm_guest", "1")
 	case "lead_captured":
 		ApplyTag(tid, profile.ID, "beh_lead_captured", "1")
+		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
 	case "conversation_msg":
 		ApplyTag(tid, profile.ID, "beh_msg_active", "1")
+		// 价格探询：仅当事件属性携带消息正文且命中价格关键词（零方文本，非行为硬推态度）
+		var msgText string
+		if c, _ := payload.Data.Attributes["content"].(string); c != "" {
+			msgText = c
+		}
+		if t, _ := payload.Data.Attributes["text"].(string); t != "" {
+			msgText = strings.TrimSpace(msgText + " " + t)
+		}
+		if isPriceInquiry(msgText) {
+			ApplyTag(tid, profile.ID, "beh_price_inquiry", "1")
+		}
+	case "store_visit":
+		ApplyTag(tid, profile.ID, "beh_visit", "1")
+	case "test_drive":
+		ApplyTag(tid, profile.ID, "beh_testdrive", "1")
+		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
 	case "payment":
 		// M2（2026-08-25）：付费事实入 CDP——订单确认到账事件此前发布即沉底，
 		// 编排层心跳消费者不认此事件名。CDP 定位"记录事实"，流程联动（欢迎流）留待专项。
 		ApplyTag(tid, profile.ID, "tran_order_paid", "1")
+		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
 		log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
 	}
 
@@ -133,19 +167,48 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	}
 	ApplyTag(tid, profile.ID, "env_time_slot", slot)
 
-	// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪（emotion）时打——
+	// P3 环境维补齐：渠道/设备/引荐/地理/语言（事件属性携带则打，否则不打）
+	if v, _ := payload.Data.Attributes["channel"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_channel", v)
+	}
+	if v, _ := payload.Data.Attributes["device"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_device", v)
+	}
+	if v, _ := payload.Data.Attributes["referrer"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_referrer", v)
+	}
+	if v, _ := payload.Data.Attributes["geo"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_geo", v)
+	}
+	if v, _ := payload.Data.Attributes["language"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_language", v)
+	}
+
+	// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪/意向/异议（emotion/intent/objection）时打——
 	// 红线：严禁由行为硬推态度；chat.go 发布 conversation_msg 时携带 strategy 情绪即合规
-	emotion, _ := payload.Data.Attributes["emotion"].(string)
-	if emotion != "" {
-		ApplyTag(tid, profile.ID, "att_emotion", emotion)
+	var emo, intentVal, sat, obj string
+	if emo, _ = payload.Data.Attributes["emotion"].(string); emo != "" {
+		ApplyTag(tid, profile.ID, "att_emotion", emo)
+	}
+	if intentVal, _ = payload.Data.Attributes["intent"].(string); intentVal != "" {
+		ApplyTag(tid, profile.ID, "att_intent", intentVal)
+	}
+	if sat, _ = payload.Data.Attributes["satisfaction"].(string); sat != "" {
+		ApplyTag(tid, profile.ID, "att_satisfaction", sat)
+	}
+	if obj, _ = payload.Data.Attributes["objection"].(string); obj != "" {
+		ApplyTag(tid, profile.ID, "att_objection", obj)
 	}
 
 	// P2 collector：CDP 事件进数据飞轮（脱敏在 Collect 内完成；URL 空则丢弃）
 	service.Collect("cdp_event", tid, map[string]any{
-		"one_id":    oneID,
-		"route":     route,
-		"time_slot": slot,
-		"emotion":   emotion,
+		"one_id":       oneID,
+		"route":        route,
+		"time_slot":    slot,
+		"emotion":      emo,
+		"intent":       intentVal,
+		"satisfaction": sat,
+		"objection":    obj,
 	})
 	return nil
 }
@@ -164,4 +227,19 @@ func toUintAny(v any) uint {
 		return uint(n)
 	}
 	return 0
+}
+
+// isPriceInquiry 判断文本是否含价格探询意图（零方文本关键词，非行为硬推）
+func isPriceInquiry(text string) bool {
+	if text == "" {
+		return false
+	}
+	low := strings.ToLower(text)
+	priceKW := []string{"贵", "便宜", "优惠", "降价", "价格", "多少钱", "预算", "首付", "分期", "贷款", "折扣", "议价", "price", "cost", "discount"}
+	for _, kw := range priceKW {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
 }

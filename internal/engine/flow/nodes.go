@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"log"
@@ -129,7 +130,7 @@ func (e *Engine) executeConditionNode(node model.FlowNode, ctx *FlowContext) Nod
 }
 
 // executeTagUpdateNode 标签更新节点
-// 作用：更新客户标签
+// 作用：更新客户标签（实际落库，而非仅日志）
 func (e *Engine) executeTagUpdateNode(node model.FlowNode, ctx *FlowContext) NodeResult {
 	log.Printf("[流程引擎] 执行标签更新节点: %s", node.Name)
 
@@ -137,7 +138,22 @@ func (e *Engine) executeTagUpdateNode(node model.FlowNode, ctx *FlowContext) Nod
 	// config: {add_tags: [], remove_tags: []}
 	if addTags, ok := node.Config["add_tags"].([]interface{}); ok {
 		for _, tag := range addTags {
-			log.Printf("  添加标签: %v", tag)
+			code, _ := tag.(string)
+			if code == "" || ctx.CustomerID == 0 {
+				continue
+			}
+			cdp.ApplyTagByCustomer(ctx.TenantID, ctx.CustomerID, code, "1")
+			log.Printf("  添加标签: %s (tenant=%d customer=%d)", code, ctx.TenantID, ctx.CustomerID)
+		}
+	}
+	if rmTags, ok := node.Config["remove_tags"].([]interface{}); ok {
+		for _, tag := range rmTags {
+			code, _ := tag.(string)
+			if code == "" || ctx.CustomerID == 0 {
+				continue
+			}
+			cdp.RemoveTagByCustomer(ctx.TenantID, ctx.CustomerID, code)
+			log.Printf("  移除标签: %s (tenant=%d customer=%d)", code, ctx.TenantID, ctx.CustomerID)
 		}
 	}
 

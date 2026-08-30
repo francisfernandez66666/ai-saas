@@ -78,10 +78,7 @@ func ChatTest(c *gin.Context) {
 		Content    string `json:"content" binding:"required"` // 客户说的话
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"code":    400,
-			"message": "参数错误: " + err.Error(),
-		})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -95,10 +92,7 @@ func ChatTest(c *gin.Context) {
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, customerID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, gin.H{
-			"code":    404,
-			"message": "客户不存在，可用customer_id=1测试",
-		})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在，可用customer_id=1测试")
 		return
 	}
 
@@ -110,7 +104,7 @@ func ChatTest(c *gin.Context) {
 	// 第一层：硬边界拦截（0延迟，不走AI，不进队列）
 	if service.IsOffTopic(req.Content) {
 		reply := service.GetOffTopicReply(req.Content)
-		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, req.Content, reply)
+		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
 		// 查找或创建活跃会话
 		var conv model.Conversation
 		if err := db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
@@ -151,16 +145,12 @@ func ChatTest(c *gin.Context) {
 		}
 		// 唤醒队列中可能等待的其他请求
 		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, reply)
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id":    conv.ID,
-				"ai_reply":           reply,
-				"route_result":       "offtopic_hardbound",
-				"customer_msg_id":    customerMsg.ID,               // 修复问题4：返回客户消息DB ID
-				"assistant_messages": []model.Message{offTopicMsg}, // 修复：返回带真实DB ID的消息列表，前端用此去重
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id":    conv.ID,
+			"ai_reply":           reply,
+			"route_result":       "offtopic_hardbound",
+			"customer_msg_id":    customerMsg.ID,               // 修复问题4：返回客户消息DB ID
+			"assistant_messages": []model.Message{offTopicMsg}, // 修复：返回带真实DB ID的消息列表，前端用此去重
 		})
 		return
 	}
@@ -285,7 +275,7 @@ func ChatTest(c *gin.Context) {
 				}
 			}
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
-				customer.ID, phoneMatchTest, customer.AssignedUserID)
+				customer.ID, service.MaskPhone(phoneMatchTest), customer.AssignedUserID)
 			// P3：到店分支留资事件上行（ChatTest 路径）
 			if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
@@ -348,17 +338,13 @@ func ChatTest(c *gin.Context) {
 			}
 			db.RQ(c).Create(&leadMsg)
 
-			c.JSON(http.StatusOK, gin.H{
-				"code":    0,
-				"message": "success",
-				"data": gin.H{
-					"conversation_id":    conv.ID,
-					"ai_reply":           leadCapturedReply,
-					"route_result":       "lead_captured_confirmed",
-					"merged_customer_id": mergedTargetIDTest,       // OneID合并：>0表示前端需切换customer_id
-					"customer_msg_id":    customerMsg.ID,           // 修复：返回客户消息DB ID
-					"assistant_messages": []model.Message{leadMsg}, // 修复：返回带真实DB ID的消息列表
-				},
+			RespOK(c, "success", gin.H{
+				"conversation_id":    conv.ID,
+				"ai_reply":           leadCapturedReply,
+				"route_result":       "lead_captured_confirmed",
+				"merged_customer_id": mergedTargetIDTest,       // OneID合并：>0表示前端需切换customer_id
+				"customer_msg_id":    customerMsg.ID,           // 修复：返回客户消息DB ID
+				"assistant_messages": []model.Message{leadMsg}, // 修复：返回带真实DB ID的消息列表
 			})
 			return
 		}
@@ -412,16 +398,12 @@ func ChatTest(c *gin.Context) {
 			log.Printf("[到店倾向-未留资线索-测试接口] 客户%d 第二段追问已发送", cid)
 		}(customer.ID, conv.ID, secondReply, tenantID)
 
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id":    conv.ID,
-				"ai_reply":           firstReply,
-				"route_result":       "store_visit_fast",
-				"customer_msg_id":    customerMsg.ID,
-				"assistant_messages": []model.Message{storeVisitMsg},
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id":    conv.ID,
+			"ai_reply":           firstReply,
+			"route_result":       "store_visit_fast",
+			"customer_msg_id":    customerMsg.ID,
+			"assistant_messages": []model.Message{storeVisitMsg},
 		})
 		return
 	}
@@ -492,16 +474,12 @@ skipStoreVisitFastTest:
 			log.Printf("[测试接口-简单消息] 客户%d自动打标: %v", customer.ID, autoTags)
 		}
 
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"conversation_id":    conv.ID,
-				"ai_reply":           simpleReply,
-				"message":            simpleMsg,
-				"customer_msg_id":    testCustomerMsgID,          // 修复问题4：返回客户消息DB ID，供前端替换temp ID
-				"assistant_messages": []model.Message{simpleMsg}, // 修复：返回带真实DB ID的消息列表
-			},
+		RespOK(c, "success", gin.H{
+			"conversation_id":    conv.ID,
+			"ai_reply":           simpleReply,
+			"message":            simpleMsg,
+			"customer_msg_id":    testCustomerMsgID,          // 修复问题4：返回客户消息DB ID，供前端替换temp ID
+			"assistant_messages": []model.Message{simpleMsg}, // 修复：返回带真实DB ID的消息列表
 		})
 		return
 	}
@@ -509,15 +487,11 @@ skipStoreVisitFastTest:
 	if !shouldProcess {
 		// Bug 1 修复：合并请求只返回合并状态，不返回完整AI回复
 		// 前端收到 merged=true 时，不渲染新消息气泡，等主请求的回复即可
-		c.JSON(http.StatusOK, gin.H{
-			"code":    0,
-			"message": "success",
-			"data": gin.H{
-				"merged":          true,
-				"merged_note":     "本条消息已与先前的消息合并处理，回复将在主请求中返回",
-				"customer_input":  req.Content,       // 保留原始输入，方便调试对照
-				"customer_msg_id": testCustomerMsgID, // 修复：返回客户消息DB ID，供前端替换temp ID
-			},
+		RespOK(c, "success", gin.H{
+			"merged":          true,
+			"merged_note":     "本条消息已与先前的消息合并处理，回复将在主请求中返回",
+			"customer_input":  req.Content,       // 保留原始输入，方便调试对照
+			"customer_msg_id": testCustomerMsgID, // 修复：返回客户消息DB ID，供前端替换temp ID
 		})
 		return
 	}
@@ -708,7 +682,7 @@ skipStoreVisitFastTest:
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	isStoreVisit := strategy.IsStoreVisitIntent(mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
-	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, mergedContent)
+	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 
 	// 胡搅蛮缠：总非车话题>10且最近未恢复→回复速度降到3分钟一次
@@ -825,45 +799,41 @@ skipStoreVisitFastTest:
 
 	// ---- 返回结果 ----
 	// 欢迎词由 /chat/welcome 接口独立返回，此处不再附带 earlier_messages
-	c.JSON(http.StatusOK, gin.H{
-		"code":    0,
-		"message": "success",
-		"data": gin.H{
-			"conversation_id":     conversation.ID,        // 会话ID（供后续请求复用）
-			"customer_input":      req.Content,            // 原始输入（调试对照）
-			"merged_content":      mergedContent,          // 合并后的完整内容（调试用）
-			"ai_reply":            aiReply,                // AI生成的回复
-			"assistant_messages":  []model.Message{aiMsg}, // 修复：返回带真实DB ID的消息列表，前端用此去重
-			"new_tags":            newTags,                // 本轮自动打标的标签
-			"is_new_conversation": isNewConversation,      // 是否冷启动
-			"customer_msg_id":     testCustomerMsgID,      // 修复问题4：客户消息DB ID，供前端替换temp ID
-			"anchor": gin.H{
-				"type":              strategyOutput.FinalAnchor,
-				"name":              strategy.GetAnchorName(strategyOutput.FinalAnchor),
-				"confidence":        strategyOutput.AnchorConfidence,
-				"original_anchor":   strategyOutput.OriginalAnchor, // softmax原始锚（降级前）
-				"soft_downgrade":    strategyOutput.SoftDowngrade,
-				"stage_before_lock": strategyOutput.StageBeforeLock, // 阶段锁降级前的锚类型
-				"stage_ceiling_agg": strategyOutput.StageCeilingAgg, // 当前阶段允许的agg上限
-				"stage_downgraded":  strategyOutput.StageDowngraded, // 阶段锁是否触发了降级
-			},
-			"template": gin.H{
-				"id":   strategyOutput.TemplateID,
-				"name": strategyOutput.TemplateName,
-			},
-			"exchange": gin.H{
-				"flag": strategyOutput.ExchangeFlag,
-				"type": strategyOutput.ExchangeType,
-			},
-			"route": gin.H{
-				"result": strategyOutput.RouteResult,
-				"reason": strategyOutput.RouteReason,
-			},
-			"urgency_level":      strategyOutput.UrgencyLevel,
-			"intent_delta":       strategyOutput.IntentDelta,
-			"is_ai_mode":         (config.GlobalConfig.AI.MockMode == false && service.DefaultSystemConfigService.GetBool("mock_mode", false)) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)),
-			"merged_customer_id": testLeadResult, // OneID合并：>0表示前端需切换customer_id
+	RespOK(c, "success", gin.H{
+		"conversation_id":     conversation.ID,        // 会话ID（供后续请求复用）
+		"customer_input":      req.Content,            // 原始输入（调试对照）
+		"merged_content":      mergedContent,          // 合并后的完整内容（调试用）
+		"ai_reply":            aiReply,                // AI生成的回复
+		"assistant_messages":  []model.Message{aiMsg}, // 修复：返回带真实DB ID的消息列表，前端用此去重
+		"new_tags":            newTags,                // 本轮自动打标的标签
+		"is_new_conversation": isNewConversation,      // 是否冷启动
+		"customer_msg_id":     testCustomerMsgID,      // 修复问题4：客户消息DB ID，供前端替换temp ID
+		"anchor": gin.H{
+			"type":              strategyOutput.FinalAnchor,
+			"name":              strategy.GetAnchorName(strategyOutput.FinalAnchor),
+			"confidence":        strategyOutput.AnchorConfidence,
+			"original_anchor":   strategyOutput.OriginalAnchor, // softmax原始锚（降级前）
+			"soft_downgrade":    strategyOutput.SoftDowngrade,
+			"stage_before_lock": strategyOutput.StageBeforeLock, // 阶段锁降级前的锚类型
+			"stage_ceiling_agg": strategyOutput.StageCeilingAgg, // 当前阶段允许的agg上限
+			"stage_downgraded":  strategyOutput.StageDowngraded, // 阶段锁是否触发了降级
 		},
+		"template": gin.H{
+			"id":   strategyOutput.TemplateID,
+			"name": strategyOutput.TemplateName,
+		},
+		"exchange": gin.H{
+			"flag": strategyOutput.ExchangeFlag,
+			"type": strategyOutput.ExchangeType,
+		},
+		"route": gin.H{
+			"result": strategyOutput.RouteResult,
+			"reason": strategyOutput.RouteReason,
+		},
+		"urgency_level":      strategyOutput.UrgencyLevel,
+		"intent_delta":       strategyOutput.IntentDelta,
+		"is_ai_mode":         (config.GlobalConfig.AI.MockMode == false && service.DefaultSystemConfigService.GetBool("mock_mode", false)) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)),
+		"merged_customer_id": testLeadResult, // OneID合并：>0表示前端需切换customer_id
 	})
 }
 

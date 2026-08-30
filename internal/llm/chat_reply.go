@@ -86,16 +86,21 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// ---- 计量与配额（SaaS 计费）：硬边界拦截不消耗配额，走到这里才算一次 AI 回复 ----
 	// H4：ConsumeAIQuota 原子地完成"判定+预留+计量"，消除并发超额
 	tenantID := customer.TenantID
-	if !service.ConsumeAIQuota(tenantID) {
-		log.Printf("[Usage] 租户%d AI 配额已超限，本次降级为规则话术（不发起模型请求）", tenantID)
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
-	}
 
-	// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
-	// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
-	if !service.CheckTokenAvailability(tenantID) {
-		log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
+	// 网关模式：计费权已上收 AI 网关（网关侧做 fail-closed 计量），本地跳过自身计量避免重复扣减
+	gatewayMode := ai.DefaultGatewayClient != nil && tenantID != 0
+	if !gatewayMode {
+		if !service.ConsumeAIQuota(tenantID) {
+			log.Printf("[Usage] 租户%d AI 配额已超限，本次降级为规则话术（不发起模型请求）", tenantID)
+			return ai.BuildFallbackReply(strategyOutput, canPromote)
+		}
+
+		// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
+		// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
+		if !service.CheckTokenAvailability(tenantID) {
+			log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
+			return ai.BuildFallbackReply(strategyOutput, canPromote)
+		}
 	}
 
 	// 模拟模式：直接用策略中心的模板话术兜底
@@ -224,16 +229,27 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 修复：从SystemConfigService读取temperature，后台调参即时生效
 	aiTemp := service.DefaultSystemConfigService.GetFloat("ai_temperature", ai.DefaultClient.Temperature)
 	callStart := time.Now()
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", messages, aiTemp)
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", tenantID, messages, aiTemp)
 	if err != nil {
 		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
-	service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
-		usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
-	// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
-	go service.DeductTokensActual(tenantID, int64(usage.TotalTokens))
+	// 网关模式下计费权在网关，本地不再重复落账/扣减
+	if !gatewayMode {
+		service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
+			usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
+		// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
+		go service.DeductTokensActual(tenantID, int64(usage.TotalTokens))
+	}
+
+	// 数据飞轮：脱敏对话素材回流（P3，供行业包自动迭代）；未配置 Collector.URL 自动丢弃
+	service.Collect("material", tenantID, map[string]any{
+		"stage":        "reply",
+		"user_message": userInput,
+		"reply":        reply,
+		"model":        modelName,
+	})
 	if modelName != "" {
 		log.Printf("[AI] 实际使用模型: %s (tokens=%d)", modelName, usage.TotalTokens)
 	}
@@ -249,7 +265,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	if chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0 {
 		stripped := chatflow.StripGuidedQuestions(reply)
 		if stripped != reply {
-			log.Printf("[留资硬拦截] 客户%d 已留资，AI回复含反问句，已剥离: %q → %q", customer.ID, reply, stripped)
+			log.Printf("[留资硬拦截] 客户%d 已留资，AI回复含反问句，已剥离: %q → %q", customer.ID, service.MaskPhoneInText(reply), service.MaskPhoneInText(stripped))
 			reply = stripped
 		}
 	}
@@ -261,7 +277,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		if closeGuided {
 			stripped := chatflow.StripGuidedQuestions(reply)
 			if stripped != reply {
-				log.Printf("[引导关闭硬拦截] 客户%d 触发反问关闭条件，已剥离: %q → %q", customer.ID, reply, stripped)
+				log.Printf("[引导关闭硬拦截] 客户%d 触发反问关闭条件，已剥离: %q → %q", customer.ID, service.MaskPhoneInText(reply), service.MaskPhoneInText(stripped))
 				reply = stripped
 			}
 		}
@@ -305,7 +321,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		oldReply := reply
 		reply = chatflow.StripAllQuestions(reply)
 		if reply != oldReply {
-			log.Printf("[引导关闭-全面剥离] 客户%d 引导已关闭，全面剥离反问句: %q → %q", customer.ID, oldReply, reply)
+			log.Printf("[引导关闭-全面剥离] 客户%d 引导已关闭，全面剥离反问句: %q → %q", customer.ID, service.MaskPhoneInText(oldReply), service.MaskPhoneInText(reply))
 		}
 	}
 
