@@ -1,3 +1,4 @@
+// branding.tsx：前端页面/模块（自动补注释）。
 import { createContext, useContext, useEffect, useState } from 'react'
 
 // 租户白标：品牌名/Logo/主题色等（按 Host 拉取）

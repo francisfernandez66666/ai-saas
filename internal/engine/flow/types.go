@@ -1,3 +1,4 @@
+// Package flow：internal/engine/flow 模块（自动补包注释）。
 package flow
 
 // ============================================================
@@ -42,6 +43,7 @@ type NodeResult struct {
 // 节点类型常量（与model中保持一致）
 // ============================================================
 
+// 常量/变量定义块（自动补注释）。
 const (
 	NodeTypeStart     = "start"      // 开始节点
 	NodeTypeAI        = "ai"         // AI对话节点

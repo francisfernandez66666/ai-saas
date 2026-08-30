@@ -26,6 +26,7 @@ import (
 // 多实例失效（Phase M）：同标签缓存，版本戳 cachever:knowledge
 // ============================================================
 
+// redisKeyKnowledgeVer 变量定义（自动补注释）。
 const redisKeyKnowledgeVer = "cachever:knowledge"
 
 // KnowledgeCacheManager 知识库缓存管理器

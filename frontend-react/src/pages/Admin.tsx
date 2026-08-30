@@ -5,6 +5,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Tabs, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken, setToken, apiJSON } from '../lib/api'
+import type { TableRowData, CellProps } from '../types'
 
 // Tabs 面板的子组件别名，用于下方按分类渲染配置面板
 const TabPanel = Tabs.TabPanel
@@ -19,6 +20,7 @@ type Cfg = {
   default_value?: string
 }
 
+// CATEGORY_TABS 常量/变量（自动补注释）。
 const CATEGORY_TABS: { value: string; label: string }[] = [
   { value: 'reply_speed', label: '⚡ 回复速度' },
   { value: 'strategy', label: '🎯 策略引擎' },
@@ -88,7 +90,7 @@ function ConfigPanels({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
 
 // JSON 类型配置编辑器：区分数字数组/字符串数组/纯文本三种形态的可视化编辑
 function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChange: (v: string) => void }) {
-  let parsed: any = null
+  let parsed: Array<number | string> | null = null
   try { parsed = JSON.parse(value) } catch { parsed = null }
   if (Array.isArray(parsed)) {
     if (parsed.length > 0 && typeof parsed[0] === 'number') {
@@ -106,7 +108,7 @@ function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChang
                   onChange(JSON.stringify(arr))
                 }}
               />
-              <button className="ml-1 text-indigo-400 hover:text-indigo-700" onClick={() => { const arr = parsed.filter((_: any, j: number) => j !== i); onChange(JSON.stringify(arr)) }}>✕</button>
+              <button className="ml-1 text-indigo-400 hover:text-indigo-700" onClick={() => { const arr = parsed.filter((_: number | string, j: number) => j !== i); onChange(JSON.stringify(arr)) }}>✕</button>
             </span>
           ))}
           <Button size="small" variant="outline" theme="primary" onClick={() => onChange(JSON.stringify([...parsed, 0]))}>+ 添加</Button>
@@ -118,7 +120,7 @@ function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChang
         {parsed.map((s: string, i: number) => (
           <span key={i} className="inline-flex items-center bg-emerald-50 text-emerald-700 rounded px-2 py-1 text-sm">
             {s}
-            <button className="ml-1 text-emerald-400 hover:text-emerald-700" onClick={() => { const arr = parsed.filter((_: any, j: number) => j !== i); onChange(JSON.stringify(arr)) }}>✕</button>
+            <button className="ml-1 text-emerald-400 hover:text-emerald-700" onClick={() => { const arr = parsed.filter((_: number | string, j: number) => j !== i); onChange(JSON.stringify(arr)) }}>✕</button>
           </span>
         ))}
         <Button size="small" variant="outline" theme="primary" onClick={() => { const t = prompt('请输入新项'); if (t) onChange(JSON.stringify([...parsed, t])) }}>+ 添加</Button>
@@ -308,6 +310,7 @@ export default function Admin() {
   )
 }
 
+// PanelContent 函数（自动补注释）。
 function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[] }) {
   if (CONFIG_CATS.includes(tab)) return <ConfigPanels cfgs={configsFor(tab)} edits={edits} setEdits={setEdits} />
   if (tab === 'customers') return <CustomersTab />
@@ -321,6 +324,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   return <Placeholder name={tab} />
 }
 
+// Placeholder 函数（自动补注释）。
 function Placeholder({ name }: { name: string }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
@@ -332,7 +336,9 @@ function Placeholder({ name }: { name: string }) {
 
 // ------------------------- 客户线索 -------------------------
 const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
+// STAGE_COLORS 常量/变量（自动补注释）。
 const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
+// STATUS_OPTS 常量/变量（自动补注释）。
 const STATUS_OPTS = ['', 'ai_connected', 'human_connected', 'lead_captured', 'arrived', 'ordered', 'delivered', 'lost']
 
 // 客户线索 Tab：按阶段筛选、分页加载客户，抽屉展示详情/试驾单/聊天记录
@@ -340,12 +346,12 @@ const STATUS_OPTS = ['', 'ai_connected', 'human_connected', 'lead_captured', 'ar
 function CustomersTab() {
   const [filter, setFilter] = useState('')
   const [page, setPage] = useState(1)
-  const [leads, setLeads] = useState<any[]>([])
+  const [leads, setLeads] = useState<TableRowData[]>([])
   const [loading, setLoading] = useState(false)
-  const [detail, setDetail] = useState<any>(null)
+  const [detail, setDetail] = useState<TableRowData | null>(null)
   const [drawer, setDrawer] = useState(false)
-  const [testDrives, setTestDrives] = useState<any[]>([])
-  const [chat, setChat] = useState<any[]>([])
+  const [testDrives, setTestDrives] = useState<TableRowData[]>([])
+  const [chat, setChat] = useState<TableRowData[]>([])
   const [showTd, setShowTd] = useState(false)
   const [showChat, setShowChat] = useState(false)
     // 匿名访客（用户名以"访客_"开头）在 UI 上统一展示为"客户"，避免泄露原始标识
@@ -437,7 +443,7 @@ function CustomersTab() {
               <div><span className="text-xs text-gray-400">城市</span><p className="text-sm">{c.city || '-'}</p></div>
             </div>
             <div><span className="text-xs text-gray-400">分配顾问</span><p className="text-sm font-medium text-indigo-600">{detail.assigned_user_name || (c.assigned_user_id > 0 ? '顾问' + c.assigned_user_id : '未分配')}</p></div>
-            <div><span className="text-xs text-gray-400">标签</span><div className="mt-1 flex flex-wrap gap-1">{(detail.tags || []).map((t: any, i: number) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)} {(detail.tags || []).length === 0 && <span className="text-xs text-gray-300">暂无</span>}</div></div>
+            <div><span className="text-xs text-gray-400">标签</span><div className="mt-1 flex flex-wrap gap-1">{(detail.tags || []).map((t: TableRowData, i: number) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)} {(detail.tags || []).length === 0 && <span className="text-xs text-gray-300">暂无</span>}</div></div>
             <div><span className="text-xs text-gray-400">备注</span><p className="text-sm text-gray-600 mt-1">{c.remark || '-'}</p></div>
             <div className="pt-2 border-t border-gray-100">
               <Button size="small" theme="success" variant="outline" onClick={loadTd}>{showTd ? '🚗 隐藏试驾单' : '🚗 查看试驾单'}</Button>
@@ -538,6 +544,7 @@ const TAG_CATS = [
   { key: 'type', name: '客户类型', tags: ['首次咨询', '回头客', '转介绍'] },
   { key: 'status', name: '跟进状态', tags: ['待跟进', '跟进中', '已试驾', '已到店', '已战败'] },
 ]
+// AUTO_TAG_RULES 常量/变量（自动补注释）。
 const AUTO_TAG_RULES = [
   { trigger: '消息中出现手机号', tag: '已留资', category: '跟进状态' },
   { trigger: '消息中提到试驾', tag: '高意向', category: '意向等级' },
@@ -548,17 +555,18 @@ const AUTO_TAG_RULES = [
   { trigger: '消息中提到朋友推荐', tag: '转介绍', category: '客户类型' },
   { trigger: '客户首次发送消息', tag: '首次咨询', category: '客户类型' },
 ]
+// CAT_COLOR 常量/变量（自动补注释）。
 const CAT_COLOR: Record<string, string> = { intent: 'bg-indigo-50 text-indigo-600', source: 'bg-emerald-50 text-emerald-600', car: 'bg-cyan-50 text-cyan-600', type: 'bg-amber-50 text-amber-600', status: 'bg-rose-50 text-rose-600' }
 // 标签体系 Tab：接后端 /admin/tags CRUD（按 category 分组）；自动打标规则只读
 function TagSystemTab() {
-  const [byCat, setByCat] = useState<Record<string, any[]>>({})
+  const [byCat, setByCat] = useState<Record<string, TableRowData[]>>({})
   const [loading, setLoading] = useState(true)
   const load = async () => {
     setLoading(true)
     const { res, json } = await apiJSON('/api/v1/admin/tags?page_size=500')
     if (res.ok && json?.code === 0) {
-      const list: any[] = json.data?.list || []
-      const grouped: Record<string, any[]> = {}
+      const list: TableRowData[] = json.data?.list || []
+      const grouped: Record<string, TableRowData[]> = {}
       for (const c of TAG_CATS) grouped[c.key] = list.filter((t) => t.category === c.key)
       setByCat(grouped)
     } else {
@@ -581,7 +589,7 @@ function TagSystemTab() {
     MessagePlugin.success('已添加'); load()
   }
   // 删除标签：二次确认后调用后端删除并刷新
-  const remove = async (catKey: string, tag: any) => {
+  const remove = async (catKey: string, tag: TableRowData) => {
     if (!confirm(`确定删除标签"${tag.name}"吗？`)) return
     const { json } = await apiJSON('/api/v1/admin/tags/' + tag.id, { method: 'DELETE' })
     if (json?.code !== 0) { MessagePlugin.error(json?.message || '删除失败'); return }
@@ -597,7 +605,7 @@ function TagSystemTab() {
             <div key={cat.key} className="border border-gray-100 rounded-lg p-4">
               <div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><span className="text-sm font-semibold text-gray-700">{cat.name}</span><span className="text-[10px] px-2 py-0.5 bg-gray-100 text-gray-500 rounded-full">{(byCat[cat.key] || []).length} 个标签</span></div><Button size="small" theme="primary" variant="outline" onClick={() => add(cat.key)}>+ 添加标签</Button></div>
               <div className="flex flex-wrap gap-2">
-                {(byCat[cat.key] || []).map((tag: any) => (
+                {(byCat[cat.key] || []).map((tag: TableRowData) => (
                   <span key={tag.id} className={`inline-flex items-center gap-1 text-xs px-2 py-1 rounded-full ${CAT_COLOR[cat.key] || 'bg-gray-100 text-gray-600'}`}>{tag.name}<button className="opacity-60 hover:opacity-100" onClick={() => remove(cat.key, tag)}>✕</button></span>
                 ))}
                 {(byCat[cat.key] || []).length === 0 && <span className="text-xs text-gray-300">暂无标签</span>}
@@ -689,7 +697,7 @@ function BrandingTab() {
 // 审计日志 Tab：按动作/时间范围查询平台与租户关键操作记录
 // 依赖 /api/v1/admin/audit-logs（critical 类动作高亮为 danger）
 function AuditTab() {
-  const [rows, setRows] = useState<any[]>([])
+  const [rows, setRows] = useState<TableRowData[]>([])
   const [action, setAction] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -707,8 +715,8 @@ function AuditTab() {
   // 审计日志表格列定义（critical 类动作标红）
   const cols = [
     { colKey: 'created_at', title: '时间', width: 160 },
-    { colKey: 'action', title: '动作', width: 200, cell: (p: any) => <Tag theme={String(p.row.action).includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
-    { colKey: 'username', title: '操作人', width: 120, cell: (p: any) => p.row.username || p.row.user_id },
+    { colKey: 'action', title: '动作', width: 200, cell: (p: CellProps) => <Tag theme={String(p.row.action).includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
+    { colKey: 'username', title: '操作人', width: 120, cell: (p: CellProps) => p.row.username || p.row.user_id },
     { colKey: 'resource', title: '资源', width: 200 },
     { colKey: 'detail', title: '详情', width: 280, ellipsis: true },
     { colKey: 'ip', title: 'IP', width: 120 },
@@ -743,7 +751,7 @@ const PERM_LABELS: Record<string, string> = { 'customer.read': '客户读取', '
 // 开放平台 Tab：签发/停用/删除 API Key，明文 Key 仅展示一次需立即保存
 // 依赖 /api/v1/admin/apikeys（Bearer sk_ 鉴权，停用即时生效）
 function OpenApiTab() {
-  const [keys, setKeys] = useState<any[]>([])
+  const [keys, setKeys] = useState<TableRowData[]>([])
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [perms, setPerms] = useState<string[]>(['customer.read'])
@@ -773,12 +781,12 @@ function OpenApiTab() {
   // 开放平台 Key 表格列定义（含权限/状态/操作渲染）
   const cols = [
     { colKey: 'name', title: '名称', width: 160 },
-    { colKey: 'key_prefix', title: 'Key前缀', width: 160, cell: (p: any) => <code className="bg-gray-100 px-2 py-0.5 rounded text-xs">{p.row.key_prefix}...</code> },
-    { colKey: 'permissions', title: '权限', width: 200, cell: (p: any) => { try { return JSON.parse(p.row.permissions).map((x: string) => PERM_LABELS[x] || x).join('、') } catch { return p.row.permissions } } },
+    { colKey: 'key_prefix', title: 'Key前缀', width: 160, cell: (p: CellProps) => <code className="bg-gray-100 px-2 py-0.5 rounded text-xs">{p.row.key_prefix}...</code> },
+    { colKey: 'permissions', title: '权限', width: 200, cell: (p: CellProps) => { try { return JSON.parse(p.row.permissions).map((x: string) => PERM_LABELS[x] || x).join('、') } catch { return p.row.permissions } } },
     { colKey: 'call_count', title: '调用次数', width: 100 },
-    { colKey: 'last_used_at', title: '最近使用', width: 160, cell: (p: any) => p.row.last_used_at ? new Date(p.row.last_used_at).toLocaleString() : '从未使用' },
-    { colKey: 'status', title: '状态', width: 100, cell: (p: any) => <Tag theme={p.row.is_active ? 'success' : 'danger'}>{p.row.is_active ? '启用' : '停用'}</Tag> },
-    { colKey: 'op', title: '操作', width: 160, cell: (p: any) => (<><Button size="small" variant="outline" theme="warning" onClick={() => toggle(p.row.id, !p.row.is_active)}>{p.row.is_active ? '停用' : '启用'}</Button> <Button size="small" variant="outline" theme="danger" onClick={() => del(p.row.id)}>删除</Button></>) },
+    { colKey: 'last_used_at', title: '最近使用', width: 160, cell: (p: CellProps) => p.row.last_used_at ? new Date(p.row.last_used_at).toLocaleString() : '从未使用' },
+    { colKey: 'status', title: '状态', width: 100, cell: (p: CellProps) => <Tag theme={p.row.is_active ? 'success' : 'danger'}>{p.row.is_active ? '启用' : '停用'}</Tag> },
+    { colKey: 'op', title: '操作', width: 160, cell: (p: CellProps) => (<><Button size="small" variant="outline" theme="warning" onClick={() => toggle(p.row.id, !p.row.is_active)}>{p.row.is_active ? '停用' : '启用'}</Button> <Button size="small" variant="outline" theme="danger" onClick={() => del(p.row.id)}>删除</Button></>) },
   ]
   return (
     <div>
@@ -808,7 +816,7 @@ function OpenApiTab() {
 // ------------------------- 用量看板 -------------------------
 // 用量看板 Tab：展示近 30 天 AI 调用等用量汇总（/api/v1/admin/usage/summary）
 function UsageTab() {
-  const [data, setData] = useState<any>(null)
+  const [data, setData] = useState<TableRowData | null>(null)
   useEffect(() => {
     fetch('/api/v1/admin/usage/summary?days=30', { headers: { Authorization: 'Bearer ' + getToken() } })
       .then((r) => r.json()).then((j) => { if (j.code === 0) setData(j.data) }).catch(() => {})
@@ -830,7 +838,7 @@ function UsageTab() {
 // ------------------------- 邀请推广 -------------------------
 // 邀请推广 Tab：展示邀请码/链接/二维码与返利余额（/api/v1/admin/referral/info、/qrcode）
 function ReferralTab() {
-  const [info, setInfo] = useState<any>(null)
+  const [info, setInfo] = useState<TableRowData | null>(null)
   const [qr, setQr] = useState('')
   useEffect(() => {
     fetch('/api/v1/admin/referral/info', { headers: { Authorization: 'Bearer ' + getToken() } }).then((r) => r.json()).then((j) => { if (j.code === 0) setInfo(j.data) }).catch(() => {})

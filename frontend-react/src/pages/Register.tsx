@@ -1,3 +1,4 @@
+// Register.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect, useRef } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON } from '../lib/api'

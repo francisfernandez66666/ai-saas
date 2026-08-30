@@ -186,6 +186,7 @@ type embeddingRequest struct {
 	Input interface{} `json:"input"` // string 或 []string
 }
 
+// embeddingResponse 结构体/类型定义（自动补注释）。
 type embeddingResponse struct {
 	Data  []gin.H `json:"data"`
 	Model string  `json:"model"`

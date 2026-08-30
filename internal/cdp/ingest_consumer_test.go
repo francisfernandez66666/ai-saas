@@ -1,7 +1,9 @@
+// Package cdp：internal/cdp 模块（自动补包注释）。
 package cdp
 
 import "testing"
 
+// TestIsPriceInquiry 测试（自动补注释，原为缺注释的顶层声明）。
 func TestIsPriceInquiry(t *testing.T) {
 	cases := []struct {
 		text string

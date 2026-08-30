@@ -23,6 +23,7 @@ import (
 // HealthStatus 健康分级
 type HealthStatus string
 
+// 常量/变量定义块（自动补注释）。
 const (
 	StatusOK   HealthStatus = "ok"   // 正常
 	StatusWarn HealthStatus = "warn" // 告警

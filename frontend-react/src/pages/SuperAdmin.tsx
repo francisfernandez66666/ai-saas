@@ -1,10 +1,15 @@
+// SuperAdmin.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect } from 'react'
 import { Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken } from '../lib/api'
+import type { TableRowData, CellProps } from '../types'
 
-const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken() } })
+// AUTH 常量/变量（自动补注释）。
+const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
+// FB_TYPES 常量/变量（自动补注释）。
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
+// TYPE_NAMES 常量/变量（自动补注释）。
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
 
 // 租户摘要行（超管租户列表）
@@ -124,7 +129,7 @@ export default function SuperAdmin() {
   // 封禁/恢复租户（带确认）
   async function setStatus(id: number, st: string) {
     if (!confirm('确认将租户 #' + id + ' 置为 ' + st + ' ?')) return
-    await fetch(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', headers: { ...AUTH(), 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
+    await fetch(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
     load()
   }
   // 上架/下架商业包
@@ -164,46 +169,46 @@ export default function SuperAdmin() {
     { colKey: 'id', title: 'ID', width: 60 },
     { colKey: 'name', title: '企业名称', width: 160 },
     { colKey: 'code', title: '标识', width: 120 },
-    { colKey: 'plan_name', title: '套餐', width: 100, cell: (p: any) => p.row.plan_name || '-' },
-    { colKey: 'used', title: '客户用量', width: 100, cell: (p: any) => `${p.row.used_customers}/${p.row.max_customers || '∞'}` },
-    { colKey: 'status', title: '状态', width: 90, cell: (p: any) => <Tag theme={p.row.status === 'suspended' ? 'danger' : 'success'}>{p.row.status}</Tag> },
+    { colKey: 'plan_name', title: '套餐', width: 100, cell: (p: CellProps) => p.row.plan_name || '-' },
+    { colKey: 'used', title: '客户用量', width: 100, cell: (p: CellProps) => `${p.row.used_customers}/${p.row.max_customers || '∞'}` },
+    { colKey: 'status', title: '状态', width: 90, cell: (p: CellProps) => <Tag theme={p.row.status === 'suspended' ? 'danger' : 'success'}>{p.row.status}</Tag> },
     { colKey: 'created_at', title: '开通日期', width: 120 },
-    { colKey: 'op', title: '操作', width: 100, cell: (p: any) => p.row.status === 'suspended' ? <Button size="small" theme="success" onClick={() => setStatus(p.row.id, 'active')}>恢复</Button> : <Button size="small" theme="danger" variant="outline" onClick={() => setStatus(p.row.id, 'suspended')}>停用</Button> },
+    { colKey: 'op', title: '操作', width: 100, cell: (p: CellProps) => p.row.status === 'suspended' ? <Button size="small" theme="success" onClick={() => setStatus(p.row.id, 'active')}>恢复</Button> : <Button size="small" theme="danger" variant="outline" onClick={() => setStatus(p.row.id, 'suspended')}>停用</Button> },
   ]
   const pkgCols = [
     { colKey: 'id', title: 'ID', width: 50 }, { colKey: 'code', title: '标识', width: 120 }, { colKey: 'name', title: '名称', width: 120 },
-    { colKey: 'p_type', title: '类型', width: 90, cell: (p: any) => TYPE_NAMES[p.row.p_type] || p.row.p_type },
+    { colKey: 'p_type', title: '类型', width: 90, cell: (p: CellProps) => TYPE_NAMES[p.row.p_type] || p.row.p_type },
     { colKey: 'ai_calls', title: 'AI次数', width: 80 },
-    { colKey: 'price_cents', title: '售价', width: 90, cell: (p: any) => '¥' + (p.row.price_cents / 100).toFixed(p.row.price_cents % 100 ? 2 : 0) },
-    { colKey: 'duration_days', title: '有效期', width: 90, cell: (p: any) => p.row.duration_days ? p.row.duration_days + '天' : '—' },
-    { colKey: 'enabled', title: '状态', width: 80, cell: (p: any) => <Tag theme={p.row.enabled ? 'success' : 'default'}>{p.row.enabled ? '上架' : '下架'}</Tag> },
-    { colKey: 'op', title: '操作', width: 90, cell: (p: any) => <Button size="small" theme={p.row.enabled ? 'danger' : 'success'} variant="outline" onClick={() => togglePkg(p.row.id, !p.row.enabled)}>{p.row.enabled ? '下架' : '上架'}</Button> },
+    { colKey: 'price_cents', title: '售价', width: 90, cell: (p: CellProps) => '¥' + (p.row.price_cents / 100).toFixed(p.row.price_cents % 100 ? 2 : 0) },
+    { colKey: 'duration_days', title: '有效期', width: 90, cell: (p: CellProps) => p.row.duration_days ? p.row.duration_days + '天' : '—' },
+    { colKey: 'enabled', title: '状态', width: 80, cell: (p: CellProps) => <Tag theme={p.row.enabled ? 'success' : 'default'}>{p.row.enabled ? '上架' : '下架'}</Tag> },
+    { colKey: 'op', title: '操作', width: 90, cell: (p: CellProps) => <Button size="small" theme={p.row.enabled ? 'danger' : 'success'} variant="outline" onClick={() => togglePkg(p.row.id, !p.row.enabled)}>{p.row.enabled ? '下架' : '上架'}</Button> },
   ]
   const fbCols = [
-    { colKey: 'created_at', title: '时间', width: 140, cell: (p: any) => (p.row.created_at || '').replace('T', ' ').slice(0, 16) },
-    { colKey: 'tenant', title: '租户', width: 160, cell: (p: any) => `#${p.row.tenant_id} ${esc(p.row.tenant_name)}` },
-    { colKey: 'username', title: '提交人', width: 100, cell: (p: any) => esc(p.row.username) },
-    { colKey: 'target_type', title: '类型', width: 90, cell: (p: any) => FB_TYPES[p.row.target_type] || p.row.target_type },
+    { colKey: 'created_at', title: '时间', width: 140, cell: (p: CellProps) => (p.row.created_at || '').replace('T', ' ').slice(0, 16) },
+    { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `#${p.row.tenant_id} ${esc(p.row.tenant_name)}` },
+    { colKey: 'username', title: '提交人', width: 100, cell: (p: CellProps) => esc(p.row.username) },
+    { colKey: 'target_type', title: '类型', width: 90, cell: (p: CellProps) => FB_TYPES[p.row.target_type] || p.row.target_type },
     { colKey: 'content', title: '意见', width: 220, ellipsis: true },
-    { colKey: 'op', title: '操作', width: 100, cell: (p: any) => p.row.status === 'open' ? <Button size="small" theme="success" onClick={() => resolveFb(p.row.id)}>标记处理</Button> : <span style={{ fontSize: 12, color: '#718096' }}>已处理</span> },
+    { colKey: 'op', title: '操作', width: 100, cell: (p: CellProps) => p.row.status === 'open' ? <Button size="small" theme="success" onClick={() => resolveFb(p.row.id)}>标记处理</Button> : <span style={{ fontSize: 12, color: '#718096' }}>已处理</span> },
   ]
   const pendingCols = [
-    { colKey: 'order_no', title: '订单号', width: 160 }, { colKey: 'tenant', title: '租户', width: 160, cell: (p: any) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
-    { colKey: 'package_name', title: '商业包', width: 140 }, { colKey: 'amount_cents', title: '金额', width: 100, cell: (p: any) => '¥' + (p.row.amount_cents / 100).toFixed(2) },
-    { colKey: 'created_at', title: '提交时间', width: 160 }, { colKey: 'op', title: '操作', width: 140, cell: (p: any) => <Button size="small" theme="success" onClick={() => confirmOrder(p.row.id)}>确认到账并发放</Button> },
+    { colKey: 'order_no', title: '订单号', width: 160 }, { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
+    { colKey: 'package_name', title: '商业包', width: 140 }, { colKey: 'amount_cents', title: '金额', width: 100, cell: (p: CellProps) => '¥' + (p.row.amount_cents / 100).toFixed(2) },
+    { colKey: 'created_at', title: '提交时间', width: 160 }, { colKey: 'op', title: '操作', width: 140, cell: (p: CellProps) => <Button size="small" theme="success" onClick={() => confirmOrder(p.row.id)}>确认到账并发放</Button> },
   ]
   const auditCols = [
-    { colKey: 'created_at', title: '时间', width: 150 }, { colKey: 'tenant_id', title: '租户', width: 70, cell: (p: any) => '#' + p.row.tenant_id },
-    { colKey: 'action', title: '动作', width: 200, cell: (p: any) => <Tag theme={p.row.action.includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
-    { colKey: 'username', title: '操作人', width: 100, cell: (p: any) => p.row.username || p.row.user_id }, { colKey: 'resource', title: '资源', width: 160 },
+    { colKey: 'created_at', title: '时间', width: 150 }, { colKey: 'tenant_id', title: '租户', width: 70, cell: (p: CellProps) => '#' + p.row.tenant_id },
+    { colKey: 'action', title: '动作', width: 200, cell: (p: CellProps) => <Tag theme={p.row.action.includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
+    { colKey: 'username', title: '操作人', width: 100, cell: (p: CellProps) => p.row.username || p.row.user_id }, { colKey: 'resource', title: '资源', width: 160 },
     { colKey: 'detail', title: '详情', width: 260, ellipsis: true }, { colKey: 'ip', title: 'IP', width: 120 },
   ]
   const agCols = [
-    { colKey: 'id', title: 'ID', width: 60 }, { colKey: 'username', title: '用户', width: 120, cell: (p: any) => esc(p.row.username) },
-    { colKey: 'tenant', title: '租户', width: 160, cell: (p: any) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
-    { colKey: 'agreement_type', title: '协议类型', width: 100, cell: (p: any) => ({ user: '用户协议', privacy: '隐私政策' } as any)[p.row.agreement_type] || p.row.agreement_type },
-    { colKey: 'version', title: '版本', width: 80 }, { colKey: 'status', title: '状态', width: 90, cell: (p: any) => <Tag theme="success">{p.row.status}</Tag> },
-    { colKey: 'signed_at', title: '签署时间', width: 160, cell: (p: any) => new Date(p.row.signed_at).toLocaleString() },
+    { colKey: 'id', title: 'ID', width: 60 }, { colKey: 'username', title: '用户', width: 120, cell: (p: CellProps) => esc(p.row.username) },
+    { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
+    { colKey: 'agreement_type', title: '协议类型', width: 100, cell: (p: CellProps) => ({ user: '用户协议', privacy: '隐私政策' } as Record<string, string>)[p.row.agreement_type] || p.row.agreement_type },
+    { colKey: 'version', title: '版本', width: 80 }, { colKey: 'status', title: '状态', width: 90, cell: (p: CellProps) => <Tag theme="success">{p.row.status}</Tag> },
+    { colKey: 'signed_at', title: '签署时间', width: 160, cell: (p: CellProps) => new Date(p.row.signed_at).toLocaleString() },
   ]
 
   return (
@@ -233,8 +238,8 @@ export default function SuperAdmin() {
       <Section title={<>模型成本核算 <span style={{ fontSize: 13, color: '#718096' }}>{cost ? `近${cost.days}天 · 共${cost.total_calls}次 / ${cost.total_tokens} tokens / ¥${cost.total_cost_yuan}` : ''}</span></>}>
         <Table rowKey="model" data={cost?.models || []} columns={[
           { colKey: 'provider', title: '供应商', width: 120 }, { colKey: 'model', title: '模型', width: 160 }, { colKey: 'calls', title: '调用次数', width: 100 },
-          { colKey: 'tokens', title: 'Tokens', width: 120 }, { colKey: 'cost_yuan', title: '成本(¥)', width: 110, cell: (p: any) => '¥' + p.row.cost_yuan.toFixed(4) },
-          { colKey: 'cost_share_pct', title: '占比', width: 140, cell: (p: any) => <div style={{ background: '#edf2f7', borderRadius: 4, overflow: 'hidden', width: 90, height: 8 }}><div style={{ background: 'var(--pri)', height: '100%', width: Math.min(100, p.row.cost_share_pct) + '%' }} /></div> },
+          { colKey: 'tokens', title: 'Tokens', width: 120 }, { colKey: 'cost_yuan', title: '成本(¥)', width: 110, cell: (p: CellProps) => '¥' + p.row.cost_yuan.toFixed(4) },
+          { colKey: 'cost_share_pct', title: '占比', width: 140, cell: (p: CellProps) => <div style={{ background: '#edf2f7', borderRadius: 4, overflow: 'hidden', width: 90, height: 8 }}><div style={{ background: 'var(--pri)', height: '100%', width: Math.min(100, p.row.cost_share_pct) + '%' }} /></div> },
         ]} size="small" empty="暂无用量数据（真实AI对话后生成）" />
       </Section>
 

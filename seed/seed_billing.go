@@ -1,3 +1,4 @@
+// Package seed：seed 模块（自动补包注释）。
 package seed
 
 import (

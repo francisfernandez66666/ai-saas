@@ -1,3 +1,4 @@
+// Package flow：internal/engine/flow 模块（自动补包注释）。
 package flow
 
 // ============================================================

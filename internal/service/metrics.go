@@ -26,10 +26,12 @@ var httpTotal uint64 // HTTP 总请求数（atomic，免锁）
 
 // ---- AI 调用成功率计数 ----
 var aiSuccessTotal uint64
+// aiFailureTotal 变量定义（自动补注释）。
 var aiFailureTotal uint64
 
 // ---- 支付成功率计数 ----
 var paymentPaidTotal uint64
+// paymentFailedTotal 变量定义（自动补注释）。
 var paymentFailedTotal uint64
 
 // bootTime 进程启动时间（指标用 uptime）
@@ -59,6 +61,7 @@ var latencyBucketCounts []uint64 // 与 latencyBuckets 等长
 var latencySumNs uint64          // 总纳秒（atomic）
 var latencyCount uint64          // 总样本数（atomic）
 
+// init 初始化（自动补注释，原为缺注释的顶层声明）。
 func init() {
 	latencyBucketCounts = make([]uint64, len(latencyBuckets))
 }

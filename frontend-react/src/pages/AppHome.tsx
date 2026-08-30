@@ -1,3 +1,4 @@
+// AppHome.tsx：前端页面/模块（自动补注释）。
 import { useBrand } from '../lib/branding'
 
 // /app 工作台首页：以卡片入口导航至对话/顾问台/收银台/邀请/设置/定价

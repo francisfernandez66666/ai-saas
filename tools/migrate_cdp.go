@@ -307,8 +307,10 @@ func migrateCustomerTags() error {
 	return nil
 }
 
+// RoutePrice 变量定义（自动补注释）。
 const RoutePrice = "RoutePrice"
 
+// main 程序入口（自动补注释，原为缺注释的顶层声明）。
 func main() {
 	// 确保数据库已初始化
 	if err := db.Init(); err != nil {
@@ -323,6 +325,7 @@ func main() {
 	verifyMigration()
 }
 
+// verifyMigration 验证（自动补注释，原为缺注释的顶层声明）。
 func verifyMigration() {
 	log.Println("\n--- 验证迁移结果 ---")
 

@@ -197,6 +197,7 @@ func DefaultResetSender() ResetCodeSender {
 
 // ---- 企微群机器人 webhook ----
 
+// httpClient 变量定义（自动补注释）。
 var httpClient = &http.Client{Timeout: 5 * time.Second}
 
 // wecomReq 企微机器人 markdown 消息体

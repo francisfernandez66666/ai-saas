@@ -8,6 +8,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/redisclient"
 
 	"gorm.io/gorm"
 )
@@ -146,8 +147,24 @@ func GetTenantQuotaView(tenantID uint) (used, maxMonthly, balance int, err error
 
 // ExpireCheck 到期巡检：到期提醒（提前3天推企微群）+ 过期摘除（active→expired）
 // 由 main 每小时 ticker 调用（Redis 选主，与用量重置同节奏）；幂等可重跑
+// expireRenewLockKey 过期摘除与续费扫描共享锁键（P2-5 竞态修复）
+// ExpireCheck 与 SweepSubscriptionRenewals 分属不同 ticker，可能时间重叠：
+// 某租户被 ExpireCheck 置 expired 的同时 SweepSubscriptionRenewals 仍按 active 生成续费单。
+// 两函数共用同一把锁串行化，避免「已过期却生成续费单」的矛盾态。
+const expireRenewLockKey = "lock:billing:expire_renew"
+
+// ExpireCheck 过期（自动补注释，原为缺注释的顶层声明）。
 func ExpireCheck() int {
 	affected := 0
+
+	// P2-5：与续费扫描串行化（多实例 TryLock 选主；未启用 Redis 各实例直跑但同进程内仍互斥）
+	if redisclient.IsEnabled() {
+		if h := redisclient.TryLock(expireRenewLockKey, 55*time.Minute); h == nil {
+			return 0 // 续费扫描正在跑，本论跳过，下轮再检
+		} else {
+			defer h.Unlock()
+		}
+	}
 
 	// 1. 过期摘除：expired_at 已过且仍是 active → expired
 	// （TenantResolver 对 expired 租户写操作返回402，读放行=宽限期语义）

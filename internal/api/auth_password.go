@@ -33,12 +33,14 @@ import (
 // 故额外要求提供注册时的手机号/邮箱匹配才发码；切 smtp 后该要求自动放宽为可选
 // ============================================================
 
+// 常量/变量定义块（自动补注释）。
 const (
 	resetCodeTTL     = 10 * time.Minute // 验证码有效期
 	resetCodeResend  = 60 * time.Second // 同账号限发间隔
 	resetMaxAttempts = 5                // 单码最大尝试次数（防爆破）
 )
 
+// changePasswordReq 结构体/类型定义（自动补注释）。
 type changePasswordReq struct {
 	OldPassword string `json:"old_password" binding:"required"`
 	NewPassword string `json:"new_password" binding:"required"`
@@ -104,6 +106,7 @@ func ChangePassword(c *gin.Context) {
 	RespOK(c, "密码修改成功", nil)
 }
 
+// resetCodeReq 结构体/类型定义（自动补注释）。
 type resetCodeReq struct {
 	Username string `json:"username" binding:"required"`
 	Contact  string `json:"contact"` // 注册时的手机号/邮箱（log 通道必填校验项）
@@ -191,6 +194,7 @@ func SendResetCode(c *gin.Context) {
 	RespOK(c, msg, nil)
 }
 
+// resetConfirmReq 结构体/类型定义（自动补注释）。
 type resetConfirmReq struct {
 	Username    string `json:"username" binding:"required"`
 	Code        string `json:"code" binding:"required"`

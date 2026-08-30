@@ -32,6 +32,7 @@ var rdb *redis.Client
 // instanceID 本实例标识（锁值，安全解锁用：只删自己的锁）
 var instanceID string
 
+// init 初始化（自动补注释，原为缺注释的顶层声明）。
 func init() {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
@@ -254,6 +255,7 @@ func DrainList(key string) []string {
 	return nil
 }
 
+// randomHex 随机（自动补注释，原为缺注释的顶层声明）。
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

@@ -1,3 +1,4 @@
+// Package seed：seed 模块（自动补包注释）。
 package seed
 
 import (
@@ -17,6 +18,7 @@ import (
 // seedBrands 写入 brands 表（幂等：已有品牌则跳过）。
 // 作用：预置极石及竞品品牌（坦克/理想/方程豹/仰望），供车型表通过 brand_code 关联；
 // 竞品品牌用于话术模板与竞品对比数据的对比口径。
+// P1-4 去硬编码：品牌数据已外置 seed/data（随 SeedIndustry 切换，默认 auto_rox）。
 func seedBrands() {
 	var count int64
 	db.DB.Model(&model.Brand{}).Count(&count)
@@ -25,44 +27,11 @@ func seedBrands() {
 		return
 	}
 
-	brands := []model.Brand{
-		{
-			Name: "极石汽车", Code: "rox",
-			Logo:        "https://www.roxmotor.com/logo.png",
-			Description: "极石汽车（ROX Motor）成立于2021年，由石头科技创始人昌敬与汽车行业老兵闫枫联合创办，背靠世界500强魏桥创业集团战略投资。专注全地形、智能化、新能源技术的全球化豪华汽车品牌。",
-			Country:     "中国", FoundedYear: 2021, Status: 1, Sort: 1,
-		},
-		{
-			Name: "坦克", Code: "tank",
-			Logo:        "",
-			Description: "长城汽车旗下高端越野品牌，以硬派越野著称。",
-			Country:     "中国", FoundedYear: 2020, Status: 1, Sort: 2,
-		},
-		{
-			Name: "理想", Code: "lixiang",
-			Logo:        "",
-			Description: "中国新能源汽车品牌，主打家庭智能SUV。",
-			Country:     "中国", FoundedYear: 2015, Status: 1, Sort: 3,
-		},
-		{
-			Name: "方程豹", Code: "leopard",
-			Logo:        "",
-			Description: "比亚迪旗下专业个性化品牌，主打新能源硬派越野。",
-			Country:     "中国", FoundedYear: 2023, Status: 1, Sort: 4,
-		},
-		{
-			Name: "仰望", Code: "yangwang",
-			Logo:        "",
-			Description: "比亚迪旗下百万级高端新能源品牌。",
-			Country:     "中国", FoundedYear: 2023, Status: 1, Sort: 5,
-		},
-	}
-
-	for _, brand := range brands {
+	for _, brand := range SeedIndustry.Brands {
 		db.DB.Create(&brand)
 	}
 
-	log.Printf("已创建 %d 个品牌", len(brands))
+	log.Printf("已创建 %d 个品牌", len(SeedIndustry.Brands))
 }
 
 // ============================================================
@@ -75,7 +44,9 @@ func seedBrands() {
 
 // seedCarModels 写入 car_models 表（幂等：已有车型则整块跳过）。
 // 作用：预置极石 2 款（ADAMAS/极石01）+ 竞品 11 款车型，含价格/级别/能源类型等；
-// 通过 getBrandID 关联品牌，code 为后续规格参数与竞品对比的外键查找键。
+// 通过 getBrandID 按 BrandCode 关联品牌，code 为后续规格参数与竞品对比的外键查找键。
+// P1-4 去硬编码：车型数据已外置 seed/data（随 SeedIndustry 切换，默认 auto_rox），
+// 数据层用 BrandCode 关联品牌，写入时解析为 BrandID。
 func seedCarModels() {
 	var count int64
 	db.DB.Model(&model.CarModel{}).Count(&count)
@@ -84,7 +55,7 @@ func seedCarModels() {
 		return
 	}
 
-	// 查找品牌ID
+	// 查找品牌ID（按 BrandCode 解析为 BrandID）
 	getBrandID := func(code string) uint {
 		var brand model.Brand
 		if err := db.DB.Where("code = ?", code).First(&brand).Error; err == nil {
@@ -93,20 +64,20 @@ func seedCarModels() {
 		return 1
 	}
 
-	carModels := []model.CarModel{
-		{BrandID: getBrandID("rox"), BrandName: "极石汽车", Name: "极石ADAMAS", Code: "adamas", PriceRange: "34.99-35.99万", Level: "中大型", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 1},
-		{BrandID: getBrandID("rox"), BrandName: "极石汽车", Name: "极石01", Code: "rox01", PriceRange: "29.99-34.99万", Level: "中大型", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 2},
-		{BrandID: getBrandID("tank"), BrandName: "坦克", Name: "坦克300 Hi4-T", Code: "tank300", PriceRange: "25-30万", Level: "紧凑型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 3},
-		{BrandID: getBrandID("tank"), BrandName: "坦克", Name: "坦克400 Hi4-T", Code: "tank400", PriceRange: "28-35万", Level: "中型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 4},
-		{BrandID: getBrandID("tank"), BrandName: "坦克", Name: "坦克500 Hi4-T", Code: "tank500", PriceRange: "34-42万", Level: "中大型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 5},
-		{BrandID: getBrandID("tank"), BrandName: "坦克", Name: "坦克700 Hi4-T", Code: "tank700", PriceRange: "43-70万", Level: "中大型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 6},
-		{BrandID: getBrandID("lixiang"), BrandName: "理想", Name: "理想L6", Code: "lixiangl6", PriceRange: "24.98-27.98万", Level: "中型", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 7},
-		{BrandID: getBrandID("lixiang"), BrandName: "理想", Name: "理想L7", Code: "lixiangl7", PriceRange: "30-35万", Level: "中大型", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 8},
-		{BrandID: getBrandID("lixiang"), BrandName: "理想", Name: "理想L8", Code: "lixiangl8", PriceRange: "33-40万", Level: "中大型", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 9},
-		{BrandID: getBrandID("lixiang"), BrandName: "理想", Name: "理想L9", Code: "lixiangl9", PriceRange: "40-45万", Level: "全尺寸", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 10},
-		{BrandID: getBrandID("leopard"), BrandName: "方程豹", Name: "方程豹豹5", Code: "leopard5", PriceRange: "23.98-30.98万", Level: "中型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 11},
-		{BrandID: getBrandID("leopard"), BrandName: "方程豹", Name: "方程豹豹8", Code: "leopard8", PriceRange: "37.98-40.98万", Level: "中大型", BodyType: "SUV", FuelType: "插混", Status: 1, Sort: 12},
-		{BrandID: getBrandID("yangwang"), BrandName: "仰望", Name: "仰望U8", Code: "yangwangu8", PriceRange: "109.8万", Level: "全尺寸", BodyType: "SUV", FuelType: "增程式", Status: 1, Sort: 13},
+	carModels := make([]model.CarModel, 0, len(SeedIndustry.CarModels))
+	for _, cm := range SeedIndustry.CarModels {
+		carModels = append(carModels, model.CarModel{
+			BrandID:    getBrandID(cm.BrandCode),
+			BrandName:  cm.BrandName,
+			Name:       cm.Name,
+			Code:       cm.Code,
+			PriceRange: cm.PriceRange,
+			Level:      cm.Level,
+			BodyType:   cm.BodyType,
+			FuelType:   cm.FuelType,
+			Status:     cm.Status,
+			Sort:       cm.Sort,
+		})
 	}
 
 	for _, m := range carModels {
@@ -125,6 +96,7 @@ func seedCarModels() {
 // ============================================================
 
 // seedModelSpecs 写入 model_specs 表（幂等：已有规格则整块跳过）。
+// 注：规格参数数据为 auto_rox 行业 demo（P1-4 去硬编码待迁移至 seed/data，随 SeedIndustry 切换）。
 // 作用：为 13 款车型逐条写入核心规格参数（动力/车身/电池/底盘/越野/智驾/座舱/舒适/户外），
 // 按 Category 分组、Sort 排序；被车型详情页与 AI 对比话术检索使用。
 // 注意：getModelID 查不到车型时回退返回 1，避免外键空值导致整条写入失败。
@@ -1972,6 +1944,7 @@ func seedModelSpecs() {
 // 作用：预置极石 vs 坦克/理想/方程豹/仰望 的多组对比话术（58 组），每组 Content 为
 // JSON 数组（aspect/our_value/their_value/conclusion 多维对比），ContainsPrice 标记是否含价格。
 // 供 AI 对比锚话术与销售对比物料使用；getModelID 同样以 1 作为查不到时的兜底。
+// 注：竞品对比数据为 auto_rox 行业 demo（P1-4 去硬编码待迁移至 seed/data，随 SeedIndustry 切换）。
 func seedCompetitorCompares() {
 	var count int64
 	db.DB.Model(&model.CompetitorCompare{}).Count(&count)

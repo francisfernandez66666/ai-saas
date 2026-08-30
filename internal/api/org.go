@@ -184,6 +184,7 @@ func GetDepartmentTree(c *gin.Context) {
 
 // ---- 部门创建/修改/删除 ----
 
+// deptCreateReq 结构体/类型定义（自动补注释）。
 type deptCreateReq struct {
 	Name      string `json:"name" binding:"required"`
 	ParentID  *uint  `json:"parent_id"` // 空=根部门（仅 tenant_admin）
@@ -280,6 +281,7 @@ func CreateDepartment(c *gin.Context) {
 	RespOK(c, "创建成功", nil)
 }
 
+// deptUpdateReq 结构体/类型定义（自动补注释）。
 type deptUpdateReq struct {
 	Name        *string `json:"name"`
 	NewParentID *uint   `json:"new_parent_id"` // 移动到新父部门
@@ -412,6 +414,7 @@ func DeleteDepartment(c *gin.Context) {
 
 // ---- 用户管理 ----
 
+// userCreateReq 结构体/类型定义（自动补注释）。
 type userCreateReq struct {
 	Username     string `json:"username" binding:"required"`
 	Password     string `json:"password" binding:"required"`
@@ -493,6 +496,7 @@ func CreateUser(c *gin.Context) {
 	RespOK(c, "创建成功", gin.H{"id": u.ID})
 }
 
+// userUpdateReq 结构体/类型定义（自动补注释）。
 type userUpdateReq struct {
 	Role         *string `json:"role"`
 	DepartmentID *uint   `json:"department_id"`
@@ -657,4 +661,5 @@ func GetManagedUsers(c *gin.Context) {
 	RespOK(c, "success", rows)
 }
 
+// _ 变量定义（自动补注释）。
 var _ = gorm.ErrRecordNotFound

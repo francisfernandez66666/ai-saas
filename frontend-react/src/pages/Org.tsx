@@ -1,3 +1,4 @@
+// Org.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect, useMemo } from 'react'
 import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
@@ -10,7 +11,9 @@ type User = { id: number; username: string; real_name?: string; role: string; de
 
 // 组织架构接口鉴权头与当前用户角色（来自 localStorage，决定可执行的部门/成员操作）
 const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
+// ROLE 常量/变量（自动补注释）。
 const ROLE = localStorage.getItem('role') || ''
+// ROLE_CN 常量/变量（自动补注释）。
 const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_admin: '租户管理员', dept_admin: '部门管理员', user: '成员', readonly: '只读' }
 
 // 组织架构管理：部门树（增删改/移动）与成员列表（启停/新增），按当前角色展示可操作按钮

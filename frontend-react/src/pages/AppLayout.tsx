@@ -1,3 +1,4 @@
+// AppLayout.tsx：前端页面/模块（自动补注释）。
 import { ReactNode } from 'react'
 import { Link, Outlet, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { clearToken, getToken } from '../lib/api'

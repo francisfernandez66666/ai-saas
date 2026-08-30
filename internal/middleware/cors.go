@@ -17,11 +17,13 @@ import (
 // 开发态默认放行 localhost:5173 / 127.0.0.1:5173（与 vite 代理一致）。
 // ============================================================
 
+// 常量/变量定义块（自动补注释）。
 var (
 	corsOrigins     map[string]bool
 	corsOriginsOnce sync.Once
 )
 
+// initCORS 初始化（自动补注释，原为缺注释的顶层声明）。
 func initCORS() {
 	corsOriginsOnce.Do(func() {
 		corsOrigins = map[string]bool{}

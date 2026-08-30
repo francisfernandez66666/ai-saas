@@ -30,6 +30,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// main 程序入口（自动补注释，原为缺注释的顶层声明）。
 func main() {
 	log.Println("========================================")
 	log.Println("  SQLite → PostgreSQL 数据迁移工具")

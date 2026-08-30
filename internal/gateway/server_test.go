@@ -1,3 +1,4 @@
+// Package gateway：internal/gateway 模块（自动补包注释）。
 package gateway
 
 import (

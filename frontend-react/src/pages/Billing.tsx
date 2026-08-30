@@ -1,7 +1,9 @@
+// Billing.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect } from 'react'
 import { Dialog, Button, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken } from '../lib/api'
+import type { TableRowData } from '../types'
 
 // 当前租户套餐用量（收银台顶部展示）
 type Quota = { tenant_name: string; status: string; used_ai_calls: number; max_ai_calls: number; ai_call_balance: number; expired_at?: string; pay_mode?: string }
@@ -11,7 +13,8 @@ type Pkg = { id: number; p_type: string; name: string; price_cents: number; desc
 type Order = { id: number; order_no: string; amount_cents: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string }
 
 // 收银台接口鉴权头与支付渠道中文映射
-const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken() } })
+const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
+// CH 常量/变量（自动补注释）。
 const CH = { mock: '模拟', manual: '静态码人工', wechat: '微信', alipay: '支付宝' }
 
 // 订阅收银台：展示套餐用量、商业包列表与订单；支持模拟支付/扫码人工确认两种方式
@@ -149,6 +152,9 @@ export default function Billing() {
   )
 }
 
+// th 常量/变量（自动补注释）。
 const th: React.CSSProperties = { padding: '10px 12px', textAlign: 'left', fontSize: 13 }
+// td 常量/变量（自动补注释）。
 const td: React.CSSProperties = { padding: '10px 12px', textAlign: 'left', fontSize: 13, borderBottom: '1px solid #edf2f7' }
+// st 常量/变量（自动补注释）。
 const st: React.CSSProperties = { padding: '2px 9px', borderRadius: 10, fontSize: 12 }

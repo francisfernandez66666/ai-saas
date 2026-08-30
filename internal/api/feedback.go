@@ -32,6 +32,7 @@ import (
 
 const feedbackDailyLimit = 20 // 单用户每日上限
 
+// feedbackReq 结构体/类型定义（自动补注释）。
 type feedbackReq struct {
 	TargetType  string `json:"target_type"` // ai_reply|feature|other（缺省 ai_reply）
 	RefID       uint   `json:"ref_id"`      // 关联消息ID

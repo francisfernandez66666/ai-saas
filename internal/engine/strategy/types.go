@@ -1,3 +1,4 @@
+// Package strategy：internal/engine/strategy 模块（自动补包注释）。
 package strategy
 
 import (

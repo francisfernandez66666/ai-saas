@@ -511,3 +511,21 @@ export interface ReferralRecord {
   signup_reward?: boolean
   registered_at?: string
 }
+
+// ============================================================
+// 表格行数据类型（P1-2：消除 TDesign 单元格回调中的 any 漂移）
+// ============================================================
+
+// 对齐 tdesign-react 的 TableRowData（其底层即 Record<string, any>）。
+// 行数据来自后端 JSON，字段动态，统一用此别名替代散落的 `any`，
+// 既收敛类型口径，又保留对任意字段的访问能力。
+export type TableRowData = Record<string, any>
+
+// TDesign PrimaryTableCol.cell 回调入参（取常用字段）。
+// 用此别名替代 (p: any)，消除显式 any 标注。
+export interface CellProps {
+  row: TableRowData
+  rowIndex: number
+  col: { colKey: string; title?: string }
+  colIndex: number
+}

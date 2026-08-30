@@ -20,6 +20,7 @@ import (
 // RespCode 业务响应码
 type RespCode int
 
+// 常量/变量定义块（自动补注释）。
 const (
 	CodeOK           RespCode = 0
 	CodeParamErr     RespCode = 40001 // 参数校验失败

@@ -1,3 +1,4 @@
+// Index.tsx：前端页面/模块（自动补注释）。
 import { useBrand } from '../lib/branding'
 
 // 营销落地首页：展示平台能力卡片与 CTA 入口，按 Host 读取白标品牌名/Logo
@@ -102,6 +103,7 @@ export default function Index() {
   )
 }
 
+// badgeStyle 常量/变量（自动补注释）。
 const badgeStyle: React.CSSProperties = {
   background: 'rgba(255,255,255,0.2)',
   padding: '4px 12px',
@@ -109,6 +111,7 @@ const badgeStyle: React.CSSProperties = {
   fontSize: 12,
   color: 'white',
 }
+// ctaStyle 常量/变量（自动补注释）。
 const ctaStyle: React.CSSProperties = {
   display: 'inline-block',
   background: 'linear-gradient(135deg, var(--pri), #764ba2)',

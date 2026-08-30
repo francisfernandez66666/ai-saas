@@ -33,6 +33,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// 常量/变量定义块（自动补注释）。
 const (
 	kbMaxContentRunes = 20000 // 单次上传正文上限
 	kbMaxChunks       = 40    // 切片数上限

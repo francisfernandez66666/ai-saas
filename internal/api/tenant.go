@@ -27,8 +27,10 @@ import (
 // 配套：子域名占用检查、套餐公开查询（定价页用）
 // ============================================================
 
+// tenantCodeRe 变量定义（自动补注释）。
 var tenantCodeRe = regexp.MustCompile(`^[a-z][a-z0-9-]{2,19}$`)
 
+// signupReq 结构体/类型定义（自动补注释）。
 type signupReq struct {
 	CompanyName  string `json:"company_name" binding:"required"`
 	Code         string `json:"code" binding:"required"` // 子域名标识，注册后不可改

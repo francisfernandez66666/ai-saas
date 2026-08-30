@@ -1,7 +1,9 @@
+// Package service：internal/service 模块（自动补包注释）。
 package service
 
 import "testing"
 
+// TestAnonymizeText 测试（自动补注释，原为缺注释的顶层声明）。
 func TestAnonymizeText(t *testing.T) {
 	got := AnonymizeText("手机13800001111 邮箱a@b.com")
 	want := "手机1380***1111 邮箱a***@b.com"
@@ -10,6 +12,7 @@ func TestAnonymizeText(t *testing.T) {
 	}
 }
 
+// TestAnonymizePayload 测试（自动补注释，原为缺注释的顶层声明）。
 func TestAnonymizePayload(t *testing.T) {
 	in := map[string]any{
 		"text":   "联系13800001111",

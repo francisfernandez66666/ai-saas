@@ -375,6 +375,7 @@ func LoadConfig() *Config {
 // 以下是辅助函数，从环境变量读取配置，带默认值
 // ============================================================
 
+// getEnv 获取（自动补注释，原为缺注释的顶层声明）。
 func getEnv(key, defaultValue string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value

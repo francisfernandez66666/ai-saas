@@ -1,7 +1,9 @@
+// Package service：internal/service 模块（自动补包注释）。
 package service
 
 import "testing"
 
+// TestCosineSimilarity 测试（自动补注释，原为缺注释的顶层声明）。
 func TestCosineSimilarity(t *testing.T) {
 	a := []float32{1, 0, 0}
 	b := []float32{1, 0, 0}
@@ -18,6 +20,7 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
+// TestSqrt32 测试（自动补注释，原为缺注释的顶层声明）。
 func TestSqrt32(t *testing.T) {
 	if s := sqrt32(0); s != 0 {
 		t.Errorf("sqrt(0)=0 got %f", s)
@@ -27,6 +30,7 @@ func TestSqrt32(t *testing.T) {
 	}
 }
 
+// TestToVectorLiteral 测试（自动补注释，原为缺注释的顶层声明）。
 func TestToVectorLiteral(t *testing.T) {
 	// 缺省维度 1536：短向量补零，长向量裁剪
 	got := toVectorLiteral([]float32{0.1, 0.2})
@@ -46,6 +50,7 @@ func TestToVectorLiteral(t *testing.T) {
 	}
 }
 
+// TestBigramSet 测试（自动补注释，原为缺注释的顶层声明）。
 func TestBigramSet(t *testing.T) {
 	bs := bigramSet("越野车")
 	// 相邻两字二元组：越野、野车（共2）

@@ -21,6 +21,7 @@ import (
 // 单实例或 Redis 未启用时退化为进程内内存实现（原有逻辑）。
 // ============================================================
 
+// 常量/变量定义块（自动补注释）。
 const (
 	maxFailures    = 5                // 窗口内最大失败次数
 	windowDuration = 10 * time.Minute // 失败计数窗口
@@ -34,6 +35,7 @@ type attemptRec struct {
 	lockedUntil time.Time // 锁定截止（零值=未锁）
 }
 
+// 常量/变量定义块（自动补注释）。
 var (
 	guardMu   sync.Mutex
 	attempts  = map[string]*attemptRec{} // key: "u:{username}" / "ip:{ip}:{username}"
@@ -55,6 +57,7 @@ func loginKeys(username, ip string) []string {
 
 // redisCountKey / redisLockKey 生成 Redis 版键
 func redisCountKey(k string) string { return "lg:cnt:" + k }
+// redisLockKey 函数（自动补注释，原为缺注释的顶层声明）。
 func redisLockKey(k string) string  { return "lg:lock:" + k }
 
 // loginRedisKeys 返回某次登录涉及的全部 Redis 键（双层）

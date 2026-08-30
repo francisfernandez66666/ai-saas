@@ -1,3 +1,4 @@
+// Package utils：pkg/utils 模块（自动补包注释）。
 package utils
 
 import (
@@ -210,6 +211,7 @@ func TextSimilarity(s1, s2 string) float64 {
 	return 1.0 - float64(dist)/float64(maxLen)
 }
 
+// minInt 取最小值（自动补注释，原为缺注释的顶层声明）。
 func minInt(a, b, c int) int {
 	m := a
 	if b < m {

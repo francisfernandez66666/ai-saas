@@ -245,6 +245,7 @@ func ToggleAiReply(c *gin.Context) {
 // 试驾单相关 API
 // ============================================================
 
+// createTestDriveRequest 结构体/类型定义（自动补注释）。
 type createTestDriveRequest struct {
 	CustomerID   uint   `json:"customer_id" binding:"required"`
 	ScheduledAt  string `json:"scheduled_at" binding:"required"` // RFC3339
@@ -353,6 +354,7 @@ func GetTestDrive(c *gin.Context) {
 	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: td})
 }
 
+// updateTestDriveRequest 结构体/类型定义（自动补注释）。
 type updateTestDriveRequest struct {
 	Status       *string `json:"status"`       // pending/completed/cancelled
 	ScheduledAt  *string `json:"scheduled_at"` // RFC3339

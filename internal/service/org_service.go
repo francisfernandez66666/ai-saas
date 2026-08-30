@@ -43,11 +43,13 @@ type orgCacheEntry struct {
 	expireAt time.Time
 }
 
+// 常量/变量定义块（自动补注释）。
 const (
 	orgCacheTTL     = 30 * time.Second
 	orgVerKeyPrefix = "userv:"
 )
 
+// 常量/变量定义块（自动补注释）。
 var (
 	orgCache sync.Map // userID(uint) → *orgCacheEntry
 )

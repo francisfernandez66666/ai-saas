@@ -79,6 +79,7 @@ func (c *KafkaCenter) StartConsumers(ctx context.Context) {
 	}
 }
 
+// consumeLoop 消费（自动补注释，原为缺注释的顶层声明）。
 func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string) {
 	fullTopic := c.cfg.TopicPrefix + topic
 	reader := kafka.NewReader(kafka.ReaderConfig{

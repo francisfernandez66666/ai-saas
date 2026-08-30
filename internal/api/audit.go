@@ -22,6 +22,7 @@ import (
 // 只读查询不写审计（防自激励死循环）
 // ============================================================
 
+// auditLogRow 结构体/类型定义（自动补注释）。
 type auditLogRow struct {
 	ID        uint   `json:"id"`
 	TenantID  uint   `json:"tenant_id"`
@@ -34,6 +35,7 @@ type auditLogRow struct {
 	CreatedAt string `json:"created_at"`
 }
 
+// auditQueryResult 结构体/类型定义（自动补注释）。
 type auditQueryResult struct {
 	Total    int64         `json:"total"`
 	Page     int           `json:"page"`

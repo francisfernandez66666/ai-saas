@@ -1,9 +1,11 @@
+// Login.tsx：前端页面/模块（自动补注释）。
 import { useState } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON, setToken, redirectByRole } from '../lib/api'
 import { useBrand } from '../lib/branding'
 import type { ApiResp, AuthResult } from '../types'
 
+// Mode 类型/接口定义（自动补注释）。
 type Mode = 'login' | 'change' | 'resetReq' | 'resetConfirm'
 
 // 登录/改密/找回密码页：支持租户码登录、首登强改密、验证码找回；
@@ -169,6 +171,7 @@ export default function Login() {
   )
 }
 
+// wrap 常量/变量（自动补注释）。
 const wrap: React.CSSProperties = {
   minHeight: '100vh',
   display: 'flex',
@@ -177,6 +180,7 @@ const wrap: React.CSSProperties = {
   background: '#f5f7fa',
   padding: 20,
 }
+// card 常量/变量（自动补注释）。
 const card: React.CSSProperties = {
   background: '#fff',
   borderRadius: 12,
@@ -184,8 +188,11 @@ const card: React.CSSProperties = {
   boxShadow: '0 4px 24px rgba(0,0,0,.08)',
   width: 'min(420px, 92vw)',
 }
+// sub 常量/变量（自动补注释）。
 const sub: React.CSSProperties = { color: '#718096', fontSize: 13, marginBottom: 22 }
+// Label 常量/变量（自动补注释）。
 const Label: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <label style={{ display: 'block', fontSize: 13, margin: '14px 0 6px', color: '#4a5568' }}>{children}</label>
 )
+// tip 常量/变量（自动补注释）。
 const tip: React.CSSProperties = { marginTop: 16, fontSize: 13, textAlign: 'center', color: '#718096' }

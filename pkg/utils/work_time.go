@@ -1,3 +1,4 @@
+// Package utils：pkg/utils 模块（自动补包注释）。
 package utils
 
 import (

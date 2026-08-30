@@ -29,6 +29,7 @@ type ipWindow struct {
 	resetAt time.Time
 }
 
+// 常量/变量定义块（自动补注释）。
 var (
 	ipLimitMu   sync.Mutex
 	ipLimitMap  = map[string]*ipWindow{} // key -> window

@@ -1,3 +1,4 @@
+// AppReferral.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import { useBrand } from '../lib/branding'

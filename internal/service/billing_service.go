@@ -20,6 +20,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/redisclient"
 
 	"gorm.io/gorm"
 )
@@ -355,7 +356,16 @@ func RequestInvoice(orderID uint) (*model.BillingOrder, error) {
 // SweepSubscriptionRenewals 订阅生命周期（P2）：为即将到期的付费订阅生成续费订单。
 // 不自动扣款——复用既有下单/支付流程，由租户完成支付后续费。幂等：近 30 天已有同包订单则跳过。
 // 返回本次生成的续费订单数。由 main 定时 ticker 调用（如每 6 小时）。
+// P2-5 竞态修复：与 ExpireCheck 共用 expireRenewLockKey 串行化，避免「刚过期又生成续费单」。
 func SweepSubscriptionRenewals() int {
+	// P2-5：与过期摘除串行化（多实例 TryLock 选主；未启用 Redis 各实例直跑但同进程内仍互斥）
+	if redisclient.IsEnabled() {
+		if h := redisclient.TryLock(expireRenewLockKey, 55*time.Minute); h == nil {
+			return 0 // 过期摘除正在跑，本论跳过，下轮再扫
+		} else {
+			defer h.Unlock()
+		}
+	}
 	days := 7
 	if DefaultSystemConfigService != nil {
 		if v := DefaultSystemConfigService.GetInt("renewal_window_days", 7); v > 0 {

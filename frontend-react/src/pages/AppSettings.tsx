@@ -1,3 +1,4 @@
+// AppSettings.tsx：前端页面/模块（自动补注释）。
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import type { ApiResp, KbMaterial } from '../types'
@@ -8,6 +9,7 @@ type KbListResp = { list: KbMaterial[]; total: number; page: number; page_size: 
 // /app 账号设置：改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
 // 依赖 /api/v1/auth/change-password、/api/v1/auth/email/code（注意端点应为 email/code）、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
 
+// AppSettings 函数（自动补注释）。
 export default function AppSettings() {
   const [must, setMust] = useState(false)
   // 改密

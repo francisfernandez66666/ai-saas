@@ -1,3 +1,4 @@
+// ErrorBoundary.tsx：前端页面/模块（自动补注释）。
 import React from 'react'
 
 // 顶层错误边界：捕获渲染期异常，避免整页白屏（生产环境给出可重试兜底）

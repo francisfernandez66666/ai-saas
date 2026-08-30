@@ -127,6 +127,7 @@ func recordAudit(env Envelope, status string) {
 	}()
 }
 
+// extractEventType 提取（自动补注释，原为缺注释的顶层声明）。
 func extractEventType(payload []byte) string {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(payload, &m) == nil {
@@ -140,6 +141,7 @@ func extractEventType(payload []byte) string {
 	return "unknown"
 }
 
+// randomHex 随机（自动补注释，原为缺注释的顶层声明）。
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

@@ -5,6 +5,7 @@ import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
 import { Msg } from '../types'
 
+// API 常量/变量（自动补注释）。
 const API = '/api/v1'
 // 本地持久化客户身份 ID，避免刷新后会话丢失（匿名访客态）
 const LS_ID = 'scrm_customer_id'

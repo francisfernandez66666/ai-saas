@@ -32,6 +32,7 @@ func RegisterConfig(c *gin.Context) {
 	})
 }
 
+// emailCodeReq 结构体/类型定义（自动补注释）。
 type emailCodeReq struct {
 	Email string `json:"email" binding:"required"`
 }
@@ -71,6 +72,7 @@ func SendRegisterEmailCode(c *gin.Context) {
 	RespOK(c, "验证码已发送至邮箱，10分钟内有效", nil)
 }
 
+// bindEmailCodeReq 结构体/类型定义（自动补注释）。
 type bindEmailCodeReq struct {
 	NewEmail string `json:"new_email" binding:"required"`
 }
@@ -105,6 +107,7 @@ func SendBindEmailCode(c *gin.Context) {
 	RespOK(c, "验证码已发送至新邮箱，10分钟内有效", nil)
 }
 
+// changeEmailReq 结构体/类型定义（自动补注释）。
 type changeEmailReq struct {
 	NewEmail string `json:"new_email" binding:"required"`
 	Code     string `json:"code" binding:"required"`
