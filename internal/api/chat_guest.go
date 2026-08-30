@@ -177,6 +177,13 @@ func Welcome(c *gin.Context) {
 
 // CreateGuest POST /api/v1/chat/guest 访客自动注册（免登录；TurnstileGuard 视开关前置拦截）
 func CreateGuest(c *gin.Context) {
+	// P0-2：解析请求体中的 channel/device 信息（供 CDP 打环境维标签）
+	var req struct {
+		Channel string `json:"channel"` // 渠道标识：web/app/openapi
+		Device  string `json:"device"`  // 设备类型：mobile/desktop
+	}
+	_ = c.ShouldBindJSON(&req)
+
 	// 生成唯一访客名：访客_后4位随机数
 	suffix := rand.Intn(9000) + 1000 // 1000-9999
 	guestName := fmt.Sprintf("访客_%d", suffix)
@@ -210,10 +217,18 @@ func CreateGuest(c *gin.Context) {
 
 	// 缺口4修复（2026-08-22）：guest_created 事件上行（激活 CDP idm_guest 标签）
 	// 此前 IngestConsumer 支持该事件但全仓无发布点，访客身份标签是死代码
+	// P0-2：携带 channel/device 信息供 CDP 打环境维标签
+	guestAttrs := map[string]any{"customer_id": customer.ID, "source": customer.Source}
+	if req.Channel != "" {
+		guestAttrs["channel"] = req.Channel
+	}
+	if req.Device != "" {
+		guestAttrs["device"] = req.Device
+	}
 	if err := mq.Publish(context.Background(), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
 		fmt.Sprintf("c:%d", customer.ID), "guest_created",
 		mq.UserEvent{EventType: "identity", EventName: "guest_created", AnchorType: "device",
-			Attributes: map[string]any{"customer_id": customer.ID, "source": customer.Source},
+			Attributes: guestAttrs,
 			OccurredAt: time.Now()}); err != nil {
 		log.Printf("[MQ] guest_created 事件发布失败: %v", err)
 	}

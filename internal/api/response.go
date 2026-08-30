@@ -37,5 +37,12 @@ RespErr 统一错误响应
 设计说明：HTTP 状态码与业务码解耦，支持前端按 code 分类 toast。
 */
 func RespErr(c *gin.Context, httpStatus, code int, msg string) {
-	c.JSON(httpStatus, gin.H{"code": code, "message": msg})
+	// P2-3 错误码全量迁移：存量 handler 的魔数（400/404/409/429/500…）在此统一推导 error_code，
+	// 使前端 toastError 能按语义码精细化提示，无需逐个 handler 迁移。
+	errorCode := codeNameFromCode(code)
+	resp := gin.H{"code": code, "message": msg}
+	if errorCode != "" {
+		resp["error_code"] = errorCode
+	}
+	c.JSON(httpStatus, resp)
 }

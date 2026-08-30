@@ -25,7 +25,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// notifyWS 向实时 hub 推送一条新消息事件
+// notifyWS 向实时 hub 推送一条新消息事件（仅信号）
 // best-effort 设计：hub 未初始化时静默跳过，不阻塞主流程
 // 在发消息、收消息等场景调用，触发 WebSocket 推送到前端
 func notifyWS(tenantID, customerID, conversationID uint, senderType string) {
@@ -44,6 +44,35 @@ func notifyWS(tenantID, customerID, conversationID uint, senderType string) {
 		return
 	}
 	realtime.DefaultHub.Publish(ev, b)
+}
+
+// notifyWSWithContent 向实时 hub 推送消息内容（P1-1 增强版）
+// 与 notifyWS 类似，但推送完整消息体，前端收到即更新本地状态
+func notifyWSWithContent(tenantID, customerID, conversationID uint, senderType string,
+	messageID uint, content, senderName, createdAt string) {
+	if realtime.DefaultHub == nil {
+		return
+	}
+	ev := realtime.RealtimeMessage{
+		Type:           "message_content",
+		CustomerID:     customerID,
+		ConversationID: conversationID,
+		SenderType:     senderType,
+		TenantID:       tenantID,
+		MessageID:      messageID,
+		Content:        content,
+		SenderName:     senderName,
+		CreatedAt:      createdAt,
+	}
+	realtime.DefaultHub.PublishWithContent(ev)
+}
+
+// notifyWSTyping 向实时 hub 推送"正在输入"状态（P1-1）
+func notifyWSTyping(tenantID, customerID, conversationID uint, isTyping bool) {
+	if realtime.DefaultHub == nil {
+		return
+	}
+	realtime.DefaultHub.PublishTyping(tenantID, customerID, conversationID, isTyping)
 }
 
 // WSAdvisor 顾问端 WebSocket 连接

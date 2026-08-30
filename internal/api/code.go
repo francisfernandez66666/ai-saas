@@ -13,6 +13,8 @@ package api
 // ============================================================
 
 import (
+	"net/http"
+
 	"ai-scrm/internal/schema"
 	"github.com/gin-gonic/gin"
 )
@@ -22,14 +24,14 @@ type RespCode int
 
 // 业务错误码常量定义
 const (
-	CodeOK           RespCode = 0       // 成功
-	CodeParamErr     RespCode = 40001   // 参数校验失败
-	CodeUnauthorized RespCode = 40101   // 未认证/ token 无效
-	CodeForbidden    RespCode = 40301   // 无权限/身份校验失败
-	CodeNotFound     RespCode = 40401   // 资源不存在
-	CodeRateLimited  RespCode = 42901   // 触发限流/防薅
-	CodeBizErr       RespCode = 42001   // 业务规则拒绝（如余额不足/线索已存在）
-	CodeInternal     RespCode = 50001   // 服务内部错误
+	CodeOK           RespCode = 0     // 成功
+	CodeParamErr     RespCode = 40001 // 参数校验失败
+	CodeUnauthorized RespCode = 40101 // 未认证/ token 无效
+	CodeForbidden    RespCode = 40301 // 无权限/身份校验失败
+	CodeNotFound     RespCode = 40401 // 资源不存在
+	CodeRateLimited  RespCode = 42901 // 触发限流/防薅
+	CodeBizErr       RespCode = 42001 // 业务规则拒绝（如余额不足/线索已存在）
+	CodeInternal     RespCode = 50001 // 服务内部错误
 )
 
 // codeName 机器可读错误码映射（与 schema.Response.Error_code 对应，前端按此 toast）
@@ -42,6 +44,56 @@ var codeName = map[RespCode]string{
 	CodeRateLimited:  "rate_limited",
 	CodeBizErr:       "biz_error",
 	CodeInternal:     "internal_error",
+}
+
+// codeNameFromCode 由业务码（含存量魔数）推导机器可读错误码
+// P2-3 错误码全量迁移（2026-08-30）：
+//   - 语义码（40001/40101/…/50001）→ 直接映射
+//   - 存量魔数（400/401/403/404/409/429/500/502）→ 按 HTTP 语义归类
+//
+// 返回空串表示不输出 error_code 字段（如 code=0 成功）。
+func codeNameFromCode(code int) string {
+	if code == 0 {
+		return ""
+	}
+	// 先按语义码精确映射（兜底双码并存：语义码与魔数同义）
+	switch RespCode(code) {
+	case CodeParamErr:
+		return codeName[CodeParamErr]
+	case CodeUnauthorized:
+		return codeName[CodeUnauthorized]
+	case CodeForbidden:
+		return codeName[CodeForbidden]
+	case CodeNotFound:
+		return codeName[CodeNotFound]
+	case CodeRateLimited:
+		return codeName[CodeRateLimited]
+	case CodeBizErr:
+		return codeName[CodeBizErr]
+	case CodeInternal:
+		return codeName[CodeInternal]
+	}
+	// 存量魔数归类（HTTP 语义与业务码解耦、按场景归类）
+	switch code {
+	case http.StatusBadRequest: // 400
+		return codeName[CodeParamErr]
+	case http.StatusUnauthorized: // 401
+		return codeName[CodeUnauthorized]
+	case http.StatusForbidden: // 403
+		return codeName[CodeForbidden]
+	case http.StatusNotFound: // 404
+		return codeName[CodeNotFound]
+	case http.StatusConflict: // 409 业务规则冲突（如幂等拦截）
+		return codeName[CodeBizErr]
+	case http.StatusTooManyRequests: // 429
+		return codeName[CodeRateLimited]
+	case http.StatusBadGateway: // 502 第三方通信失败→内部错误
+		return codeName[CodeInternal]
+	}
+	if code >= 500 {
+		return codeName[CodeInternal]
+	}
+	return codeName[CodeBizErr]
 }
 
 /*

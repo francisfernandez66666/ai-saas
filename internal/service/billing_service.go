@@ -249,7 +249,14 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 	}
 	order.QRContent = qrContent
 
-	if err := db.DB.Create(order).Error; err != nil {
+	// P2-2 RLS热路径接入：订单创建放事务内激活租户隔离（billing_orders 属租户表）
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		if r := SetTenantRLS(tx, tenantID); r.Error != nil {
+			return r.Error
+		}
+		return tx.Create(order).Error
+	})
+	if err != nil {
 		return nil, err
 	}
 	log.Printf("[Billing] 订单已创建 order=%s tenant=%d pkg=%s amount=%d分 channel=%s",

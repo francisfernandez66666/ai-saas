@@ -16,7 +16,8 @@ type Feedback struct {
 	ID         uint       `gorm:"primaryKey" json:"id"`                        // 主键
 	TenantID   uint       `gorm:"index" json:"-"`                              // 租户
 	UserID     uint       `gorm:"index" json:"user_id"`                        // 提交人
-	TargetType string     `gorm:"size:20;default:ai_reply" json:"target_type"` // ai_reply|feature|other
+	CustomerID uint       `gorm:"index" json:"customer_id"`                    // 客户ID（满意度评分用）
+	TargetType string     `gorm:"size:20;default:ai_reply" json:"target_type"` // ai_reply|feature|other|rating
 	RefID      uint       `json:"ref_id"`                                      // 关联对象ID（AI消息ID等，可0）
 	Context    string     `gorm:"type:text" json:"context"`                    // JSON 上下文（勾选同意才写入，手机号已脱敏）
 	Content    string     `gorm:"type:text;not null" json:"content"`           // 意见 ≤1000字

@@ -59,6 +59,13 @@ export default function Login() {
       setMode('change')
       return
     }
+    // P1-2：登录后跳转到 redirect 参数指定的页面（路由守卫带回的原路径）
+    const urlParams = new URLSearchParams(location.search)
+    const redirectPath = urlParams.get('redirect')
+    if (redirectPath) {
+      location.href = redirectPath
+      return
+    }
     // 在 /app SPA 内登录则留在 /app（与原 Vue SPA 行为一致），否则按角色分流
     // 角色分流涉及权限边界：超管进 /super，租户管理员进 /admin，其余进 /advisor
     if (location.pathname.startsWith('/app')) {

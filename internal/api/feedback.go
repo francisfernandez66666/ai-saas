@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -34,10 +35,10 @@ const feedbackDailyLimit = 20 // 单用户每日上限
 
 // feedbackReq 反馈提交请求的结构体定义
 type feedbackReq struct {
-	TargetType  string `json:"target_type"` // 反馈类型：ai_reply（AI话术）、feature（功能建议）、other（其他）
-	RefID       uint   `json:"ref_id"`      // 关联的消息ID，用于获取反馈上下文
+	TargetType  string `json:"target_type"`                // 反馈类型：ai_reply（AI话术）、feature（功能建议）、other（其他）
+	RefID       uint   `json:"ref_id"`                     // 关联的消息ID，用于获取反馈上下文
 	Content     string `json:"content" binding:"required"` // 反馈内容，必填
-	WithContext bool   `json:"with_context"` // 是否需要自动采集反馈上下文（AI回复摘要+客户掩码手机）
+	WithContext bool   `json:"with_context"`               // 是否需要自动采集反馈上下文（AI回复摘要+客户掩码手机）
 }
 
 /*
@@ -215,4 +216,89 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "..."
+}
+
+// ============================================================
+// 满意度评分采集（P0-2 CDP标签，2026-08-30）
+//
+// 目标：采集客户满意度零方数据，驱动 att_satisfaction 标签
+// 数据流：POST /api/v1/feedback/rating → MQ(user_event) → CDP → att_satisfaction 标签
+// ============================================================
+
+// FeedbackRatingReq 满意度评分请求
+type FeedbackRatingReq struct {
+	CustomerID uint   `json:"customer_id" binding:"required"` // 客户ID
+	Rating     int    `json:"rating" binding:"required"`      // 评分（1-5）
+	Comment    string `json:"comment"`                        // 评论（可选）
+}
+
+// CreateFeedbackRating 处理 POST /api/v1/feedback/rating 请求，采集客户满意度评分
+// 评分数据通过 MQ 发布到 CDP，驱动 att_satisfaction 标签
+// 限流：同客户每日 5 次评分
+func CreateFeedbackRating(c *gin.Context) {
+	var req FeedbackRatingReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: customer_id 和 rating 必填")
+		return
+	}
+
+	// 评分范围校验
+	if req.Rating < 1 || req.Rating > 5 {
+		RespErr(c, http.StatusBadRequest, 400, "评分范围为 1-5")
+		return
+	}
+
+	tid := tenantIDOf(c)
+
+	// 限流：同客户每日 5 次评分
+	var today int64
+	db.RQ(c).Model(&model.Feedback{}).
+		Where("customer_id = ? AND target_type = 'rating' AND created_at >= CURRENT_DATE", req.CustomerID).
+		Count(&today)
+	if today >= 5 {
+		RespErr(c, http.StatusTooManyRequests, 429, "今日评分已达上限（5次），请明日再试")
+		return
+	}
+
+	// 保存评分记录
+	fb := model.Feedback{
+		TenantID:   tid,
+		CustomerID: req.CustomerID,
+		TargetType: "rating",
+		Content:    fmt.Sprintf("评分:%d", req.Rating),
+		Status:     "open",
+	}
+	if req.Comment != "" {
+		fb.Content = fmt.Sprintf("评分:%d %s", req.Rating, req.Comment)
+	}
+	if err := db.DB.Create(&fb).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "提交失败")
+		return
+	}
+
+	// P0-2：发布满意度事件到 CDP，驱动 att_satisfaction 标签
+	// 评分映射：1-2=dissatisfied, 3=neutral, 4-5=satisfied
+	satisfaction := "neutral"
+	if req.Rating <= 2 {
+		satisfaction = "dissatisfied"
+	} else if req.Rating >= 4 {
+		satisfaction = "satisfied"
+	}
+
+	mq.Publish(c.Request.Context(), mq.TopicUserEvent, tid,
+		fmt.Sprintf("c:%d", req.CustomerID), "feedback_rating",
+		mq.UserEvent{
+			EventType:  "attitude",
+			EventName:  "feedback_rating",
+			AnchorType: "rating",
+			Attributes: map[string]any{
+				"customer_id":  req.CustomerID,
+				"rating":       req.Rating,
+				"satisfaction": satisfaction,
+				"comment":      req.Comment,
+			},
+			OccurredAt: time.Now(),
+		})
+
+	RespOK(c, "评分已提交", nil)
 }

@@ -1172,8 +1172,10 @@ func AdvisorSendMessage(c *gin.Context) {
 		CreatedAt:      now,
 	}
 	db.RQ(c).Create(&humanMsg)
-	// P1-2 实时推送：顾问真人回复通知客户端（前端即时拉取，轮询兜底）
-	notifyWS(middleware.EffectiveTenantID(c), conversation.CustomerID, conversation.ID, "human")
+	// P1-1 实时推送：顾问真人回复通知客户端（推送消息内容，前端即时更新）
+	_, senderName, _ := middleware.CurrentUser(c)
+	notifyWSWithContent(middleware.EffectiveTenantID(c), conversation.CustomerID, conversation.ID, "human",
+		humanMsg.ID, req.Content, senderName, now.Format("2006-01-02T15:04:05Z"))
 
 	// P3 数据飞轮（2026-08-26）：顾问真人回复入素材池（优质回复资产回收）
 	// 脱敏：手机号掩码后入库；评分/审核走超管面板

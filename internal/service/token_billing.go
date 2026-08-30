@@ -96,6 +96,10 @@ func DeductTokensActual(tenantID uint, tokens int64) {
 		return
 	}
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		// P2-2 RLS热路径接入：事务内激活租户行级隔离（RLS_ENABLED=true 时 DB 强制收敛）
+		if r := SetTenantRLS(tx, tenantID); r.Error != nil {
+			return r.Error
+		}
 		var t model.Tenant
 		if err := tx.Set("gorm:query_option", "FOR UPDATE").
 			Select("id, free_token_balance, free_token_expires_at, monthly_token_quota, monthly_token_used, token_balance").

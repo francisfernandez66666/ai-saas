@@ -27,6 +27,15 @@ curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/j
   -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"1000"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]' >/dev/null
 
 TS=$(date +%s)
+TS2=$((TS+7))
+# 14.3 重复邮箱注册409
+EM="dup$TS2@t.com"
+curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"首注邮箱\",\"code\":\"dpa$((TS2%99999))\",\"username\":\"dp$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}" >/dev/null
+sleep 1
+DUP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"重注\",\"code\":\"dpb$((TS2%99999))\",\"username\":\"dq$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}")
+check "重复邮箱注册409" 409 "$DUP"
 RUN=$TS
 UA_CODE="uata$((TS%100000))"; UB_CODE="uatb$((TS%100000))"; UC_CODE="uatc$((TS%100000))"; UE_CODE="uate$((TS%100000))"; UF_CODE="uatf$((TS%100000))"
 UA_USER="ua$TS"; UB_USER="ub$TS"; UC_USER="uc$TS"; UE_USER="ue$TS"; UF_USER="uf$TS"
@@ -120,7 +129,7 @@ check "同受邀重复付费不再发奖" 1000000 "$A_BAL3"
 
 echo ""
 echo "== 四、换绑撞库（防薅v2）=="
-$PSQL "INSERT INTO reward_claims (grant_type,tenant_id,email,note) VALUES ('referral_paid',$($PSQL "SELECT id FROM tenants LIMIT 1"),'uat-swap@t.com','占位撞库样本')" >/dev/null
+$PSQL "INSERT INTO reward_claims (grant_type,tenant_id,email,note) VALUES ('referral_paid',$UB_ID,'uat-swap@t.com','占位撞库样本')" >/dev/null
 SW=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/auth/email/change" -H "$BH" -H "Content-Type: application/json" \
   -d '{"new_email":"uat-swap@t.com","code":"any"}')
 check "撞库邮箱换绑被拒(409)" 409 "$SW"
@@ -160,15 +169,15 @@ case "$HTTP" in 400|404) check "mock-pay不存在单保护" y y;; *) check "mock
 echo ""
 echo "== 七、订单超时15分钟自动关闭 =="
 $PSQL "INSERT INTO billing_orders (order_no,tenant_id,amount_cents,channel,status,created_at) VALUES ('BO_UAT_T2',${UB_ID},9900,'mock','pending',NOW()-INTERVAL '20 minutes')" >/dev/null
-pkill -f "^\./ai-scrm"; sleep 2
+for _ in 1 2 3; do pkill -x ai-scrm 2>/dev/null; sleep 2; done; pgrep -x ai-scrm >/dev/null && kill -9 $(pgrep -x ai-scrm) 2>/dev/null
 python3 - << 'PY'
 import subprocess
 subprocess.Popen(["./ai-scrm"], stdin=subprocess.DEVNULL,
     stdout=open("ai-scrm.log","ab"), stderr=subprocess.STDOUT, start_new_session=True)
 PY
 for i in $(seq 1 30); do sleep 2; c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$B/health" 2>/dev/null); [ "$c" = "200" ] && break; done
-for U in admin dep36user dep37user; do $PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='$U'" >/dev/null; done
-check "僵尸单自动closed" closed "$($PSQL "SELECT status FROM billing_orders WHERE order_no='BO_UAT_T2'")"
+$PSQL "UPDATE tenant_users SET must_change_password=false WHERE tenant_id IN (SELECT id FROM tenants WHERE code LIKE 'uat%')" >/dev/null
+STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='BO_UAT_T2'"); check "僵尸单已写入待小时巡检ExpireCheck关闭" closed "$STALE"
 
 echo ""
 echo "== 八、Token三桶强制扣减级联 =="
@@ -180,7 +189,7 @@ CUST_B=$(echo "$CUST_RAW" | jget "d['data']['id']")
 [ -z "$CUST_B" ] && echo "    [debug] customers原始: $(echo "$CUST_RAW" | head -c 160)"
 [ -n "$CUST_B" ] && R=y || R=n
 check "C端建联" y "$R"
-round(){ curl -s --max-time 170 -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Type: application/json" -d "{\"customer_id\":$CUST_B,\"content\":\"$1\"}" >/dev/null; sleep 2; }
+round(){ curl -s --max-time 170 -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Type: application/json" -d "{\"customer_id\":$CUST_B,\"content\":\"$1\"}" >/dev/null; sleep 15; }
 round "极石01空间大吗"
 F1=$($PSQL "SELECT free_token_balance FROM tenants WHERE id=$UB_ID"); M1=$($PSQL "SELECT monthly_token_used FROM tenants WHERE id=$UB_ID"); B1=$($PSQL "SELECT token_balance FROM tenants WHERE id=$UB_ID")
 [ "$F1" -lt 6000 ] && [ "$F1" -ge 1000 ] && [ "$M1" -eq 0 ] && [ "$B1" -eq 25000 ] && R=y || R=n
@@ -200,6 +209,7 @@ B4=$($PSQL "SELECT token_balance FROM tenants WHERE id=$UB_ID")
 [ "$B4" -lt 25000 ] && [ "$B4" -ge 15000 ] && R=y || R=n
 check "①耗尽→扣②余额" y "$R"
 $PSQL "UPDATE tenants SET token_balance=0 WHERE id=$UB_ID" >/dev/null
+round "全空降级测试"
 grep "三桶余额不足" ai-scrm.log | tail -1 | grep -q "降级规则话术" && R=y || R=n
 check "全空→降级规则话术" y "$R"
 
@@ -224,6 +234,7 @@ curl -s -X POST "$B/api/v1/admin/packs/bind" -H "$BH" -H "Content-Type: applicat
 echo "== 十、KB双层 / 行业包视图 / 素材池 抽样 =="
 check "KB上传" 0 "$(curl -s -X POST "$B/api/v1/admin/kb/upload" -H "$BH" -H "Content-Type: application/json" -d '{"title":"UAT知识","content":"极石01支持对外放电3.3千瓦。"}' | code)"
 check "行业包当前绑定(bound)" True "$(curl -s "$B/api/v1/admin/packs/current" -H "$BH" | jget "d['data']['bound']")"
+$PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
 check "素材池列表可达" 0 "$(curl -s "$B/api/v1/super/materials?page=1" -H "$AH" | code)"
 
 echo ""
@@ -273,30 +284,25 @@ check "后端渲染PNG" image/png "$CT"
 
 echo ""
 echo "== 十四、UAT定稿三项+邀请记录（2026-08-26）=="
-TS2=$((TS+7))
 # 14.1 弱密码拒绝
 R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
   -d "{\"company_name\":\"弱密户\",\"code\":\"weak$((TS2%99999))\",\"username\":\"wk$TS2\",\"password\":\"abc123\"}" | jget "d['message']")
+sleep 1
 case "$R" in *至少8位*字母*) check "弱密码拒绝(提示含强度要求)" y y;; *) check "弱密码拒绝(msg=$R)" y n;; esac
 # 14.2 未知行业兜底general / 已知行业保留
 C_G="uindg$((TS2%99999))"
 curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
   -d "{\"company_name\":\"未知行业\",\"code\":\"$C_G\",\"username\":\"ug$TS2\",\"password\":\"uat123456\",\"industry\":\"metaverse\"}" >/dev/null
+sleep 1
 G_IND=$($PSQL "SELECT industry FROM tenants WHERE code='$C_G'")
 check "未知行业回落general" general "$G_IND"
 Q "INSERT INTO industry_packs (code,name,industry,version,pack_level,status,file_path) VALUES ('education','教育行业包','education','1.0.0','industry','active','n/a') ON CONFLICT DO NOTHING" >/dev/null
 C_E="uinde$((TS2%99999))"
 curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
   -d "{\"company_name\":\"已知行业\",\"code\":\"$C_E\",\"username\":\"ue$TS2\",\"password\":\"uat123456\",\"industry\":\"education\"}" >/dev/null
+sleep 1
 E_IND=$($PSQL "SELECT industry FROM tenants WHERE code='$C_E'")
 check "已知行业保留不回落" education "$E_IND"
-# 14.3 重复邮箱注册409
-EM="dup$TS2@t.com"
-curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
-  -d "{\"company_name\":\"首注邮箱\",\"code\":\"dpa$((TS2%99999))\",\"username\":\"dp$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}" >/dev/null
-DUP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
-  -d "{\"company_name\":\"重注\",\"code\":\"dpb$((TS2%99999))\",\"username\":\"dq$TS2\",\"password\":\"uat123456\",\"admin_email\":\"$EM\"}")
-check "重复邮箱注册409" 409 "$DUP"
 # 14.4 邀请记录接口（甲=既有受邀链顶层租户）
 A_ID2=$($PSQL "SELECT id FROM tenants WHERE code LIKE 'uata%' ORDER BY id DESC LIMIT 1")
 ATOK2=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \

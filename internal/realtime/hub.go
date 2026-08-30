@@ -5,7 +5,10 @@
 // 跨实例覆盖由既有 Redis 锁/合并队列保证最终一致——实时性为体验增强，非强一致依赖）。
 package realtime
 
-import "sync"
+import (
+	"encoding/json"
+	"sync"
+)
 
 // RealtimeEvent 推送事件（前端收到即触发对应拉取）
 type RealtimeEvent struct {
@@ -100,4 +103,86 @@ func (h *Hub) Publish(ev RealtimeEvent, payload []byte) {
 			}
 		}
 	}
+}
+
+// ============================================================
+// P1-1 WebSocket推送增强（2026-08-30）
+//
+// 目标：推送消息内容（而非仅信号），前端收到即更新本地状态
+// 新增：
+//   - PublishWithContent：推送消息内容（含消息体）
+//   - PublishTyping：推送"正在输入"状态
+//   - PublishStatus：推送状态变更
+// ============================================================
+
+// RealtimeMessage 推送的消息内容（P1-1）
+type RealtimeMessage struct {
+	Type           string `json:"type"`            // new_message / typing / status / message_content
+	CustomerID     uint   `json:"customer_id"`     // 关联客户
+	ConversationID uint   `json:"conversation_id"` // 关联会话
+	SenderType     string `json:"sender_type"`     // customer / ai / human
+	TenantID       uint   `json:"tenant_id"`       // 租户ID
+	// 消息内容字段（P1-1 新增）
+	MessageID  uint   `json:"message_id,omitempty"`  // 消息ID
+	Content    string `json:"content,omitempty"`     // 消息内容
+	SenderName string `json:"sender_name,omitempty"` // 发送方名称
+	CreatedAt  string `json:"created_at,omitempty"`  // 创建时间
+}
+
+// PublishWithContent 向租户内相关订阅者推送消息内容（P1-1）
+// 与 Publish 类似，但 payload 包含完整消息体，前端收到即更新本地状态
+func (h *Hub) PublishWithContent(ev RealtimeMessage) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for cl := range h.clients {
+		if cl.TenantID != ev.TenantID {
+			continue
+		}
+		hit := cl.UserID != 0 // 顾问端全收
+		if !hit && cl.CustomerID == ev.CustomerID && ev.CustomerID != 0 {
+			hit = true // 该客户端连接
+		}
+		if hit {
+			// 序列化消息并推送
+			data, err := jsonMarshal(ev)
+			if err != nil {
+				continue
+			}
+			select {
+			case cl.send <- data:
+			default: // 发送缓冲满则丢弃（轮询兜底保证最终到达）
+			}
+		}
+	}
+}
+
+// PublishTyping 向租户内相关订阅者推送"正在输入"状态（P1-1）
+func (h *Hub) PublishTyping(tenantID, customerID, conversationID uint, isTyping bool) {
+	ev := RealtimeMessage{
+		Type:           "typing",
+		CustomerID:     customerID,
+		ConversationID: conversationID,
+		TenantID:       tenantID,
+	}
+	if !isTyping {
+		ev.Type = "typing_stop"
+	}
+	h.PublishWithContent(ev)
+}
+
+// PublishStatus 向租户内相关订阅者推送状态变更（P1-1）
+func (h *Hub) PublishStatus(tenantID, customerID, conversationID uint, status string) {
+	ev := RealtimeMessage{
+		Type:           "status",
+		CustomerID:     customerID,
+		ConversationID: conversationID,
+		TenantID:       tenantID,
+		SenderType:     status, // 复用 SenderType 字段传递状态
+	}
+	h.PublishWithContent(ev)
+}
+
+// jsonMarshal JSON序列化（简化错误处理）
+func jsonMarshal(v interface{}) ([]byte, error) {
+	return json.Marshal(v)
 }

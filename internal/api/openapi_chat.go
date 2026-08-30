@@ -112,8 +112,9 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		RespErr(c, http.StatusInternalServerError, 500, "消息落库失败")
 		return
 	}
-	// P1-2 实时推送：外部渠道客户新消息通知本租户顾问端
-	notifyWS(tenantID, customer.ID, conversation.ID, "customer")
+	// P1-1 实时推送：外部渠道客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
+	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer",
+		customerMsg.ID, userInput, customer.Name, time.Now().Format("2006-01-02T15:04:05Z"))
 
 	// 4. 持续打标（与站内一致）
 	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, userInput); tagErr == nil && len(autoTags) > 0 {
@@ -170,10 +171,11 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	aiReply := flow.DefaultEngine.OrchestrateReply(customer, conversation.ID, userInput, &strategyOutput, nil)
 
 	// 8. 持久化 AI 消息
-	persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, aiReply,
+	aiMsgID := persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, aiReply,
 		strategyOutput.FinalAnchor, strategyOutput.TemplateID, "ai_triggered_by_openapi")
-	// P1-2 实时推送：外部渠道 AI 回复通知客户端与顾问端
-	notifyWS(tenantID, customer.ID, conversation.ID, "ai")
+	// P1-1 实时推送：外部渠道 AI 回复通知客户端与顾问端（推送消息内容，前端即时更新）
+	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai",
+		aiMsgID, aiReply, "AI顾问", time.Now().Format("2006-01-02T15:04:05Z"))
 
 	// 9. 返回 OpenAI 兼容结构（stream=true 走 SSE 逐帧，false 全量 JSON）
 	openAIRespond(c, req.Stream, req.Model, aiReply, estimateTokens(userInput), estimateTokens(aiReply))
@@ -354,7 +356,8 @@ func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone str
 }
 
 // persistOpenAPIAIMessage 持久化 AI 回复并刷新会话
-func persistOpenAPIAIMessage(c *gin.Context, conv *model.Conversation, customerID, tenantID uint, channel, content string, anchor int, tid, route string) {
+// persistOpenAPIAIMessage 持久化 OpenAPI AI 消息并返回消息ID（P1-1）
+func persistOpenAPIAIMessage(c *gin.Context, conv *model.Conversation, customerID, tenantID uint, channel, content string, anchor int, tid, route string) uint {
 	msg := model.Message{
 		TenantID:       tenantID,
 		ConversationID: conv.ID,
@@ -369,13 +372,14 @@ func persistOpenAPIAIMessage(c *gin.Context, conv *model.Conversation, customerI
 	}
 	if err := db.RQ(c).Create(&msg).Error; err != nil {
 		log.Printf("[OpenAPI] AI消息落库失败 conv=%d: %v", conv.ID, err)
-		return
+		return 0
 	}
 	now := time.Now()
 	conv.LastMessageAt = &now
 	conv.LastTid = tid
 	conv.LastAnchorType = anchor
 	db.RQ(c).Save(conv)
+	return msg.ID
 }
 
 // isCapturedStage 是否已过留资阶段（无需重复捕获）

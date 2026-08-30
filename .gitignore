@@ -7,6 +7,7 @@
 
 # Binary/Generated files
 ai-scrm
+.pid
 tmp/
 /tmp/*
 

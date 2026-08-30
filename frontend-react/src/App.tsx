@@ -1,7 +1,7 @@
 // 全站根路由组件：声明路由表，区分公开页（登录/注册/协议）与业务页（/admin、/super、/advisor、/client、/billing 等）
 // /app 为嵌套布局路由，其内部子页由 AppLayout 统一做登录态守卫与顶栏
 // 注意：BrowserRouter 已由 main.tsx 统一提供，此处不再嵌套（避免双 Router 冲突）
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import Index from './pages/Index'
 import Login from './pages/Login'
 import Register from './pages/Register'
@@ -18,6 +18,28 @@ import AppHome from './pages/AppHome'
 import AppReferral from './pages/AppReferral'
 import AppSettings from './pages/AppSettings'
 import AppLayout from './pages/AppLayout'
+import { getToken } from './lib/api'
+
+// ============================================================
+// P1-2 前端路由守卫（2026-08-30）
+//
+// 目标：受保护路由无前端守卫，未登录直接访问会闪屏
+// 方案：<ProtectedRoute> 检查 token，无则跳 /login，保留原路径供登录后跳回
+// ============================================================
+
+// ProtectedRoute 受保护路由守卫组件
+// 检查 localStorage 中的 token，无则跳转到登录页
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const token = getToken()
+  const location = useLocation()
+
+  if (!token) {
+    // 无 token：跳转登录页，保留当前路径供登录后跳回
+    return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
+  }
+
+  return <>{children}</>
+}
 
 // 全站根路由组件：声明路由表，区分公开页（登录/注册/协议）与业务页（/admin、/super、/advisor、/client、/billing 等）
 // /app 为嵌套布局路由，其内部子页由 AppLayout 统一做登录态守卫与顶栏
@@ -37,18 +59,18 @@ export default function App() {
       <Route path="/user-agreement" element={<UserAgreement />} />
       {/* 隐私政策静态页：展示《个人信息保护法》等合规条款 */}
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
-      {/* 租户管理员后台：管理成员、部门、客户等租户级资源 */}
-      <Route path="/admin" element={<Admin />} />
-      {/* 平台超管后台：管理租户、套餐、全局配置等平台级资源 */}
-      <Route path="/super" element={<SuperAdmin />} />
-      {/* 顾问工作台：管理客户会话、跟进记录、AI 接待策略 */}
-      <Route path="/advisor" element={<Advisor />} />
-      {/* C 端客户对话页：匿名访客与 AI 对话，支持人机验证 */}
+      {/* 租户管理员后台：管理成员、部门、客户等租户级资源（需登录） */}
+      <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+      {/* 平台超管后台：管理租户、套餐、全局配置等平台级资源（需登录） */}
+      <Route path="/super" element={<ProtectedRoute><SuperAdmin /></ProtectedRoute>} />
+      {/* 顾问工作台：管理客户会话、跟进记录、AI 接待策略（需登录） */}
+      <Route path="/advisor" element={<ProtectedRoute><Advisor /></ProtectedRoute>} />
+      {/* C 端客户对话页：匿名访客与 AI 对话，支持人机验证（免登录） */}
       <Route path="/client" element={<Client />} />
-      {/* 收银台：展示套餐用量、商业包列表与订单，支持支付 */}
-      <Route path="/billing" element={<Billing />} />
-      {/* 组织架构管理：部门树（增删改/移动）与成员列表（启停/新增） */}
-      <Route path="/org" element={<Org />} />
+      {/* 收银台：展示套餐用量、商业包列表与订单，支持支付（需登录） */}
+      <Route path="/billing" element={<ProtectedRoute><Billing /></ProtectedRoute>} />
+      {/* 组织架构管理：部门树（增删改/移动）与成员列表（启停/新增）（需登录） */}
+      <Route path="/org" element={<ProtectedRoute><Org /></ProtectedRoute>} />
       {/* 定价页：展示套餐（plan）与 AI 商业包（package） */}
       <Route path="/pricing" element={<Pricing />} />
       {/* /app 嵌套布局路由：移动端工作台，AppLayout 统一做登录态守卫与顶栏 */}

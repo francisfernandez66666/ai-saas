@@ -18,7 +18,7 @@ import (
 // CollectorEvent 数据飞轮上报事件（脱敏后）
 // ID 用于接收端幂等去重；Payload 内不得含明文 PII（发送前经 AnonymizePayload 处理）
 type CollectorEvent struct {
-	ID       string         `json:"id"`       // 事件唯一ID，用于接收端幂等去重
+	ID       string         `json:"id"`        // 事件唯一ID，用于接收端幂等去重
 	TenantID uint           `json:"tenant_id"` // 租户ID，用于多租户数据隔离
 	Kind     string         `json:"kind"`      // 事件类型：cdp_event/material/audit_increment/state_change
 	Payload  map[string]any `json:"payload"`   // 脱敏后的事件载荷（PII已处理）
@@ -28,10 +28,10 @@ type CollectorEvent struct {
 // batchCollector 进程内批量缓冲（休眠式：URL 空则不发任何外部请求）
 // 采用生产者-消费者模式，事件先缓冲在内存中，达到阈值或定时批量发送
 type batchCollector struct {
-	mu      sync.Mutex         // 互斥锁，保护缓冲区并发安全
-	buf     []CollectorEvent   // 事件缓冲区
-	maxBuf  int                // 缓冲区最大容量，超出触发flush
-	flushMs int64              // 自动刷新间隔（毫秒）
+	mu      sync.Mutex       // 互斥锁，保护缓冲区并发安全
+	buf     []CollectorEvent // 事件缓冲区
+	maxBuf  int              // 缓冲区最大容量，超出触发flush
+	flushMs int64            // 自动刷新间隔（毫秒）
 }
 
 var defaultCollector = &batchCollector{maxBuf: 2000, flushMs: 300000} // 5分钟批次
@@ -144,4 +144,48 @@ func StartCollector() {
 			defaultCollector.flush()
 		}
 	}()
+}
+
+// ============================================================
+// 数据飞轮 - 调参行为审计上报（P0-1，2026-08-30）
+//
+// 目标：管理员修改策略参数 → 审计落库 → collector → 素材池
+// 数据流：admin_config.BatchUpdate → ReportTuningBehavior → Collect → 素材池
+//
+// 载荷结构：
+//
+//	{
+//	  "action": "config_update",
+//	  "operator": "admin",
+//	  "tenant_id": 1,
+//	  "changes": [{"key": "tau", "old": "0.8", "new": "0.9"}],
+//	  "category": "strategy"
+//	}
+// ============================================================
+
+// TuningChange 单项配置变更记录
+type TuningChange struct {
+	Key  string `json:"key"`  // 配置键名
+	Old  string `json:"old"`  // 旧值
+	New  string `json:"new"`  // 新值
+	Kind string `json:"kind"` // 变更类型：strategy/reply_speed/mental_stage/ai_chain
+}
+
+// ReportTuningBehavior 上报调参行为审计（供数据飞轮素材池消费）
+// 调用时机：admin_config.BatchUpdateSystemConfig / ResetSystemConfig / ForceInitSystemConfig
+// 载荷经 AnonymizePayload 脱敏后上报
+func ReportTuningBehavior(tenantID uint, operator string, category string, changes []TuningChange) {
+	if len(changes) == 0 {
+		return
+	}
+	payload := map[string]any{
+		"action":    "config_update",
+		"operator":  operator,
+		"tenant_id": tenantID,
+		"category":  category,
+		"changes":   changes,
+	}
+	Collect("tuning_behavior", tenantID, payload)
+	log.Printf("[DataFlywheel] 调参行为上报 tenant=%d operator=%s category=%s changes=%d",
+		tenantID, operator, category, len(changes))
 }

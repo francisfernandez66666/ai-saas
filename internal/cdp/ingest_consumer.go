@@ -8,9 +8,12 @@ import (
 	"strings"
 	"time"
 
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
+
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -113,142 +116,164 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	oneID := env.Header.OneID
 	tid := env.Header.TenantID
 
-	// 1) 身份锚点归并（手机号锚存在时建立映射）
-	if attrPhone != "" {
-		UpsertAnchor(tid, "phone", attrPhone, oneID)
-	}
-	if attrEmail != "" {
-		UpsertAnchor(tid, "email", attrEmail, oneID)
-	}
+	// 4) Collector 遥测素材（事务外组装；attrs 供事务内标签计算复用）
+	var route, slot, emo, intentVal, sat, obj string
 
-	// 2) 确保画像主体存在
-	profile := EnsureProfile(tid, oneID, attrCustomerID)
+	// 1)~3) 写入段：锚点归并 + 画像确保 + 事件落库 + 标签计算
+	// P2-2 RLS热路径接入：CDP 摄入写收口在「单事务 + SET LOCAL 租户隔离」内完成——
+	// RLS_ENABLED=true 时 DB 强制按租户收敛，与应用层 db.RQ 双重保险；
+	// profile 捕获到事务外供 collector 遥测引用。
+	var profile *model.CdpProfile
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		// 事务内激活租户行级隔离（提交/回滚自动失效）
+		if r := service.SetTenantRLS(tx, tid); r.Error != nil {
+			return r.Error
+		}
+
+		// 1) 身份锚点归并（手机号锚存在时建立映射）
+		if attrPhone != "" {
+			UpsertAnchorTx(tx, tid, "phone", attrPhone, oneID)
+		}
+		if attrEmail != "" {
+			UpsertAnchorTx(tx, tid, "email", attrEmail, oneID)
+		}
+
+		// 2) 确保画像主体存在
+		profile = EnsureProfileTx(tx, tid, oneID, attrCustomerID)
+		if profile == nil {
+			return nil
+		}
+
+		// 3) Raw Zone：不可变事件日志
+		logEvent := model.EventLog{
+			TenantID: tid, CustomerID: attrCustomerID,
+			EventType: payload.EventType, EventKey: eventName,
+			EventValue: string(env.Payload), Source: "scrm",
+		}
+		if err := tx.Create(&logEvent).Error; err != nil {
+			log.Printf("[CDP] 事件落库失败: %v", err)
+		}
+
+		// 4) 原子标签计算（首批规则表；扩展走 cdp_tag_definitions 配置）
+		switch eventName {
+		case "guest_created":
+			ApplyTagTx(tx, tid, profile.ID, "idm_guest", "1")
+		case "lead_captured":
+			ApplyTagTx(tx, tid, profile.ID, "beh_lead_captured", "1")
+			ApplyTagTx(tx, tid, profile.ID, "beh_deep_interest", "1")
+		case "conversation_msg":
+			ApplyTagTx(tx, tid, profile.ID, "beh_msg_active", "1")
+			// 价格探询：仅当事件属性携带消息正文且命中价格关键词（零方文本，非行为硬推态度）
+			var msgText string
+			if c, _ := payload.Data.Attributes["content"].(string); c != "" {
+				msgText = c
+			}
+			if t, _ := payload.Data.Attributes["text"].(string); t != "" {
+				msgText = strings.TrimSpace(msgText + " " + t)
+			}
+			if isPriceInquiry(msgText) {
+				ApplyTagTx(tx, tid, profile.ID, "beh_price_inquiry", "1")
+			}
+		case "store_visit":
+			ApplyTagTx(tx, tid, profile.ID, "beh_visit", "1")
+			// 复访：事件属性显式携带 repeat=true 才打（避免每次到访都算复访）
+			if rpt, _ := payload.Data.Attributes["repeat"].(bool); rpt {
+				ApplyTagTx(tx, tid, profile.ID, "beh_repeat_visit", "1")
+			}
+		case "test_drive":
+			ApplyTagTx(tx, tid, profile.ID, "beh_testdrive", "1")
+			ApplyTagTx(tx, tid, profile.ID, "beh_deep_interest", "1")
+		case "payment":
+			// M2（2026-08-25）：付费事实入 CDP——订单确认到账事件此前发布即沉底，
+			// 编排层心跳消费者不认此事件名。CDP 定位"记录事实"，流程联动（欢迎流）留待专项。
+			ApplyTagTx(tx, tid, profile.ID, "tran_order_paid", "1")
+			ApplyTagTx(tx, tid, profile.ID, "beh_deep_interest", "1")
+			log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
+		case "model_view":
+			// P1-1 浏览车型：模型详情页访问（事件驱动，非行为硬推）
+			ApplyTagTx(tx, tid, profile.ID, "beh_viewed_model", "1")
+			ApplyTagTx(tx, tid, profile.ID, "beh_deep_interest", "1")
+		case "complaint":
+			ApplyTagTx(tx, tid, profile.ID, "beh_complained", "1")
+		case "share":
+			ApplyTagTx(tx, tid, profile.ID, "beh_shared", "1")
+		case "referral":
+			ApplyTagTx(tx, tid, profile.ID, "beh_referral", "1")
+		case "follow":
+			ApplyTagTx(tx, tid, profile.ID, "beh_followed", "1")
+		case "booking":
+			ApplyTagTx(tx, tid, profile.ID, "beh_booked", "1")
+		}
+
+		// P1-3 环境维标签：渠道路由 + 到访时段（上下文信号，非行为推导）
+		route, _ = payload.Data.Attributes["route"].(string)
+		if route != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_route", route)
+		}
+		slot = "rest"
+		if h := time.Now().Hour(); h >= 9 && h < 18 {
+			slot = "work"
+		}
+		ApplyTagTx(tx, tid, profile.ID, "env_time_slot", slot)
+
+		// P3 环境维补齐：渠道/设备/引荐/地理/语言（事件属性携带则打，否则不打）
+		if v, _ := payload.Data.Attributes["channel"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_channel", v)
+		}
+		if v, _ := payload.Data.Attributes["device"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_device", v)
+		}
+		if v, _ := payload.Data.Attributes["referrer"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_referrer", v)
+		}
+		if v, _ := payload.Data.Attributes["geo"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_geo", v)
+		}
+		if v, _ := payload.Data.Attributes["language"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_language", v)
+		}
+		if v, _ := payload.Data.Attributes["utm_source"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_utm_source", v)
+		}
+		if v, _ := payload.Data.Attributes["landing_page"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_landing_page", v)
+		}
+		if v, _ := payload.Data.Attributes["browser"].(string); v != "" {
+			ApplyTagTx(tx, tid, profile.ID, "env_browser", v)
+		}
+
+		// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪/意向/异议（emotion/intent/objection）时打——
+		// 红线：严禁由行为硬推态度；chat.go 发布 conversation_msg 时携带 strategy 情绪即合规
+		if emo, _ = payload.Data.Attributes["emotion"].(string); emo != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_emotion", emo)
+		}
+		if intentVal, _ = payload.Data.Attributes["intent"].(string); intentVal != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_intent", intentVal)
+		}
+		if sat, _ = payload.Data.Attributes["satisfaction"].(string); sat != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_satisfaction", sat)
+		}
+		if obj, _ = payload.Data.Attributes["objection"].(string); obj != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_objection", obj)
+		}
+		// P1-1 态度维扩展：忠诚/流失风险/推荐意愿——仅零方或运营显式标记（emotion/intent 同红线，严禁行为硬推）
+		if loy, _ := payload.Data.Attributes["loyalty"].(string); loy != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_loyalty", loy)
+		}
+		if churn, _ := payload.Data.Attributes["churn_risk"].(string); churn != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_churn_risk", churn)
+		}
+		if adv, _ := payload.Data.Attributes["advocate"].(string); adv != "" {
+			ApplyTagTx(tx, tid, profile.ID, "att_advocate", adv)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Printf("[CDP] 摄入事务失败: %v", err)
+		return err
+	}
 	if profile == nil {
 		return nil
-	}
-
-	// 3) Raw Zone：不可变事件日志
-	logEvent := model.EventLog{
-		TenantID: tid, CustomerID: attrCustomerID,
-		EventType: payload.EventType, EventKey: eventName,
-		EventValue: string(env.Payload), Source: "scrm",
-	}
-	if err := gdb().Create(&logEvent).Error; err != nil {
-		log.Printf("[CDP] 事件落库失败: %v", err)
-	}
-
-	// 4) 原子标签计算（首批规则表；扩展走 cdp_tag_definitions 配置）
-	switch eventName {
-	case "guest_created":
-		ApplyTag(tid, profile.ID, "idm_guest", "1")
-	case "lead_captured":
-		ApplyTag(tid, profile.ID, "beh_lead_captured", "1")
-		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
-	case "conversation_msg":
-		ApplyTag(tid, profile.ID, "beh_msg_active", "1")
-		// 价格探询：仅当事件属性携带消息正文且命中价格关键词（零方文本，非行为硬推态度）
-		var msgText string
-		if c, _ := payload.Data.Attributes["content"].(string); c != "" {
-			msgText = c
-		}
-		if t, _ := payload.Data.Attributes["text"].(string); t != "" {
-			msgText = strings.TrimSpace(msgText + " " + t)
-		}
-		if isPriceInquiry(msgText) {
-			ApplyTag(tid, profile.ID, "beh_price_inquiry", "1")
-		}
-	case "store_visit":
-		ApplyTag(tid, profile.ID, "beh_visit", "1")
-		// 复访：事件属性显式携带 repeat=true 才打（避免每次到访都算复访）
-		if rpt, _ := payload.Data.Attributes["repeat"].(bool); rpt {
-			ApplyTag(tid, profile.ID, "beh_repeat_visit", "1")
-		}
-	case "test_drive":
-		ApplyTag(tid, profile.ID, "beh_testdrive", "1")
-		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
-	case "payment":
-		// M2（2026-08-25）：付费事实入 CDP——订单确认到账事件此前发布即沉底，
-		// 编排层心跳消费者不认此事件名。CDP 定位"记录事实"，流程联动（欢迎流）留待专项。
-		ApplyTag(tid, profile.ID, "tran_order_paid", "1")
-		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
-		log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
-	case "model_view":
-		// P1-1 浏览车型：模型详情页访问（事件驱动，非行为硬推）
-		ApplyTag(tid, profile.ID, "beh_viewed_model", "1")
-		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
-	case "complaint":
-		ApplyTag(tid, profile.ID, "beh_complained", "1")
-	case "share":
-		ApplyTag(tid, profile.ID, "beh_shared", "1")
-	case "referral":
-		ApplyTag(tid, profile.ID, "beh_referral", "1")
-	case "follow":
-		ApplyTag(tid, profile.ID, "beh_followed", "1")
-	case "booking":
-		ApplyTag(tid, profile.ID, "beh_booked", "1")
-	}
-
-	// P1-3 环境维标签：渠道路由 + 到访时段（上下文信号，非行为推导）
-	route, _ := payload.Data.Attributes["route"].(string)
-	if route != "" {
-		ApplyTag(tid, profile.ID, "env_route", route)
-	}
-	slot := "rest"
-	if h := time.Now().Hour(); h >= 9 && h < 18 {
-		slot = "work"
-	}
-	ApplyTag(tid, profile.ID, "env_time_slot", slot)
-
-	// P3 环境维补齐：渠道/设备/引荐/地理/语言（事件属性携带则打，否则不打）
-	if v, _ := payload.Data.Attributes["channel"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_channel", v)
-	}
-	if v, _ := payload.Data.Attributes["device"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_device", v)
-	}
-	if v, _ := payload.Data.Attributes["referrer"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_referrer", v)
-	}
-	if v, _ := payload.Data.Attributes["geo"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_geo", v)
-	}
-	if v, _ := payload.Data.Attributes["language"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_language", v)
-	}
-	if v, _ := payload.Data.Attributes["utm_source"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_utm_source", v)
-	}
-	if v, _ := payload.Data.Attributes["landing_page"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_landing_page", v)
-	}
-	if v, _ := payload.Data.Attributes["browser"].(string); v != "" {
-		ApplyTag(tid, profile.ID, "env_browser", v)
-	}
-
-	// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪/意向/异议（emotion/intent/objection）时打——
-	// 红线：严禁由行为硬推态度；chat.go 发布 conversation_msg 时携带 strategy 情绪即合规
-	var emo, intentVal, sat, obj string
-	if emo, _ = payload.Data.Attributes["emotion"].(string); emo != "" {
-		ApplyTag(tid, profile.ID, "att_emotion", emo)
-	}
-	if intentVal, _ = payload.Data.Attributes["intent"].(string); intentVal != "" {
-		ApplyTag(tid, profile.ID, "att_intent", intentVal)
-	}
-	if sat, _ = payload.Data.Attributes["satisfaction"].(string); sat != "" {
-		ApplyTag(tid, profile.ID, "att_satisfaction", sat)
-	}
-	if obj, _ = payload.Data.Attributes["objection"].(string); obj != "" {
-		ApplyTag(tid, profile.ID, "att_objection", obj)
-	}
-	// P1-1 态度维扩展：忠诚/流失风险/推荐意愿——仅零方或运营显式标记（emotion/intent 同红线，严禁行为硬推）
-	if loy, _ := payload.Data.Attributes["loyalty"].(string); loy != "" {
-		ApplyTag(tid, profile.ID, "att_loyalty", loy)
-	}
-	if churn, _ := payload.Data.Attributes["churn_risk"].(string); churn != "" {
-		ApplyTag(tid, profile.ID, "att_churn_risk", churn)
-	}
-	if adv, _ := payload.Data.Attributes["advocate"].(string); adv != "" {
-		ApplyTag(tid, profile.ID, "att_advocate", adv)
 	}
 
 	// P2 collector：CDP 事件进数据飞轮（脱敏在 Collect 内完成；URL 空则丢弃）

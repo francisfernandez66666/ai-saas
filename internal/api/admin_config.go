@@ -122,6 +122,26 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 	// K7修复(2026-08-27)：跨实例广播配置变更，其他实例收到后本地重载
 	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
+	// P0-1 数据飞轮：调参行为审计上报（供素材池消费）
+	// 记录本次配置变更，供数据飞轮素材池迭代
+	if len(tenant) > 0 {
+		changes := make([]service.TuningChange, 0, len(tenant))
+		for _, it := range tenant {
+			changes = append(changes, service.TuningChange{
+				Key:  it.Key,
+				Old:  "", // 旧值需从内存读取（此处简化为仅记录新值）
+				New:  it.Value,
+				Kind: "config_update",
+			})
+		}
+		roleV2, _ := c.Get("username")
+		operator, _ := roleV2.(string)
+		if operator == "" {
+			operator = "admin"
+		}
+		service.ReportTuningBehavior(db.EffectiveTenantIDFromGin(c), operator, "strategy", changes)
+	}
+
 	c.JSON(http.StatusOK, schema.Response{
 		Code:    0,
 		Message: "更新成功，已热加载到内存",

@@ -253,8 +253,9 @@ func Chat(c *gin.Context) {
 		CreatedAt:      now,
 	}
 	db.RQ(c).Create(&customerMsg)
-	// P1-2 实时推送：客户新消息通知本租户顾问端（前端即时拉取，轮询兜底）
-	notifyWS(tenantID, customer.ID, conversation.ID, "customer")
+	// P1-1 实时推送：客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
+	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer",
+		customerMsg.ID, req.Content, customer.Name, now.Format("2006-01-02T15:04:05Z"))
 
 	// 更新会话最后消息时间
 	conversation.LastMessageAt = &now
@@ -426,10 +427,18 @@ func Chat(c *gin.Context) {
 				customer.ID, service.MaskPhone(phoneMatch), customer.AssignedUserID)
 
 			// P3：到店分支留资事件上行（与 DetectLeadCapture 主路径埋点对齐）
+			// P0-2：携带 channel/device 信息供 CDP 打环境维标签
+			leadAttrs := map[string]any{"customer_id": customer.ID, "path": "store_visit_branch"}
+			if req.Channel != "" {
+				leadAttrs["channel"] = req.Channel
+			}
+			if req.Device != "" {
+				leadAttrs["device"] = req.Device
+			}
 			if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
 				mq.UserEvent{EventType: "behavior", EventName: "lead_captured", AnchorType: "phone",
-					Attributes: map[string]any{"customer_id": customer.ID, "path": "store_visit_branch"},
+					Attributes: leadAttrs,
 					OccurredAt: time.Now()}); err != nil {
 				log.Printf("[MQ] lead_captured(到店分支) 发布失败: %v", err)
 			}
@@ -779,8 +788,9 @@ skipStoreVisitFast:
 		}
 		db.RQ(c).Create(&aiMsg)
 		publishConversationMsg(tenantID, customer.ID, routeResult, state.Emotion)
-		// P1-2 实时推送：AI 新回复通知客户端与顾问端（前端即时拉取，轮询兜底）
-		notifyWS(tenantID, customer.ID, conversation.ID, "ai")
+		// P1-1 实时推送：AI 新回复通知客户端与顾问端（推送消息内容，前端即时更新）
+		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai",
+			aiMsg.ID, aiReply, "AI顾问", time.Now().Format("2006-01-02T15:04:05Z"))
 	}
 
 	// 9. 更新会话状态
