@@ -27,7 +27,11 @@ import (
 // 数据门禁：所有读写先过 assertDeptInScope（fail-closed）
 // ============================================================
 
-// OrgManageRequired 组织管理入口守卫：放行 tenant_admin/dept_admin，其余拒绝
+/*
+OrgManageRequired 组织管理入口守卫中间件，控制对组织架构管理接口的访问。
+仅允许 tenant_admin、dept_admin 和 super_admin 角色访问，其他角色返回403。
+设计决策：采用 fail-closed 策略，未明确授权的角色一律拒绝访问
+*/
 func OrgManageRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
@@ -45,7 +49,12 @@ func OrgManageRequired() gin.HandlerFunc {
 
 // ---- 作用域工具 ----
 
-// myScope 从 Context 取操作者作用域
+// orgScope 操作者作用域结构体，包含进行权限判断所需的所有上下文信息
+// TenantID: 租户ID，确保数据隔离
+// Role: 操作者角色，决定权限边界
+// UserID: 操作者用户ID，用于审计和自保护
+// DeptID: 操作者所在部门ID
+// DeptPath: 操作者部门物化路径，用于判断部门管辖范围（如"/1/5/"表示从根到当前部门的路径）
 type orgScope struct {
 	TenantID uint
 	Role     string
@@ -54,8 +63,13 @@ type orgScope struct {
 	DeptPath string // 形如 "/1/5/"；tenant_admin 为 ""
 }
 
-// getOrgScope 从 gin.Context 解析操作者作用域（角色/用户ID/部门ID/部门物化路径）
-// 入参：c 请求上下文；出参：orgScope（租户隔离基石，后续所有门禁判断均依赖它）
+/*
+getOrgScope 从gin.Context中解析操作者的完整作用域信息。
+该函数提取租户ID、角色、用户ID、部门ID和部门路径，为后续所有权限判断提供基础。
+参数：c - Gin请求上下文，包含中间件设置的用户信息
+返回：orgScope结构体，作为租户隔离和权限控制的基石
+设计决策：部门路径(DeptPath)是物化路径，支持高效的子树查询和范围判断
+*/
 func getOrgScope(c *gin.Context) orgScope {
 	s := orgScope{TenantID: db.EffectiveTenantIDFromGin(c)}
 	if v, ok := c.Get("role"); ok {
@@ -87,8 +101,14 @@ func getOrgScope(c *gin.Context) orgScope {
 	return s
 }
 
-// deptInScope 部门是否落在操作者管辖范围内（fail-closed）
-// tenant_admin 恒真；dept_admin 要求目标路径以其自身路径为前缀
+/*
+deptInScope 判断目标部门是否落在操作者的管辖范围内。
+采用fail-closed策略：tenant_admin和super_admin恒真，dept_admin仅能管理自身路径下的子树。
+参数：
+  - s: 操作者作用域
+  - deptPath: 目标部门的物化路径
+返回：bool，true表示目标部门在操作者管辖范围内
+*/
 func deptInScope(s orgScope, deptPath string) bool {
 	if s.Role == model.RoleSuperAdmin || s.Role == model.RoleTenantAdmin {
 		return true
@@ -99,7 +119,16 @@ func deptInScope(s orgScope, deptPath string) bool {
 	return false
 }
 
-// canAssignRole 角色分配合法性（调用方已确保部门在范围内）
+/*
+canAssignRole 判断操作者是否有权分配指定角色给其他用户。
+权限矩阵：
+  - super_admin/tenant_admin：可分配所有角色
+  - dept_admin：只能分配dept_admin和user角色
+参数：
+  - operator: 操作者作用域
+  - targetRole: 要分配的目标角色
+返回：bool，true表示有分配权限
+*/
 func canAssignRole(operator orgScope, targetRole string) bool {
 	switch operator.Role {
 	case model.RoleSuperAdmin:
@@ -123,8 +152,13 @@ func canAssignRole(operator orgScope, targetRole string) bool {
 
 // ---- 部门树查询 ----
 
-// GetDepartmentTree GET /org/departments/tree
-// 返回当前作用域内完整部门树（dept_admin 仅见子树），附带每部门人数
+/*
+GetDepartmentTree 处理 GET /org/departments/tree 请求，返回当前作用域内的完整部门树。
+dept_admin只能看到自己管辖的子树，tenant_admin可以看到所有部门。
+每个部门节点附带该部门的用户数量统计。
+参数：c - Gin请求上下文，包含操作者作用域信息
+返回：部门树结构，包含每个部门的详细信息、用户数量和子部门列表
+*/
 func GetDepartmentTree(c *gin.Context) {
 	s := getOrgScope(c)
 	var depts []model.Department
@@ -184,14 +218,20 @@ func GetDepartmentTree(c *gin.Context) {
 
 // ---- 部门创建/修改/删除 ----
 
-// deptCreateReq 结构体/类型定义（自动补注释）。
+// deptCreateReq 创建部门的请求结构体
 type deptCreateReq struct {
-	Name      string `json:"name" binding:"required"`
-	ParentID  *uint  `json:"parent_id"` // 空=根部门（仅 tenant_admin）
-	SortOrder int    `json:"sort_order"`
+	Name      string `json:"name" binding:"required"` // 部门名称，必填
+	ParentID  *uint  `json:"parent_id"`               // 父部门ID，为空表示创建根部门（仅tenant_admin可操作）
+	SortOrder int    `json:"sort_order"`               // 排序权重，数字越小越靠前
 }
 
-// CreateDepartment POST /org/departments
+/*
+CreateDepartment 处理 POST /org/departments 请求，创建新的部门。
+支持创建根部门（仅tenant_admin）和子部门，自动维护部门物化路径。
+参数：c - Gin请求上下文，包含操作者作用域和请求体{name, parent_id?, sort_order?}
+返回：创建结果，成功后部门树会自动更新
+设计决策：使用事务确保部门记录和物化路径的一致性
+*/
 func CreateDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	var req deptCreateReq
@@ -281,14 +321,21 @@ func CreateDepartment(c *gin.Context) {
 	RespOK(c, "创建成功", nil)
 }
 
-// deptUpdateReq 结构体/类型定义（自动补注释）。
+// deptUpdateReq 更新部门的请求结构体，所有字段均为可选
 type deptUpdateReq struct {
-	Name        *string `json:"name"`
-	NewParentID *uint   `json:"new_parent_id"` // 移动到新父部门
-	SortOrder   *int    `json:"sort_order"`
+	Name        *string `json:"name"`         // 新部门名称
+	NewParentID *uint   `json:"new_parent_id"` // 移动到的新父部门ID，实现部门调整
+	SortOrder   *int    `json:"sort_order"`    // 新的排序权重
 }
 
-// UpdateDepartment PUT /org/departments/:id —— 改名 / 移动（重写整棵子树路径）/ 排序
+/*
+UpdateDepartment 处理 PUT /org/departments/:id 请求，更新部门信息。
+支持三种操作：改名、移动部门位置、调整排序。
+移动部门时会自动重写整棵子树的物化路径，并触发全员组织缓存失效。
+参数：c - Gin请求上下文，包含操作者作用域和请求体{name?, new_parent_id?, sort_order?}
+返回：更新结果，移动操作会使用事务确保数据一致性
+设计决策：移动部门时进行防环校验，防止形成循环引用
+*/
 func UpdateDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -385,7 +432,12 @@ func UpdateDepartment(c *gin.Context) {
 	RespOK(c, "更新成功", nil)
 }
 
-// DeleteDepartment DELETE /org/departments/:id —— 仅允许删除空部门
+/*
+DeleteDepartment 处理 DELETE /org/departments/:id 请求，删除指定部门。
+仅允许删除空部门（无子部门且无成员），删除前会进行权限和状态检查。
+参数：c - Gin请求上下文，包含操作者作用域和部门ID
+返回：删除结果，非空部门会返回409冲突错误
+*/
 func DeleteDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -414,17 +466,24 @@ func DeleteDepartment(c *gin.Context) {
 
 // ---- 用户管理 ----
 
-// userCreateReq 结构体/类型定义（自动补注释）。
+// userCreateReq 创建用户的请求结构体
 type userCreateReq struct {
-	Username     string `json:"username" binding:"required"`
-	Password     string `json:"password" binding:"required"`
-	RealName     string `json:"real_name"`
-	Phone        string `json:"phone"`
-	Role         string `json:"role" binding:"required"`
-	DepartmentID uint   `json:"department_id" binding:"required"`
+	Username     string `json:"username" binding:"required"` // 用户名，全局唯一
+	Password     string `json:"password" binding:"required"` // 密码，系统会自动哈希处理
+	RealName     string `json:"real_name"`                   // 真实姓名，可选
+	Phone        string `json:"phone"`                       // 手机号，可选
+	Role         string `json:"role" binding:"required"`     // 角色，必须符合权限矩阵
+	DepartmentID uint   `json:"department_id" binding:"required"` // 所属部门ID，必须在操作者管辖范围内
 }
 
-// CreateUser POST /org/users —— 在指定部门下创建账号（角色按权限矩阵裁剪）
+/*
+CreateUser 处理 POST /org/users 请求，在指定部门下创建新用户账号。
+系统会验证用户名唯一性、部门归属权限、角色分配权限，并检查套餐配额。
+密码会自动进行哈希处理，创建成功后记录操作日志。
+参数：c - Gin请求上下文，包含操作者作用域和用户创建请求体
+返回：创建结果，成功后返回新用户ID
+设计决策：dept_admin不能在自己所在部门任命另一个管理员，防止权限滥用
+*/
 func CreateUser(c *gin.Context) {
 	s := getOrgScope(c)
 	var req userCreateReq
@@ -496,16 +555,23 @@ func CreateUser(c *gin.Context) {
 	RespOK(c, "创建成功", gin.H{"id": u.ID})
 }
 
-// userUpdateReq 结构体/类型定义（自动补注释）。
+// userUpdateReq 更新用户的请求结构体，所有字段均为可选
 type userUpdateReq struct {
-	Role         *string `json:"role"`
-	DepartmentID *uint   `json:"department_id"`
-	Status       *int    `json:"status"`
-	Password     *string `json:"password"`
-	RealName     *string `json:"real_name"`
+	Role         *string `json:"role"`          // 新角色
+	DepartmentID *uint   `json:"department_id"` // 新部门ID
+	Status       *int    `json:"status"`        // 新状态：1启用，0禁用
+	Password     *string `json:"password"`      // 新密码
+	RealName     *string `json:"real_name"`     // 新真实姓名
 }
 
-// UpdateUser PUT /org/users/:id —— 改角色/调部门/启停/改密（全部即时生效：InvalidateOrg）
+/*
+UpdateUser 处理 PUT /org/users/:id 请求，更新用户信息。
+支持修改角色、部门、状态、密码和姓名，所有变更即时生效。
+系统会验证操作者权限、目标用户归属、角色分配合法性，并保护关键账号。
+参数：c - Gin请求上下文，包含操作者作用域和用户更新请求体
+返回：更新结果，成功后会触发组织缓存失效确保一致性
+设计决策：不能修改自己的组织信息，防止误操作自锁；平台超管账号不可在此修改
+*/
 func UpdateUser(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -607,8 +673,14 @@ func UpdateUser(c *gin.Context) {
 	RespOK(c, "更新成功", nil)
 }
 
-// GetManagedUsers GET /org/users?keyword=&role=&department_id=
-// 用户列表（作用域裁剪：dept_admin 仅子树成员）
+/*
+GetManagedUsers 处理 GET /org/users 请求，查询当前作用域内的用户列表。
+dept_admin只能看到自己管辖子树内的成员，tenant_admin可以看到所有租户用户。
+支持按关键词、角色和部门进行筛选，结果限制在500条以内。
+参数：c - Gin请求上下文，包含操作者作用域和筛选条件
+返回：用户列表，包含用户详细信息、部门名称和创建时间
+设计决策：JOIN查询不走RQ（裸tenant_id歧义），租户条件显式携带
+*/
 func GetManagedUsers(c *gin.Context) {
 	s := getOrgScope(c)
 	type row struct {

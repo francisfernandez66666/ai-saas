@@ -1,9 +1,6 @@
 // 数据飞轮素材池API：素材评审与 AI evals 自动评分管理。
 package api
 
-// 数据飞轮素材池管理API（P3）：素材列表、人工评审(approved/rejected/pending)、AI evals自动评分。
-// 两层评分互不干扰(human_score人工/ai_score自动)，入库以人工审核为准，approved且pack_code非空进入行业包。
-
 // ============================================================
 // 数据飞轮：素材池管理 + AI evals 评分（P3，2026-08-26）
 //
@@ -30,7 +27,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// SuperMaterialList GET /api/v1/super/materials
+/*
+SuperMaterialList 处理 GET /api/v1/super/materials 请求，返回素材池分页列表。
+支持按状态(status)和来源(source)筛选，供超级管理员查看所有素材的评审状态。
+参数：c - Gin请求上下文，通过query参数传递筛选条件和分页信息
+返回：分页后的素材列表，包含total、page、page_size等分页元数据
+*/
 func SuperMaterialList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -57,7 +59,9 @@ func SuperMaterialList(c *gin.Context) {
 	})
 }
 
-// SuperMaterialReview POST /api/v1/super/materials/:id/review
+// SuperMaterialReview 处理 POST /api/v1/super/materials/:id/review 请求，执行人工评审操作。
+// 评审状态只能为 approved（通过）、rejected（拒绝）或 pending（待处理）。
+// 支持可选的人工评分(human_score)、行业包代码(pack_code)和成交标记(deal_closed)。
 func SuperMaterialReview(c *gin.Context) {
 	id := c.Param("id")
 	var req struct {
@@ -93,8 +97,10 @@ func SuperMaterialReview(c *gin.Context) {
 	RespOK(c, "已更新", nil)
 }
 
-// SuperMaterialEvals POST /api/v1/super/materials/:id/evals
-// AI evals：走 stage_models 的 evals 阶段专属模型（后台可配仅超管），与对话链路隔离
+// SuperMaterialEvals 处理 POST /api/v1/super/materials/:id/evals 请求，触发AI自动评分。
+// 该函数通过策略引擎调用evals阶段专属模型，与对话链路完全隔离。
+// 评分维度包括：口语自然度、需求针对性、推进有效性，输出0-5分及简短理由。
+// 同时执行离线评分作为零成本护栏，与LLM评估结果互补验证。
 func SuperMaterialEvals(c *gin.Context) {
 	id := c.Param("id")
 	var m model.KbFeedbackMaterial

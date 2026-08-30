@@ -2,11 +2,9 @@
 import { useState, useEffect } from 'react'
 import { Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken } from '../lib/api'
+import { AUTH, apiJSON } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
 
-// AUTH 常量/变量（自动补注释）。
-const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
 // FB_TYPES 常量/变量（自动补注释）。
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
 // TYPE_NAMES 常量/变量（自动补注释）。
@@ -63,23 +61,23 @@ export default function SuperAdmin() {
 
   // 拉取租户列表
   async function load() {
-    const r = await fetch('/api/v1/super/tenants', AUTH()); const j = await r.json(); setTenants(j.data || [])
+    const j = await AUTH('/api/v1/super/tenants'); setTenants(j.data || [])
   }
   // 拉取 AI 商业包列表
   async function loadPkgs() {
-    const r = await fetch('/api/v1/super/packages', AUTH()); const j = await r.json(); setPkgs(j.data || [])
+    const j = await AUTH('/api/v1/super/packages'); setPkgs(j.data || [])
   }
   // 拉取近 30 天模型成本核算汇总
   async function loadCost() {
-    const r = await fetch('/api/v1/super/usage/cost?days=30', AUTH()); const j = await r.json(); if (j.code === 0) setCost(j.data)
+    const j = await AUTH('/api/v1/super/usage/cost?days=30'); if (j.code === 0) setCost(j.data)
   }
   // 按状态拉取用户反馈列表
   async function loadFeedbacks() {
-    const r = await fetch('/api/v1/super/feedbacks?status=' + fbStatus + '&page_size=50', AUTH()); const j = await r.json(); setFbs((j.data && j.data.list) || [])
+    const j = await AUTH('/api/v1/super/feedbacks?status=' + fbStatus + '&page_size=50'); setFbs((j.data && j.data.list) || [])
   }
   // 拉取待确认收款订单
   async function loadPending() {
-    const r = await fetch('/api/v1/super/orders/pending', AUTH()); const j = await r.json(); setPendings(j.data || [])
+    const j = await AUTH('/api/v1/super/orders/pending'); setPendings(j.data || [])
   }
   // 按筛选条件（动作/租户/时间区间）拉取审计日志
   async function loadAudit() {
@@ -89,24 +87,23 @@ export default function SuperAdmin() {
     const f = (document.getElementById('aFrom') as HTMLInputElement)?.value
     const t = (document.getElementById('aTo') as HTMLInputElement)?.value
     if (a) q.set('action', a); if (ti) q.set('tenant_id', ti); if (f) q.set('from', f); if (t) q.set('to', t)
-    const r = await fetch('/api/v1/super/audit-logs?' + q, AUTH()); const j = await r.json(); setAudits((j.data && j.data.list) || [])
+    const j = await AUTH('/api/v1/super/audit-logs?' + q); setAudits((j.data && j.data.list) || [])
   }
   // 按类型拉取协议签署记录
   async function loadAgreements() {
-    const r = await fetch('/api/v1/super/agreements' + (agType ? '?type=' + agType : ''), AUTH()); const j = await r.json(); setAgs((j.data && j.data.list) || [])
+    const j = await AUTH('/api/v1/super/agreements' + (agType ? '?type=' + agType : '')); setAgs((j.data && j.data.list) || [])
   }
   // 读取选中租户的白标配置（品牌名若为平台默认值则清空待填）
   async function loadBdTenant() {
     if (bdTenant === '') return
-    const r = await fetch('/api/v1/super/tenants/' + bdTenant + '/branding', AUTH()); const j = await r.json(); const b = j.data || {}
+    const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding'); const b = j.data || {}
     setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== '跨山 LexCross') ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '' })
   }
   // 保存选中租户的白标配置
   async function saveBd() {
     if (bdTenant === '') return
     setBdMsg('保存中...')
-    const r = await fetch('/api/v1/super/tenants/' + bdTenant + '/branding', { method: 'PUT', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ ...bd, custom_domain: bd.custom_domain.trim() || null, brand_name: bd.brand_name.trim() }) })
-    const j = await r.json(); setBdMsg(j.code === 0 ? '✅ 已保存' : '❌ ' + (j.message || '失败'))
+    const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding', { method: 'PUT', body: { ...bd, custom_domain: bd.custom_domain.trim() || null, brand_name: bd.brand_name.trim() } }); setBdMsg(j.code === 0 ? '✅ 已保存' : '❌ ' + (j.message || '失败'))
   }
 
   // 超管守卫：非 super_admin 直接跳登录；加载各模块并每 30s 刷新待确认收款
@@ -129,13 +126,12 @@ export default function SuperAdmin() {
   // 封禁/恢复租户（带确认）
   async function setStatus(id: number, st: string) {
     if (!confirm('确认将租户 #' + id + ' 置为 ' + st + ' ?')) return
-    await fetch(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
+    await AUTH(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', body: { status: st } })
     load()
   }
   // 上架/下架商业包
   async function togglePkg(id: number, enabled: boolean) {
-    const r = await fetch(`/api/v1/super/packages/${id}`, { method: 'PUT', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
-    const j = await r.json(); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败'); loadPkgs()
+    const j = await AUTH(`/api/v1/super/packages/${id}`, { method: 'PUT', body: { enabled } }); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败'); loadPkgs()
   }
   // 新增商业包（读取弹窗表单字段后提交，成功后清空并刷新）
   async function createPkg() {
@@ -147,21 +143,19 @@ export default function SuperAdmin() {
     let duration_days = parseInt((document.getElementById('pDays') as HTMLInputElement).value) || 0
     if (!code || !name) { MessagePlugin.warning('标识和名称必填'); return }
     if (p_type === 'free') duration_days = 0
-    const r = await fetch('/api/v1/super/packages', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ code, name, p_type, ai_calls, price_cents, duration_days }) })
-    const j = await r.json(); if (j.code !== 0) { MessagePlugin.error(j.message || '创建失败'); return }
+    const j = await AUTH('/api/v1/super/packages', { method: 'POST', body: { code, name, p_type, ai_calls, price_cents, duration_days } }); if (j.code !== 0) { MessagePlugin.error(j.message || '创建失败'); return }
     ;['pCode', 'pName', 'pCalls', 'pPrice', 'pDays'].forEach((id) => { const el = document.getElementById(id) as HTMLInputElement; if (el) el.value = '' })
     loadPkgs()
   }
   // 人工确认收款：核实到账后发放权益，接口幂等（重复确认自动跳过）
   async function confirmOrder(id: number) {
     if (!confirm('确认已收到该笔款项？确认后立即发放对应权益。')) return
-    const r = await fetch(`/api/v1/super/orders/${id}/confirm`, { method: 'POST', ...AUTH() })
-    const j = await r.json(); MessagePlugin.info(j.message || '操作完成'); loadPending()
+    const j = await AUTH(`/api/v1/super/orders/${id}/confirm`, { method: 'POST' }); MessagePlugin.info(j.message || '操作完成'); loadPending()
   }
   // 标记反馈为已处理（可填处理备注）
   async function resolveFb(id: number) {
     const note = prompt('处理备注（可空）：'); if (note === null) return
-    await fetch('/api/v1/super/feedbacks/resolve', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, note }) })
+    await AUTH('/api/v1/super/feedbacks/resolve', { method: 'POST', body: { id, note } })
     loadFeedbacks()
   }
 

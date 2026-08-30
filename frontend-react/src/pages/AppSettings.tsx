@@ -1,4 +1,8 @@
-// AppSettings.tsx：前端页面/模块（自动补注释）。
+/**
+ * AppSettings.tsx：移动端账号设置页
+ * 支持改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
+ * 依赖接口：/api/v1/auth/change-password、/api/v1/auth/email/code、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
+ */
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import type { ApiResp, KbMaterial } from '../types'
@@ -6,42 +10,56 @@ import type { ApiResp, KbMaterial } from '../types'
 // 企业知识库列表分页响应 data 结构（admin/kb/my）
 type KbListResp = { list: KbMaterial[]; total: number; page: number; page_size: number }
 
-// /app 账号设置：改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
-// 依赖 /api/v1/auth/change-password、/api/v1/auth/email/code（注意端点应为 email/code）、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
-
-// AppSettings 函数（自动补注释）。
+/**
+ * /app 账号设置页组件
+ * 四大功能模块：
+ * 1. 修改密码：输入旧密码和新密码
+ * 2. 换绑邮箱：输入新邮箱 → 发送验证码 → 输入验证码完成换绑
+ * 3. 企业知识库：上传标题+内容切片 → 列表展示 → 支持删除
+ * 4. 账号注销：输入密码确认 → 次日零点停用（数据保留）
+ */
 export default function AppSettings() {
+  // 是否为首次登录强制改密模式
   const [must, setMust] = useState(false)
-  // 改密
-  const [oldPwd, setOldPwd] = useState('')
-  const [newPwd, setNewPwd] = useState('')
-  const [pwdMsg, setPwdMsg] = useState('')
-  // 换绑邮箱
-  const [newEmail, setNewEmail] = useState('')
-  const [emailCode, setEmailCode] = useState('')
-  const [emMsg, setEmMsg] = useState('')
-  const [cd, setCd] = useState(0)
-  // 知识库
-  const [kbTitle, setKbTitle] = useState('')
-  const [kbContent, setKbContent] = useState('')
-  const [kbList, setKbList] = useState<KbMaterial[]>([])
-  // 注销
-  const [cancelPwd, setCancelPwd] = useState('')
-  const [cMsg, setCMsg] = useState('')
+  // 改密相关状态
+  const [oldPwd, setOldPwd] = useState('')      // 旧密码
+  const [newPwd, setNewPwd] = useState('')      // 新密码
+  const [pwdMsg, setPwdMsg] = useState('')      // 改密结果提示
+  // 换绑邮箱相关状态
+  const [newEmail, setNewEmail] = useState('')  // 新邮箱地址
+  const [emailCode, setEmailCode] = useState('') // 邮箱验证码
+  const [emMsg, setEmMsg] = useState('')        // 换绑结果提示
+  const [cd, setCd] = useState(0)               // 验证码发送倒计时（秒）
+  // 知识库相关状态
+  const [kbTitle, setKbTitle] = useState('')    // 知识库标题
+  const [kbContent, setKbContent] = useState('') // 知识库内容
+  const [kbList, setKbList] = useState<KbMaterial[]>([]) // 知识库列表
+  // 注销相关状态
+  const [cancelPwd, setCancelPwd] = useState('') // 注销确认密码
+  const [cMsg, setCMsg] = useState('')          // 注销结果提示
 
   useEffect(() => {
+    // 检查 URL 参数 must=1，首次登录强制改密时展示提示
     if (typeof window !== 'undefined') {
       const p = new URLSearchParams(window.location.search)
       if (p.get('must') === '1') setMust(true)
     }
+    // 加载企业知识库列表
     loadKb()
   }, [])
 
-  // 修改登录密码
+  /**
+   * 修改登录密码：调用 /api/v1/auth/change-password 接口
+   */
   async function changePwd() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/auth/change-password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } })
     setPwdMsg(j.code === 0 ? '✓ 已修改' : (j.message || '失败'))
   }
+
+  /**
+   * 发送邮箱验证码：调用 /api/v1/auth/email/code 接口（绑定专用）
+   * H6 修复：换绑邮箱应调用绑定专用验证码接口，原 /auth/email-code 是注册验证码接口
+   */
   async function sendCode() {
     if (!newEmail) return
     // H6 修复：换绑邮箱应调用绑定专用验证码接口 /auth/email/code，
@@ -51,25 +69,45 @@ export default function AppSettings() {
     setCd(60)
     const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)
   }
-  // 用验证码换绑新邮箱
+
+  /**
+   * 用验证码换绑新邮箱：调用 /api/v1/auth/email/change 接口
+   */
   async function bindEmail() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/auth/email/change', { method: 'POST', body: { new_email: newEmail, code: emailCode } })
     setEmMsg(j.message || '')
   }
-  // 加载企业知识库列表
+
+  /**
+   * 加载企业知识库列表：调用 /api/v1/admin/kb/my 接口
+   */
   async function loadKb() {
     const j: ApiResp<KbListResp> = await AUTH('/api/v1/admin/kb/my?page=1&page_size=50')
     if (j.code === 0) setKbList(j.data?.list || [])
   }
+
+  /**
+   * 上传知识库切片：调用 /api/v1/admin/kb/upload 接口
+   * 上传成功后清空表单并刷新列表
+   */
   async function uploadKb() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: '企业知识' } })
     if (j.code === 0) { setKbTitle(''); setKbContent(''); loadKb() }
     alert(j.message)
   }
+
+  /**
+   * 删除知识库条目：调用 /api/v1/admin/kb/my/:id DELETE 接口
+   */
   async function delKb(id: number) {
     await AUTH('/api/v1/admin/kb/my/' + id, { method: 'DELETE' })
     loadKb()
   }
+
+  /**
+   * 申请账号注销：调用 /api/v1/admin/account/cancel 接口
+   * 需二次确认密码；平台级动作，名下 API Key 同步禁用
+   */
   async function cancelAccount() {
     if (!confirm('确认注销？次日零点起账号停用（数据保留）')) return
     // 注销需二次确认密码；平台级动作，名下 API Key 同步禁用
@@ -77,15 +115,20 @@ export default function AppSettings() {
     setCMsg(j.message || '')
   }
 
+  // 卡片样式
   const card: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)', marginBottom: 16 }
+  // 输入框样式
   const inputStyle: React.CSSProperties = { width: '100%', padding: 9, border: '1px solid #e2e8f0', borderRadius: 6, marginBottom: 10, boxSizing: 'border-box' }
+  // 标签样式
   const labelStyle: React.CSSProperties = { display: 'block', fontSize: 13, color: '#475569', marginBottom: 4 }
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto', padding: 16 }}>
       <h2 style={{ fontSize: 20, margin: '0 0 14px' }}>⚙️ 账号设置</h2>
+      {/* 首次登录强制改密提示 */}
       {must && <div style={{ ...card, border: '1px solid #fde68a', background: '#fffbeb' }}><p style={{ color: '#b45309', margin: 0 }}>⚠️ 首次登录请先修改密码后再使用其他功能</p></div>}
 
+      {/* 修改密码模块 */}
       <div style={card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>修改密码</h3>
         <label style={labelStyle}>旧密码</label><input type="password" value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} style={inputStyle} />
@@ -94,6 +137,7 @@ export default function AppSettings() {
         {pwdMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{pwdMsg}</p>}
       </div>
 
+      {/* 换绑邮箱模块 */}
       <div style={card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>换绑邮箱</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>新邮箱曾参与奖励领取时不可用于换绑</p>
@@ -106,12 +150,14 @@ export default function AppSettings() {
         {emMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{emMsg}</p>}
       </div>
 
+      {/* 企业知识库模块 */}
       <div style={card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>我的企业知识库</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>上传产品/企业资料，AI 对话自动融合检索（租户层优先）</p>
         <label style={labelStyle}>标题</label><input placeholder="如：售后政策" value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
         <label style={labelStyle}>内容</label><textarea rows={4} value={kbContent} onChange={(e) => setKbContent(e.target.value)} style={{ ...inputStyle, resize: 'vertical' }} />
         <button onClick={uploadKb} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>上传切片入库</button>
+        {/* 知识库列表：展示已上传的条目，支持删除 */}
         <ul style={{ marginTop: 12, paddingLeft: 18, fontSize: 14 }}>
           {kbList.map((f) => (
             <li key={f.id} style={{ margin: '6px 0' }}>{f.title} <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>删除</a></li>
@@ -119,6 +165,7 @@ export default function AppSettings() {
         </ul>
       </div>
 
+      {/* 账号注销模块 */}
       <div style={{ ...card, border: '1px solid #fecaca' }}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16, color: '#ef4444' }}>⚠️ 账号注销</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>今日内仍可登录，明日零点起停用；数据保留不删除；名下 API Key 同步禁用。</p>

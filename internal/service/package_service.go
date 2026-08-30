@@ -26,6 +26,10 @@ import (
 // ============================================================
 
 // GrantPackage 按包类型发放权益到租户
+// 三类包的发放语义（对齐实施文档 §二）：
+//   free       注册试用包：max_ai_calls_monthly += 包含量（叠加，不覆盖）
+//   paid       包月包：expired_at 顺延 duration_days、max_ai_calls_monthly = 包含量
+//   increment  AI增量包：ai_call_balance += 包含量（买断资产，月度重置不触碰）
 // tx 传 nil 走全局 DB；订单确认链路传事务句柄保证"改单+发放"原子
 func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 	if tx == nil {
@@ -118,6 +122,7 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 }
 
 // DeductBalance 原子扣减增量余额：UPDATE ... WHERE balance>0 天然防并发超扣
+// 利用SQL的WHERE条件保证原子性，无需额外锁
 // 返回 false = 无可用余额
 func DeductBalance(tenantID uint) bool {
 	res := db.DB.Model(&model.Tenant{}).
@@ -131,6 +136,7 @@ func DeductBalance(tenantID uint) bool {
 }
 
 // GetTenantQuotaView 读租户配额三要素（月已用/月上限/增量余额）
+// 用于API层展示租户当前配额使用情况
 func GetTenantQuotaView(tenantID uint) (used, maxMonthly, balance int, err error) {
 	var row struct {
 		Used    int
@@ -153,7 +159,9 @@ func GetTenantQuotaView(tenantID uint) (used, maxMonthly, balance int, err error
 // 两函数共用同一把锁串行化，避免「已过期却生成续费单」的矛盾态。
 const expireRenewLockKey = "lock:billing:expire_renew"
 
-// ExpireCheck 过期（自动补注释，原为缺注释的顶层声明）。
+// ExpireCheck 到期巡检：到期提醒（提前3天推企微群）+ 过期摘除（active→expired）
+// 由 main 每小时 ticker 调用（Redis 选主，与用量重置同节奏）；幂等可重跑
+// 返回受影响的租户数量
 func ExpireCheck() int {
 	affected := 0
 

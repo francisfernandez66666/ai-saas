@@ -20,40 +20,49 @@ import (
 	"ai-scrm/internal/model"
 )
 
-// HealthStatus 健康分级
+// HealthStatus 健康分级枚举
+// ok=正常，warn=告警（达到警告阈值），crit=严重（达到严重阈值，触发主动通知）
 type HealthStatus string
 
-// 常量/变量定义块（自动补注释）。
 const (
-	StatusOK   HealthStatus = "ok"   // 正常
-	StatusWarn HealthStatus = "warn" // 告警
-	StatusCrit HealthStatus = "crit" // 严重
+	// StatusOK 正常状态：指标在健康范围内
+	StatusOK   HealthStatus = "ok"
+	// StatusWarn 告警状态：指标达到警告阈值，需关注但暂不影响服务
+	StatusWarn HealthStatus = "warn"
+	// StatusCrit 严重状态：指标达到严重阈值，触发企微/钉钉群主动通知
+	StatusCrit HealthStatus = "crit"
 )
 
 // HealthCheck 单指标探测结果
+// 每个指标独立探测，包含当前值、阈值和描述
 type HealthCheck struct {
-	Name   string       `json:"name"`
-	Status HealthStatus `json:"status"`
-	Value  string       `json:"value"`
-	WarnAt string       `json:"warn_at"`
-	CritAt string       `json:"crit_at"`
-	Desc   string       `json:"desc"`
+	Name   string       `json:"name"`   // 指标名称（如 db, merge_queue_depth, goroutines）
+	Status HealthStatus `json:"status"` // 当前健康分级
+	Value  string       `json:"value"`  // 当前值（字符串格式，方便展示）
+	WarnAt string       `json:"warn_at"` // 警告阈值
+	CritAt string       `json:"crit_at"` // 严重阈值
+	Desc   string       `json:"desc"`   // 指标描述（中文）
 }
 
-// HealthSnapshot 一次完整探测
+// HealthSnapshot 一次完整探测结果
+// 包含所有指标的探测结果和全局状态标志
 type HealthSnapshot struct {
-	DBOK    bool          `json:"db_ok"`
-	Checks  []HealthCheck `json:"checks"`
-	HasCrit bool          `json:"has_crit"`
-	HasWarn bool          `json:"has_warn"`
+	DBOK    bool          `json:"db_ok"`    // 数据库是否连通
+	Checks  []HealthCheck `json:"checks"`   // 所有指标的探测结果
+	HasCrit bool          `json:"has_crit"` // 是否存在crit级指标
+	HasWarn bool          `json:"has_warn"` // 是否存在warn级指标
 }
 
 // alertCooldown 各指标通知冷却（避免每次探测都刷群），name -> 上次通知时间
+// 采用sync.Map支持并发安全访问，不同指标独立冷却
 var alertCooldown sync.Map
 
-const alertCooldownSec = 600 // 同一指标 10 分钟内至多通知一次
+// alertCooldownSec 同一指标的冷却时间（秒）
+// 防止短时间内重复发送大量通知，避免群消息刷屏
+const alertCooldownSec = 600 // 10分钟冷却
 
 // intCheck 数值型指标分级（越大越糟）
+// 通用阈值分级函数：value < warn → OK, warn ≤ value < crit → WARN, value ≥ crit → CRIT
 func intCheck(name string, value, warn, crit int64, desc string) HealthCheck {
 	st := StatusOK
 	if value >= crit {
@@ -72,6 +81,7 @@ func intCheck(name string, value, warn, crit int64, desc string) HealthCheck {
 }
 
 // monitorCfgInt 读系统配置阈值，缺省回退 def
+// 支持通过 system_configs 表动态调整监控阈值，无需重启
 func monitorCfgInt(key string, def int64) int64 {
 	if DefaultSystemConfigService == nil {
 		return def
@@ -80,6 +90,8 @@ func monitorCfgInt(key string, def int64) int64 {
 }
 
 // ComputeHealth 执行一次完整健康探测
+// 探测项目：DB连通性、合并队列深度、24h严重事件数、goroutine数
+// 返回 HealthSnapshot 包含所有指标的探测结果
 func ComputeHealth() HealthSnapshot {
 	snap := HealthSnapshot{Checks: []HealthCheck{}}
 
@@ -142,6 +154,8 @@ func ComputeHealth() HealthSnapshot {
 }
 
 // MaybeAlert 对 crit 级指标主动通知（带冷却）
+// 仅当存在crit级指标时触发通知，通过企微和钉钉双通道发送
+// 同一指标10分钟内只通知一次，避免刷屏
 func MaybeAlert(snap HealthSnapshot) {
 	if !snap.HasCrit {
 		return

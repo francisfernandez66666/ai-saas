@@ -20,6 +20,7 @@ import (
 )
 
 // boundPackCodes 取租户绑定包的行业+企业 code（去重）
+// 一个租户可绑定行业包和企业包，返回去重后的code列表
 func boundPackCodes(tenantID uint) []string {
 	var bind model.TenantPackBinding
 	if err := db.DB.Where("tenant_id = ?", tenantID).First(&bind).Error; err != nil {
@@ -33,6 +34,8 @@ func boundPackCodes(tenantID uint) []string {
 }
 
 // GetBoundPackPrompts 收集租户绑定包（行业+企业）的定制系统指令
+// 从 system_configs 表读取 pack_prompts_{code} 键值，解析 persona 和 system_instruction
+// 返回拼接后的指令列表，用于构建LLM系统提示
 func GetBoundPackPrompts(tenantID uint) []string {
 	if tenantID == 0 {
 		return nil
@@ -64,6 +67,7 @@ func GetBoundPackPrompts(tenantID uint) []string {
 
 // GetBoundPackParams 收集租户绑定包（行业+企业）的 params.json 参数约束
 // 支持 {"params": {...}} 或裸对象；扁平化为可读 "key: value" 行
+// 用于注入LLM提示的参数约束信息
 func GetBoundPackParams(tenantID uint) []string {
 	if tenantID == 0 {
 		return nil
@@ -82,6 +86,7 @@ func GetBoundPackParams(tenantID uint) []string {
 
 // GetBoundPackMindset 收集租户绑定包（行业+企业）的 mindset.json 心态/策略指引
 // 支持 {"mindset": ["...","..."]} / {"guidance": "..."} / 字符串数组
+// 用于注入LLM提示的心态和策略指引
 func GetBoundPackMindset(tenantID uint) []string {
 	if tenantID == 0 {
 		return nil
@@ -121,6 +126,7 @@ func GetBoundPackMindset(tenantID uint) []string {
 }
 
 // flattenJSONLines 将 JSON 值扁平化为 "k: v" 行（嵌套以 parent.k 表达）
+// 递归解析JSON，将嵌套结构展平为可读的键值对
 func flattenJSONLines(raw, prefix string) []string {
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
@@ -166,6 +172,7 @@ func isHanOrWordR(r rune) bool {
 }
 
 // mergeFragmentsByID 合并两个片段集并按 ID 去重（近邻结果优先保留）
+// 用于合并pgvector近邻召回和历史未向量化片段
 func mergeFragmentsByID(a, b []model.KnowledgeFragment) []model.KnowledgeFragment {
 	seen := map[uint]bool{}
 	out := make([]model.KnowledgeFragment, 0, len(a)+len(b))
@@ -185,6 +192,7 @@ func mergeFragmentsByID(a, b []model.KnowledgeFragment) []model.KnowledgeFragmen
 }
 
 // extractKeywords 提取关键词token（≥2字的连续汉字/字母数字段）
+// 过滤标点符号和空格，仅保留有意义的文本片段
 func extractKeywords(input string) []string {
 	input = strings.ToLower(input)
 	var tokens []string
@@ -206,6 +214,7 @@ func extractKeywords(input string) []string {
 }
 
 // bigramSet 生成字符串的二元组集合（相邻两字片段），用于关键词相似度打分
+// 二元组打分是pgvector前的朴素相似度方案
 func bigramSet(s string) map[string]bool {
 	r := []rune(strings.ToLower(s))
 	out := map[string]bool{}
@@ -216,7 +225,9 @@ func bigramSet(s string) map[string]bool {
 }
 
 // SearchTenantKnowledge 租户自有资料检索（企业知识类片段，二元组交集打分）
-// 命中阈值 ≥3；返回 top-N（默认3）。行业包内容经模板/卖点通道注入，此处只查租户层。
+// 命中阈值 ≥2（含向量时相似度>0.3即命中）；返回 top-N（默认3）
+// 行业包内容经模板/卖点通道注入，此处只查租户层
+// 检索策略：pgvector向量近邻 + 关键词二元组混合打分
 func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.KnowledgeFragment {
 	if tenantID == 0 || strings.TrimSpace(userInput) == "" {
 		return nil

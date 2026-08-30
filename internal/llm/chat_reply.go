@@ -184,10 +184,10 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	strategyPrompt := ai.BuildStrategyPrompt(strategyOutput, customer.GetTags(), modelID, hasArrived, canPromote, chatflow.IsLeadCaptured(customer))
 
 	// 3. 构建对话上下文
-	// 修复问题7：关闭模型聊天记忆（默认0轮），改用核心内容摘要注入system prompt
+	// 对话历史轮数由 system_configs 的 chat_history_rounds 控制（DB 默认 3 轮）
+	// =0 时改用核心内容摘要注入 system prompt，避免模型记忆偏移
 	// 核心摘要提取：用户需求、看过哪些车、在开什么车、关注点等
-	// 不依赖模型记忆来回复（会偏移），只用核心信息让AI知道客户背景
-	chatHistoryRounds := service.DefaultSystemConfigService.GetInt("chat_history_rounds", 0)
+	chatHistoryRounds := service.DefaultSystemConfigService.GetInt("chat_history_rounds", 3)
 	var historyMessages []ai.ChatMessage
 	if chatHistoryRounds > 0 {
 		// 如果配置了>0轮，仍用传统对话历史注入

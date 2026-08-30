@@ -34,6 +34,7 @@ import (
 )
 
 // cfgInt 读计费类配置（nil 安全兜底）
+// 从 system_configs 表读取配置值，nil 安全兜底返回默认值
 func cfgInt(key string, def int) int {
 	if DefaultSystemConfigService == nil {
 		return def
@@ -42,6 +43,7 @@ func cfgInt(key string, def int) int {
 }
 
 // GenerateInviteCode 生成8位大写字母数字邀请码（去除易混淆字符 0/O/1/I）
+// 使用密码学安全随机数生成器，8位长度足够唯一性
 func GenerateInviteCode() (string, error) {
 	// alphabet 邀请码字符集：去除易混淆字符 0/O/1/I，仅留大写字母数字，降低人工抄错率
 	const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
@@ -57,6 +59,7 @@ func GenerateInviteCode() (string, error) {
 }
 
 // EnsureInviteCode 幂等获取租户邀请码：无则生成并落库（存量租户首次访问时补发）
+// 使用乐观锁+重试策略处理唯一索引冲突
 func EnsureInviteCode(tenantID uint) (string, error) {
 	var t model.Tenant
 	if err := db.DB.Select("id", "invite_code").First(&t, tenantID).Error; err != nil {
@@ -89,8 +92,7 @@ func EnsureInviteCode(tenantID uint) (string, error) {
 // ApplyReferralBinding 注册事务内调用：首绑邀请关系 + 双向发放奖励
 //   - 受邀租户：写入 InvitedByTenantID（仅当为空——首绑唯一）+ 发放注册免费桶
 //   - 邀请租户：免费桶余额叠加 + 有效期顺延
-//
-// refCode 无效（不存在/自邀/非 trial|active）时静默忽略（只记日志），不阻断注册。
+// refCode 无效（不存在/自邀/非 trial|active）时静默忽略（只记日志），不阻断注册
 func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, inviteeEmail string) {
 	refCode = upperTrim(refCode)
 	if refCode == "" || newTenant == nil || newTenant.ID == 0 {
@@ -202,8 +204,9 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 }
 
 // ReferralInfo 邀请信息聚合出参
+// 包含邀请码、邀请统计、参数快照和当前token余额
 type ReferralInfo struct {
-	InviteCode       string     `json:"invite_code"`
+	InviteCode       string     `json:"invite_code"`        // 租户邀请码
 	InvitedCount     int64      `json:"invited_count"`       // 累计成功绑定数
 	PaidCount        int64      `json:"paid_count"`          // 其中已完成首笔付费数
 	BonusPerSignup   int64      `json:"bonus_per_signup"`    // 参数快照：每邀1人token
@@ -211,12 +214,13 @@ type ReferralInfo struct {
 	BonusOnPaid      int64      `json:"bonus_on_paid"`       // 参数快照：受邀人付费后得永久token
 	TrialTokenAmount int64      `json:"trial_token_amount"`  // 参数快照：注册赠送
 	TrialValidDays   int        `json:"trial_valid_days"`    // 参数快照：免费有效天数
-	FreeTokenBalance int64      `json:"free_token_balance"`  // 我的③桶现状
-	FreeTokenExpires *time.Time `json:"free_token_expires_at"`
-	TokenBalance     int64      `json:"token_balance"` // 我的②桶现状
+	FreeTokenBalance int64      `json:"free_token_balance"`  // 我的③桶现状（免费体验桶）
+	FreeTokenExpires *time.Time `json:"free_token_expires_at"` // ③桶过期时间
+	TokenBalance     int64      `json:"token_balance"`       // 我的②桶现状（永久余额桶）
 }
 
 // GetReferralInfo 聚合当前租户的邀请信息（EnsureInviteCode 幂等补码）
+// 返回邀请码、邀请统计、参数快照和当前token余额
 func GetReferralInfo(tenantID uint) (*ReferralInfo, error) {
 	code, err := EnsureInviteCode(tenantID)
 	if err != nil {
@@ -243,6 +247,7 @@ func GetReferralInfo(tenantID uint) (*ReferralInfo, error) {
 }
 
 // upperTrim 邀请码归一化（去空白+转大写）
+// 统一邀请码格式，避免大小写和空格导致的匹配失败
 func upperTrim(s string) string {
 	out := make([]byte, 0, len(s))
 	for i := 0; i < len(s); i++ {

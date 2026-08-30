@@ -7,9 +7,10 @@ import (
 )
 
 // EvalResult 离线评分结果（与 LLM evals 阶段互补，零成本护栏）
+// 用于存储销售话术离线评分的最终结果，包含0-5分的评分和扣分/加分理由
 type EvalResult struct {
-	Score   float64  // 0~5
-	Reasons []string // 扣分/加分理由（短句）
+	Score   float64  // 0~5 综合评分，5分满分
+	Reasons []string // 扣分/加分理由（短句），用于可解释性
 }
 
 // ScoreReplyOffline 销售话术离线评分（数据飞轮 evals 阶段）

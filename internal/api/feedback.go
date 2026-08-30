@@ -32,15 +32,21 @@ import (
 
 const feedbackDailyLimit = 20 // 单用户每日上限
 
-// feedbackReq 结构体/类型定义（自动补注释）。
+// feedbackReq 反馈提交请求的结构体定义
 type feedbackReq struct {
-	TargetType  string `json:"target_type"` // ai_reply|feature|other（缺省 ai_reply）
-	RefID       uint   `json:"ref_id"`      // 关联消息ID
-	Content     string `json:"content" binding:"required"`
-	WithContext bool   `json:"with_context"`
+	TargetType  string `json:"target_type"` // 反馈类型：ai_reply（AI话术）、feature（功能建议）、other（其他）
+	RefID       uint   `json:"ref_id"`      // 关联的消息ID，用于获取反馈上下文
+	Content     string `json:"content" binding:"required"` // 反馈内容，必填
+	WithContext bool   `json:"with_context"` // 是否需要自动采集反馈上下文（AI回复摘要+客户掩码手机）
 }
 
-// CreateFeedback POST /api/v1/feedback
+/*
+CreateFeedback 处理 POST /api/v1/feedback 请求，允许登录用户提交反馈。
+反馈内容限制在1000字以内，支持可选的上下文采集功能。
+系统会执行每日20条的限流策略，并在提交后通过企微群推送催办通知。
+参数：c - Gin请求上下文，包含用户认证信息
+返回：反馈提交结果，成功后返回反馈对象
+*/
 func CreateFeedback(c *gin.Context) {
 	var req feedbackReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -89,7 +95,12 @@ func CreateFeedback(c *gin.Context) {
 	RespOK(c, "反馈已提交，感谢你的意见", fb)
 }
 
-// SuperFeedbackList GET /api/v1/super/feedbacks?status=&page=
+/*
+SuperFeedbackList 处理 GET /api/v1/super/feedbacks?status=&page= 请求，返回反馈分页列表。
+供超级管理员查看所有租户的用户反馈，支持按状态筛选。
+参数：c - Gin请求上下文，通过query参数传递筛选条件和分页信息
+返回：分页后的反馈列表，包含租户名称、用户名等关联信息
+*/
 func SuperFeedbackList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -126,7 +137,12 @@ func SuperFeedbackList(c *gin.Context) {
 	})
 }
 
-// SuperResolveFeedback POST /api/v1/super/feedbacks/resolve {id, note}
+/*
+SuperResolveFeedback 处理 POST /api/v1/super/feedbacks/resolve 请求，标记反馈为已处理。
+仅允许处理状态为"open"的反馈，处理后记录处理人、处理时间和备注信息。
+参数：c - Gin请求上下文，包含请求体{id, note}
+返回：处理结果，成功后记录审计日志
+*/
 func SuperResolveFeedback(c *gin.Context) {
 	var req struct {
 		ID   uint   `json:"id" binding:"required"`
@@ -153,8 +169,13 @@ func SuperResolveFeedback(c *gin.Context) {
 	RespOK(c, "已标记处理完成", nil)
 }
 
-// buildFeedbackContext 反馈上下文采集（脱敏）：AI回复摘要 + 客户掩码手机
-// 明文手机号不出库；查不到关联消息时返回空（不阻断提交）
+/*
+buildFeedbackContext 构建反馈上下文信息，用于辅助问题定位和复现。
+当messageID不为0时，会查询关联的AI回复内容和客户信息。
+客户手机号会进行脱敏处理，明文手机号不会出现在上下文中。
+参数：messageID - 关联的消息ID，为0时返回空字符串
+返回：JSON格式的上下文信息字符串，包含AI回复摘要、客户掩码手机和旅程阶段
+*/
 func buildFeedbackContext(messageID uint) string {
 	if messageID == 0 {
 		return ""
@@ -174,7 +195,7 @@ func buildFeedbackContext(messageID uint) string {
 	return string(b)
 }
 
-// targetTypeLabel 反馈类型中文标签（企微推送/列表展示用）
+// targetTypeLabel 将反馈类型代码转换为中文标签，用于企微推送和列表展示
 func targetTypeLabel(t string) string {
 	switch t {
 	case "ai_reply":
@@ -186,7 +207,8 @@ func targetTypeLabel(t string) string {
 	}
 }
 
-// truncateRunes 按字符截断（rune安全，中文不切半），超长追加省略号
+// truncateRunes 按字符截断字符串，确保中文字符不会被切断
+// 当字符串长度超过指定限制时，在末尾添加省略号
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

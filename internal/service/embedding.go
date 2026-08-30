@@ -27,7 +27,9 @@ import (
 )
 
 // EmbeddingClient 文本向量化接口（可替换实现：本地模型/远端服务）
+// 可插拔设计，支持不同向量化后端
 type EmbeddingClient interface {
+	// Embed 将文本转换为向量表示，失败返回nil
 	Embed(text string) []float32
 }
 
@@ -35,11 +37,12 @@ type EmbeddingClient interface {
 var DefaultEmbeddingClient EmbeddingClient
 
 // httpEmbeddingClient OpenAI 兼容 /v1/embeddings 实现
+// 通过HTTP调用远端向量化服务，支持OpenAI API格式
 type httpEmbeddingClient struct {
-	url   string
-	token string
-	model string
-	http  *http.Client
+	url   string        // 向量化服务端点URL
+	token string        // API密钥
+	model string        // 向量模型名（如 text-embedding-3-small）
+	http  *http.Client  // HTTP客户端（30s超时）
 }
 
 // embeddingRequest OpenAI 兼容 /v1/embeddings 请求体（输入文本 + 模型名）
@@ -59,6 +62,8 @@ type embeddingResponse struct {
 }
 
 // InitEmbeddingClient 由配置装配；未配置则不启用（graceful）
+// 读取 EMBEDDING_API_URL + EMBEDDING_API_KEY + EMBEDDING_MODEL 配置
+// 未配置时 DefaultEmbeddingClient 为空，SearchTenantKnowledge 自动回退纯关键词检索
 func InitEmbeddingClient() {
 	cfg := config.GlobalConfig.AI
 	if cfg.EmbeddingURL == "" {
@@ -79,8 +84,9 @@ func InitEmbeddingClient() {
 	BackfillEmbeddings()
 }
 
-// BackfillEmbeddings 后台分批回填历史片段的向量列（embedding IS NULL）。
-// 限流避免打爆 Embedding 端点；租户隔离按行天然成立（逐行更新）。失败单条跳过，整体不阻断。
+// BackfillEmbeddings 后台分批回填历史片段的向量列（embedding IS NULL）
+// 限流避免打爆 Embedding 端点（每条20ms间隔）；租户隔离按行天然成立（逐行更新）
+// 失败单条跳过，整体不阻断
 func BackfillEmbeddings() {
 	if !pgvectorEnabled || DefaultEmbeddingClient == nil {
 		return
@@ -118,8 +124,8 @@ func BackfillEmbeddings() {
 // pgvectorEnabled 标记 pgvector 扩展是否就绪（决定 KB 检索走 SQL 向量索引还是 Go 内余弦）
 var pgvectorEnabled bool
 
-// EnsurePgvector 幂等启用 pgvector：建扩展 + knowledge_fragments.embedding 定长列 + HNSW 索引。
-// 任意步骤失败均静默降级（pgvectorEnabled=false → 检索回退关键词+内存余弦，不影响主链路）。
+// EnsurePgvector 幂等启用 pgvector：建扩展 + knowledge_fragments.embedding 定长列 + HNSW 索引
+// 任意步骤失败均静默降级（pgvectorEnabled=false → 检索回退关键词+内存余弦，不影响主链路）
 func EnsurePgvector() {
 	if db.DB == nil {
 		return
@@ -144,7 +150,8 @@ func EnsurePgvector() {
 	log.Printf("[向量检索] pgvector 已启用（dim=%d），KB 检索走 SQL 向量索引", dim)
 }
 
-// toVectorLiteral 将向量格式化为 pgvector 文本字面量 [..]，并按配置维度裁剪/补零对齐。
+// toVectorLiteral 将向量格式化为 pgvector 文本字面量 [..]，并按配置维度裁剪/补零对齐
+// 用于SQL插入/更新向量列
 func toVectorLiteral(emb []float32) string {
 	dim := 1536
 	if config.GlobalConfig != nil && config.GlobalConfig.AI.EmbeddingDim > 0 {
@@ -170,6 +177,7 @@ func toVectorLiteral(emb []float32) string {
 }
 
 // Embed 向量化（best-effort：失败返回 nil，调用方回退关键词）
+// 调用OpenAI兼容的/v1/embeddings接口，失败时记录日志并返回nil
 func (c *httpEmbeddingClient) Embed(text string) []float32 {
 	if text == "" {
 		return nil
@@ -204,9 +212,9 @@ func (c *httpEmbeddingClient) Embed(text string) []float32 {
 }
 
 // EmbedAndSetFragment 为知识片段生成 embedding 并写入字段（best-effort，失败留空）
-// 上传/更新知识片段时调用：标题+内容联合向量化；未启用向量客户端则不动。
+// 上传/更新知识片段时调用：标题+内容联合向量化；未启用向量客户端则不动
 // 片段须已落库（frag.ID>0）以便回写向量列；pgvector 就绪时同步写 embedding 向量列，
-// 否则仅写 embedding_json 供 Go 内余弦回退。
+// 否则仅写 embedding_json 供 Go 内余弦回退
 func EmbedAndSetFragment(frag *model.KnowledgeFragment) {
 	if DefaultEmbeddingClient == nil {
 		return
@@ -241,6 +249,7 @@ func EmbedAndSetFragment(frag *model.KnowledgeFragment) {
 }
 
 // cosineSimilarity 余弦相似度（维度不一致返回0）
+// 用于向量检索时计算查询向量与文档向量的相似度
 func cosineSimilarity(a, b []float32) float32 {
 	if len(a) == 0 || len(b) == 0 || len(a) != len(b) {
 		return 0
@@ -263,6 +272,7 @@ func cosineSimilarity(a, b []float32) float32 {
 }
 
 // sqrt32 单精度平方根（Newton 4 次迭代，相似度用途足够）
+// 避免引入math依赖，简单实现满足需求
 func sqrt32(x float32) float32 {
 	if x <= 0 {
 		return 0
@@ -275,6 +285,7 @@ func sqrt32(x float32) float32 {
 }
 
 // embeddingFromJSON 解析片段存储的 embedding
+// 从JSON数组格式的字符串解析为[]float32向量
 func embeddingFromJSON(raw string) []float32 {
 	if raw == "" {
 		return nil

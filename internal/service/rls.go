@@ -22,6 +22,7 @@ import (
 )
 
 // rlsTenantTables 启用行级隔离的租户业务表（均含 tenant_id 列）
+// 仅对确含 tenant_id 的业务表启用；平台级表（tenants/system_configs/…）不在列，避免误伤跨租户管理
 var rlsTenantTables = []string{
 	"customers", "conversations", "messages", "knowledge_fragments", "kb_feedback_materials",
 	"feedback", "followups", "test_drives", "customer_tags", "agreement_signatures",
@@ -33,6 +34,7 @@ var rlsTenantTables = []string{
 // 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
 // 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
 // service.WithTenantRLS(tid, fn) 或 SET LOCAL app.current_tenant 激活后即被 DB 强制收敛。
+// 采用休眠式设计：默认 app.current_tenant 未设置时策略恒真，零行为变更
 func EnableRLS() {
 	if db.DB == nil {
 		return
@@ -57,15 +59,16 @@ func EnableRLS() {
 	log.Printf("[RLS] 已对 %d 张租户表启用休眠式行级隔离（SET app.current_tenant 激活）", len(rlsTenantTables))
 }
 
-// SetTenantRLS 在事务内激活租户隔离：返回已 SET LOCAL 的事务 *gorm.DB，调用方须在该事务内完成查询。
-// 用法：tx := SetTenantRLS(db.DB, tid); tx.Where(...).Find(...)；提交/回滚后设置自动失效。
+// SetTenantRLS 在事务内激活租户隔离
+// 返回已 SET LOCAL 的事务 *gorm.DB，调用方须在该事务内完成查询
+// 提交/回滚后设置自动失效（SET LOCAL 作用域为当前事务）
 func SetTenantRLS(d *gorm.DB, tenantID uint) *gorm.DB {
 	return d.Exec(fmt.Sprintf("SET LOCAL app.current_tenant = '%d'", tenantID))
 }
 
-// WithTenantRLS 在事务内激活租户隔离并执行回调（安全激活范式）。
-// 连接池下无法在普通查询稳定设置会话变量（会跨请求泄漏），故仅支持事务内激活；
-// 关键跨表读（如超管跨租户审计、计费对账）可改用此 API 获得 DB 级强制隔离兜底。
+// WithTenantRLS 在事务内激活租户隔离并执行回调（安全激活范式）
+// 连接池下无法在普通查询稳定设置会话变量（会跨请求泄漏），故仅支持事务内激活
+// 关键跨表读（如超管跨租户审计、计费对账）可改用此 API 获得 DB 级强制隔离兜底
 // 示例：
 //
 //	var rows []model.Customer

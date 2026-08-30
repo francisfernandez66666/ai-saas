@@ -472,7 +472,6 @@ func Chat(c *gin.Context) {
 				"好嘞，您方便详细聊聊您的用车需求吗？关注什么方面比较多？有没有旧车考虑置换，大概啥时候想用车呢",
 				"好的，您要不跟我说说您的用车场景和需求？关注哪些地方比较多，有没有老车要换，大概打算啥时候用车",
 			}
-			rand.Seed(time.Now().UnixNano())
 			leadCapturedReply := leadCapturedReplies[rand.Intn(len(leadCapturedReplies))]
 
 			leadMsg := model.Message{

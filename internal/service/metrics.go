@@ -22,19 +22,22 @@ import (
 )
 
 // ---- 基础计数 ----
-var httpTotal uint64 // HTTP 总请求数（atomic，免锁）
+// httpTotal HTTP 总请求数（atomic，免锁），由中间件IncRequest递增
+var httpTotal uint64
 
 // ---- AI 调用成功率计数 ----
+// aiSuccessTotal AI调用成功次数，llm层在真模型成功返回后调用IncAISuccess递增
 var aiSuccessTotal uint64
-// aiFailureTotal 变量定义（自动补注释）。
+// aiFailureTotal AI调用失败次数，全模型失败降级模板时调用IncAIFailure递增
 var aiFailureTotal uint64
 
 // ---- 支付成功率计数 ----
+// paymentPaidTotal 支付成功次数，订单确认到账/发放后调用IncPaymentPaid递增
 var paymentPaidTotal uint64
-// paymentFailedTotal 变量定义（自动补注释）。
+// paymentFailedTotal 支付失败/关闭次数，订单超时关闭/退款时调用IncPaymentFailed递增
 var paymentFailedTotal uint64
 
-// bootTime 进程启动时间（指标用 uptime）
+// bootTime 进程启动时间（用于计算uptime指标）
 var bootTime = time.Now()
 
 // IncRequest 每次请求 +1（中间件调用）
@@ -55,18 +58,19 @@ func IncPaymentPaid() { atomic.AddUint64(&paymentPaidTotal, 1) }
 func IncPaymentFailed() { atomic.AddUint64(&paymentFailedTotal, 1) }
 
 // ---- HTTP 请求延迟直方图（P99 来源）----
-// 桶（秒）：指数分布覆盖 5ms~10s
+// 桶（秒）：指数分布覆盖 5ms~10s，用于Prometheus histogram计算
 var latencyBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
-var latencyBucketCounts []uint64 // 与 latencyBuckets 等长
-var latencySumNs uint64          // 总纳秒（atomic）
-var latencyCount uint64          // 总样本数（atomic）
+var latencyBucketCounts []uint64 // 与 latencyBuckets 等长，各桶的样本计数
+var latencySumNs uint64          // 总纳秒（atomic），用于计算平均延迟
+var latencyCount uint64          // 总样本数（atomic），用于计算平均延迟
 
-// init 初始化（自动补注释，原为缺注释的顶层声明）。
+// init 初始化延迟直方图桶计数数组
 func init() {
 	latencyBucketCounts = make([]uint64, len(latencyBuckets))
 }
 
 // RecordRequestLatency 记录一次请求延迟（中间件在 c.Next() 后调用）
+// 按延迟值分配到对应的桶，同时累加总纳秒和样本数
 func RecordRequestLatency(d time.Duration) {
 	sec := d.Seconds()
 	atomic.AddUint64(&latencySumNs, uint64(d.Nanoseconds()))
@@ -82,6 +86,8 @@ func RecordRequestLatency(d time.Duration) {
 }
 
 // RenderPrometheus 生成 Prometheus exposition 格式文本
+// 手写Prometheus文本格式（零外部依赖），/metrics 端点返回
+// 包含：运行时gauge + HTTP请求计数/延迟直方图 + AI成功率 + DB连接数 + 支付成功率 + 到期租户数 + 磁盘水位
 func RenderPrometheus() string {
 	snap := ComputeHealth()
 	var crit24h int64
@@ -191,6 +197,7 @@ func RenderPrometheus() string {
 	b = append(b, fmt.Sprintf("ai_scrm_tenants_expiring_7d %d\n", expiring)...)
 
 	// ---- P1-2 指标6：磁盘水位（0~1，1=满）----
+// 磁盘使用率超过阈值可能影响日志写入和数据库操作
 	diskRatio, diskOK := diskUsedRatio()
 	if diskOK {
 		b = append(b, "# HELP ai_scrm_disk_used_ratio disk used ratio (0..1)\n"...)
@@ -202,6 +209,7 @@ func RenderPrometheus() string {
 }
 
 // countExpiringTenants 统计 N 天内即将到期的 active/trial 租户数（P1-2 指标5）
+// 用于Prometheus指标，监控即将到期的租户数量
 func countExpiringTenants(withinDays int) int64 {
 	if db.DB == nil {
 		return 0

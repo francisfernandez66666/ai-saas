@@ -36,24 +36,30 @@ func Seed(tenantID uint) (int, error) {
 		return 0, err
 	}
 	inserted := 0
-	for _, d := range defaults {
-		var cnt int64
-		db.DB.Model(&model.SystemConfig{}).
-			Where("tenant_id = ? AND \"key\" = ?", tenantID, d.Key).Count(&cnt)
-		if cnt > 0 {
-			continue
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		for _, d := range defaults {
+			var cnt int64
+			tx.Model(&model.SystemConfig{}).
+				Where("tenant_id = ? AND \"key\" = ?", tenantID, d.Key).Count(&cnt)
+			if cnt > 0 {
+				continue
+			}
+			row := model.SystemConfig{
+				TenantID: tenantID, Category: d.Category, Key: d.Key,
+				Value: d.DefaultValue, ValueType: d.ValueType,
+				Description: d.Description, DefaultValue: d.DefaultValue,
+				SortOrder: d.SortOrder,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				log.Printf("[ConfigCenter] Seed 写入失败 key=%s: %v", d.Key, err)
+				continue
+			}
+			inserted++
 		}
-		row := model.SystemConfig{
-			TenantID: tenantID, Category: d.Category, Key: d.Key,
-			Value: d.DefaultValue, ValueType: d.ValueType,
-			Description: d.Description, DefaultValue: d.DefaultValue,
-			SortOrder: d.SortOrder,
-		}
-		if err := db.DB.Create(&row).Error; err != nil {
-			log.Printf("[ConfigCenter] Seed 写入失败 key=%s: %v", d.Key, err)
-			continue
-		}
-		inserted++
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	publish(tenantID, "seed", "params", inserted)
 	log.Printf("[ConfigCenter] 租户%d Seed 完成：%d 项默认配置已克隆", tenantID, inserted)

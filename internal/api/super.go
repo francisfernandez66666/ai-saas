@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -20,7 +21,9 @@ import (
 // 仅 super_admin 可访问；操作全部写 tenant_audit_logs 审计
 // ============================================================
 
-// SuperRequired 平台超管守卫（区别于 AdminRequired 的租户管理员放行）
+// SuperRequired 平台超管权限守卫中间件
+// 区别于 AdminRequired（允许租户管理员通过），此守卫仅允许 super_admin 角色
+// 无权限时返回 403 并中断请求
 func SuperRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if role, ok := c.Get("role"); ok {
@@ -35,19 +38,22 @@ func SuperRequired() gin.HandlerFunc {
 	}
 }
 
-// SuperTenantList GET /api/v1/super/tenants —— 全平台租户列表（含用量与套餐）
+// SuperTenantList 获取全平台租户列表（含用量与套餐信息）
+// GET /api/v1/super/tenants
+// LEFT JOIN subscription_plans 带出套餐名，最多返回500条
+// 用于超管运营视图，监控所有租户状态和资源使用情况
 func SuperTenantList(c *gin.Context) {
 	// row 全平台租户列表聚合行：LEFT JOIN subscription_plans 带出套餐名，便于超管运营视图
 	type row struct {
-		ID            uint    `json:"id"`
-		Name          string  `json:"name"`
-		Code          string  `json:"code"`
-		Tier          string  `json:"tier"`
-		Status        string  `json:"status"`
-		PlanName      *string `json:"plan_name"`
-		UsedCustomers int     `json:"used_customers"`
-		MaxCustomers  int     `json:"max_customers"`
-		CreatedAt     string  `json:"created_at"`
+		ID            uint    `json:"id"`             // 租户ID
+		Name          string  `json:"name"`           // 租户名称
+		Code          string  `json:"code"`           // 租户编码
+		Tier          string  `json:"tier"`           // 等级
+		Status        string  `json:"status"`         // 状态（active/suspended/trial等）
+		PlanName      *string `json:"plan_name"`      // 套餐名称
+		UsedCustomers int     `json:"used_customers"` // 已用客户数
+		MaxCustomers  int     `json:"max_customers"`  // 客户数上限
+		CreatedAt     string  `json:"created_at"`     // 创建时间
 	}
 	rows := []row{}
 	err := db.DB.Table("tenants t").
@@ -64,16 +70,19 @@ func SuperTenantList(c *gin.Context) {
 	RespOK(c, "", rows)
 }
 
-// SuperTenantStatus PUT /api/v1/super/tenants/:id/status {status}
+// SuperTenantStatus 超管修改租户状态
+// PUT /api/v1/super/tenants/:id/status {status}
 // 合法流转：active↔suspended；expired/cancelled 仅超管手动干预
+// 修改后立即清除租户解析缓存，确保封禁即时生效
 func SuperTenantStatus(c *gin.Context) {
 	var req struct {
-		Status string `json:"status" binding:"required"`
+		Status string `json:"status" binding:"required"` // 目标状态
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, 400, 400, "参数错误")
 		return
 	}
+	// 校验目标状态合法性
 	valid := map[string]bool{"active": true, "suspended": true, "expired": true, "cancelled": true, "trial": true}
 	if !valid[req.Status] {
 		RespErr(c, 400, 400, "非法状态")
@@ -86,9 +95,11 @@ func SuperTenantStatus(c *gin.Context) {
 		return
 	}
 
+	// 写入审计日志
 	uidV, _ := c.Get("user_id")
+	targetTenantID, _ := strconv.ParseUint(id, 10, 64)
 	db.DB.Create(&model.TenantAuditLog{
-		TenantID: 1, UserID: toUintSafe(uidV), Action: "super_tenant_status",
+		TenantID: uint(targetTenantID), UserID: toUintSafe(uidV), Action: "super_tenant_status",
 		Resource: "tenant:" + id, Detail: `{"to":"` + req.Status + `"}`,
 		IP: c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
@@ -97,14 +108,17 @@ func SuperTenantStatus(c *gin.Context) {
 	RespOK(c, "状态已更新为 "+req.Status, nil)
 }
 
-// SuperGrantTrial POST /api/v1/super/tenants/:id/grant-trial —— 审核模式放行（M1）
-// 幂等：已存在 trial_granted 审计记录的租户拒绝重复发放；review/trial/suspended → trial
+// SuperGrantTrial 超管发放试用额度（审核模式放行）
+// POST /api/v1/super/tenants/:id/grant-trial
+// 幂等设计：已存在 trial_granted 审计记录的租户拒绝重复发放
+// 流转路径：review/trial/suspended → trial，发放7天试用期
 func SuperGrantTrial(c *gin.Context) {
 	var t model.Tenant
 	if err := db.DB.First(&t, c.Param("id")).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "租户不存在")
 		return
 	}
+	// 幂等拦截：检查是否已发放过试用额度
 	var granted int64
 	db.DB.Model(&model.TenantAuditLog{}).
 		Where("tenant_id = ? AND action = ?", t.ID, "trial_granted").
@@ -116,6 +130,7 @@ func SuperGrantTrial(c *gin.Context) {
 	// P1.5(2026-08-26)：换用幂等的 GrantTrialBucket（双唯一防撞库；
 	// 非审核态重复调用因台账唯一而跳过，不再二次入桶）
 	service.GrantTrialBucket(nil, t.ID, t.ContactEmail)
+	// 设置试用期：当前时间开始，7天后结束
 	now := time.Now()
 	end := now.AddDate(0, 0, 7)
 	db.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Updates(map[string]interface{}{
@@ -123,6 +138,7 @@ func SuperGrantTrial(c *gin.Context) {
 		"trial_start_at": now,
 		"trial_end_at":   end,
 	})
+	// 写入审计日志
 	uidV, _ := c.Get("user_id")
 	db.DB.Create(&model.TenantAuditLog{
 		TenantID: t.ID, UserID: toUintSafe(uidV), Action: "trial_granted",
@@ -133,7 +149,7 @@ func SuperGrantTrial(c *gin.Context) {
 	RespOK(c, "试用额度已发放，租户已激活", nil)
 }
 
-// toUintSafe 轻量转换
+// toUintSafe 轻量类型转换：将 interface{} 安全转换为 uint
 func toUintSafe(v interface{}) uint {
 	switch val := v.(type) {
 	case uint:

@@ -325,7 +325,6 @@ func ChatTest(c *gin.Context) {
 				"收到，我先帮您把试驾约上，安排好了告诉您~",
 				"好的！我先帮您把时间约好，确认了跟您说~",
 			}
-			rand.Seed(time.Now().UnixNano())
 			leadCapturedReply := leadCapturedReplies[rand.Intn(len(leadCapturedReplies))]
 
 			leadMsg := model.Message{

@@ -16,7 +16,11 @@ const ERR_MSG: Record<string, string> = {
   internal_error: '服务开小差了，稍后再试',
 }
 
-// 按后端返回体给出友好提示（error_code 优先，其次 message）；返回是否业务失败
+/**
+ * 按后端返回体给出友好提示（error_code 优先，其次 message）
+ * @param json - 后端返回的 JSON 响应体
+ * @returns 是否业务失败（code !== 0 表示失败）
+ */
 export function toastError(json: any): boolean {
   if (!json || json.code === 0 || json.code === undefined) return false
   const code = json.error_code as string
@@ -25,20 +29,33 @@ export function toastError(json: any): boolean {
   return true
 }
 
-// 读取当前登录 token，缺失返回空串
+/**
+ * 读取当前登录 token，缺失返回空串
+ * @returns 登录 token 字符串
+ */
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
-// 写入登录 token 到 localStorage
+
+/**
+ * 写入登录 token 到 localStorage
+ * @param t - 登录 token
+ */
 export function setToken(t: string) {
   localStorage.setItem(TOKEN_KEY, t)
 }
-// 清除登录 token（退出登录时调用）
+
+/**
+ * 清除登录 token（退出登录时调用）
+ */
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
 }
 
-// 401 统一处理：登录态失效（token 过期/被踢）时清掉本地 token 并跳登录页
+/**
+ * 401 统一处理：登录态失效（token 过期/被踢）时清掉本地 token 并跳登录页
+ * 注意：已在登录/注册页时不重复跳转
+ */
 function handleUnauthorized() {
   clearToken()
   // 避免重复跳转（已在登录/注册页时不跳）
@@ -47,7 +64,13 @@ function handleUnauthorized() {
   }
 }
 
-// 底层请求封装：自动拼接 JSON 头，并在存在 token 时附加 Authorization: Bearer
+/**
+ * 底层请求封装：自动拼接 JSON 头，并在存在 token 时附加 Authorization: Bearer
+ * 同时处理 401（登录态失效）和 403（强制改密拦截）状态码
+ * @param url - 请求地址
+ * @param opts - fetch 配置项
+ * @returns 原始 Response 对象
+ */
 export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -72,8 +95,13 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
   return res
 }
 
-// 在 apiFetch 基础上解析 JSON 响应体（解析失败返回 null），返回 {res, json}
-// 泛型 T 为后端 data 字段类型，便于调用点标注 ApiResp<T>
+/**
+ * 在 apiFetch 基础上解析 JSON 响应体（解析失败返回 null），返回 {res, json}
+ * 泛型 T 为后端 data 字段类型，便于调用点标注 ApiResp<T>
+ * @param url - 请求地址
+ * @param opts - fetch 配置项
+ * @returns 包含 Response 和解析后 JSON 的对象
+ */
 export async function apiJSON<T = any>(
   url: string,
   opts: RequestInit = {},
@@ -83,15 +111,26 @@ export async function apiJSON<T = any>(
   return { res, json }
 }
 
-// 角色分流：与旧前端一致
+/**
+ * 角色分流：根据用户角色跳转到对应的工作台页面
+ * - super_admin → /super（平台超管后台）
+ * - tenant_admin/admin → /admin（租户管理员后台）
+ * - 其他角色 → /advisor（顾问工作台）
+ * @param role - 用户角色标识
+ */
 export function redirectByRole(role: string) {
   if (role === 'super_admin') location.href = '/super'
   else if (role === 'tenant_admin' || role === 'admin') location.href = '/admin'
   else location.href = '/advisor'
 }
 
-// 鉴权请求：自动带 token 与 JSON 头；body 传对象会自动 JSON.stringify
-// 泛型 T 标注后端返回的 data 类型
+/**
+ * 鉴权请求：自动带 token 与 JSON 头；body 传对象会自动 JSON.stringify
+ * 泛型 T 标注后端返回的 data 类型
+ * @param url - 请求地址
+ * @param opts - 请求配置（method/body/headers）
+ * @returns 后端返回的 JSON 响应体（已调用 toastError 处理业务错误）
+ */
 export async function AUTH<T = any>(
   url: string,
   opts: { method?: string; body?: any; headers?: Record<string, string> } = {},

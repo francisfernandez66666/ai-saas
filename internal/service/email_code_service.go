@@ -34,18 +34,22 @@ const (
 )
 
 // hashCodeEmail SHA256 摘要（与密码重置码同一哈希口径）
+// 验证码不落明文，仅存储哈希值，校验时比对哈希
 func hashCodeEmail(code string) string {
 	h := sha256.Sum256([]byte(code))
 	return hex.EncodeToString(h[:])
 }
 
 // normalizeEmail 邮箱规范化：去空格+小写
+// 统一邮箱格式，避免大小写和空格导致的重复记录
 func normalizeEmail(e string) string {
 	return strings.ToLower(strings.TrimSpace(e))
 }
 
 // SendEmailCode 生成并发送邮箱验证码
+// 参数：email-目标邮箱, purpose-用途(register/bind_email), ip-发送方IP
 // 返回 error；调用方负责映射为友好提示
+// 防薅四件套：同邮箱60s冷却 / 单IP每日20封 / 10分钟有效 / 错误5次作废
 func SendEmailCode(email, purpose, ip string) error {
 	email = normalizeEmail(email)
 	if !strings.Contains(email, "@") || len(email) > 100 {
@@ -97,7 +101,9 @@ func SendEmailCode(email, purpose, ip string) error {
 }
 
 // VerifyEmailCode 校验并一次性消费验证码
-// 命中：used=false→true 原子抢占 + 过期/作废/错误计数校验
+// 参数：email-目标邮箱, purpose-用途, code-用户输入的验证码
+// 原子抢占：used=false→true，防止并发重放攻击
+// 校验：过期检查、错误计数检查（≥5次作废）、哈希比对
 func VerifyEmailCode(email, purpose, code string) error {
 	email = normalizeEmail(email)
 	var rec model.EmailVerify
@@ -124,6 +130,7 @@ func VerifyEmailCode(email, purpose, code string) error {
 }
 
 // EmailVerifyEnabled 注册邮箱验证开关（平台级热配置）
+// 通过 system_configs 表控制，支持热更新无需重启
 func EmailVerifyEnabled() bool {
 	if DefaultSystemConfigService == nil {
 		return false
@@ -132,6 +139,8 @@ func EmailVerifyEnabled() bool {
 }
 
 // buildEmailCodeContent 按用途组装邮件标题与正文
+// register：注册验证码邮件
+// bind_email：换绑新邮箱验证码邮件
 func buildEmailCodeContent(purpose, code string) (string, string) {
 	switch purpose {
 	case model.EmailPurposeBind:
@@ -144,6 +153,8 @@ func buildEmailCodeContent(purpose, code string) (string, string) {
 }
 
 // genEmailCode 6位随机数字码（crypto/rand 密码学安全）
+// 使用密码学安全随机数生成器，防止可预测性
+// 兜底返回000000（配合一次性+哈希存储仍安全）
 func genEmailCode() string {
 	max := big.NewInt(1000000)
 	n, err := rand.Int(rand.Reader, max)

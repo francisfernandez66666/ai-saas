@@ -357,8 +357,12 @@ func RequestInvoice(c *gin.Context) {
 }
 
 // writeOrderAudit 订单链路审计（异步写，失败不影响主流程）
+// 修复：goroutine 内不读 gin context（handler 返回后 context 可能被回收），
+// 改为在调用时提取所有值，goroutine 内仅用捕获的变量。
 func writeOrderAudit(c *gin.Context, tenantID uint, action string, order *model.BillingOrder) {
 	uidV, _ := c.Get("user_id")
+	clientIP := c.ClientIP()
+	userAgent := c.Request.UserAgent()
 	detail := fmt.Sprintf(`{"order_no":"%s","amount_cents":%d,"channel":"%s","status":"%s","package_id":%d}`,
 		order.OrderNo, order.AmountCents, order.Channel, order.Status, order.PackageID)
 	go func() {
@@ -366,7 +370,7 @@ func writeOrderAudit(c *gin.Context, tenantID uint, action string, order *model.
 		db.DB.Create(&model.TenantAuditLog{
 			TenantID: tenantID, UserID: toUintSafe(uidV), Action: action,
 			Resource: "billing_order:" + order.OrderNo, Detail: detail,
-			IP: c.ClientIP(), UserAgent: c.Request.UserAgent(),
+			IP: clientIP, UserAgent: userAgent,
 		})
 	}()
 }

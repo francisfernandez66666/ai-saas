@@ -19,7 +19,8 @@ import (
 // 流程定义管理、流程实例管理、流程推进
 // ============================================================
 
-// GetFlowList 获取流程定义列表
+// GetFlowList 获取当前租户的流程定义列表
+// 按ID降序返回，包含所有状态的流程定义（草稿/已发布/已归档）
 func GetFlowList(c *gin.Context) {
 	var flows []model.FlowDefinition
 	db.PQ(c).Order("id DESC").Find(&flows)
@@ -31,7 +32,8 @@ func GetFlowList(c *gin.Context) {
 	})
 }
 
-// GetFlow 获取流程定义详情
+// GetFlow 获取单个流程定义详情
+// 根据URL参数ID查询，不存在时返回404
 func GetFlow(c *gin.Context) {
 	id := c.Param("id")
 
@@ -49,7 +51,9 @@ func GetFlow(c *gin.Context) {
 	})
 }
 
-// StartFlow 启动流程
+// StartFlow 启动一个新流程实例
+// 请求体包含流程编码、客户ID、会话ID
+// 流程引擎根据流程编码找到定义，创建实例并执行第一个节点
 func StartFlow(c *gin.Context) {
 	var req schema.FlowStartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -57,6 +61,7 @@ func StartFlow(c *gin.Context) {
 		return
 	}
 
+	// 构建流程上下文，携带租户/客户/会话等运行时信息
 	flowCtx := &flow.FlowContext{
 		TenantID:       db.EffectiveTenantIDFromGin(c),
 		CustomerID:     req.CustomerID,
@@ -81,7 +86,9 @@ func StartFlow(c *gin.Context) {
 	})
 }
 
-// AdvanceFlow 推进流程
+// AdvanceFlow 推进流程到下一个节点
+// 请求体包含实例ID和路由选择（决定走向哪个分支）
+// 路由结果会影响流程引擎的节点跳转逻辑
 func AdvanceFlow(c *gin.Context) {
 	var req schema.FlowAdvanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -111,7 +118,8 @@ func AdvanceFlow(c *gin.Context) {
 	})
 }
 
-// GetFlowInstance 获取流程实例
+// GetFlowInstance 获取单个流程实例详情
+// 根据实例ID查询，用于查看流程执行状态和历史
 func GetFlowInstance(c *gin.Context) {
 	id := c.Param("id")
 
@@ -129,7 +137,8 @@ func GetFlowInstance(c *gin.Context) {
 	})
 }
 
-// GetFlowInstanceList 获取流程实例列表
+// GetFlowInstanceList 获取当前租户的流程实例列表
+// 最多返回最近100条记录，按ID降序排列
 func GetFlowInstanceList(c *gin.Context) {
 	var instances []model.FlowInstance
 	db.PQ(c).Order("id DESC").Limit(100).Find(&instances)

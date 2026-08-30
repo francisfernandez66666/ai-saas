@@ -12,10 +12,10 @@ import (
 // ============================================================
 // AI模型路由层 - 多模型降级调度
 //
-// 降级链路（v5：干掉智谱4.7，硅基流动做主力）：
-//   1. 硅基流动 DeepSeek V4 Flash（主力，限流宽松、响应快）
-//   2. 硅基流动 GLM-4-9B（同平台免费兜底，9B以下永久免费）
-//   3. 智谱GLM-4-Flash（跨平台备用，智谱4.7已干掉因频繁429）
+// 降级链路（v6：干掉智谱，硅基流动做主力）：
+//   1. AI 网关（云端枢纽转发，本地不持有厂商Key时优先）
+//   2. 硅基流动 DeepSeek V4 Flash（主力，限流宽松、响应快）
+//   3. 硅基流动 GLM-4-9B（同平台免费兜底，9B以下永久免费）
 //   4. 模板兜底（最后防线）
 //
 // 设计原则：
@@ -96,16 +96,8 @@ func InitRouter() {
 		}
 	}
 
-	// 3. 智谱GLM-4-Flash（跨平台备用）
-	// 智谱已移除：频繁429限流，重试8-16秒也大概率继续429，浪费时间
-	if cfg.Zhipu.APIKey != "" {
-		models = append(models, &ModelState{
-			Provider:         ProviderZhipu,
-			ModelName:        cfg.Zhipu.ModelBackup, // 直接用4-flash（不用4.7）
-			Available:        true,
-			ConsecutiveFails: 0,
-		})
-	}
+	// 智谱已移除（频繁429限流，重试8-16秒也大概率继续429）
+	// 如需恢复，在 stage_models 配置中指定 provider=zhipu 即可（callProvider 仍保留兼容）
 
 	Router = &AIRouter{
 		models:      models,

@@ -25,7 +25,9 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-// notifyWS 向实时 hub 推送一条新消息事件（best-effort，hub 未初始化亦安全）
+// notifyWS 向实时 hub 推送一条新消息事件
+// best-effort 设计：hub 未初始化时静默跳过，不阻塞主流程
+// 在发消息、收消息等场景调用，触发 WebSocket 推送到前端
 func notifyWS(tenantID, customerID, conversationID uint, senderType string) {
 	if realtime.DefaultHub == nil {
 		return
@@ -44,23 +46,29 @@ func notifyWS(tenantID, customerID, conversationID uint, senderType string) {
 	realtime.DefaultHub.Publish(ev, b)
 }
 
-// WSAdvisor 顾问端 WS（JWT 经 query 传递，因浏览器 WS 难附加 header）
+// WSAdvisor 顾问端 WebSocket 连接
+// GET /api/v1/ws/advisor?token=<JWT>
+// 顾问登录后建立 WS 长连接，接收本租户所有客户的新消息通知
+// JWT 通过 query 参数传递（浏览器 WebSocket API 不支持自定义 header）
 func WSAdvisor(c *gin.Context) {
+	// 从 query 参数获取 JWT token
 	token := c.Query("token")
 	if token == "" {
 		respFailStatus(c, http.StatusUnauthorized, CodeUnauthorized, "缺少 token")
 		return
 	}
+	// 解析 JWT 获取用户身份和租户信息
 	claims, err := middleware.ParseToken(token)
 	if err != nil {
 		respFailStatus(c, http.StatusUnauthorized, CodeUnauthorized, "token 无效")
 		return
 	}
+	// 升级 HTTP 连接为 WebSocket，注册客户端到 Hub
 	handler := websocket.Handler(func(ws *websocket.Conn) {
 		cl := realtime.NewClient(claims.TenantID, claims.UserID, 0)
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
-		// 写泵
+		// 写泵：从客户端发送队列读取消息并推送到 WebSocket
 		done := make(chan struct{})
 		go func() {
 			for msg := range cl.SendQueue() {
@@ -70,7 +78,7 @@ func WSAdvisor(c *gin.Context) {
 				}
 			}
 		}()
-		// 读泵（丢弃客户端消息，仅保活）
+		// 读泵：持续读取客户端消息（丢弃内容），仅用于检测连接断开
 		buf := ""
 		for {
 			if err := websocket.Message.Receive(ws, &buf); err != nil {
@@ -81,7 +89,10 @@ func WSAdvisor(c *gin.Context) {
 	handler.ServeHTTP(c.Writer, c.Request)
 }
 
-// WSClient C 端 WS（visitor_key + customer_id 双重校验，防越权）
+// WSClient C端（客户）WebSocket 连接
+// GET /api/v1/ws/client?customer_id=&visitor_key=
+// 客户建立 WS 连接后接收自身的新消息通知
+// 采用 visitor_key + customer_id 双重校验防止越权访问
 func WSClient(c *gin.Context) {
 	cid, _ := strconv.ParseUint(c.Query("customer_id"), 10, 64)
 	vk := c.Query("visitor_key")
@@ -89,15 +100,18 @@ func WSClient(c *gin.Context) {
 		respFailStatus(c, http.StatusBadRequest, CodeParamErr, "缺少 customer_id/visitor_key")
 		return
 	}
+	// 校验客户身份：visitor_key 是客户身份凭证，必须匹配
 	var cust model.Customer
 	if err := db.RQ(c).First(&cust, uint(cid)).Error; err != nil || cust.VisitorKey != vk {
 		respFailStatus(c, http.StatusForbidden, CodeForbidden, "客户身份校验失败")
 		return
 	}
+	// 升级 HTTP 连接为 WebSocket，注册到 Hub（仅监听该客户的消息）
 	handler := websocket.Handler(func(ws *websocket.Conn) {
 		cl := realtime.NewClient(cust.TenantID, 0, uint(cid))
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
+		// 写泵：推送消息到客户端
 		go func() {
 			for msg := range cl.SendQueue() {
 				if err := websocket.Message.Send(ws, msg); err != nil {
@@ -105,6 +119,7 @@ func WSClient(c *gin.Context) {
 				}
 			}
 		}()
+		// 读泵：检测连接断开
 		buf := ""
 		for {
 			if err := websocket.Message.Receive(ws, &buf); err != nil {

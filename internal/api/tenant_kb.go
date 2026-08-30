@@ -33,14 +33,20 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// 常量/变量定义块（自动补注释）。
+// 租户自定义知识库常量定义
 const (
-	kbMaxContentRunes = 20000 // 单次上传正文上限
-	kbMaxChunks       = 40    // 切片数上限
-	kbChunkTarget     = 400   // 每片目标长度（rune）
+	kbMaxContentRunes = 20000 // 单次上传的正文内容最大字符数限制，防止过大内容影响系统性能
+	kbMaxChunks       = 40    // 内容切片后的最大片段数量限制，避免生成过多小片段
+	kbChunkTarget     = 400   // 每个知识片段的目标字符长度，平衡检索精度和管理效率
 )
 
-// splitKBChunks 按空行段落聚合切片：段落到目标长度即成片，超长单段硬切
+/*
+splitKBChunks 将长文本内容按段落和长度进行智能切片。
+切片策略：优先按空行分段，每段达到目标长度时成片，超长单段会硬切。
+同时受到最大切片数(kbMaxChunks)的限制，超出部分直接丢弃。
+参数：content - 需要切片的原始文本内容
+返回：切片后的字符串数组，每个元素是一个知识片段
+*/
 func splitKBChunks(content string) []string {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -83,12 +89,18 @@ func splitKBChunks(content string) []string {
 	return chunks
 }
 
-// isHanOrWord 判断是否值得参与关键词的字符
+// isHanOrWord 判断字符是否为中文汉字、字母或数字，用于关键词提取时的字符过滤
 func isHanOrWord(r rune) bool {
 	return unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-// TenantKBUpload POST /api/v1/admin/kb/upload
+/*
+TenantKBUpload 处理 POST /api/v1/admin/kb/upload 请求，上传企业自有知识资料。
+上传后会自动切片并入库，每个片段会生成向量嵌入用于语义检索。
+参数：c - Gin请求上下文，包含租户信息和请求体{title, content, category?}
+返回：上传结果，包含切片数量和每片的处理状态
+设计决策：上传后触发知识缓存Reload，通过版本戳实现多实例广播
+*/
 func TenantKBUpload(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
@@ -146,7 +158,12 @@ func TenantKBUpload(c *gin.Context) {
 	RespOK(c, fmt.Sprintf("上传成功：%s 共 %d 字，切成 %d 个知识片段", title, len([]rune(req.Content)), inserted), gin.H{"fragments": inserted})
 }
 
-// TenantKBMy GET /api/v1/admin/kb/my?page=&page_size=
+/*
+TenantKBMy 处理 GET /api/v1/admin/kb/my 请求，查询当前租户已上传的知识片段。
+仅返回类别为"企业知识"的片段，支持分页查询。
+参数：c - Gin请求上下文，通过query参数传递分页信息
+返回：分页后的知识片段列表，包含total、page、page_size等分页元数据
+*/
 func TenantKBMy(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
@@ -173,7 +190,12 @@ func TenantKBMy(c *gin.Context) {
 	})
 }
 
-// TenantKBDelete DELETE /api/v1/admin/kb/my/:id （仅本租户的"企业知识"类片段可删）
+/*
+TenantKBDelete 处理 DELETE /api/v1/admin/kb/my/:id 请求，删除当前租户的知识片段。
+仅允许删除类别为"企业知识"的片段，确保租户数据隔离。
+参数：c - Gin请求上下文，通过路径参数id指定要删除的片段ID
+返回：删除结果，成功后触发知识缓存Reload
+*/
 func TenantKBDelete(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {

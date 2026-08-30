@@ -1,11 +1,20 @@
-// Register.tsx：前端页面/模块（自动补注释）。
+/**
+ * Register.tsx：租户自助开通注册页
+ * 填写企业信息并创建管理员账号；支持邮箱验证（平台热开关）、邀请码（ref）返利
+ * 依赖接口：/api/v1/auth/register-config、/api/v1/tenant/check-code、/api/v1/auth/email-code、/api/v1/tenant/signup
+ */
 import { useState, useEffect, useRef } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON } from '../lib/api'
 import { useBrand } from '../lib/branding'
 
-// 租户自助开通页：填写企业信息并创建管理员账号；支持邮箱验证（平台热开关）、邀请码（ref）返利
-// 依赖 /api/v1/auth/register-config、/api/v1/tenant/check-code、/api/v1/auth/email-code、/api/v1/tenant/signup
+/**
+ * 租户自助开通页组件
+ * 1. 加载注册配置（是否开启邮箱验证）
+ * 2. 校验访问标识（子域名）可用性
+ * 3. 支持邮箱验证码发送与倒计时
+ * 4. 提交注册表单，成功后跳转登录页
+ */
 export default function Register() {
   // 读取品牌配置（用于页脚展示品牌名）
   const brand = useBrand()
@@ -13,14 +22,14 @@ export default function Register() {
   const [emailVerifyOn, setEmailVerifyOn] = useState(false)
   // 开通表单数据
   const [form, setForm] = useState({
-    company_name: '',
-    code: '',
-    username: '',
-    password: '',
-    admin_email: '',
-    email_code: '',
-    contact_name: '',
-    contact_phone: '',
+    company_name: '',   // 企业名称
+    code: '',           // 访问标识（子域名，如 acme）
+    username: '',       // 管理员账号
+    password: '',       // 管理员密码
+    admin_email: '',    // 管理员邮箱
+    email_code: '',     // 邮箱验证码
+    contact_name: '',   // 联系人姓名
+    contact_phone: '',  // 联系手机
   })
   // 访问标识（子域名）校验提示：ok 表示可用
   const [codeTip, setCodeTip] = useState<{ text: string; ok: boolean }>({ text: '', ok: false })
@@ -32,6 +41,7 @@ export default function Register() {
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
+    // 加载注册配置：获取邮箱验证是否开启
     apiJSON('/api/v1/auth/register-config').then(({ json }) => {
       if (json?.data?.email_verify_enabled) setEmailVerifyOn(true)
     })
@@ -46,6 +56,11 @@ export default function Register() {
     }
   }, [])
 
+  /**
+   * 校验访问标识（子域名）可用性
+   * 防抖 400ms：避免每次输入都打校验接口
+   * @param v - 用户输入的访问标识
+   */
   function checkCode(v: string) {
     if (!v) {
       setCodeTip({ text: '', ok: false })
@@ -60,6 +75,10 @@ export default function Register() {
     }, 400)
   }
 
+  /**
+   * 发送邮箱验证码
+   * 调用 /api/v1/auth/email-code 接口，发送后进入 60s 倒计时防重复发送
+   */
   async function sendCode() {
     if (!form.admin_email) {
       MessagePlugin.warning('请先填写邮箱')
@@ -93,6 +112,12 @@ export default function Register() {
     }
   }
 
+  /**
+   * 提交注册表单
+   * 调用 /api/v1/tenant/signup 接口
+   * 成功后：展示提示 → 延迟 1500ms 跳转登录页
+   * 邀请码（ref）统一大写提交，用于防薅返利与幂等发放
+   */
   async function submitForm(e: React.FormEvent) {
     e.preventDefault()
     setMsg('开通中...')
@@ -112,6 +137,7 @@ export default function Register() {
     }
   }
 
+  // 通用表单字段 setter：根据 key 更新 form 对应字段
   const set = (k: keyof typeof form) => (v: string) => setForm({ ...form, [k]: v })
 
   return (
@@ -119,6 +145,7 @@ export default function Register() {
       <div style={card}>
         <h2 style={{ marginBottom: 6 }}>免费开通试用</h2>
         <div style={sub}>7 天全功能试用，无需绑卡</div>
+        {/* 邀请返利横幅：URL 带 ?ref= 时显示 */}
         <div id="refBanner" style={{ display: 'none', background: '#eef2ff', color: '#4f46e5', padding: '8px 12px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>
           🎁 已应用好友邀请，注册成功后双方均可获赠 token
         </div>
@@ -134,6 +161,7 @@ export default function Register() {
           <Label>管理员密码 *（至少6位）</Label>
           <Input type="password" value={form.password} onChange={set('password')} />
 
+          {/* 邮箱验证模块：平台开启时展示邮箱输入与验证码获取 */}
           {emailVerifyOn && (
             <>
               <Label>管理员邮箱 *（用于接收验证码与账号找回）</Label>
@@ -153,6 +181,7 @@ export default function Register() {
           <Label>联系手机</Label>
           <Input value={form.contact_phone} onChange={set('contact_phone')} />
 
+          {/* 法律声明：注册即视为同意用户协议与隐私政策 */}
           <div style={{ fontSize: 12, color: '#64748b', margin: '12px 0', lineHeight: 1.6 }}>
             注册即代表您已阅读并同意 <a href="/user-agreement">《用户协议》</a> 与 <a href="/privacy-policy">《隐私政策》</a>，
             平台将记录您的签署时间与状态。
@@ -161,10 +190,12 @@ export default function Register() {
           <div style={{ fontSize: 13, minHeight: 18, marginTop: 12 }}>{msg}</div>
         </form>
 
+        {/* 底部导航：已有账号/查看套餐 */}
         <div style={tip}>
           已有账号？<a href="/login">直接登录</a>　<a href="/pricing">查看套餐</a>
         </div>
       </div>
+      {/* 页脚：法律链接与品牌名 */}
       <div className="footer-legal">
         <a href="/user-agreement">用户协议</a> ·{' '}
         <a href="/privacy-policy">隐私政策</a> · {brand.brandName} AI-SCRM 平台
@@ -182,7 +213,7 @@ const wrap: React.CSSProperties = {
   background: '#f5f7fa',
   padding: 20,
 }
-// 表单卡片样式
+// 表单卡片样式（白色圆角卡片，带阴影）
 const card: React.CSSProperties = {
   background: '#fff',
   borderRadius: 12,

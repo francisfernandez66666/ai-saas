@@ -21,46 +21,53 @@ import (
 // 单实例或 Redis 未启用时退化为进程内内存实现（原有逻辑）。
 // ============================================================
 
-// 常量/变量定义块（自动补注释）。
+// 登录防爆破策略常量
 const (
-	maxFailures    = 5                // 窗口内最大失败次数
-	windowDuration = 10 * time.Minute // 失败计数窗口
-	lockDuration   = 15 * time.Minute // 触发后锁定时长
+	// maxFailures 窗口内最大失败次数，超过触发锁定
+	maxFailures    = 5
+	// windowDuration 失败计数窗口，10分钟内的失败次数累计
+	windowDuration = 10 * time.Minute
+	// lockDuration 触发后锁定时长，锁定期间拒绝登录
+	lockDuration   = 15 * time.Minute
 )
 
 // attemptRec 内存版守卫记录：单键的失败计数 + 窗口起点 + 锁定截止（零值=未锁）
+// 用于单实例或Redis未启用时的进程内防爆破
 type attemptRec struct {
 	count       int       // 窗口内失败次数
-	windowStart time.Time // 窗口起点
-	lockedUntil time.Time // 锁定截止（零值=未锁）
+	windowStart time.Time // 窗口起点，用于判断是否过期
+	lockedUntil time.Time // 锁定截止（零值=未锁），锁定期间拒绝登录
 }
 
-// 常量/变量定义块（自动补注释）。
+// 登录防爆破内存存储
 var (
-	guardMu   sync.Mutex
-	attempts  = map[string]*attemptRec{} // key: "u:{username}" / "ip:{ip}:{username}"
-	lastSweep = time.Now()
+	guardMu   sync.Mutex                              // 互斥锁，保护attempts map并发安全
+	attempts  = map[string]*attemptRec{}               // 键格式：u:{username} / ip:{ip}:{username}
+	lastSweep = time.Now()                             // 上次惰性清理时间
 )
 
 // ErrLocked 登录锁定错误（携带剩余时间）
 type ErrLocked struct{ Remaining time.Duration }
 
-// Error 实现 error 接口：返回锁定剩余提示
+// Error 实现 error 接口：返回锁定剩余时间提示
 func (e *ErrLocked) Error() string {
 	return fmt.Sprintf("失败次数过多，账号已临时锁定，请 %d 分钟后再试", int(e.Remaining.Minutes())+1)
 }
 
 // loginKeys 生成双层守卫键（内存版）
+// 返回两个键：用户名维度和IP+用户名维度，分别独立计数
 func loginKeys(username, ip string) []string {
 	return []string{"u:" + username, "ip:" + ip + ":" + username}
 }
 
-// redisCountKey / redisLockKey 生成 Redis 版键
+// redisCountKey 生成Redis版失败计数键
 func redisCountKey(k string) string { return "lg:cnt:" + k }
-// redisLockKey 函数（自动补注释，原为缺注释的顶层声明）。
+
+// redisLockKey 生成Redis版锁定键
 func redisLockKey(k string) string  { return "lg:lock:" + k }
 
 // loginRedisKeys 返回某次登录涉及的全部 Redis 键（双层）
+// 返回计数键和锁定键两个数组，分别用于失败计数和锁定状态
 func loginRedisKeys(username, ip string) (countKeys []string, lockKeys []string) {
 	base := loginKeys(username, ip)
 	for _, b := range base {
@@ -71,6 +78,8 @@ func loginRedisKeys(username, ip string) (countKeys []string, lockKeys []string)
 }
 
 // CheckLoginAllowed 登录前检查是否被锁定
+// 双层检查：用户名维度和IP+用户名维度
+// 返回nil允许登录，返回*ErrLocked表示被锁定
 func CheckLoginAllowed(username, ip string) error {
 	if redisclient.IsEnabled() {
 		return checkLoginAllowedRedis(username, ip)
@@ -88,6 +97,7 @@ func CheckLoginAllowed(username, ip string) error {
 }
 
 // checkLoginAllowedRedis Redis 版锁定检查：读 lg:lock 键，按锁定生效时间戳推算剩余等待
+// 多实例部署下共享锁定状态
 func checkLoginAllowedRedis(username, ip string) error {
 	_, lockKeys := loginRedisKeys(username, ip)
 	now := time.Now()
@@ -111,6 +121,7 @@ func checkLoginAllowedRedis(username, ip string) error {
 }
 
 // RecordLoginFailure 登录失败记账（超阈值即触发锁定）
+// 每次失败递增计数，达到maxFailures时触发锁定
 func RecordLoginFailure(username, ip string) {
 	if redisclient.IsEnabled() {
 		recordLoginFailureRedis(username, ip)
@@ -133,6 +144,7 @@ func RecordLoginFailure(username, ip string) {
 }
 
 // recordLoginFailureRedis Redis 版失败记账：INCR 计数+设窗口 TTL，达阈值写锁定键
+// 首次写入时设置窗口TTL，达阈值时写入锁定键
 func recordLoginFailureRedis(username, ip string) {
 	countKeys, lockKeys := loginRedisKeys(username, ip)
 	now := time.Now()
@@ -149,6 +161,7 @@ func recordLoginFailureRedis(username, ip string) {
 }
 
 // ClearLoginFailures 登录成功清账
+// 清除该用户名的全部失败记录和锁定状态
 func ClearLoginFailures(username string) {
 	if redisclient.IsEnabled() {
 		clearLoginFailuresRedis(username)
@@ -172,7 +185,8 @@ func ClearLoginFailures(username string) {
 	_ = prefix
 }
 
-// clearLoginFailuresRedis 清用户名维度计数/锁键（IP 维度键无前缀删除，待 TTL 自然过期）
+// clearLoginFailuresRedis 清用户名维度计数/锁键
+// IP维度键无前缀删除，待TTL自然过期
 func clearLoginFailuresRedis(username string) {
 	// 删除用户名维度的全部计数/锁键（含 IP 组合）
 	keys := []string{
@@ -188,6 +202,7 @@ func clearLoginFailuresRedis(username string) {
 }
 
 // sweepIfNeeded 惰性清理过期记录（每分钟最多一次，仅内存版使用）
+// 避免内存无限增长，清理已过期的尝试记录
 func sweepIfNeeded() {
 	now := time.Now()
 	if now.Sub(lastSweep) < time.Minute {

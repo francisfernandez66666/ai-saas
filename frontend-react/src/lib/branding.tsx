@@ -1,15 +1,22 @@
-// branding.tsx：前端页面/模块（自动补注释）。
+/**
+ * branding.tsx：白标品牌模块
+ * 按当前域名（Host）拉取租户白标配置，通过 React Context 下发品牌名/Logo/主题色等
+ * 支持自定义 CSS/JS 注入，实现 SaaS 多租户白标能力
+ */
 import { createContext, useContext, useEffect, useState } from 'react'
 
-// 租户白标：品牌名/Logo/主题色等（按 Host 拉取）
+/**
+ * 租户白标类型定义：品牌名/Logo/主题色等（按 Host 拉取）
+ * platformDefault 为 true 表示使用平台默认配置，未做白标定制
+ */
 export type Brand = {
-  brandName: string
-  brandLink: string
-  logoUrl: string
-  faviconUrl: string
-  primaryColor?: string
-  secondaryColor?: string
-  platformDefault: boolean
+  brandName: string       // 品牌名称
+  brandLink: string       // 品牌链接（点击 Logo 跳转）
+  logoUrl: string         // 品牌 Logo 地址
+  faviconUrl: string      // 浏览器 favicon 地址
+  primaryColor?: string   // 主题色（CSS 变量 --brand-primary）
+  secondaryColor?: string // 辅助色（CSS 变量 --brand-secondary）
+  platformDefault: boolean // 是否为平台默认配置（未定制白标）
 }
 
 // 平台级默认品牌（未配置白标时回退到此），避免标题/favicon 出现空白
@@ -24,12 +31,25 @@ const DEFAULT: Brand = {
 // 品牌上下文：跨组件共享当前租户白标
 const Ctx = createContext<Brand>(DEFAULT)
 
-// 消费品牌上下文：各页面用它读取当前租户白标（名称/Logo/主题色等）
+/**
+ * 消费品牌上下文：各页面用它读取当前租户白标（名称/Logo/主题色等）
+ * @returns 当前租户的 Brand 配置对象
+ */
 export function useBrand() {
   return useContext(Ctx)
 }
 
-// 等价于原 frontend/branding.js：按 Host 拉取租户白标并应用到标题/favicon/主题色
+/**
+ * 品牌上下文提供者：按当前 Host 拉取租户白标并应用到页面
+ * 等价于原 frontend/branding.js 的逻辑
+ * 职责：
+ * 1. 从 /api/v1/public/branding 获取白标配置
+ * 2. 更新页面标题（document.title）
+ * 3. 注入 favicon 和 logo 链接
+ * 4. 设置 CSS 变量（--brand-primary、--brand-secondary）
+ * 5. 注入自定义 CSS/JS（SaaS 白标定制）
+ * @param children - 子组件
+ */
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [b, setB] = useState<Brand>(DEFAULT)
 
@@ -56,6 +76,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         } else if (document.title.indexOf('跨山 LexCross') > -1) {
           document.title = document.title.replace('跨山 LexCross', brandName)
         }
+        // 动态更新 favicon
         if (d.favicon_url) {
           let l = document.querySelector('link[rel="icon"]') as HTMLLinkElement | null
           if (!l) {
@@ -75,6 +96,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
           }
           logo.href = d.logo_url
         }
+        // 设置主题色 CSS 变量
         if (d.primary_color) {
           document.documentElement.style.setProperty('--brand-primary', d.primary_color)
         }

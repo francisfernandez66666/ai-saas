@@ -27,7 +27,12 @@ import (
 // phoneMaskRe 手机号脱敏正则（11位大陆手机号）
 var phoneMaskRe = regexp.MustCompile(`1[3-9]\d{9}`)
 
-// maskSensitiveFields 递归脱敏：手机号保留前3后4
+/*
+maskSensitiveFields 对字符串进行脱敏处理，主要针对手机号等敏感信息。
+手机号保留前3位和后4位，中间用****替换，防止敏感信息外泄。
+参数：s - 需要脱敏的字符串
+返回：脱敏后的字符串
+*/
 func maskSensitiveFields(s string) string {
 	return phoneMaskRe.ReplaceAllStringFunc(s, func(p string) string {
 		if len(p) != 11 {
@@ -37,8 +42,13 @@ func maskSensitiveFields(s string) string {
 	})
 }
 
-// GetCDPProfile GET /api/v1/cdp/profiles/:one_id
-// 360°用户视图：画像基础 + 四维标签 + 事件计数（脱敏后返回）
+/*
+GetCDPProfile 处理 GET /api/v1/cdp/profiles/:one_id 请求，返回360°用户视图。
+该视图包含用户画像基础信息、四维标签和事件计数，所有敏感字段已脱敏。
+参数：c - Gin请求上下文，通过路径参数one_id指定用户标识
+返回：脱敏后的用户画像数据，若用户不存在或不属于当前租户则返回404
+设计决策：统一返回404而非区分"不存在"与"他租户"，防止租户枚举攻击
+*/
 func GetCDPProfile(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	oneID := c.Param("one_id")
@@ -63,8 +73,13 @@ func GetCDPProfile(c *gin.Context) {
 	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: view})
 }
 
-// GetCDPSegment GET /api/v1/cdp/segments?tag=beh_lead_captured
-// 分群圈选：按原子标签圈选当前租户 OneID 列表（分群=查询结果，不落静态标签）
+/*
+GetCDPSegment 处理 GET /api/v1/cdp/segments?tag=beh_lead_captured 请求，执行分群圈选。
+根据指定的原子标签(tag)圈选当前租户的OneID列表，返回查询结果而非落静态标签。
+参数：c - Gin请求上下文，通过query参数tag指定标签代码
+返回：匹配的OneID列表，结果数量上限为1000条以保护系统性能
+设计决策：OneID是内部标识（c:{id}），非敏感信息，可直接返回
+*/
 func GetCDPSegment(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	tagCode := c.Query("tag")
@@ -89,8 +104,12 @@ func GetCDPSegment(c *gin.Context) {
 	}})
 }
 
-// ListCDPTagDefs GET /api/v1/cdp/tag-defs
-// 标签字典查询（四维分类可见，供 B 端理解分群语义）
+/*
+ListCDPTagDefs 处理 GET /api/v1/cdp/tag-defs 请求，查询标签字典。
+返回四维分类的标签定义，供B端用户理解分群语义和标签体系。
+参数：c - Gin请求上下文，自动获取当前租户ID
+返回：标签定义列表，包含所有可用的标签分类和代码
+*/
 func ListCDPTagDefs(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	defs, err := cdp.ListTagDefinitions(tenantID)

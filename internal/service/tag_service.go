@@ -19,6 +19,7 @@ import (
 // ============================================================
 
 // TagService 标签服务结构体
+// 提供手动/自动打标、标签权重累加、打标驱动T向量策略等核心能力
 type TagService struct{}
 
 // DefaultTagService 默认标签服务实例
@@ -29,8 +30,8 @@ var DefaultTagService = &TagService{}
 // ============================================================
 
 // ApplyTagsToCustomer 批量给客户打标签
-// tags参数是标签名称数组（或编码数组），自动匹配
-// source: 标签来源 manual/auto/ai
+// 参数：customerID-客户ID, tagNames-标签名称或编码数组, source-标签来源(manual/auto/ai)
+// 自动匹配标签名称或编码，已存在的标签更新来源，新标签创建关联
 func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, source string) error {
 	if len(tagNames) == 0 {
 		return nil
@@ -99,6 +100,7 @@ func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, sou
 }
 
 // RemoveTagFromCustomer 移除客户的某个标签
+// 删除customer_tags表中的关联记录，并同步更新客户表的Tags冗余字段
 func (s *TagService) RemoveTagFromCustomer(customerID uint, tagID uint) error {
 	result := db.DB.Where("customer_id = ? AND tag_id = ?", customerID, tagID).
 		Delete(&model.CustomerTag{})
@@ -117,6 +119,7 @@ func (s *TagService) RemoveTagFromCustomer(customerID uint, tagID uint) error {
 }
 
 // GetCustomerTags 获取客户的所有标签
+// 过滤掉已过期的标签，按创建时间倒序返回
 func (s *TagService) GetCustomerTags(customerID uint) ([]model.CustomerTag, error) {
 	var tags []model.CustomerTag
 	err := db.DB.Where("customer_id = ?", customerID).
@@ -169,6 +172,7 @@ func (s *TagService) syncCustomerTagsField(customerID uint) {
 // AutoTagFromText 从客户输入文本中自动打标
 // 遍历所有启用的TagRule，命中任何一个关键词就打上对应标签
 // 已有标签的话，累加权重（每次+0.5，上限5.0），而不是跳过
+// 支持三种规则类型：keyword（关键词匹配）、intent（意图识别）、resistance（抗性识别）
 // 返回：新打上的标签名称列表（供前端展示）
 func (s *TagService) AutoTagFromText(customerID uint, text string) ([]string, error) {
 	if text == "" {
@@ -256,6 +260,7 @@ func (s *TagService) AutoTagFromText(customerID uint, text string) ([]string, er
 
 // applyHitTagsWithWeight 应用命中的标签，已有标签累加权重，新标签创建
 // 权重累加规则：每次+0.5，上限5.0
+// 已有标签更新权重，新标签创建关联记录
 func (s *TagService) applyHitTagsWithWeight(
 	customerID uint,
 	hitTagIDs []uint,
@@ -312,11 +317,9 @@ func (s *TagService) applyHitTagsWithWeight(
 //  2. 对每个标签，查找对应的权重映射
 //  3. 在传入的"基准向量baseVector"上按权重映射逐个更新T向量的对应维度
 //  4. 保存更新后的T向量到客户对象（内存中，不存DB）
-//
 // 注意：这个方法只修改传入的customer对象的T向量，不写入DB
 // 写入DB由调用方决定（策略引擎只需要内存中的T向量做推理）
-//
-// 修复：baseVector 必须由调用方显式传入客户的"基准T向量"（通常是
+// baseVector 必须由调用方显式传入客户的"基准T向量"（通常是
 // customer.BuildBaseTVector() 的结果），不能在函数内部自己用
 // customer.GetTVector()/BuildBaseTVector() 现算——
 // 原因1：GetTVector()读的是上次已经叠加过标签权重的持久化结果，每调用一次就在
@@ -324,7 +327,7 @@ func (s *TagService) applyHitTagsWithWeight(
 // 原因2：策略引擎(strategy.go)在推理时构造的customer只是个只带ID的临时对象，
 // 结构化字段(预算/意向分等)全是空，如果这里再调用BuildBaseTVector()会现算出
 // 一个全零的"假基准"，把客户真实画像清空。
-// 所以基准值必须由持有真实客户结构化字段的一方（chat.go）算好后传进来。
+// 所以基准值必须由持有真实客户结构化字段的一方（chat.go）算好后传进来
 func (s *TagService) ApplyTagWeightsToTVector(customer *model.Customer, baseVector [32]float64) error {
 	if customer == nil {
 		return nil
@@ -401,12 +404,11 @@ func (s *TagService) ApplyTagWeightsToTVector(customer *model.Customer, baseVect
 
 // isZeroOneDimension 判断T向量某维是否是0-1范围的维度
 // T向量说明：
-//
-//	T[0]=意向分(0-1), T[1]=价格敏感度(0-1), T[2]=品牌认知度(0-1)
-//	T[3]=车型编码(数值), T[4]=到店状态(0/1/2), T[5]=决策周期(天)
-//	T[6]=信任度(0-1), T[7]=流量来源编码(数值)
-//	T[8]=性别(0/1/2), T[9]=年龄段(数值), T[10]=地域编码(数值)...
-//	T[14]=抗性类型编码(数值), T[15]=客户身份编码(0/1)
+//   T[0]=意向分(0-1), T[1]=价格敏感度(0-1), T[2]=品牌认知度(0-1)
+//   T[3]=车型编码(数值), T[4]=到店状态(0/1/2), T[5]=决策周期(天)
+//   T[6]=信任度(0-1), T[7]=流量来源编码(数值)
+//   T[8]=性别(0/1/2), T[9]=年龄段(数值), T[10]=地域编码(数值)...
+//   T[14]=抗性类型编码(数值), T[15]=客户身份编码(0/1)
 func isZeroOneDimension(idx int) bool {
 	zeroOneDims := map[int]bool{
 		0: true, // 意向分

@@ -25,7 +25,8 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 )
 
-// buildInviteURL 按请求构造注册页邀请链接（scheme 兼容反代 X-Forwarded-Proto）
+// buildInviteURL 按请求构造注册页邀请链接
+// scheme 兼容反代场景：优先读取 X-Forwarded-Proto 头，再检查 TLS
 func buildInviteURL(c *gin.Context, code string) string {
 	scheme := "http"
 	if p := c.GetHeader("X-Forwarded-Proto"); p == "https" {
@@ -36,7 +37,9 @@ func buildInviteURL(c *gin.Context, code string) string {
 	return scheme + "://" + c.Request.Host + "/register?ref=" + code
 }
 
-// GetReferralInfo GET /api/v1/admin/referral/info
+// GetReferralInfo 获取邀请推广信息
+// GET /api/v1/admin/referral/info
+// 返回当前租户的邀请码、邀请链接、邀请统计等信息
 func GetReferralInfo(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	tenantID := ti.ID
@@ -44,6 +47,7 @@ func GetReferralInfo(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	// 查询邀请信息（含邀请码、邀请人数、奖励统计）
 	info, err := service.GetReferralInfo(tenantID)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
@@ -55,8 +59,9 @@ func GetReferralInfo(c *gin.Context) {
 	})
 }
 
-// GetReferralQRCode GET /api/v1/admin/referral/qrcode?size=320
-// 返回 image/png；size 可调 100~1000，默认 320
+// GetReferralQRCode 获取邀请链接二维码
+// GET /api/v1/admin/referral/qrcode?size=320
+// 返回 image/png 格式二维码图片，size 可调 100~1000，默认 320
 func GetReferralQRCode(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	tenantID := ti.ID
@@ -64,17 +69,20 @@ func GetReferralQRCode(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	// 确保邀请码存在（自动生成或返回已有）
 	code, err := service.EnsureInviteCode(tenantID)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "邀请码生成失败")
 		return
 	}
+	// 解析二维码尺寸参数
 	size := 320
 	if s := c.Query("size"); s != "" {
 		if n, err := strconv.Atoi(s); err == nil && n >= 100 && n <= 1000 {
 			size = n
 		}
 	}
+	// 生成二维码图片
 	png, err := qrcode.Encode(buildInviteURL(c, code), qrcode.Medium, size)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "二维码生成失败")
@@ -83,7 +91,8 @@ func GetReferralQRCode(c *gin.Context) {
 	c.Data(http.StatusOK, "image/png", png)
 }
 
-// currentUserID 从 JWT 语境取当前登录用户ID（0=未登录/系统）
+// currentUserID 从 JWT 语境取当前登录用户ID
+// 0 表示未登录或系统操作
 func currentUserID(c *gin.Context) uint {
 	v, _ := c.Get("user_id")
 	if uid, ok := v.(uint); ok {
@@ -94,23 +103,26 @@ func currentUserID(c *gin.Context) uint {
 
 // InviteeRecord 单条邀请记录（前台展示口径）
 type InviteeRecord struct {
-	TenantID     uint   `json:"tenant_id"` // 被邀请人账户ID
-	CompanyName  string `json:"company_name"`
+	TenantID     uint   `json:"tenant_id"`     // 被邀请人账户ID
+	CompanyName  string `json:"company_name"`  // 被邀请人公司名
 	Email        string `json:"email"`         // 被邀请人绑定邮箱（外键身份锚）
 	InvitedOK    bool   `json:"invited_ok"`    // 邀请成功（首绑完成即成功）
 	PaidOK       bool   `json:"paid_ok"`       // 好友已支付（存在paid订单）
 	PaidRewarded bool   `json:"paid_rewarded"` // 邀请付费奖励已发放
 	SignupReward bool   `json:"signup_reward"` // 邀请注册奖励已发放
-	RegisteredAt string `json:"registered_at"`
+	RegisteredAt string `json:"registered_at"` // 注册时间
 }
 
-// GetReferralRecords GET /api/v1/admin/referral/records —— 邀请好友前台记录列表
+// GetReferralRecords 获取邀请好友记录列表
+// GET /api/v1/admin/referral/records
+// 返回当前租户邀请的所有好友及其奖励发放状态
 func GetReferralRecords(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	// 查询被邀请的租户列表（invited_by_tenant_id 指向我）
 	var rows []model.Tenant
 	db.DB.Where("invited_by_tenant_id = ?", ti.ID).Order("id DESC").Find(&rows)
 
@@ -124,12 +136,12 @@ func GetReferralRecords(c *gin.Context) {
 			PaidRewarded: t.ReferralPaidRewarded,
 			RegisteredAt: t.CreatedAt.Format("2006-01-02 15:04"),
 		}
-		// 邀请注册奖励是否发放：referral_signup 台账(邀请人=我,受邀=该租户)
+		// 检查注册奖励是否发放：查询 referral_signup 台账（邀请人=我，受邀=该租户）
 		var signupCnt, paidCnt int64
 		db.DB.Model(&model.RewardClaim{}).
 			Where("grant_type='referral_signup' AND tenant_id=? AND ref_id=?", ti.ID, t.ID).Count(&signupCnt)
 		rec.SignupReward = signupCnt > 0
-		// 好友支付状态：名下是否存在 paid 订单
+		// 检查好友是否已支付：查询是否存在 paid 状态的订单
 		db.DB.Model(&model.BillingOrder{}).
 			Where("tenant_id=? AND status='paid'", t.ID).Count(&paidCnt)
 		rec.PaidOK = paidCnt > 0

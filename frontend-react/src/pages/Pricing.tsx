@@ -1,13 +1,22 @@
-// Pricing.tsx：前端页面/模块（自动补注释）。
+/**
+ * Pricing.tsx：定价页
+ * 展示套餐（plan）与 AI 商业包（package），数据来自 /api/v1/plans（含 packages 字段）
+ * 无登录态要求，面向潜在客户展示价格信息
+ */
 import { useState, useEffect } from 'react'
 import { useBrand } from '../lib/branding'
 
-// 租户套餐（定价页展示）
+// 租户套餐类型（定价页展示）
 type Plan = { name: string; price_monthly_cents: number; highlights?: string; max_users: number; max_customers: number; max_departments: number }
-// AI 商业包（定价页展示）
+// AI 商业包类型（定价页展示）
 type Pkg = { name: string; p_type: string; price_cents: number; ai_calls: number; duration_days?: number; description?: string }
 
-// 定价页：展示套餐（plan）与 AI 商业包（package），数据来自 /api/v1/plans（含 packages 字段）
+/**
+ * 定价页组件
+ * 1. 上半部分：租户套餐（plan）列表，含价格、亮点、席位/客户/部门限制
+ * 2. 下半部分：AI 商业包（package）列表，含价格、调用次数、有效期
+ * 3. 每个套餐/商业包卡片带 CTA 按钮跳转注册页
+ */
 export default function Pricing() {
   // 读取品牌配置（用于页脚展示品牌名）
   const brand = useBrand()
@@ -15,14 +24,18 @@ export default function Pricing() {
   const [plans, setPlans] = useState<Plan[]>([])
   // AI 商业包列表（来自 /api/v1/plans 的 packages 字段）
   const [pkgs, setPkgs] = useState<Pkg[]>([])
+
   useEffect(() => {
+    // 加载套餐与商业包数据
     fetch('/api/v1/plans').then((r) => r.json()).then((j) => {
       setPlans(j.data || [])
       setPkgs(j.packages || [])
     }).catch(() => {})
   }, [])
+
   return (
     <div style={{ fontFamily: '-apple-system, PingFang SC, sans-serif', background: '#f5f7fa', minHeight: '100vh', padding: '40px 20px', color: '#2d3748' }}>
+      {/* 租户套餐区域 */}
       <h1 style={{ textAlign: 'center', marginBottom: 8 }}>选择适合您的套餐</h1>
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 36 }}>全部套餐支持免费试用 · 随时升降级</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
@@ -34,18 +47,24 @@ export default function Pricing() {
           const hasPrice = p.price_monthly_cents > 0
           return (
             <div key={i} style={{ background: '#fff', borderRadius: 12, padding: 26, boxShadow: '0 4px 18px rgba(0,0,0,.07)', position: 'relative' }} className={i === 1 ? 'ring-2 ring-indigo-500' : ''}>
+              {/* 推荐标签：第二个套餐标记为推荐 */}
               {i === 1 && <span style={{ position: 'absolute', top: -10, right: 12, background: 'var(--pri)', color: '#fff', fontSize: 11, padding: '3px 8px', borderRadius: 10 }}>推荐</span>}
               <b>{p.name}</b>
               <div style={{ fontSize: 30, fontWeight: 800, margin: '10px 0' }}>{hasPrice ? '¥' + m : <small style={{ fontSize: 13, color: '#718096', fontWeight: 400 }}>联系商务</small>}{hasPrice && <small style={{ fontSize: 13, color: '#718096' }}>/月</small>}</div>
+              {/* 套餐亮点列表 */}
               <ul style={{ listStyle: 'none', margin: '14px 0' }}>
                 {hl.map((h, k) => <li key={k} style={{ padding: '5px 0', fontSize: 14, color: '#4a5568' }}>✓ {h}</li>)}
               </ul>
+              {/* 套餐限制：席位、客户数、部门数 */}
               <div style={{ fontSize: 12, color: '#718096', borderTop: '1px dashed #e2e8f0', marginTop: 12, paddingTop: 10 }}>席位 {p.max_users} · 客户 {p.max_customers} · 部门 {p.max_departments}</div>
+              {/* CTA 按钮：跳转注册页 */}
               <a href="/register" style={{ display: 'block', textAlign: 'center', marginTop: 16, padding: 11, borderRadius: 8, background: 'var(--pri)', color: '#fff', textDecoration: 'none' }}>{hasPrice ? '免费试用' : '联系我们'}</a>
             </div>
           )
         })}
       </div>
+
+      {/* AI 商业包区域 */}
       <h1 style={{ fontSize: 26, textAlign: 'center', marginTop: 44 }}>AI 商业包</h1>
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 24 }}>注册即送试用包 · 增量包买断不过期</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
@@ -57,17 +76,22 @@ export default function Pricing() {
               {/* 按包类型展示中文标签：试用/包月/买断 */}
               <span style={{ position: 'absolute', top: 14, right: 14, background: '#edf2f7', color: '#4a5568', fontSize: 11, padding: '3px 9px', borderRadius: 10 }}>{p.p_type === 'free' ? '注册赠送' : p.p_type === 'paid' ? '包月' : '买断'}</span>
               <div style={{ fontSize: 30, fontWeight: 800, margin: '10px 0' }}>{price}{p.p_type === 'paid' && <small style={{ fontSize: 13, color: '#718096' }}>/月</small>}</div>
+              {/* 商业包详情列表 */}
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>
                 <li style={{ padding: '5px 0', fontSize: 14, color: '#4a5568' }}>{p.ai_calls} 次 AI 调用</li>
                 <li style={{ padding: '5px 0', fontSize: 14, color: '#4a5568' }}>{p.duration_days ? p.duration_days + ' 天有效期' : '额度永不过期'}</li>
                 {p.description && <li style={{ padding: '5px 0', fontSize: 14, color: '#4a5568' }}>{p.description}</li>}
               </ul>
+              {/* CTA 按钮：跳转注册页 */}
               <a href="/register" style={{ display: 'block', textAlign: 'center', marginTop: 16, padding: 11, borderRadius: 8, background: 'var(--pri)', color: '#fff', textDecoration: 'none' }}>开通后订阅</a>
             </div>
           )
         })}
       </div>
+
+      {/* 底部导航 */}
       <div style={{ textAlign: 'center', marginTop: 28 }}><a href="/register" style={{ color: 'var(--pri)' }}>← 返回注册</a>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
+      {/* 页脚：法律链接与品牌名 */}
       <footer style={{ textAlign: 'center', padding: 16, color: '#94a3b8', fontSize: 12, borderTop: '1px solid #e5e7eb', marginTop: 28, lineHeight: 2 }}>
         <a href="/user-agreement" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 平台
       </footer>

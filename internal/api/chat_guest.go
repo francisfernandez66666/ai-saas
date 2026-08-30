@@ -178,7 +178,6 @@ func Welcome(c *gin.Context) {
 // CreateGuest POST /api/v1/chat/guest 访客自动注册（免登录；TurnstileGuard 视开关前置拦截）
 func CreateGuest(c *gin.Context) {
 	// 生成唯一访客名：访客_后4位随机数
-	rand.Seed(time.Now().UnixNano())
 	suffix := rand.Intn(9000) + 1000 // 1000-9999
 	guestName := fmt.Sprintf("访客_%d", suffix)
 

@@ -26,21 +26,24 @@ import (
 // ============================================================
 
 // OrgContext 用户组织上下文
+// 实时从DB加载的角色/部门/路径信息，供中间件与数据范围隔离使用
+// 为什么不走 JWT？角色降级/调部门必须即时生效
 type OrgContext struct {
-	UserID             uint
-	TenantID           uint
-	Role               string // super_admin/tenant_admin/dept_admin/user/readonly（DB 实时值）
-	Status             int    // 1=正常 0=禁用
+	UserID             uint   // 用户ID
+	TenantID           uint   // 租户ID
+	Role               string // 用户角色：super_admin/tenant_admin/dept_admin/user/readonly（DB实时值）
+	Status             int    // 用户状态：1=正常, 0=禁用
 	DeptID             uint   // 挂载部门（0=未挂载，仅 tenant_admin 允许）
 	DeptPath           string // 物化路径 "/1/5/"；直属租户层为空串
 	MustChangePassword bool   // 首登强制改密标记（M3，改密成功后清除）
 }
 
 // orgCacheEntry 进程内缓存条目：Redis 版本戳 + 上下文指针 + 过期时间（oc=nil 为负缓存）
+// 双层缓存策略：进程内30s TTL + Redis版本戳，实现近实时失效
 type orgCacheEntry struct {
 	ver      int64       // 加载时的 user_ver 版本（Redis 版本戳）
-	oc       *OrgContext // nil=负缓存（用户不存在）
-	expireAt time.Time
+	oc       *OrgContext // nil=负缓存（用户不存在），避免频繁查库
+	expireAt time.Time   // 本地缓存过期时间
 }
 
 // 常量/变量定义块（自动补注释）。
@@ -54,7 +57,9 @@ var (
 	orgCache sync.Map // userID(uint) → *orgCacheEntry
 )
 
-// LoadOrgContext 加载组织上下文（带双层缓存），用户不存在返回 nil
+// LoadOrgContext 加载组织上下文（带双层缓存）
+// 缓存策略：进程内30s TTL + Redis版本戳，管理端改角色/调部门即INCR，各实例下次请求比对版本不一致立即重载
+// 返回 nil 表示用户不存在
 func LoadOrgContext(userID uint) *OrgContext {
 	if userID == 0 {
 		return nil
@@ -95,6 +100,7 @@ func LoadOrgContext(userID uint) *OrgContext {
 }
 
 // loadOrgFromDB 查库组装（LEFT JOIN 部门取 path）
+// 查询 tenant_users 表 LEFT JOIN departments 获取部门路径
 func loadOrgFromDB(userID uint) *OrgContext {
 	var row struct {
 		ID                 uint
@@ -136,7 +142,7 @@ func loadOrgFromDB(userID uint) *OrgContext {
 }
 
 // InvalidateOrg 用户组织信息变更后调用：删本地缓存 + 推进 Redis 版本戳
-// （多实例下其他实例在下一次请求比对版本即失效）
+// 多实例下其他实例在下一次请求比对版本即失效（近实时踢生效）
 func InvalidateOrg(userID uint) {
 	orgCache.Delete(userID)
 	if redisclient.IsEnabled() {
@@ -150,6 +156,7 @@ func InvalidateOrg(userID uint) {
 }
 
 // InvalidateTenantUsers 批量失效（部门移动重写子树 path 后，子树全部用户路径变化）
+// 遍历租户下所有用户，逐个调用InvalidateOrg清除缓存
 func InvalidateTenantUsers(tenantID uint) {
 	var ids []uint
 	if err := db.DB.Model(&model.User{}).Where("tenant_id = ?", tenantID).Pluck("id", &ids).Error; err != nil {
@@ -162,6 +169,7 @@ func InvalidateTenantUsers(tenantID uint) {
 
 // DeptChainFromPath 解析物化路径为部门ID继承链（三级包架构 2026-08-26）
 // path 形如 "/1/5/" → [1,5]（根→…→自身）；自底向上查起语义的集合来源
+// 用于知识包继承链的可见域解析
 func DeptChainFromPath(path string) []uint {
 	if path == "" {
 		return nil
@@ -185,6 +193,7 @@ func DeptChainFromPath(path string) []uint {
 }
 
 // DeptChainForUser 用户所属部门的完整继承链（含自身）；无部门返回空
+// 加载用户组织上下文，解析DeptPath为继承链
 func DeptChainForUser(userID uint) []uint {
 	oc := LoadOrgContext(userID)
 	if oc == nil || oc.DeptPath == "" {
@@ -198,15 +207,17 @@ func DeptChainForUser(userID uint) []uint {
 // ============================================================
 
 // RecallScope 召回可见域：三级包自底向上继承 + 可选跨部门回退
+// 用于知识检索时确定当前用户可访问的知识范围
 type RecallScope struct {
-	OwnDepts   map[uint]bool   // ①链内部门（自身→祖先）
+	OwnDepts   map[uint]bool   // ①链内部门（自身→祖先），恒可见
 	CrossDepts map[uint]bool   // ④跨部门候选（策略开∧包共享才进入）
-	CrossTags  map[uint]string // deptID → 「🌐跨部门·来自X部门库」打标文案
+	CrossTags  map[uint]string // deptID → 「🌐跨部门·来自X部门库」打标文案，用于结果标注
 	Distances  map[uint]int    // 链内距离（0=本部门，参数类就近覆盖 P2 用）
 }
 
 // ResolveRecallScope 解析指定顾问部门链的召回可见域
-// 规则：①链内恒可见；④仅当 租户策略 kb_cross_dept_fallback=开 且 该部门包 share_cross_dept=1
+// 规则：①链内恒可见；④仅当租户策略 kb_cross_dept_fallback=开 且该部门包 share_cross_dept=1
+// 返回 RecallScope 包含链内部门和跨部门候选
 func ResolveRecallScope(tenantID uint, selfChain []uint) *RecallScope {
 	scope := &RecallScope{
 		OwnDepts:   map[uint]bool{},

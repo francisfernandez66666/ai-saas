@@ -13,8 +13,11 @@ import './index.css'
 // ErrorBoundary 兜底渲染异常，避免整页白屏
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
+    {/* BrowserRouter：全局路由提供者，所有页面共享同一路由上下文 */}
     <BrowserRouter>
+      {/* BrandingProvider：按当前域名拉取租户白标配置（品牌名/Logo/主题色等），通过 Context 下发 */}
       <BrandingProvider>
+        {/* ErrorBoundary：捕获渲染期异常，展示兜底 UI 而非整页白屏 */}
         <ErrorBoundary>
           <App />
         </ErrorBoundary>

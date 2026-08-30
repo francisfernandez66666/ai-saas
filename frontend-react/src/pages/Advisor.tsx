@@ -4,14 +4,12 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button, Dialog, Input, Textarea, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken } from '../lib/api'
+import { AUTH, getToken } from '../lib/api'
 import { useAdvisorWS } from '../lib/realtime'
 import { Msg, Cust, Detail } from '../types'
 
-// 顾问工作台接口前缀与带 token 的请求头构造器
+// 顾问工作台接口前缀
 const API = '/api/v1/advisor'
-// AUTH 常量/变量（自动补注释）。
-const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
 // STAGE_LABELS 常量/变量（自动补注释）。
 const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
 // STAGE_COLORS 常量/变量（自动补注释）。
@@ -52,10 +50,10 @@ export default function Advisor() {
   const [fbText, setFbText] = useState('')
   const chatRef = useRef<HTMLDivElement>(null)
 
-  const loadStats = async () => { const r = await fetch(API + '/stats', AUTH()); const j = await r.json(); if (j.code === 0) setStats(j.data || []) }
-  const loadCustomers = async () => { const r = await fetch(API + '/customers?status=' + status + '&page_size=50', AUTH()); const j = await r.json(); if (j.code === 0) setList((j.data?.list) || []) }
-  const loadFollowups = async () => { const r = await fetch(API + '/followups', AUTH()); const j = await r.json(); if (j.code === 0) setFollowups(j.data || []) }
-  const loadQuota = async () => { const r = await fetch('/api/v1/billing/my-package', AUTH()); const j = await r.json(); if (j.code === 0) setQuota(j.data) }
+  const loadStats = async () => { const j = await AUTH(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
+  const loadCustomers = async () => { const j = await AUTH(API + '/customers?status=' + status + '&page_size=50'); if (j.code === 0) setList((j.data?.list) || []) }
+  const loadFollowups = async () => { const j = await AUTH(API + '/followups'); if (j.code === 0) setFollowups(j.data || []) }
+  const loadQuota = async () => { const j = await AUTH('/api/v1/billing/my-package'); if (j.code === 0) setQuota(j.data) }
 
   // 路由守卫：无 token 直接跳登录；否则加载统计、客户列表、全部标签
   useEffect(() => { if (!getToken()) { location.href = '/login'; return } loadStats(); loadCustomers(); loadAllTags() }, [])
@@ -65,40 +63,39 @@ export default function Advisor() {
 
   async function openDetail(id: number) {
     setDetailId(id)
-    const r = await fetch(API + '/customer/' + id, AUTH()); const j = await r.json()
+    const j = await AUTH(API + '/customer/' + id)
     if (j.code === 0 && j.data) { setDetail(j.data); const conv = (j.data.conversations && j.data.conversations[0]); setConvId(conv ? conv.id : null); setAiOn(conv ? conv.is_ai_reply_enabled !== false : true) }
     loadChat(id); loadTestDrives(id)
   }
-  async function loadChat(id: number) { const r = await fetch('/api/v1/chat/history?customer_id=' + id + '&limit=50', AUTH()); const j = await r.json(); if (j.code === 0) setMsgs(j.data || []) }
-  async function loadTestDrives(id: number) { const r = await fetch(API + '/test-drives?customer_id=' + id, AUTH()); const j = await r.json(); setTestDrives(j.data || []) }
+  async function loadChat(id: number) { const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50'); if (j.code === 0) setMsgs(j.data || []) }
+  async function loadTestDrives(id: number) { const j = await AUTH(API + '/test-drives?customer_id=' + id); setTestDrives(j.data || []) }
   async function send() {
     if (!input.trim() || !detailId) return
     const content = input; setInput('')
-    const r = await fetch(API + '/chat/send', { method: 'POST', headers: AUTH(), body: JSON.stringify({ conversation_id: convId, customer_id: detailId, content }) })
-    const j = await r.json()
+    const j = await AUTH(API + '/chat/send', { method: 'POST', body: { conversation_id: convId, customer_id: detailId, content } })
     if (j.code === 0) { if (j.data?.conversation_id) setConvId(j.data.conversation_id); setMsgs((m) => [...m, { sender_type: 'human', content, created_at: new Date().toISOString() }]) }
     else MessagePlugin.error('发送失败')
   }
   async function toggleAI() {
     if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
-    const r = await fetch(API + '/chat/toggle-ai-reply', { method: 'POST', headers: AUTH(), body: JSON.stringify({ conversation_id: convId }) })
-    const j = await r.json(); if (j.code === 0) setAiOn(j.data.is_ai_reply_enabled)
+    const j = await AUTH(API + '/chat/toggle-ai-reply', { method: 'POST', body: { conversation_id: convId } })
+    if (j.code === 0) setAiOn(j.data.is_ai_reply_enabled)
   }
-  async function loadAllTags() { const r = await fetch('/api/v1/admin/tags', AUTH()); const j = await r.json(); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
+  async function loadAllTags() { const j = await AUTH('/api/v1/admin/tags'); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
   async function saveTags() {
     if (!detailId) return
-    const r = await fetch(API + '/customer/' + detailId + '/tags', { method: 'PUT', headers: AUTH(), body: JSON.stringify({ tags: checkedTags }) })
-    const j = await r.json(); if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
+    const j = await AUTH(API + '/customer/' + detailId + '/tags', { method: 'PUT', body: { tags: checkedTags } })
+    if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
   }
   async function submitFeedback() {
     if (!fbText.trim()) return
-    const r = await fetch('/api/v1/feedback', { method: 'POST', headers: AUTH(), body: JSON.stringify({ content: fbText, target_type: 'feature' }) })
-    const j = await r.json(); if (j.code === 0) { MessagePlugin.success('已提交'); setFbOpen(false); setFbText('') } else MessagePlugin.error(j.message || '提交失败')
+    const j = await AUTH('/api/v1/feedback', { method: 'POST', body: { content: fbText, target_type: 'feature' } })
+    if (j.code === 0) { MessagePlugin.success('已提交'); setFbOpen(false); setFbText('') } else MessagePlugin.error(j.message || '提交失败')
   }
   // 详情轮询新消息：打开某客户后每 5s 拉一次聊天记录，保持与 AI/客户消息同步
   useEffect(() => {
     if (detailId == null) return
-    const t = setInterval(async () => { const r = await fetch('/api/v1/chat/history?customer_id=' + detailId + '&limit=50', AUTH()); const j = await r.json(); if (j.code === 0) setMsgs(j.data || []) }, 5000)
+    const t = setInterval(async () => { const j = await AUTH('/api/v1/chat/history?customer_id=' + detailId + '&limit=50'); if (j.code === 0) setMsgs(j.data || []) }, 5000)
     return () => clearInterval(t)
   }, [detailId])
 
@@ -235,8 +232,8 @@ export default function Advisor() {
     const remark = (document.getElementById('eRemark') as HTMLTextAreaElement)?.value.trim()
     if (name) body.name = name; if (phone) body.phone = phone; if (model) body.interest_model = model
     if (budget > 0) body.budget = budget; if (remark) body.remark = remark
-    const r = await fetch(API + '/customer/' + detailId + '/info', { method: 'PUT', headers: AUTH(), body: JSON.stringify(body) })
-    const j = await r.json(); if (j.code === 0) { MessagePlugin.success('保存成功'); setEditOpen(false); openDetail(detailId) } else MessagePlugin.error('保存失败')
+    const j = await AUTH(API + '/customer/' + detailId + '/info', { method: 'PUT', body })
+    if (j.code === 0) { MessagePlugin.success('保存成功'); setEditOpen(false); openDetail(detailId) } else MessagePlugin.error('保存失败')
   }
 }
 

@@ -4,6 +4,7 @@ package flow
 import (
 	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"log"
 )
@@ -57,20 +58,46 @@ func (e *Engine) executeStartNode(node model.FlowNode, ctx *FlowContext) NodeRes
 // executeStrategyNode 策略中心调用节点
 // 作用：调用策略中心引擎，获取路由结果
 // 策略中心决定下一步怎么走
+// 增强：当 ctx.RouteResult 为空时（如 MQ 事件驱动的流程推进），
+// 实际调用策略引擎获取路由结果，使流程引擎可独立运转。
 func (e *Engine) executeStrategyNode(node model.FlowNode, ctx *FlowContext) NodeResult {
 	log.Printf("[流程引擎] 执行策略中心节点: %s", node.Name)
 
-	// 策略中心的实际调用在chat handler中完成
-	// 这里只负责流程流转
-	// 路由结果已经存在ctx.RouteResult中
+	routeResult := ctx.RouteResult
+
+	// 当 RouteResult 为空时（非 chat handler 调用），实际调用策略引擎
+	if routeResult == "" && ctx.CustomerID > 0 && ctx.TenantID > 0 {
+		var customer model.Customer
+		if err := db.DB.First(&customer, ctx.CustomerID).Error; err == nil {
+			tVector := customer.BuildBaseTVector()
+			state := model.SessionState{CurrentStage: 0}
+			// 尝试从会话获取状态
+			if ctx.ConversationID > 0 {
+				var conv model.Conversation
+				if err := db.DB.First(&conv, ctx.ConversationID).Error; err == nil {
+					state = conv.GetState()
+				}
+			}
+			input := strategy.StrategyInput{
+				TVector:       tVector,
+				State:         state,
+				CustomerInput: "",
+				CustomerID:    customer.ID,
+				TenantID:      ctx.TenantID,
+			}
+			output := strategy.DefaultEngine.Infer(input)
+			routeResult = output.RouteResult
+			log.Printf("[流程引擎] 策略引擎实际调用: customer=%d route=%s", ctx.CustomerID, routeResult)
+		}
+	}
 
 	// 根据路由结果选择下一个节点
-	nextNode := findNextNodeByCondition(node, ctx.RouteResult)
+	nextNode := findNextNodeByCondition(node, routeResult)
 
 	return NodeResult{
 		NextNodeID: nextNode,
 		Output: map[string]interface{}{
-			"route_result": ctx.RouteResult,
+			"route_result": routeResult,
 		},
 		Status: "completed",
 	}
@@ -79,8 +106,20 @@ func (e *Engine) executeStrategyNode(node model.FlowNode, ctx *FlowContext) Node
 // executeAINode AI对话节点
 // 作用：AI回复客户，等待客户回复
 // 这是一个"等待节点"，执行后暂停，等客户回复后再推进
+// 增强：设置会话模式为 ai
 func (e *Engine) executeAINode(node model.FlowNode, ctx *FlowContext) NodeResult {
 	log.Printf("[流程引擎] 执行AI对话节点: %s", node.Name)
+
+	// 设置会话模式为 ai
+	if ctx.ConversationID > 0 {
+		db.DB.Model(&model.Conversation{}).
+			Where("id = ?", ctx.ConversationID).
+			Updates(map[string]interface{}{
+				"mode":                "ai",
+				"is_ai_reply_enabled": true,
+				"is_human_locked":     false,
+			})
+	}
 
 	// AI对话节点是等待型节点
 	// 流程在这里暂停，等客户回复后再回到策略中心节点
@@ -96,14 +135,19 @@ func (e *Engine) executeAINode(node model.FlowNode, ctx *FlowContext) NodeResult
 // executeHumanNode 人工介入节点
 // 作用：转人工，通知销售
 // 这也是一个"等待节点"，等人工处理完后再决定下一步
+// 增强：设置会话模式为 human + 关闭 AI 回复
 func (e *Engine) executeHumanNode(node model.FlowNode, ctx *FlowContext) NodeResult {
 	log.Printf("[流程引擎] 执行人工介入节点: %s", node.Name)
 
-	// 更新会话模式为人工
+	// 更新会话模式为人工 + 关闭 AI 回复
 	if ctx.ConversationID > 0 {
 		db.DB.Model(&model.Conversation{}).
 			Where("id = ?", ctx.ConversationID).
-			Update("mode", "human")
+			Updates(map[string]interface{}{
+				"mode":                "human",
+				"is_human_locked":     true,
+				"is_ai_reply_enabled": false,
+			})
 	}
 
 	return NodeResult{

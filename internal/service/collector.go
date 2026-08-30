@@ -18,19 +18,20 @@ import (
 // CollectorEvent 数据飞轮上报事件（脱敏后）
 // ID 用于接收端幂等去重；Payload 内不得含明文 PII（发送前经 AnonymizePayload 处理）
 type CollectorEvent struct {
-	ID       string         `json:"id"`
-	TenantID uint           `json:"tenant_id"`
-	Kind     string         `json:"kind"` // cdp_event / material / audit_increment / state_change
-	Payload  map[string]any `json:"payload"`
-	Ts       int64          `json:"ts"`
+	ID       string         `json:"id"`       // 事件唯一ID，用于接收端幂等去重
+	TenantID uint           `json:"tenant_id"` // 租户ID，用于多租户数据隔离
+	Kind     string         `json:"kind"`      // 事件类型：cdp_event/material/audit_increment/state_change
+	Payload  map[string]any `json:"payload"`   // 脱敏后的事件载荷（PII已处理）
+	Ts       int64          `json:"ts"`        // 事件发生时间戳（Unix秒）
 }
 
 // batchCollector 进程内批量缓冲（休眠式：URL 空则不发任何外部请求）
+// 采用生产者-消费者模式，事件先缓冲在内存中，达到阈值或定时批量发送
 type batchCollector struct {
-	mu      sync.Mutex
-	buf     []CollectorEvent
-	maxBuf  int
-	flushMs int64
+	mu      sync.Mutex         // 互斥锁，保护缓冲区并发安全
+	buf     []CollectorEvent   // 事件缓冲区
+	maxBuf  int                // 缓冲区最大容量，超出触发flush
+	flushMs int64              // 自动刷新间隔（毫秒）
 }
 
 var defaultCollector = &batchCollector{maxBuf: 2000, flushMs: 300000} // 5分钟批次

@@ -27,7 +27,10 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
-// CancelAccount POST /api/v1/admin/account/cancel {password}
+// CancelAccount 租户管理员账号注销
+// POST /api/v1/admin/account/cancel {password}
+// 需要密码二次确认，注销后当日仍可登录，次日零点起禁用
+// 数据完整保留，API Key 同步禁用
 func CancelAccount(c *gin.Context) {
 	uid, _, _ := middleware.CurrentUser(c)
 	ti := middleware.GetTenantInfo(c)
@@ -35,6 +38,7 @@ func CancelAccount(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	// 绑定请求体，仅需密码字段
 	var req struct {
 		Password string `json:"password" binding:"required"`
 	}
@@ -43,7 +47,7 @@ func CancelAccount(c *gin.Context) {
 		return
 	}
 
-	// 密码二次确认
+	// 密码二次确认：防止误操作，必须验证当前登录用户密码
 	var user model.User
 	if err := db.DB.Select("id, password_hash").First(&user, uid).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "用户不存在")
@@ -54,6 +58,7 @@ func CancelAccount(c *gin.Context) {
 		return
 	}
 
+	// 设置注销时间（次日零点生效）
 	now := time.Now()
 	res := db.DB.Model(&model.Tenant{}).Where("id = ?", ti.ID).
 		Update("cancel_at", now)
@@ -65,6 +70,7 @@ func CancelAccount(c *gin.Context) {
 	// 同步禁用本租户签发的全部 API Key（权限即时收回）
 	db.DB.Model(&model.ApiKey{}).Where("tenant_id = ?", ti.ID).Update("is_active", false)
 
+	// 写入审计日志，记录注销操作
 	db.DB.Create(&model.TenantAuditLog{
 		TenantID: ti.ID, UserID: uid, Action: "account_cancel",
 		Resource: "tenant:" + ti.Code,

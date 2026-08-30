@@ -443,7 +443,7 @@ func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) 
 		sb.WriteString(fmt.Sprintf("· 客户姓名：%s\n", customerKnownName))
 	}
 	if customer.Phone != "" {
-		sb.WriteString(fmt.Sprintf("· 手机号：%s\n", customer.Phone))
+		sb.WriteString(fmt.Sprintf("· 手机号：%s\n", service.MaskPhone(customer.Phone)))
 	}
 	if customer.InterestModel != "" {
 		sb.WriteString(fmt.Sprintf("· 兴趣车型：%s\n", customer.InterestModel))
