@@ -1,3 +1,4 @@
+// 流程引擎API：流程定义查询与流程实例的启动/推进/查询。
 package api
 
 // 流程引擎API：流程定义列表/详情查询，以及流程实例的启动(StartFlow)、推进(AdvanceFlow)与查询。

@@ -35,6 +35,7 @@ export default function AppSettings() {
     loadKb()
   }, [])
 
+  // 修改登录密码
   async function changePwd() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/auth/change-password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } })
     setPwdMsg(j.code === 0 ? '✓ 已修改' : (j.message || '失败'))
@@ -48,10 +49,12 @@ export default function AppSettings() {
     setCd(60)
     const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)
   }
+  // 用验证码换绑新邮箱
   async function bindEmail() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/auth/email/change', { method: 'POST', body: { new_email: newEmail, code: emailCode } })
     setEmMsg(j.message || '')
   }
+  // 加载企业知识库列表
   async function loadKb() {
     const j: ApiResp<KbListResp> = await AUTH('/api/v1/admin/kb/my?page=1&page_size=50')
     if (j.code === 0) setKbList(j.data?.list || [])

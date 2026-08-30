@@ -1,0 +1,86 @@
+{
+  "title": "AI-SCRM 生产监控看板",
+  "uid": "ai-scrm-prod",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": { "from": "now-6h", "to": "now" },
+  "refresh": "30s",
+  "panels": [
+    {
+      "id": 1,
+      "title": "HTTP P99 延迟 (s)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.99, rate(ai_scrm_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P99"
+        },
+        {
+          "expr": "histogram_quantile(0.50, rate(ai_scrm_http_request_duration_seconds_bucket[5m]))",
+          "legendFormat": "P50"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "AI 成功率 (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        {
+          "expr": "(ai_scrm_ai_success_total / (ai_scrm_ai_success_total + ai_scrm_ai_failure_total)) * 100",
+          "legendFormat": "AI 成功率"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "DB 连接数",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "ai_scrm_db_open_connections", "legendFormat": "open" },
+        { "expr": "ai_scrm_db_in_use_connections", "legendFormat": "in_use" },
+        { "expr": "ai_scrm_db_idle_connections", "legendFormat": "idle" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "支付成功率 (%)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [
+        {
+          "expr": "(ai_scrm_payment_paid_total / (ai_scrm_payment_paid_total + ai_scrm_payment_failed_total)) * 100",
+          "legendFormat": "支付成功率"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "7天内到期租户数",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [ { "expr": "ai_scrm_tenants_expiring_7d", "legendFormat": "到期租户" } ]
+    },
+    {
+      "id": 6,
+      "title": "磁盘水位 (0~1)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [ { "expr": "ai_scrm_disk_used_ratio", "legendFormat": "已用比例" } ]
+    },
+    {
+      "id": 7,
+      "title": "运行时概览",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 24 },
+      "targets": [
+        { "expr": "ai_scrm_goroutines", "legendFormat": "goroutines" },
+        { "expr": "ai_scrm_merge_queue_active", "legendFormat": "合并队列活跃" },
+        { "expr": "ai_scrm_http_requests_total", "legendFormat": "HTTP 总量" }
+      ]
+    }
+  ]
+}

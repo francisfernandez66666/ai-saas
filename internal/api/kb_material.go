@@ -1,3 +1,4 @@
+// 数据飞轮素材池API：素材评审与 AI evals 自动评分管理。
 package api
 
 // 数据飞轮素材池管理API（P3）：素材列表、人工评审(approved/rejected/pending)、AI evals自动评分。

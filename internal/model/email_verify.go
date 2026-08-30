@@ -7,7 +7,6 @@ import (
 
 // ============================================================
 // 邮箱验证码（商业化第二批追加，借鉴翻译助手三期 §3.9）
-//
 // 用途：注册验证 / 换绑新邮箱；与 password_resets（密码重置）分表，
 // purpose 区分场景防止跨场景消费
 // 安全：code 只存 SHA-256 哈希；10分钟有效；一次性；错误5次作废；
@@ -22,7 +21,7 @@ const (
 
 // EmailVerify 邮箱验证码表
 type EmailVerify struct {
-	ID         uint      `gorm:"primaryKey" json:"id"`         // 注释：主键ID
+	ID         uint      `gorm:"primaryKey" json:"id"`         // 主键ID
 	Email      string    `gorm:"size:100;index" json:"email"`  // 目标邮箱（小写）
 	Purpose    string    `gorm:"size:20;index" json:"purpose"` // register|bind_email
 	CodeHash   string    `gorm:"size:200" json:"-"`            // SHA256(6位码)
@@ -31,7 +30,7 @@ type EmailVerify struct {
 	Attempts   int       `json:"attempts"`                     // 错误尝试次数（≥5作废）
 	SentIP     string    `gorm:"size:45" json:"-"`             // 发送请求来源IP（日限额锚点）
 	LastSentAt time.Time `json:"last_sent_at"`                 // 冷却锚点
-	CreatedAt  time.Time `json:"created_at"`                   // 注释：创建时间
+	CreatedAt  time.Time `json:"created_at"`                   // 创建时间
 }
 
 // TableName 指定表名

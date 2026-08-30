@@ -206,10 +206,10 @@ func IsStoreVisitIntent(text string) bool {
 	return strategytypes.IsStoreVisitIntent(text)
 }
 
-// GetAnchorName 获取锚类型名称
-// p(a|T,S) = softmax(score_a / τ)，取a_hat
+// Step2_SoftmaxAnchor 锚打分 softmax 归一化
+// p(a|T,S) = softmax(score_a / τ)，取概率最大的锚 a_hat
 //
-// 为什么用softmax？
+// 为什么用 softmax？
 //   - 将原始分数转化为概率分布，可解释性强
 //   - 温度τ控制分布的"锐利度"
 //   - τ越小，最高分的概率越接近1（更确定）

@@ -1,3 +1,4 @@
+// 对话核心API（主链路）：消息接收、三层分流、合并队列与AI回复生成。
 package api
 
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
@@ -70,8 +71,11 @@ func Chat(c *gin.Context) {
 	// 生效租户（中间件链保证存在）：消息合并队列按 tenantID:customerID 隔离
 	tenantID := middleware.EffectiveTenantID(c)
 
+	trace := middleware.GetTraceID(c) // P1-3：全链路 trace
+
 	var req schema.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[对话][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
 		c.JSON(http.StatusBadRequest, schema.Response{
 			Code:    400,
 			Message: "参数错误: " + err.Error(),
@@ -300,7 +304,7 @@ func Chat(c *gin.Context) {
 	// 在入口用原始消息检测，不依赖合并后的内容
 	if service.IsOffTopic(req.Content) {
 		reply := service.GetOffTopicReply(req.Content)
-		log.Printf("[硬边界] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
+		log.Printf("[硬边界][trace=%s] 客户%d 拦截无关话题(入队前): %q → %q", trace, customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
 		// 保存AI拦截回复消息到DB
 		offTopicMsg := model.Message{
 			ConversationID: conversation.ID,

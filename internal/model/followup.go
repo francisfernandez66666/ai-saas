@@ -12,7 +12,7 @@ import (
 
 // FollowUp 跟进记录表
 type FollowUp struct {
-	ID             uint       `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
+	ID             uint       `gorm:"primaryKey" json:"id"`                      // 主键ID
 	TenantID       uint       `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	CustomerID     uint       `gorm:"index;not null" json:"customer_id"`         // 客户ID
 	ConversationID uint       `gorm:"index" json:"conversation_id"`              // 关联会话ID
@@ -23,8 +23,8 @@ type FollowUp struct {
 	Result         string     `gorm:"size:50" json:"result"`                     // 跟进结果
 	NextFollowAt   *time.Time `json:"next_follow_at"`                            // 下次跟进时间
 	IntentChange   float64    `json:"intent_change"`                             // 意向分变化
-	CreatedAt      time.Time  `json:"created_at"`                                // 注释：创建时间
-	UpdatedAt      time.Time  `json:"updated_at"`                                // 注释：更新时间
+	CreatedAt      time.Time  `json:"created_at"`                                // 创建时间
+	UpdatedAt      time.Time  `json:"updated_at"`                                // 更新时间
 }
 
 // TableName 指定表名

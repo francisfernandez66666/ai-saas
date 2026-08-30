@@ -1,3 +1,4 @@
+// 统一业务错误码与响应助手：RespCode/RespFail 等响应封装。
 package api
 
 // ============================================================
@@ -11,7 +12,10 @@ package api
 // 新接口统一走本文件助手；存量 handler 随改动逐步迁移。
 // ============================================================
 
-import "github.com/gin-gonic/gin"
+import (
+	"ai-scrm/internal/schema"
+	"github.com/gin-gonic/gin"
+)
 
 // RespCode 业务响应码
 type RespCode int
@@ -26,6 +30,28 @@ const (
 	CodeBizErr       RespCode = 42001 // 业务规则拒绝（如余额不足/线索已存在）
 	CodeInternal     RespCode = 50001 // 服务内部错误
 )
+
+// codeName 机器可读错误码（与 schema.Response.Error_code 对应，前端按此 toast）
+var codeName = map[RespCode]string{
+	CodeOK:           "ok",
+	CodeParamErr:     "param_error",
+	CodeUnauthorized: "unauthorized",
+	CodeForbidden:    "forbidden",
+	CodeNotFound:     "not_found",
+	CodeRateLimited:  "rate_limited",
+	CodeBizErr:       "biz_error",
+	CodeInternal:     "internal_error",
+}
+
+// RespFail 业务错误响应（P1-4：统一带 error_code，前端据此精细化 toast）
+// httpStatus 随错误性质返回（401/403/429/400/500），业务 code 与之解耦。
+func RespFail(c *gin.Context, httpStatus int, code RespCode, msg string) {
+	c.JSON(httpStatus, schema.Response{
+		Code:       int(code),
+		Error_code: codeName[code],
+		Message:    msg,
+	})
+}
 
 // respOK 成功响应
 func respOK(c *gin.Context, data any) {

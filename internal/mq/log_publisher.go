@@ -31,7 +31,7 @@ func newLogCenter(cfg config.MQConfig) *LogCenter {
 // P4 起 LogCenter 兼作"进程内事件总线"：无 Kafka 时订阅者（如 CDP IngestConsumer）
 // 仍可闭环消费，切换 MQ_TYPE=kafka 后无缝升级为真实总线，业务与消费者代码零改动
 func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) error {
-	env := buildEnvelope(topic, tenantID, oneID, eventType, payload)
+	env := buildEnvelope(ctx, topic, tenantID, oneID, eventType, payload)
 	recordAudit(env, "sent")
 
 	line, _ := json.Marshal(map[string]interface{}{

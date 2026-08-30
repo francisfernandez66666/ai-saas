@@ -1,3 +1,4 @@
+// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
 package service
 
 // ============================================================
@@ -23,9 +24,9 @@ import (
 type HealthStatus string
 
 const (
-	StatusOK   HealthStatus = "ok"
-	StatusWarn HealthStatus = "warn"
-	StatusCrit HealthStatus = "crit"
+	StatusOK   HealthStatus = "ok"   // 正常
+	StatusWarn HealthStatus = "warn" // 告警
+	StatusCrit HealthStatus = "crit" // 严重
 )
 
 // HealthCheck 单指标探测结果

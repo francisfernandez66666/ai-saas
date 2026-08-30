@@ -8,8 +8,11 @@ type Pkg = { name: string; p_type: string; price_cents: number; ai_calls: number
 
 // 定价页：展示套餐（plan）与 AI 商业包（package），数据来自 /api/v1/plans（含 packages 字段）
 export default function Pricing() {
+  // 读取品牌配置（用于页脚展示品牌名）
   const brand = useBrand()
+  // 租户套餐列表（来自 /api/v1/plans）
   const [plans, setPlans] = useState<Plan[]>([])
+  // AI 商业包列表（来自 /api/v1/plans 的 packages 字段）
   const [pkgs, setPkgs] = useState<Pkg[]>([])
   useEffect(() => {
     fetch('/api/v1/plans').then((r) => r.json()).then((j) => {
@@ -23,6 +26,7 @@ export default function Pricing() {
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 36 }}>全部套餐支持免费试用 · 随时升降级</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
         {plans.map((p, i) => {
+          // 套餐亮点为 JSON 字符串，解析失败时降级为空数组
           let hl: string[] = []
           try { hl = JSON.parse(p.highlights || '[]') } catch {}
           const m = (p.price_monthly_cents / 100).toFixed(0)
@@ -49,6 +53,7 @@ export default function Pricing() {
           return (
             <div key={i} style={{ background: '#fff', borderRadius: 12, padding: 26, boxShadow: '0 4px 18px rgba(0,0,0,.07)', position: 'relative' }} className={i === 2 ? 'ring-2 ring-indigo-500' : ''}>
               <b>{p.name}</b>
+              {/* 按包类型展示中文标签：试用/包月/买断 */}
               <span style={{ position: 'absolute', top: 14, right: 14, background: '#edf2f7', color: '#4a5568', fontSize: 11, padding: '3px 9px', borderRadius: 10 }}>{p.p_type === 'free' ? '注册赠送' : p.p_type === 'paid' ? '包月' : '买断'}</span>
               <div style={{ fontSize: 30, fontWeight: 800, margin: '10px 0' }}>{price}{p.p_type === 'paid' && <small style={{ fontSize: 13, color: '#718096' }}>/月</small>}</div>
               <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>

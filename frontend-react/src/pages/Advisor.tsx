@@ -1,3 +1,6 @@
+// 顾问工作台页（移动风格）：首页客户列表/跟进提醒/我的套餐，客户详情含聊天、试驾、标签、AI 接管开关
+// 顶部文件级说明；子组件 FU（跟进条目）、EditForm（资料编辑表单）见下方
+// 依赖 /api/v1/advisor/*、/api/v1/chat/history、/api/v1/feedback、/api/v1/billing/my-package、/api/v1/admin/tags
 import { useState, useEffect, useRef } from 'react'
 import { Button, Dialog, Input, Textarea, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
@@ -14,6 +17,7 @@ const TABS = [{ k: 'all', t: '全部' }, { k: 'pending', t: '待跟进' }, { k: 
 const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
 const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
 
+// 首页统计卡片的数据结构（数值 + 文案 + 颜色）
 type Stat = { value: number; label: string; color: string }
 // Cust / Detail / Msg 已从 ../types 导入（见上方 import），统一领域口径
 

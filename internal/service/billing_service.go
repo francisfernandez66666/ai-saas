@@ -278,6 +278,7 @@ func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, err
 		}
 		return &o, false, nil
 	}
+	IncPaymentPaid() // P1-2：支付成功计数（成功率分母）
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
@@ -326,6 +327,7 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 		}
 		return &o, false, nil
 	}
+	IncPaymentFailed() // P1-2：退款计为支付失败（成功率分母）
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
@@ -512,6 +514,7 @@ func SweepExpiredOrders() int64 {
 		return 0
 	}
 	if res.RowsAffected > 0 {
+		IncPaymentFailed() // P1-2：超时关闭计为支付失败（成功率分母）
 		log.Printf("[Billing] 订单超时关闭 %d 笔(超过%d分钟未付)", res.RowsAffected, minutes)
 	}
 	return res.RowsAffected

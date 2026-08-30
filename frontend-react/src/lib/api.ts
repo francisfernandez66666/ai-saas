@@ -1,6 +1,29 @@
 // 前端统一请求层：封装 localStorage 鉴权 token 读写、fetch 包装、角色分流与 401/403 统一处理
 // 401：登录态失效→清 token 跳登录页；403：后端强改密拦截→已登录用户跳 /login?mcp=1 改密
+import { MessagePlugin } from 'tdesign-react'
+
+// 本地存储里放登录 token 的键名
 const TOKEN_KEY = 'scrm_auth_token'
+
+// 业务错误码 → 用户提示（P1-4：按后端 error_code 统一 toast，去 AI 味短句）
+const ERR_MSG: Record<string, string> = {
+  param_error: '参数填错了，麻烦核对一下',
+  unauthorized: '账号或密码不对',
+  forbidden: '没有权限操作',
+  not_found: '没找到对应的内容',
+  rate_limited: '操作太频繁，稍后再试',
+  biz_error: '操作没成功',
+  internal_error: '服务开小差了，稍后再试',
+}
+
+// 按后端返回体给出友好提示（error_code 优先，其次 message）；返回是否业务失败
+export function toastError(json: any): boolean {
+  if (!json || json.code === 0 || json.code === undefined) return false
+  const code = json.error_code as string
+  const msg = (code && ERR_MSG[code]) || json.message || '操作没成功'
+  MessagePlugin.warning(msg)
+  return true
+}
 
 // 读取当前登录 token，缺失返回空串
 export function getToken(): string {
@@ -78,5 +101,6 @@ export async function AUTH<T = any>(
     headers: opts.headers,
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   })
+  toastError(json) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
   return json
 }

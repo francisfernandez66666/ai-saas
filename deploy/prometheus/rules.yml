@@ -1,0 +1,81 @@
+# AI-SCRM Prometheus 告警规则（P1-2，2026-08-30）
+# 配合 /metrics 端点（手写 exposition，零依赖）使用。
+# 关键指标：P99 延迟 / AI 成功率 / DB 连接 / 支付成功率 / 到期租户 / 磁盘水位
+
+groups:
+  - name: ai-scrm-critical
+    rules:
+      # 1. DB 不可达
+      - alert: DatabaseDown
+        expr: ai_scrm_db_up == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "数据库不可达"
+          description: "ai_scrm_db_up=0 持续 1 分钟，PostgreSQL 连接失败。"
+
+      # 2. AI 成功率过低（5 分钟窗口 < 80%）
+      - alert: AILowSuccessRate
+        expr: |
+          (ai_scrm_ai_success_total / (ai_scrm_ai_success_total + ai_scrm_ai_failure_total)) * 100 < 80
+          and (ai_scrm_ai_success_total + ai_scrm_ai_failure_total) > 20
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "AI 生成成功率过低"
+          description: "近 5 分钟 AI 成功率 {{ $value | printf \"%.1f\" }}% (<80%)，多模型降级链可能全线异常。"
+
+      # 3. 支付成功率过低（< 90%）
+      - alert: PaymentLowSuccessRate
+        expr: |
+          (ai_scrm_payment_paid_total / (ai_scrm_payment_paid_total + ai_scrm_payment_failed_total)) * 100 < 90
+          and (ai_scrm_payment_paid_total + ai_scrm_payment_failed_total) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "支付成功率偏低"
+          description: "支付成功率 {{ $value | printf \"%.1f\" }}% (<90%)，检查支付网关/对账。"
+
+      # 4. HTTP P99 延迟过高（> 2s）
+      - alert: HTTPP99High
+        expr: |
+          histogram_quantile(0.99, rate(ai_scrm_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP P99 延迟过高"
+          description: "P99 延迟 {{ $value | printf \"%.2f\" }}s (>2s)，检查慢查询或模型超时。"
+
+      # 5. 磁盘水位过高（> 85%）
+      - alert: DiskUsageHigh
+        expr: ai_scrm_disk_used_ratio > 0.85
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "磁盘水位过高"
+          description: "磁盘已用 {{ $value | printf \"%.1f\" }}% (>85%)，及时清理备份/日志。"
+
+      # 6. DB 连接接近打满（in_use >= open 且 open>0 视为耗尽）
+      - alert: DBConnectionsExhausted
+        expr: ai_scrm_db_in_use_connections >= ai_scrm_db_open_connections and ai_scrm_db_open_connections > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB 连接池耗尽"
+          description: "DB in_use={{ $value }} 达到 open 上限，连接泄漏或池过小。"
+
+      # 7. 近期到期租户激增（7 天内 > 20）
+      - alert: TenantsExpiringBulk
+        expr: ai_scrm_tenants_expiring_7d > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "批量租户即将到期"
+          description: "7 天内到期租户 {{ $value }} 个，提前触发续费提醒/对账。"

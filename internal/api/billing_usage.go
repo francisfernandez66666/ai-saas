@@ -1,3 +1,4 @@
+// 用量与计量查询API：租户/平台级 Token 用量与成本看板。
 package api
 
 import (

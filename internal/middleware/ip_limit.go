@@ -23,6 +23,7 @@ import (
 //   - 命中限流返回 429，不消耗下游资源
 // ============================================================
 
+// ipWindow 单 IP 限流窗口：累计次数 + 窗口重置时刻
 type ipWindow struct {
 	count   int
 	resetAt time.Time

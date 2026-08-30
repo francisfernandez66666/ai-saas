@@ -1,3 +1,6 @@
+// Package strategytypes 策略中立类型包（P2-B 架构解耦产物）
+// 只放纯数据类型与纯函数：锚常量、锚名、StrategyOutput、到店意图/接钩/情绪文本匹配。
+// 任何层（ai/llm/strategy）都可安全引用，不构成环，是断 ai→strategy 反向依赖的关键。
 package strategytypes
 
 import (

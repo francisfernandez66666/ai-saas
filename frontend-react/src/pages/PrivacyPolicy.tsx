@@ -1,3 +1,4 @@
+// 正文容器样式（最大宽度居中，行高宽松）
 const body: React.CSSProperties = {
   fontFamily: '-apple-system,"PingFang SC","Microsoft YaHei",sans-serif',
   maxWidth: 860,
@@ -6,9 +7,13 @@ const body: React.CSSProperties = {
   color: '#1f2937',
   lineHeight: 1.8,
 }
+// 一级标题样式（主色下边框）
 const h1: React.CSSProperties = { fontSize: 24, borderBottom: '2px solid var(--pri)', paddingBottom: 10 }
+// 小节标题样式
 const h2: React.CSSProperties = { fontSize: 18, marginTop: 32, color: '#4338ca' }
+// 元信息（更新日期、版权）灰色小字样式
 const meta: React.CSSProperties = { color: '#94a3b8', fontSize: 13 }
+// 品牌名高亮样式（用在正文中强调平台名）
 const brand = { color: '#4f46e5', fontWeight: 600 } as React.CSSProperties
 
 // 隐私政策静态页：展示《个人信息保护法》等合规条款，无业务接口依赖

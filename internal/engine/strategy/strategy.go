@@ -1,3 +1,7 @@
+// Package strategy 策略中心引擎（系统"大脑"）
+// 串联线上推理7步公式：锚派发打分→softmax归一化→阶段锁/软降级→话术召回→紧迫判定→路由→意向反哺。
+// 含 strategy/flow 子目录：flow 管会话生命周期，strategy 管单轮决策。
+// 架构红线：业务层不得直连 llm，一律经本包 GenerateReply 桥接（ai→strategy→llm）。
 package strategy
 
 import (

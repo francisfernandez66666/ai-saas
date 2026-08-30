@@ -3,17 +3,14 @@ package industrypack
 
 // ============================================================
 // 包内容物化（绑定/解绑的落地执行）——三级包架构版（2026-08-26）
-//
 // 层级语义：
 //   行业包/企业包 → 租户级物化（DepartmentID=NULL，全租户可见）
 //   部门包       → 部门级物化（行带 DepartmentID，仅该部门继承链召回可见）
-//
 // 设计：内容写入租户私有层，复用既有隔离与召回链路
 //   - templates/features：id 前缀 pk_{code}_；先删后插（同层级内幂等换版本）
 //     召回过滤规则见 strategy.templatesForTenant（预置0全员可见+租户匹配+部门链匹配）
 //   - prompts/params/mindset：JSON 存 system_configs 租户覆盖层键（消费端 P2 接通）
 //   - flows/tags：本批校验合法性并跳过导入（日志明示 P2 接入）
-//
 // 继承链应用逻辑（自底向上）：最底层部门包→父部门包→…→顶层部门包
 //   →企业租户包→行业包。内容类(模板/卖点)为链上并集；参数类就近覆盖(P2)。
 // ============================================================
@@ -38,9 +35,10 @@ func IDPrefix(code string, tenantID uint) string {
 
 // ApplyResult 物化统计
 type ApplyResult struct {
-	Templates int `json:"templates"` // 注释：模板数
-	Features  int `json:"features"`  // 注释：功能列表
-	Configs   int `json:"configs"`   // 注释：配置数
+	Templates int `json:"templates"` // 模板数
+	Features  int `json:"features"`  // 功能列表
+	Configs   int `json:"configs"`   // 配置数
+	Tags      int `json:"tags"`      // 标签数
 }
 
 // ApplyToTenant 将包内容物化到指定层级（事务）
@@ -239,9 +237,12 @@ func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, e
 				}
 			}
 		}
-		// tags：仍为校验跳过（tag/tag_rules 模型耦合高，随标签引擎专项）
-		if raw, ok := pc.RawFile(FileTags); ok && len(raw) > 0 && !json.Valid(raw) {
-			return fmt.Errorf("tags.json 不是合法 JSON")
+		// ---- tags.json：物化行业包预置标签（租户私有层，code 加包前缀防冲突 + 幂等换版本）----
+		// tag_rules 因引用 TargetTagID（插入后生成），跨包映射耦合高，留待标签引擎专项（P2）
+		if n, err := materializeTags(pc, tx, tenantID); err != nil {
+			return err
+		} else {
+			res.Tags += n
 		}
 		return nil
 	})
@@ -252,9 +253,70 @@ func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, e
 	if deptID > 0 {
 		scope = fmt.Sprintf("部门%d", deptID)
 	}
-	log.Printf("[IndustryPack] 已物化到租户%d [%s] pack=%s v%s 模板=%d 卖点=%d 配置=%d",
-		tenantID, scope, code, pc.Manifest.Version, res.Templates, res.Features, res.Configs)
+	log.Printf("[IndustryPack] 已物化到租户%d [%s] pack=%s v%s 模板=%d 卖点=%d 配置=%d 标签=%d",
+		tenantID, scope, code, pc.Manifest.Version, res.Templates, res.Features, res.Configs, res.Tags)
 	return res, nil
+}
+
+// materializeTags 将包内 tags.json 物化到租户私有标签层（P0-3）
+// 幂等：同包前缀(code LIKE pk_{code}_t{tenant}_%)先删后插，重绑即换版本。
+// 标签 code 加包前缀避免与租户自建/其他包重名冲突；name 维持原语义（租户级唯一，
+// 重绑时已删旧行故不冲突）。空 tags.json 直接跳过（向后兼容不报错）。
+func materializeTags(pc *PackContent, tx *gorm.DB, tenantID uint) (int, error) {
+	raw, ok := pc.RawFile(FileTags)
+	if !ok || len(raw) == 0 {
+		return 0, nil
+	}
+	if !json.Valid(raw) {
+		return 0, fmt.Errorf("tags.json 不是合法 JSON")
+	}
+	var items []struct {
+		Code        string  `json:"code"`
+		Name        string  `json:"name"`
+		Category    string  `json:"category"`
+		Weight      float64 `json:"weight"`
+		Description string  `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &items); err != nil {
+		return 0, fmt.Errorf("tags.json 解析失败: %w", err)
+	}
+	if len(items) == 0 {
+		return 0, nil
+	}
+	prefix := IDPrefix(pc.Manifest.Code, tenantID)
+	// 幂等清除：仅删本包前缀标签，不动租户其他标签
+	if err := tx.Where("tenant_id = ? AND code LIKE ?", tenantID, prefix+"%").
+		Delete(&model.Tag{}).Error; err != nil {
+		return 0, fmt.Errorf("清除旧包标签失败: %w", err)
+	}
+	count := 0
+	for _, it := range items {
+		if it.Code == "" || it.Name == "" {
+			continue
+		}
+		w := it.Weight
+		if w == 0 {
+			w = 1.0
+		}
+		row := model.Tag{
+			TenantID:    tenantID,
+			Name:        it.Name,
+			Code:        prefix + it.Code,
+			Category:    it.Category,
+			Weight:      w,
+			Description: it.Description,
+			Status:      1,
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			log.Printf("[IndustryPack] 标签 %q 物化失败(可能重名跳过): %v", it.Name, err)
+			continue
+		}
+		count++
+	}
+	if count > 0 {
+		log.Printf("[IndustryPack] 物化标签 %d 个到租户%d (pack=%s)", count, tenantID, pc.Manifest.Code)
+	}
+	return count, nil
 }
 
 // UnbindFromTenant 解绑清除：删除该包在指定层级的全部物化产物
@@ -275,6 +337,14 @@ func UnbindFromTenant(code string, tenantID uint, deptID uint) error {
 			return err
 		}
 		if err := delF.Delete(&model.Feature{}).Error; err != nil {
+			return err
+		}
+		// 清除本包前缀物化标签（code LIKE pk_{code}_t{tenant}_%）
+		tagDel := tx.Where("tenant_id = ? AND code LIKE ?", tenantID, prefix+"%")
+		if deptID > 0 {
+			// 标签无部门列，部门级解绑仅清租户级包标签（与物化一致，租户-wide）
+		}
+		if err := tagDel.Delete(&model.Tag{}).Error; err != nil {
 			return err
 		}
 		if deptID == 0 {

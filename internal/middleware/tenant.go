@@ -417,7 +417,7 @@ func TenantResolver() gin.HandlerFunc {
 	}
 }
 
-// applyTenantContext 将解析出的租户写入请求上下文（Resolver 与一致性中间件共用）
+// applyTenantContext 把解析出的租户写进请求上下文（Resolver 与一致性中间件共用）
 func applyTenantContext(c *gin.Context, tenant *model.Tenant) {
 	c.Set("tenant_id", tenant.ID)
 	c.Set("host_tenant_id", tenant.ID)

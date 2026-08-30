@@ -7,7 +7,6 @@ import (
 
 // ============================================================
 // Token 计量底座（商业化第二批 M3，借鉴翻译助手四期 §四 + SAAS_ROADMAP 阶段四）
-//
 // 定位：请求级 LLM 用量台账——provider/model/token/成本/延迟逐笔落账，
 // 支撑分级用量看板与模型选型决策。
 // ⚠️ 边界：本表只记账不扣费——商业包仍按"次"扣减（CheckAIQuota 不变），
@@ -24,19 +23,19 @@ const (
 
 // UsageLedger 用量台账（请求级）
 type UsageLedger struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`                       // 注释：主键ID
-	TenantID         uint      `gorm:"index:idx_ul_tenant_time" json:"tenant_id"`  // 注释：租户ID
+	ID               uint      `gorm:"primaryKey" json:"id"`                       // 主键ID
+	TenantID         uint      `gorm:"index:idx_ul_tenant_time" json:"tenant_id"`  // 租户ID
 	CustomerID       uint      `json:"customer_id"`                                // 可0（平台内部调用）
 	UserID           uint      `json:"user_id"`                                    // 触发人（AI自动=0）
 	Stage            string    `gorm:"size:20" json:"stage"`                       // intent|strategy|reply|fallback
 	Provider         string    `gorm:"size:30" json:"provider"`                    // zhipu|siliconflow
 	Model            string    `gorm:"size:80" json:"model"`                       // 具体模型名
-	PromptTokens     int       `json:"prompt_tokens"`                              // 注释：输入token
-	CompletionTokens int       `json:"completion_tokens"`                          // 注释：输出token
-	TotalTokens      int       `json:"total_tokens"`                               // 注释：总token
+	PromptTokens     int       `json:"prompt_tokens"`                              // 输入token
+	CompletionTokens int       `json:"completion_tokens"`                          // 输出token
+	TotalTokens      int       `json:"total_tokens"`                               // 总token
 	CostMicro        int64     `json:"cost_micro"`                                 // 微元=total_tokens/1000×单价×markup（展示口径，不扣费）
-	LatencyMs        int       `json:"latency_ms"`                                 // 注释：延迟(毫秒)
-	CreatedAt        time.Time `gorm:"index:idx_ul_tenant_time" json:"created_at"` // 注释：创建时间
+	LatencyMs        int       `json:"latency_ms"`                                 // 延迟(毫秒)
+	CreatedAt        time.Time `gorm:"index:idx_ul_tenant_time" json:"created_at"` // 创建时间
 }
 
 // TableName 指定表名

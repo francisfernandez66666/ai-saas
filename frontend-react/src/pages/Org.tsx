@@ -28,6 +28,7 @@ export default function Org() {
   const [userDlg, setUserDlg] = useState(false)
   const [u, setU] = useState({ username: '', password: '', real_name: '', role: 'user', department_id: 0 })
 
+  // 拉取部门树，并展平为平铺列表（供父部门下拉与成员部门名映射使用）
   async function loadTree() {
     const r = await fetch('/api/v1/org/departments/tree', AUTH())
     const j = await r.json()
@@ -38,6 +39,7 @@ export default function Org() {
     walk(t)
     setDepts(flat)
   }
+  // 拉取成员列表，若已选中部门则只显示该部门成员
   async function loadUsers() {
     const r = await fetch('/api/v1/org/users', AUTH())
     const j = await r.json()
@@ -52,14 +54,17 @@ export default function Org() {
   }, [])
   useEffect(() => { loadUsers() }, [sel])
 
+  // 生父部门下拉项，按层级缩进展示；exceptId 用于编辑时排除自身避免挂到自己下面
   const deptOptions = (exceptId?: number) => depts.filter((d) => d.id !== exceptId).map((d) => ({ label: '　'.repeat((d.depth || 1) - 1) + d.name, value: d.id }))
 
+  // 打开部门操作弹窗：add 新建、rename 重命名、move 移动
   function openDept(mode: string, id?: number | null, name?: string) {
     setDlg({ mode, id, title: mode === 'add' ? (id ? '新建子部门' : '新建根部门') : mode === 'rename' ? '重命名部门' : '移动部门到…' })
     setFName(name || '')
     // 疑点：setFParent(id ? null : null) 恒为 null，新建子部门时未预置父部门，用户需手动在下拉里选父级
     setFParent(id ? null : null)
   }
+  // 提交部门弹窗：按当前模式分别走新建/重命名/移动接口
   async function submitDept() {
     const name = fName.trim()
     if (dlg?.mode === 'add') await fetch('/api/v1/org/departments', { method: 'POST', headers: AUTH(), body: JSON.stringify({ name, parent_id: fParent }) })
@@ -67,16 +72,20 @@ export default function Org() {
     else if (dlg?.mode === 'move') await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', headers: AUTH(), body: JSON.stringify({ new_parent_id: fParent }) })
     setDlg(null); loadTree()
   }
+  // 删除空部门（带确认），成功后刷新部门树
   async function delDept(id: number) {
     if (!confirm('删除该空部门？')) return
     const r = await fetch('/api/v1/org/departments/' + id, { method: 'DELETE', headers: AUTH() })
     const j = await r.json(); MessagePlugin.info(j.message || ''); loadTree()
   }
+  // 启用/停用成员账号（状态取反），仅管理员类角色可见此按钮
   async function toggleU(id: number, st: number) {
     await fetch('/api/v1/org/users/' + id, { method: 'PUT', headers: AUTH(), body: JSON.stringify({ status: st === 1 ? 0 : 1 }) })
     loadUsers()
   }
+  // 打开新增成员弹窗并重置表单
   function openUser() { setU({ username: '', password: '', real_name: '', role: 'user', department_id: 0 }); setUserDlg(true) }
+  // 提交新增成员，成功后关闭弹窗并刷新成员与部门树
   async function submitUser() {
     const r = await fetch('/api/v1/org/users', { method: 'POST', headers: AUTH(), body: JSON.stringify(u) })
     const j = await r.json(); MessagePlugin.info(j.message || '')
@@ -131,6 +140,7 @@ export default function Org() {
     </div>
   )
 
+  // 递归渲染部门树节点，点击切换选中、按角色展示增删改移动按钮
   function renderNodes(ns: Dept[], depth: number) {
     return ns.map((n) => (
       <div key={n.id}>
@@ -150,10 +160,17 @@ export default function Org() {
   }
 }
 
+// 面板容器样式
 const panel: React.CSSProperties = { background: '#fff', borderRadius: 10, padding: 18, boxShadow: '0 3px 14px rgba(0,0,0,.06)' }
+// 面板标题行样式（标题 + 操作按钮左右排布）
 const top: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', marginBottom: 14 }
+// 表头单元格样式
 const th: React.CSSProperties = { padding: '8px 10px', fontSize: 13, textAlign: 'left', borderBottom: '1px solid #edf2f7' }
+// 表格数据单元格样式
 const td: React.CSSProperties = { padding: '8px 10px', fontSize: 13, textAlign: 'left', borderBottom: '1px solid #edf2f7' }
+// 部门树节点上的小操作按钮样式
 const op: React.CSSProperties = { marginLeft: 4, border: 'none', background: 'none', cursor: 'pointer', fontSize: 12, color: 'var(--pri)' }
+// 成员行的启停小按钮样式
 const miniBtn: React.CSSProperties = { marginLeft: 8, border: 'none', background: 'none', color: 'var(--pri)', cursor: 'pointer' }
+// 弹窗内字段标签样式
 const lab: React.CSSProperties = { display: 'block', fontSize: 13, margin: '10px 0 5px' }

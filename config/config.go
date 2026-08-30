@@ -1,3 +1,5 @@
+// Package config 全局配置中心：集中管理服务/数据库/Redis/MQ/AI/策略超参数等。
+// 环境变量优先生效，缺失回落默认值；含安全基线校验（非 debug 禁默认 JWT 密钥）。
 package config
 
 import (
@@ -26,6 +28,15 @@ type Config struct {
 	ReplySpeed ReplySpeedConfig // 回复速度配置（模拟人工）
 	JWT        JWTConfig        // JWT配置
 	Collector  CollectorConfig  // 数据飞轮聚合上报（空=关闭）
+	RLS        RLSConfig        // 多租户行级安全（DB 层兜底，默认关闭；开启后业务事务可经 SET app.current_tenant 激活强隔离）
+}
+
+// RLSConfig 多租户行级安全配置（P0-4）
+// Enabled=false（默认）：不创建 RLS 策略，租户隔离完全由应用层 db.T/c.PQ 保证（现状，零行为变更）。
+// Enabled=true：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内 SET LOCAL
+// app.current_tenant 后即被 DB 强制按租户收敛，作为应用层隔离的双保险。
+type RLSConfig struct {
+	Enabled bool // RLS_ENABLED：是否启用 DB 层行级隔离策略
 }
 
 // CollectorConfig 数据飞轮批量上报配置（P2 collector）
@@ -281,6 +292,9 @@ func LoadConfig() *Config {
 			TypingMinDelay: getEnvFloat("AI_TYPING_MIN_DELAY", 0.8), // 最少等0.8秒
 			TypingMaxDelay: getEnvFloat("AI_TYPING_MAX_DELAY", 4.0), // 最多等4秒，别让用户等太久
 			TypingJitter:   getEnvFloat("AI_TYPING_JITTER", 0.2),    // 20%随机波动
+		},
+		RLS: RLSConfig{
+			Enabled: getEnvBool("RLS_ENABLED", false), // 默认关闭；运维显式开启方激活 DB 层强隔离
 		},
 		Strategy: StrategyConfig{
 			// Step2: softmax温度

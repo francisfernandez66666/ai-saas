@@ -26,23 +26,23 @@ const (
 
 // FlowDefinition 流程定义表
 type FlowDefinition struct {
-	ID          uint   `gorm:"primaryKey" json:"id"`                                                 // 注释：主键ID
+	ID          uint   `gorm:"primaryKey" json:"id"`                                                 // 主键ID
 	TenantID    uint   `gorm:"not null;default:0;uniqueIndex:idx_flow_tenant_code" json:"tenant_id"` // 租户ID（0=系统预置流程；>0=租户私有）SaaS多租户隔离（J12-2026-08-26 复合唯一）
 	Name        string `gorm:"size:100;not null" json:"name"`                                        // 流程名称
 	Code        string `gorm:"size:50;uniqueIndex:idx_flow_tenant_code" json:"code"`                 // 流程编码（租户级唯一）
 	Description string `gorm:"size:255" json:"description"`                                          // 描述
 	// NodesJSON 节点定义JSON数组
 	// 每个节点: {id, type, name, config, next_nodes}
-	NodesJSON string `gorm:"column:nodes;type:text" json:"nodes_json"` // 注释：节点JSON
+	NodesJSON string `gorm:"column:nodes;type:text" json:"nodes_json"` // 节点JSON
 	// EdgesJSON 连线定义JSON数组
 	// 每条边: {from, to, condition}
-	EdgesJSON   string    `gorm:"column:edges;type:text" json:"edges_json"` // 注释：连线JSON
+	EdgesJSON   string    `gorm:"column:edges;type:text" json:"edges_json"` // 连线JSON
 	StartNodeID string    `gorm:"size:50" json:"start_node_id"`             // 开始节点ID
 	IsDefault   bool      `gorm:"default:false" json:"is_default"`          // 是否默认流程
 	Status      int       `gorm:"default:1" json:"status"`                  // 状态
 	Version     string    `gorm:"size:20" json:"version"`                   // 版本
-	CreatedAt   time.Time `json:"created_at"`                               // 注释：创建时间
-	UpdatedAt   time.Time `json:"updated_at"`                               // 注释：更新时间
+	CreatedAt   time.Time `json:"created_at"`                               // 创建时间
+	UpdatedAt   time.Time `json:"updated_at"`                               // 更新时间
 }
 
 // TableName 指定表名
@@ -88,7 +88,7 @@ func (f *FlowDefinition) GetEdges() []FlowEdge {
 
 // FlowInstance 流程实例表
 type FlowInstance struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
+	ID             uint   `gorm:"primaryKey" json:"id"`                      // 主键ID
 	TenantID       uint   `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	FlowDefID      uint   `gorm:"index;not null" json:"flow_def_id"`         // 流程定义ID
 	ConversationID uint   `gorm:"index" json:"conversation_id"`              // 关联会话ID
@@ -97,11 +97,11 @@ type FlowInstance struct {
 	Status         string `gorm:"size:20;default:running" json:"status"`     // 状态: running/completed/suspended
 	// StateJSON 流程实例状态JSON
 	// 保存上下文变量、已执行节点历史等
-	StateJSON string     `gorm:"type:text" json:"state_json"` // 注释：状态JSON
-	StartedAt time.Time  `json:"started_at"`                  // 注释：开始时间
-	EndedAt   *time.Time `json:"ended_at"`                    // 注释：结束时间
-	CreatedAt time.Time  `json:"created_at"`                  // 注释：创建时间
-	UpdatedAt time.Time  `json:"updated_at"`                  // 注释：更新时间
+	StateJSON string     `gorm:"type:text" json:"state_json"` // 状态JSON
+	StartedAt time.Time  `json:"started_at"`                  // 开始时间
+	EndedAt   *time.Time `json:"ended_at"`                    // 结束时间
+	CreatedAt time.Time  `json:"created_at"`                  // 创建时间
+	UpdatedAt time.Time  `json:"updated_at"`                  // 更新时间
 }
 
 // TableName 指定表名

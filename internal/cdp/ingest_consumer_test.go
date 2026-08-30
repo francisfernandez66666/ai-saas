@@ -18,3 +18,10 @@ func TestIsPriceInquiry(t *testing.T) {
 		}
 	}
 }
+
+// TestBuiltinTagDefsCount P1-1：原子标签补齐至 30+（四维体系完备度门槛）
+func TestBuiltinTagDefsCount(t *testing.T) {
+	if len(builtinTagDefs) < 30 {
+		t.Errorf("原子标签数 = %d, want >= 30", len(builtinTagDefs))
+	}
+}

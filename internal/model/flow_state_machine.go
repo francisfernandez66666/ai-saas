@@ -14,7 +14,7 @@ import (
 
 // FlowStateMachine 流程状态机表
 type FlowStateMachine struct {
-	ID             uint      `gorm:"primaryKey" json:"id"`                         // 注释：主键ID
+	ID             uint      `gorm:"primaryKey" json:"id"`                         // 主键ID
 	TenantID       uint      `gorm:"index;not null;default:0" json:"tenant_id"`    // 租户ID
 	OneID          string    `gorm:"size:64;index" json:"one_id"`                  // OneID（并发分片键）
 	FlowInstanceID uint      `gorm:"uniqueIndex;not null" json:"flow_instance_id"` // 流程实例ID（一实例一行）
@@ -24,8 +24,8 @@ type FlowStateMachine struct {
 	Status         string    `gorm:"size:20;default:running;index" json:"status"`  // running/paused/completed
 	Version        int64     `gorm:"not null;default:1" json:"version"`            // 乐观锁版本号
 	StateJSON      string    `gorm:"type:text" json:"state_json"`                  // 场景流状态快照
-	CreatedAt      time.Time `json:"created_at"`                                   // 注释：创建时间
-	UpdatedAt      time.Time `json:"updated_at"`                                   // 注释：更新时间
+	CreatedAt      time.Time `json:"created_at"`                                   // 创建时间
+	UpdatedAt      time.Time `json:"updated_at"`                                   // 更新时间
 }
 
 // TableName 指定表名

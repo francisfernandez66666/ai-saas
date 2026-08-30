@@ -3,7 +3,6 @@ package industrypack
 
 // ============================================================
 // 行业包格式定义（P1 行业包地基，2026-08-25）
-//
 // 八件套目录结构（打包源目录）：
 //   manifest.json   由 CLI 自动生成（含 content_sha256，平台私钥签名）
 //   scripts.json    话术模板库 → 物化到 templates 表（租户私有层）
@@ -13,7 +12,6 @@ package industrypack
 //   tags.json       标签字典 → P2 接入 tags/tag_rules
 //   params.json     策略超参数 → 存配置键（引擎分片 P2 消费）
 //   mindset.json    心智周期/培育参数 → 存配置键（P2 消费）
-//
 // .aipack 容器布局（防破解=IP保护：混合加密+签名）：
 //   magic "AIP1" | u32 sigLen | RSA-SHA256(manifestJSON) | u32 manLen | manifestJSON
 //   | u32 blobLen | RSA-OAEP(pub, AES-256key) | nonce(12B) | AES-GCM(tar.gz)
@@ -46,10 +44,10 @@ type Manifest struct {
 	FormatVersion int       `json:"format_version"` // = FormatVersion
 	Code          string    `json:"code"`           // 包唯一码：auto / auto_rox ...
 	Name          string    `json:"name"`           // 显示名
-	Industry      string    `json:"industry"`       // 注释：行业
+	Industry      string    `json:"industry"`       // 行业
 	Version       string    `json:"version"`        // semver
-	Publisher     string    `json:"publisher"`      // 注释：发布者
-	CreatedAt     time.Time `json:"created_at"`     // 注释：创建时间
+	Publisher     string    `json:"publisher"`      // 发布者
+	CreatedAt     time.Time `json:"created_at"`     // 创建时间
 	ContentSHA256 string    `json:"content_sha256"` // hex(sha256(tar.gz))——解密后校验完整性
 	// ---- 三级树形结构（2026-08-26 定稿）：行业 → 企业(=租户) → 部门 ----
 	// industry   行业包：parent_code 为空
@@ -73,50 +71,50 @@ func ValidLevel(l string) bool {
 
 // PackContent 开包后的完整内容（内存态）
 type PackContent struct {
-	Manifest Manifest          // 注释：包元数据
+	Manifest Manifest          // 包元数据
 	Files    map[string][]byte // 相对文件名 → 内容
 }
 
 // ScriptTemplate scripts.json 元素 → model.Template 映射源
 type ScriptTemplate struct {
-	ID               string   `json:"id"`                // 注释：主键ID
-	AnchorType       int      `json:"anchor_type"`       // 注释：锚类型
-	SubType          string   `json:"sub_type"`          // 注释：子类型
-	Name             string   `json:"name"`              // 注释：名称
-	Category         string   `json:"category"`          // 注释：分类
-	TriggerTags      []string `json:"trigger_tags"`      // 注释：触发标签
-	RequiredTags     []string `json:"required_tags"`     // 注释：必含标签
-	MinIntent        float64  `json:"min_intent"`        // 注释：最低意向分
-	MaxIntent        float64  `json:"max_intent"`        // 注释：最高意向分
-	ApplicableModels []string `json:"applicable_models"` // 注释：适用车型(json)
-	PromptTemplate   string   `json:"prompt_template"`   // 注释：抛话术模板
-	HookTemplate     string   `json:"hook_template"`     // 注释：钩话术模板
-	HookFields       []string `json:"hook_fields"`       // 注释：钩采集字段
-	RequiredFeatures []string `json:"required_features"` // 注释：所需卖点
-	Priority         int      `json:"priority"`          // 注释：优先级
-	Status           int      `json:"status"`            // 注释：状态
+	ID               string   `json:"id"`                // 主键ID
+	AnchorType       int      `json:"anchor_type"`       // 锚类型
+	SubType          string   `json:"sub_type"`          // 子类型
+	Name             string   `json:"name"`              // 名称
+	Category         string   `json:"category"`          // 分类
+	TriggerTags      []string `json:"trigger_tags"`      // 触发标签
+	RequiredTags     []string `json:"required_tags"`     // 必含标签
+	MinIntent        float64  `json:"min_intent"`        // 最低意向分
+	MaxIntent        float64  `json:"max_intent"`        // 最高意向分
+	ApplicableModels []string `json:"applicable_models"` // 适用车型(json)
+	PromptTemplate   string   `json:"prompt_template"`   // 抛话术模板
+	HookTemplate     string   `json:"hook_template"`     // 钩话术模板
+	HookFields       []string `json:"hook_fields"`       // 钩采集字段
+	RequiredFeatures []string `json:"required_features"` // 所需卖点
+	Priority         int      `json:"priority"`          // 优先级
+	Status           int      `json:"status"`            // 状态
 }
 
 // KbFeature product_kb.json 内 features[] 元素 → model.Feature 映射源
 type KbFeature struct {
-	ID               string            `json:"id"`                // 注释：主键ID
-	FeatureName      string            `json:"feature_name"`      // 注释：卖点名称
-	Category         string            `json:"category"`          // 注释：分类
-	DescTemplate     string            `json:"desc_template"`     // 注释：描述模板
-	ShortDesc        string            `json:"short_desc"`        // 注释：简短描述
-	Params           map[string]string `json:"params"`            // 注释：参数(json)
-	ApplicableTags   []string          `json:"applicable_tags"`   // 注释：适用标签(json)
-	ApplicableModels []string          `json:"applicable_models"` // 注释：适用车型(json)
-	Priority         int               `json:"priority"`          // 注释：优先级
-	Status           int               `json:"status"`            // 注释：状态
+	ID               string            `json:"id"`                // 主键ID
+	FeatureName      string            `json:"feature_name"`      // 卖点名称
+	Category         string            `json:"category"`          // 分类
+	DescTemplate     string            `json:"desc_template"`     // 描述模板
+	ShortDesc        string            `json:"short_desc"`        // 简短描述
+	Params           map[string]string `json:"params"`            // 参数(json)
+	ApplicableTags   []string          `json:"applicable_tags"`   // 适用标签(json)
+	ApplicableModels []string          `json:"applicable_models"` // 适用车型(json)
+	Priority         int               `json:"priority"`          // 优先级
+	Status           int               `json:"status"`            // 状态
 }
 
 // ProductKB product_kb.json 顶层结构（本批消费 features；其余 P2）
 type ProductKB struct {
-	Features []KbFeature      `json:"features"` // 注释：功能列表
+	Features []KbFeature      `json:"features"` // 功能列表
 	Faqs     []map[string]any `json:"faqs"`     // P2: knowledge_fragments
 	Products []map[string]any `json:"products"` // P2
-	Notes    string           `json:"notes"`    // 注释：备注
+	Notes    string           `json:"notes"`    // 备注
 }
 
 // ---- 确定性输出工具（同内容同哈希） ----

@@ -52,6 +52,20 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	{Code: "beh_testdrive", Name: "已试驾", Category: "behavior"},
 	{Code: "beh_deep_interest", Name: "深度兴趣", Category: "behavior"},
 	{Code: "beh_price_inquiry", Name: "价格探询", Category: "behavior"},
+	// P1-1（2026-08-30）运营级原子标签补齐至 30+：运营闭环行为/态度/环境维扩展
+	{Code: "beh_viewed_model", Name: "浏览车型", Category: "behavior"},   // 事件 model_view 或属性 model_id
+	{Code: "beh_complained", Name: "投诉反馈", Category: "behavior"},     // 事件 complaint
+	{Code: "beh_shared", Name: "分享转发", Category: "behavior"},         // 事件 share
+	{Code: "beh_referral", Name: "转介绍", Category: "behavior"},        // 事件 referral（老带新）
+	{Code: "beh_followed", Name: "关注加微", Category: "behavior"},       // 事件 follow
+	{Code: "beh_repeat_visit", Name: "复访", Category: "behavior"},     // 事件 store_visit 且属性 repeat=true
+	{Code: "beh_booked", Name: "已预约", Category: "behavior"},          // 事件 booking
+	{Code: "att_loyalty", Name: "忠诚态度", Category: "attitude"},        // 属性 loyalty（零方/运营标记）
+	{Code: "att_churn_risk", Name: "流失风险", Category: "attitude"},     // 属性 churn_risk
+	{Code: "att_advocate", Name: "推荐意愿", Category: "attitude"},       // 属性 advocate
+	{Code: "env_utm_source", Name: "UTM来源", Category: "environment"}, // 属性 utm_source
+	{Code: "env_landing_page", Name: "落地页", Category: "environment"}, // 属性 landing_page
+	{Code: "env_browser", Name: "浏览器", Category: "environment"},      // 属性 browser
 }
 
 // StartIngestConsumer 注册 user_event 订阅（main 启动时调用一次）
@@ -145,6 +159,10 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		}
 	case "store_visit":
 		ApplyTag(tid, profile.ID, "beh_visit", "1")
+		// 复访：事件属性显式携带 repeat=true 才打（避免每次到访都算复访）
+		if rpt, _ := payload.Data.Attributes["repeat"].(bool); rpt {
+			ApplyTag(tid, profile.ID, "beh_repeat_visit", "1")
+		}
 	case "test_drive":
 		ApplyTag(tid, profile.ID, "beh_testdrive", "1")
 		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
@@ -154,6 +172,20 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		ApplyTag(tid, profile.ID, "tran_order_paid", "1")
 		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
 		log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
+	case "model_view":
+		// P1-1 浏览车型：模型详情页访问（事件驱动，非行为硬推）
+		ApplyTag(tid, profile.ID, "beh_viewed_model", "1")
+		ApplyTag(tid, profile.ID, "beh_deep_interest", "1")
+	case "complaint":
+		ApplyTag(tid, profile.ID, "beh_complained", "1")
+	case "share":
+		ApplyTag(tid, profile.ID, "beh_shared", "1")
+	case "referral":
+		ApplyTag(tid, profile.ID, "beh_referral", "1")
+	case "follow":
+		ApplyTag(tid, profile.ID, "beh_followed", "1")
+	case "booking":
+		ApplyTag(tid, profile.ID, "beh_booked", "1")
 	}
 
 	// P1-3 环境维标签：渠道路由 + 到访时段（上下文信号，非行为推导）
@@ -183,6 +215,15 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	if v, _ := payload.Data.Attributes["language"].(string); v != "" {
 		ApplyTag(tid, profile.ID, "env_language", v)
 	}
+	if v, _ := payload.Data.Attributes["utm_source"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_utm_source", v)
+	}
+	if v, _ := payload.Data.Attributes["landing_page"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_landing_page", v)
+	}
+	if v, _ := payload.Data.Attributes["browser"].(string); v != "" {
+		ApplyTag(tid, profile.ID, "env_browser", v)
+	}
 
 	// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪/意向/异议（emotion/intent/objection）时打——
 	// 红线：严禁由行为硬推态度；chat.go 发布 conversation_msg 时携带 strategy 情绪即合规
@@ -198,6 +239,16 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	}
 	if obj, _ = payload.Data.Attributes["objection"].(string); obj != "" {
 		ApplyTag(tid, profile.ID, "att_objection", obj)
+	}
+	// P1-1 态度维扩展：忠诚/流失风险/推荐意愿——仅零方或运营显式标记（emotion/intent 同红线，严禁行为硬推）
+	if loy, _ := payload.Data.Attributes["loyalty"].(string); loy != "" {
+		ApplyTag(tid, profile.ID, "att_loyalty", loy)
+	}
+	if churn, _ := payload.Data.Attributes["churn_risk"].(string); churn != "" {
+		ApplyTag(tid, profile.ID, "att_churn_risk", churn)
+	}
+	if adv, _ := payload.Data.Attributes["advocate"].(string); adv != "" {
+		ApplyTag(tid, profile.ID, "att_advocate", adv)
 	}
 
 	// P2 collector：CDP 事件进数据飞轮（脱敏在 Collect 内完成；URL 空则丢弃）

@@ -8,11 +8,10 @@ import (
 // ============================================================
 // 用户模型 - 系统用户（管理员、销售）
 // ============================================================
-//
 // User 系统用户表
 // SaaS 化改造：指向 tenant_users 表，sys_users 已废弃。
 type User struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`                                                  // 注释：主键ID
+	ID                 uint      `gorm:"primaryKey" json:"id"`                                                  // 主键ID
 	Username           string    `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名
 	PasswordHash       string    `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
 	RealName           string    `gorm:"size:50" json:"real_name"`                                              // 真实姓名
@@ -25,8 +24,8 @@ type User struct {
 	Department         string    `gorm:"size:50" json:"department"`                                             // 部门
 	TenantID           *uint     `gorm:"index" json:"-"`                                                        // 租户ID，NULL=超级管理员，非NULL=某租户下用户
 	DepartmentID       *uint     `gorm:"index" json:"department_id"`                                            // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
-	CreatedAt          time.Time `json:"created_at"`                                                            // 注释：创建时间
-	UpdatedAt          time.Time `json:"updated_at"`                                                            // 注释：更新时间
+	CreatedAt          time.Time `json:"created_at"`                                                            // 创建时间
+	UpdatedAt          time.Time `json:"updated_at"`                                                            // 更新时间
 }
 
 // TableName 指定表名

@@ -47,14 +47,14 @@ type newPasswordRequest struct {
 func Login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": "参数错误", "errors": []string{err.Error()}})
+		RespFail(c, http.StatusBadRequest, CodeParamErr, "参数错误: "+err.Error())
 		return
 	}
 
 	// 0. 防爆破守卫：锁定中直接拒绝（不消耗数据库查询）
 	clientIP := c.ClientIP()
 	if err := service.CheckLoginAllowed(req.Username, clientIP); err != nil {
-		RespErr(c, http.StatusTooManyRequests, 429, err.Error())
+		RespFail(c, http.StatusTooManyRequests, CodeRateLimited, err.Error())
 		return
 	}
 
@@ -69,19 +69,19 @@ func Login(c *gin.Context) {
 	}
 	result := db.DB.Raw(userQuery, args...).Scan(&user)
 	if result.Error != nil {
-		RespErr(c, 500, 500, "数据库错误")
+		RespFail(c, 500, CodeInternal, "数据库错误")
 		return
 	}
 	if result.RowsAffected == 0 {
 		service.RecordLoginFailure(req.Username, clientIP)
-		RespErr(c, 401, 401, "用户名或密码错误")
+		RespFail(c, 401, CodeUnauthorized, "用户名或密码错误")
 		return
 	}
 
 	// 2. bcrypt CompareHashAndPassword：检查明文密码与哈希是否匹配
 	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(req.Password)); err != nil {
 		service.RecordLoginFailure(req.Username, clientIP)
-		RespErr(c, 401, 401, "用户名或密码错误")
+		RespFail(c, 401, CodeUnauthorized, "用户名或密码错误")
 		return
 	}
 
@@ -156,7 +156,7 @@ func Register(c *gin.Context) {
 	var count int64
 	db.DB.Raw("SELECT count(*) FROM tenant_users WHERE username = ?", req.Username).Scan(&count)
 	if count > 0 {
-		RespErr(c, 400, 400, "用户名已存在")
+		RespFail(c, 400, CodeBizErr, "用户名已存在")
 		return
 	}
 

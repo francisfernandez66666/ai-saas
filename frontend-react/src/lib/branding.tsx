@@ -20,6 +20,7 @@ const DEFAULT: Brand = {
   platformDefault: true,
 }
 
+// 品牌上下文：跨组件共享当前租户白标
 const Ctx = createContext<Brand>(DEFAULT)
 
 // 消费品牌上下文：各页面用它读取当前租户白标（名称/Logo/主题色等）

@@ -1,3 +1,4 @@
+// OpenAPI 对话端点：对外渠道嵌入的 chat/completions 兼容接口。
 package api
 
 // ============================================================
@@ -15,6 +16,7 @@ package api
 // ============================================================
 
 import (
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -44,6 +46,7 @@ type openAPIChatReq struct {
 	SessionID      string  `json:"session_id"`       // 渠道侧会话ID（可选，隔离同一用户多轮会话）
 	Channel        string  `json:"channel"`          // 渠道标识：douyin/tiktok/taobao...（默认 openapi）
 	Temperature    float64 `json:"temperature"`
+	Stream         bool    `json:"stream"` // 是否流式返回（SSE，OpenAI 兼容逐帧；默认 false 全量返回）
 }
 
 // phoneRegex 手机号提取（留资线索捕获）
@@ -52,9 +55,11 @@ var phoneRegex = regexp.MustCompile(`1[3-9]\d{9}`)
 // OpenAPIChatCompletions POST /openapi/v1/chat/completions
 func OpenAPIChatCompletions(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
+	trace := middleware.GetTraceID(c) // P1-3：全链路 trace
 
 	var req openAPIChatReq
 	if err := c.ShouldBindJSON(&req); err != nil {
+		log.Printf("[OpenAPI][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
 		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "error_code": "bad_request", "message": "参数错误: " + err.Error()})
 		return
 	}
@@ -123,7 +128,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	if service.IsOffTopic(userInput) {
 		reply := service.GetOffTopicReply(userInput)
 		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "offtopic_hardbound")
-		c.JSON(http.StatusOK, openAICompletion(req.Model, reply, estimateTokens(userInput), estimateTokens(reply)))
+		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
 		return
 	}
 
@@ -170,8 +175,79 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	// P1-2 实时推送：外部渠道 AI 回复通知客户端与顾问端
 	notifyWS(tenantID, customer.ID, conversation.ID, "ai")
 
-	// 9. 返回 OpenAI 兼容结构
-	c.JSON(http.StatusOK, openAICompletion(req.Model, aiReply, estimateTokens(userInput), estimateTokens(aiReply)))
+	// 9. 返回 OpenAI 兼容结构（stream=true 走 SSE 逐帧，false 全量 JSON）
+	openAIRespond(c, req.Stream, req.Model, aiReply, estimateTokens(userInput), estimateTokens(aiReply))
+}
+
+// openAIRespond 按 stream 决定返回形态：
+//   - false：直接返回全量 OpenAI chat/completions JSON（与原行为一致）
+//   - true：SSE 逐帧流式返回（text/event-stream），兼容 OpenAI streaming 客户端；
+//     业务后置处理（引导轮数递减/盲点兜底/反问剥离/意向分）均在生成全量回复后完成，
+//     故以分块推送已定稿回复，保证所有业务语义与站内一致（零核心路径改动）。
+func openAIRespond(c *gin.Context, stream bool, modelName, content string, promptTokens, completionTokens int) {
+	if !stream {
+		c.JSON(http.StatusOK, openAICompletion(modelName, content, promptTokens, completionTokens))
+		return
+	}
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		// 不支持流式刷新则降级全量 JSON
+		c.JSON(http.StatusOK, openAICompletion(modelName, content, promptTokens, completionTokens))
+		return
+	}
+	// 按字数切分逐帧推送（每帧一个 token delta），末尾发 [DONE]
+	runes := []rune(content)
+	step := 4
+	for i := 0; i < len(runes); i += step {
+		end := i + step
+		if end > len(runes) {
+			end = len(runes)
+		}
+		delta := string(runes[i:end])
+		frame := gin.H{
+			"id":      "chatcmpl-" + time.Now().Format("20060102150405.000000000"),
+			"object":  "chat.completion.chunk",
+			"created": time.Now().Unix(),
+			"model":   firstNonEmpty(modelName, "ai-scrm"),
+			"choices": []gin.H{{
+				"index":         0,
+				"delta":         gin.H{"role": "assistant", "content": delta},
+				"finish_reason": nil,
+			}},
+		}
+		if b, err := json.Marshal(frame); err == nil {
+			c.Writer.WriteString("data: " + string(b) + "\n\n")
+			flusher.Flush()
+		}
+	}
+	// 结束帧
+	done := gin.H{
+		"id":      "chatcmpl-" + time.Now().Format("20060102150405.000000000"),
+		"object":  "chat.completion.chunk",
+		"created": time.Now().Unix(),
+		"model":   firstNonEmpty(modelName, "ai-scrm"),
+		"choices": []gin.H{{"index": 0, "delta": gin.H{}, "finish_reason": "stop"}},
+	}
+	if b, err := json.Marshal(done); err == nil {
+		c.Writer.WriteString("data: " + string(b) + "\n\n")
+	}
+	c.Writer.WriteString("data: [DONE]\n\n")
+	flusher.Flush()
+}
+
+// firstNonEmpty 返回首个非空字符串
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // resolveOpenAPICustomer external_user_id 租户内解析/创建客户

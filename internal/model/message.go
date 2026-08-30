@@ -12,7 +12,7 @@ import (
 
 // Message 消息表
 type Message struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
+	ID             uint   `gorm:"primaryKey" json:"id"`                      // 主键ID
 	TenantID       uint   `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	ConversationID uint   `gorm:"index;not null" json:"conversation_id"`     // 会话ID
 	CustomerID     uint   `gorm:"index" json:"customer_id"`                  // 客户ID
@@ -29,8 +29,8 @@ type Message struct {
 	Emotion     string  `gorm:"size:20" json:"emotion"`      // 情绪判断
 	// ---- 元数据 ----
 	Metadata  string    `gorm:"type:text" json:"metadata"` // 扩展元数据(JSON)
-	CreatedAt time.Time `json:"created_at"`                // 注释：创建时间
-	UpdatedAt time.Time `json:"updated_at"`                // 注释：更新时间
+	CreatedAt time.Time `json:"created_at"`                // 创建时间
+	UpdatedAt time.Time `json:"updated_at"`                // 更新时间
 }
 
 // TableName 指定表名

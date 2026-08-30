@@ -1,3 +1,4 @@
+// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
 package service
 
 // ============================================================
@@ -15,6 +16,7 @@ import (
 	"fmt"
 	"log"
 
+	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"gorm.io/gorm"
 )
@@ -27,9 +29,16 @@ var rlsTenantTables = []string{
 	"usage_records", "tenant_audit_logs",
 }
 
-// EnableRLS 幂等启用租户隔离策略（休眠，不破坏现有查询）
+// EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
+// 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
+// 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
+// service.WithTenantRLS(tid, fn) 或 SET LOCAL app.current_tenant 激活后即被 DB 强制收敛。
 func EnableRLS() {
 	if db.DB == nil {
+		return
+	}
+	if !config.GlobalConfig.RLS.Enabled {
+		log.Printf("[RLS] 未启用（RLS_ENABLED=false），跳过策略创建；租户隔离由应用层 db.T 保证")
 		return
 	}
 	for _, t := range rlsTenantTables {

@@ -1,8 +1,12 @@
+// 后台管理页：租户管理员登录后按分类 Tab 维护系统配置（热加载）、查看客户线索/流程/标签/品牌/审计/开放平台/用量/邀请
+// 顶部文件级说明；各子 Tab 函数见下方对应位置（CustomersTab / FlowEngineTab / TagSystemTab / BrandingTab / AuditTab / OpenApiTab / UsageTab / ReferralTab）
+// 依赖接口见各 Tab 注释与 Admin 组件顶部注释（/admin/config、/admin/tags、/admin/audit-logs、/admin/apikeys、/admin/usage/summary、/admin/referral/*、/admin/tenant/branding）
 import { useState, useEffect, useRef } from 'react'
 import { Tabs, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken, setToken, apiJSON } from '../lib/api'
 
+// Tabs 面板的子组件别名，用于下方按分类渲染配置面板
 const TabPanel = Tabs.TabPanel
 
 // 系统配置项（分类/类型/值，管理端读写）
@@ -32,6 +36,7 @@ const CATEGORY_TABS: { value: string; label: string }[] = [
   { value: 'branding', label: '🎨 品牌定制' },
 ]
 
+// 走通用配置面板（ConfigPanels）渲染的分类；其余分类由专属 Tab 组件处理
 const CONFIG_CATS = ['reply_speed', 'strategy', 'mental_stage', 'ai_chain', 'billing', 'notify']
 
 // 配置项渲染面板：按 value_type 渲染不同控件（number/bool/json/string），ai_chain 走专属布局
@@ -347,6 +352,7 @@ function CustomersTab() {
   const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
   const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
 
+  // 按阶段筛选 + 分页加载客户线索列表
   async function load() {
     setLoading(true)
     try {
@@ -357,12 +363,14 @@ function CustomersTab() {
   }
   useEffect(() => { load() }, [filter, page])
 
+  // 打开客户详情抽屉，并重置试驾单/聊天记录等展开态
   async function openDetail(id: number) {
     const r = await fetch(`/api/v1/advisor/customer/${id}`, { headers: { Authorization: 'Bearer ' + getToken() } })
     const j = await r.json()
     if (j.code === 0) { setDetail(j.data); setDrawer(true); setShowTd(false); setShowChat(false); setTestDrives([]); setChat([]) }
     else MessagePlugin.error('获取详情失败')
   }
+  // 展开/收起该客户的试驾单列表
   async function loadTd() {
     if (showTd) { setShowTd(false); return }
     const cid = detail?.customer?.id
@@ -370,6 +378,7 @@ function CustomersTab() {
     const j = await r.json()
     setTestDrives(j.data || []); setShowTd(true)
   }
+  // 展开/收起该客户的聊天记录
   async function loadChat() {
     if (showChat) { setShowChat(false); return }
     const cid = detail?.customer?.id
@@ -378,7 +387,9 @@ function CustomersTab() {
     setChat(j.data || []); setShowChat(true)
   }
   const c = detail?.customer
+  // 把消息发送方类型映射成中文展示名
   const who = (t: string) => (t === 'customer' ? '客户' : t === 'ai' ? 'AI' : t === 'human' ? '人工' : '系统')
+  // 把消息发送方类型映射成对应文字颜色
   const wcolor = (t: string) => (t === 'customer' ? 'text-blue-600' : t === 'ai' ? 'text-green-600' : 'text-orange-600')
 
   return (
@@ -476,6 +487,7 @@ function FlowEngineTab({ configs }: { configs: Cfg[] }) {
   ]
   const keys = ['tau', 'merge_window', 'stage_lock', 'aggressiveness_default', 'max_delay', 'min_delay', 'delay_range', 'model_priority', 'mock_mode', 'reply_probability']
   const chips = keys.map((k) => { const cfg = configs.find((c) => c.key === k); return cfg ? { k, v: cfg.value.length > 40 ? cfg.value.slice(0, 37) + '...' : cfg.value } : null }).filter(Boolean) as { k: string; v: string }[]
+  // 流程节点之间的箭头分隔符
   const Arrow = () => <span className="text-gray-300 text-xl px-2">→</span>
   return (
     <div className="space-y-8">
@@ -555,6 +567,7 @@ function TagSystemTab() {
     setLoading(false)
   }
   useEffect(() => { load() }, [])
+  // 新增标签：名称转小写下划线作为 code，按分类落库
   const add = async (catKey: string) => {
     const text = prompt('请输入新标签名称')
     if (!text || !text.trim()) return
@@ -567,6 +580,7 @@ function TagSystemTab() {
     if (json?.code !== 0) { MessagePlugin.error(json?.message || '添加失败'); return }
     MessagePlugin.success('已添加'); load()
   }
+  // 删除标签：二次确认后调用后端删除并刷新
   const remove = async (catKey: string, tag: any) => {
     if (!confirm(`确定删除标签"${tag.name}"吗？`)) return
     const { json } = await apiJSON('/api/v1/admin/tags/' + tag.id, { method: 'DELETE' })
@@ -625,6 +639,7 @@ function BrandingTab() {
       })
     }).catch(() => {})
   }, [])
+  // 提交品牌白标配置到后端（空域名置 null 回退平台子域名）
   async function save() {
     setMsg('保存中...')
     const payload = {
@@ -644,6 +659,7 @@ function BrandingTab() {
     const j = await res.json()
     setMsg(j.code === 0 ? '✅ 已保存，刷新页面即可看到效果' : '❌ ' + (j.message || '保存失败'))
   }
+  // 通用表单字段渲染：标签 + 输入框，受控写入表单状态 f
   const field = (k: keyof typeof f, label: string, ph: string) => (
     <div style={{ marginBottom: 12 }}>
       <label style={{ display: 'block', fontSize: 13, marginBottom: 4, color: '#475569' }}>{label}</label>
@@ -677,6 +693,7 @@ function AuditTab() {
   const [action, setAction] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
+  // 按动作/时间范围查询审计日志
   async function load() {
     const q = new URLSearchParams()
     if (action) q.set('action', action)
@@ -687,6 +704,7 @@ function AuditTab() {
     if (j.code === 0) setRows(j.data.list || [])
   }
   useEffect(() => { load() }, [])
+  // 审计日志表格列定义（critical 类动作标红）
   const cols = [
     { colKey: 'created_at', title: '时间', width: 160 },
     { colKey: 'action', title: '动作', width: 200, cell: (p: any) => <Tag theme={String(p.row.action).includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
@@ -729,12 +747,14 @@ function OpenApiTab() {
   const [showCreate, setShowCreate] = useState(false)
   const [name, setName] = useState('')
   const [perms, setPerms] = useState<string[]>(['customer.read'])
+  // 加载当前租户的 API Key 列表
   async function load() {
     const r = await fetch('/api/v1/admin/apikeys', { headers: { Authorization: 'Bearer ' + getToken() } })
     const j = await r.json()
     if (j.code === 0) setKeys(j.data || [])
   }
   useEffect(() => { load() }, [])
+  // 签发新 Key：明文仅返回一次，确认后尝试写剪贴板
   async function create() {
     if (!name || perms.length === 0) { MessagePlugin.warning('请填写名称并至少选择一项权限'); return }
     const r = await fetch('/api/v1/admin/apikeys', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() }, body: JSON.stringify({ name, perms }) })
@@ -746,8 +766,11 @@ function OpenApiTab() {
     }
     setName(''); setShowCreate(false); load()
   }
+  // 启用/停用指定 Key（即时生效）
   const toggle = async (id: number, active: boolean) => { await fetch(`/api/v1/admin/apikeys/${id}/${active ? 'enable' : 'disable'}`, { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } }); load() }
+  // 删除指定 Key
   const del = async (id: number) => { if (!confirm('确认删除该 Key？')) return; await fetch(`/api/v1/admin/apikeys/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + getToken() } }); load() }
+  // 开放平台 Key 表格列定义（含权限/状态/操作渲染）
   const cols = [
     { colKey: 'name', title: '名称', width: 160 },
     { colKey: 'key_prefix', title: 'Key前缀', width: 160, cell: (p: any) => <code className="bg-gray-100 px-2 py-0.5 rounded text-xs">{p.row.key_prefix}...</code> },
@@ -832,6 +855,9 @@ function ReferralTab() {
   )
 }
 
+// 登录卡片样式（未登录态使用）
 const card: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 24, width: 320, boxShadow: '0 4px 24px rgba(0,0,0,.08)' }
+// 登录输入框样式
 const inp: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, marginBottom: 12 }
+// 后台顶部栏样式
 const header: React.CSSProperties = { background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }

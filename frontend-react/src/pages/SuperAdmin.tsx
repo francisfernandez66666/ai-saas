@@ -25,38 +25,58 @@ type Ag = { id: number; username?: string; tenant_id: number; tenant_name?: stri
 // 平台超管后台：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 // 依赖 /api/v1/super/* 系列接口；仅 role=super_admin 可访问（前端双重守卫 + 后端鉴权）
 export default function SuperAdmin() {
+  // 读取品牌配置（页脚展示品牌名）
   const brand = useBrand()
+  // 当前超管用户名（来自 localStorage）
   const [me, setMe] = useState(localStorage.getItem('username') || '-')
+  // 租户搜索关键字
   const [kw, setKw] = useState('')
+  // 租户列表
   const [tenants, setTenants] = useState<Tenant[]>([])
+  // AI 商业包列表
   const [pkgs, setPkgs] = useState<Pkg[]>([])
+  // 模型成本核算汇总（近 N 天）
   const [cost, setCost] = useState<Cost | null>(null)
+  // 用户反馈列表
   const [fbs, setFbs] = useState<Fb[]>([])
+  // 反馈筛选状态（open/resolved/''）
   const [fbStatus, setFbStatus] = useState('open')
+  // 待确认收款订单列表
   const [pendings, setPendings] = useState<Pending[]>([])
+  // 审计日志列表
   const [audits, setAudits] = useState<Audit[]>([])
+  // 协议签署记录列表
   const [ags, setAgs] = useState<Ag[]>([])
+  // 协议类型筛选（user/privacy/''）
   const [agType, setAgType] = useState('')
-  // branding
+  // 白标定制：当前选中的租户 ID
   const [bdTenant, setBdTenant] = useState<number | ''>('')
+  // 白标表单字段（自定义域名/品牌名/Logo/主题色等）
   const [bd, setBd] = useState({ custom_domain: '', brand_name: '', brand_link: '', logo_url: '', favicon_url: '', primary_color: '', secondary_color: '' })
+  // 白标保存结果提示
   const [bdMsg, setBdMsg] = useState('')
 
+  // 拉取租户列表
   async function load() {
     const r = await fetch('/api/v1/super/tenants', AUTH()); const j = await r.json(); setTenants(j.data || [])
   }
+  // 拉取 AI 商业包列表
   async function loadPkgs() {
     const r = await fetch('/api/v1/super/packages', AUTH()); const j = await r.json(); setPkgs(j.data || [])
   }
+  // 拉取近 30 天模型成本核算汇总
   async function loadCost() {
     const r = await fetch('/api/v1/super/usage/cost?days=30', AUTH()); const j = await r.json(); if (j.code === 0) setCost(j.data)
   }
+  // 按状态拉取用户反馈列表
   async function loadFeedbacks() {
     const r = await fetch('/api/v1/super/feedbacks?status=' + fbStatus + '&page_size=50', AUTH()); const j = await r.json(); setFbs((j.data && j.data.list) || [])
   }
+  // 拉取待确认收款订单
   async function loadPending() {
     const r = await fetch('/api/v1/super/orders/pending', AUTH()); const j = await r.json(); setPendings(j.data || [])
   }
+  // 按筛选条件（动作/租户/时间区间）拉取审计日志
   async function loadAudit() {
     const q = new URLSearchParams()
     const a = (document.getElementById('aAction') as HTMLSelectElement)?.value
@@ -66,14 +86,17 @@ export default function SuperAdmin() {
     if (a) q.set('action', a); if (ti) q.set('tenant_id', ti); if (f) q.set('from', f); if (t) q.set('to', t)
     const r = await fetch('/api/v1/super/audit-logs?' + q, AUTH()); const j = await r.json(); setAudits((j.data && j.data.list) || [])
   }
+  // 按类型拉取协议签署记录
   async function loadAgreements() {
     const r = await fetch('/api/v1/super/agreements' + (agType ? '?type=' + agType : ''), AUTH()); const j = await r.json(); setAgs((j.data && j.data.list) || [])
   }
+  // 读取选中租户的白标配置（品牌名若为平台默认值则清空待填）
   async function loadBdTenant() {
     if (bdTenant === '') return
     const r = await fetch('/api/v1/super/tenants/' + bdTenant + '/branding', AUTH()); const j = await r.json(); const b = j.data || {}
     setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== '跨山 LexCross') ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '' })
   }
+  // 保存选中租户的白标配置
   async function saveBd() {
     if (bdTenant === '') return
     setBdMsg('保存中...')
@@ -93,18 +116,23 @@ export default function SuperAdmin() {
 
   if (localStorage.getItem('role') !== 'super_admin') return null
 
+  // 按关键字过滤租户（名称或标识模糊匹配）
   const filtered = tenants.filter((t) => !kw || t.name.includes(kw) || t.code.includes(kw))
+  // 把空值安全转成字符串，避免表格渲染出 undefined
   const esc = (s?: string) => (s == null ? '' : String(s))
 
+  // 封禁/恢复租户（带确认）
   async function setStatus(id: number, st: string) {
     if (!confirm('确认将租户 #' + id + ' 置为 ' + st + ' ?')) return
     await fetch(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', headers: { ...AUTH(), 'Content-Type': 'application/json' }, body: JSON.stringify({ status: st }) })
     load()
   }
+  // 上架/下架商业包
   async function togglePkg(id: number, enabled: boolean) {
     const r = await fetch(`/api/v1/super/packages/${id}`, { method: 'PUT', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) })
     const j = await r.json(); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败'); loadPkgs()
   }
+  // 新增商业包（读取弹窗表单字段后提交，成功后清空并刷新）
   async function createPkg() {
     const code = (document.getElementById('pCode') as HTMLInputElement).value.trim()
     const name = (document.getElementById('pName') as HTMLInputElement).value.trim()
@@ -125,6 +153,7 @@ export default function SuperAdmin() {
     const r = await fetch(`/api/v1/super/orders/${id}/confirm`, { method: 'POST', ...AUTH() })
     const j = await r.json(); MessagePlugin.info(j.message || '操作完成'); loadPending()
   }
+  // 标记反馈为已处理（可填处理备注）
   async function resolveFb(id: number) {
     const note = prompt('处理备注（可空）：'); if (note === null) return
     await fetch('/api/v1/super/feedbacks/resolve', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ id, note }) })
@@ -258,6 +287,7 @@ export default function SuperAdmin() {
   )
 }
 
+// 后台通用分区容器：标题 + 可选说明 + 内容
 function Section({ title, desc, children }: { title: React.ReactNode; desc?: string; children: React.ReactNode }) {
   return (
     <div style={{ marginBottom: 30 }}>
@@ -267,7 +297,9 @@ function Section({ title, desc, children }: { title: React.ReactNode; desc?: str
     </div>
   )
 }
+// 白标配置的单行输入字段：标签 + 输入框
 function Field({ label, v, set, ph }: { label: string; v: string; set: (x: string) => void; ph?: string }) {
   return <div><label style={{ display: 'block', fontSize: 13, color: '#475569', marginBottom: 4 }}>{label}</label><Input value={v} onChange={(x) => set(x)} placeholder={ph} style={{ width: '100%' }} /></div>
 }
+// 审计日志筛选控件（下拉/输入框）统一样式
 const sel: React.CSSProperties = { padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }

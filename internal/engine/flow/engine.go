@@ -1,3 +1,7 @@
+// Package flow 流程引擎（会话生命周期编排）
+// 只看 route 字段跳节点，不关心决策细节；决策由 strategy 包负责。
+// 负责启动/推进流程实例、节点执行分发、与 state_machine 状态机同步心跳。
+// 编排层（orchestrate.go）统一收事件、拉画像、调 strategy 大脑，业务层唯一合法大脑通道。
 package flow
 
 import (

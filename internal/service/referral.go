@@ -43,8 +43,8 @@ func cfgInt(key string, def int) int {
 
 // GenerateInviteCode 生成8位大写字母数字邀请码（去除易混淆字符 0/O/1/I）
 func GenerateInviteCode() (string, error) {
-		// alphabet 邀请码字符集：去除易混淆字符 0/O/1/I，仅留大写字母数字，降低人工抄错率
-		const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+	// alphabet 邀请码字符集：去除易混淆字符 0/O/1/I，仅留大写字母数字，降低人工抄错率
+	const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
 	out := make([]byte, 8)
 	for i := range out {
 		n, err := rand.Int(rand.Reader, big.NewInt(int64(len(alphabet))))

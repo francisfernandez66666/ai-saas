@@ -1,3 +1,4 @@
+// 审计日志查询API：超管全平台与租户本租户的只读分页查询。
 package api
 
 // 审计日志查询API：超管全平台(SuperAuditLogs)与租户本租户(AdminAuditLogs)的只读分页查询。

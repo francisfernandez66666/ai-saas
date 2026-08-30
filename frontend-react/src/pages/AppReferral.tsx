@@ -26,6 +26,7 @@ export default function AppReferral() {
     }).catch(() => {})
   }, [])
 
+  // 复制邀请链接到剪贴板（优先用后端返回的链接，否则本地拼装）
   const copy = () => {
     const url = inviteUrl || (typeof window !== 'undefined' ? location.origin + '/register?ref=' + (info?.invite_code || '') : '')
     navigator.clipboard?.writeText(url)

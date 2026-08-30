@@ -14,7 +14,7 @@ import (
 
 // Conversation 会话表
 type Conversation struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`                      // 注释：主键ID
+	ID             uint   `gorm:"primaryKey" json:"id"`                      // 主键ID
 	TenantID       uint   `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	CustomerID     uint   `gorm:"index;not null" json:"customer_id"`         // 客户ID
 	AssignedUserID uint   `json:"assigned_user_id"`                          // 归属销售ID
@@ -47,8 +47,8 @@ type Conversation struct {
 	// ---- 状态S的JSON存储（扩展用）----
 	StateJSON string `gorm:"type:text" json:"state_json"` // 完整会话状态JSON
 
-	CreatedAt time.Time `json:"created_at"` // 注释：创建时间
-	UpdatedAt time.Time `json:"updated_at"` // 注释：更新时间
+	CreatedAt time.Time `json:"created_at"` // 创建时间
+	UpdatedAt time.Time `json:"updated_at"` // 更新时间
 }
 
 // TableName 指定表名

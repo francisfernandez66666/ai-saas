@@ -231,9 +231,11 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	callStart := time.Now()
 	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", tenantID, messages, aiTemp)
 	if err != nil {
+		service.IncAIFailure() // P1-2：全模型失败计为 AI 失败（成功率分母）
 		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
+	service.IncAISuccess() // P1-2：真模型成功返回计为 AI 成功
 	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
 	// 网关模式下计费权在网关，本地不再重复落账/扣减
 	if !gatewayMode {

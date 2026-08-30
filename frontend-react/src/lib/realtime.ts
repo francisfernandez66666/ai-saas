@@ -8,6 +8,7 @@ function wsURL(path: string): string {
   return `${proto}//${location.host}${path}`
 }
 
+// WS 事件处理函数类型：收到消息后回调
 type EvHandler = (ev: any) => void
 
 // 顾问端 WS：token 取自 localStorage

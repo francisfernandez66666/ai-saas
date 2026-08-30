@@ -6,8 +6,11 @@ import { useBrand } from '../lib/branding'
 // 租户自助开通页：填写企业信息并创建管理员账号；支持邮箱验证（平台热开关）、邀请码（ref）返利
 // 依赖 /api/v1/auth/register-config、/api/v1/tenant/check-code、/api/v1/auth/email-code、/api/v1/tenant/signup
 export default function Register() {
+  // 读取品牌配置（用于页脚展示品牌名）
   const brand = useBrand()
+  // 平台是否开启邮箱验证（来自 register-config 热开关）
   const [emailVerifyOn, setEmailVerifyOn] = useState(false)
+  // 开通表单数据
   const [form, setForm] = useState({
     company_name: '',
     code: '',
@@ -18,9 +21,13 @@ export default function Register() {
     contact_name: '',
     contact_phone: '',
   })
+  // 访问标识（子域名）校验提示：ok 表示可用
   const [codeTip, setCodeTip] = useState<{ text: string; ok: boolean }>({ text: '', ok: false })
+  // 提交结果提示文案
   const [msg, setMsg] = useState('')
+  // 预留倒计时（当前未启用，保留兼容）
   const [cd, setCd] = useState(0)
+  // 防抖/倒计时定时器引用
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
@@ -165,6 +172,7 @@ export default function Register() {
   )
 }
 
+// 页面外层容器样式（居中纵向排列）
 const wrap: React.CSSProperties = {
   minHeight: '100vh',
   display: 'flex',
@@ -173,6 +181,7 @@ const wrap: React.CSSProperties = {
   background: '#f5f7fa',
   padding: 20,
 }
+// 表单卡片样式
 const card: React.CSSProperties = {
   background: '#fff',
   borderRadius: 12,
@@ -180,8 +189,11 @@ const card: React.CSSProperties = {
   boxShadow: '0 4px 24px rgba(0,0,0,.08)',
   width: 'min(420px, 92vw)',
 }
+// 副标题（试用说明）样式
 const sub: React.CSSProperties = { color: '#718096', fontSize: 13, marginBottom: 22 }
+// 表单字段标签组件
 const Label: React.FC<{ children: React.ReactNode; style?: React.CSSProperties }> = ({ children, style }) => (
   <label style={{ display: 'block', fontSize: 13, margin: '14px 0 6px', color: '#4a5568', ...style }}>{children}</label>
 )
+// 底部提示（已注册/查看套餐）样式
 const tip: React.CSSProperties = { marginTop: 16, fontSize: 13, textAlign: 'center', color: '#718096' }

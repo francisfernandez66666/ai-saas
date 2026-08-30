@@ -1,3 +1,4 @@
+// CDP 开放接口API：OneID 合并与事件摄入的对外写入端点。
 package api
 
 import (

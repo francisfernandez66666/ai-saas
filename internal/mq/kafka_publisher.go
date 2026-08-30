@@ -46,7 +46,7 @@ func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
 
 // Publish 生产事件（Header 注入 + 审计落库 + kafka 写入）
 func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) error {
-	env := buildEnvelope(topic, tenantID, oneID, eventType, payload)
+	env := buildEnvelope(ctx, topic, tenantID, oneID, eventType, payload)
 	recordAudit(env, "sent")
 
 	fullTopic := c.cfg.TopicPrefix + topic
@@ -57,11 +57,11 @@ func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, 
 		Headers: kafkaHeaders(env),
 	})
 	if err != nil {
-		log.Printf("[MQ-Kafka] 发布失败 topic=%s event=%s: %v", fullTopic, env.Header.EventID, err)
+		log.Printf("[MQ-Kafka] 发布失败 topic=%s event=%s trace=%s: %v", fullTopic, env.Header.EventID, env.Header.TraceID, err)
 		return err
 	}
-	log.Printf("[MQ-Kafka] 已发布 topic=%s event=%s tenant=%d one=%s type=%s",
-		fullTopic, env.Header.EventID, tenantID, env.Header.OneID, eventType)
+	log.Printf("[MQ-Kafka] 已发布 topic=%s event=%s tenant=%d one=%s type=%s trace=%s",
+		fullTopic, env.Header.EventID, tenantID, env.Header.OneID, eventType, env.Header.TraceID)
 	return nil
 }
 

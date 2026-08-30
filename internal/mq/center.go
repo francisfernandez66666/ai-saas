@@ -79,11 +79,17 @@ func Close() {
 // ============================================================
 
 // buildEnvelope 构建信封（Header 注入唯一入口）
-func buildEnvelope(topic string, tenantID uint, oneID string, eventType string, payload interface{}) Envelope {
+func buildEnvelope(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) Envelope {
 	if oneID == "" {
 		oneID = fmt.Sprintf("sys:t%d", tenantID)
 	}
+	// P1-3：trace 优先沿用请求链路（gin.Context 经 ctx.Value 透传），否则随机
 	traceID := randomHex(8)
+	if ctx != nil {
+		if g, ok := ctx.Value("trace_id").(string); ok && g != "" {
+			traceID = g
+		}
+	}
 	return Envelope{
 		Header: EventHeader{
 			TenantID:  tenantID,

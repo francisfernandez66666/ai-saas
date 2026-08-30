@@ -16,7 +16,7 @@ import (
 
 // Customer 客户表
 type Customer struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`                              // 注释：主键ID
+	ID               uint      `gorm:"primaryKey" json:"id"`                              // 主键ID
 	Name             string    `gorm:"size:50" json:"name"`                               // 客户姓名
 	Phone            string    `gorm:"size:20;index" json:"phone"`                        // 手机号
 	WechatID         string    `gorm:"size:50;index" json:"wechat_id"`                    // 微信号
@@ -49,8 +49,8 @@ type Customer struct {
 	ExternalUserID   string    `gorm:"size:64;index" json:"external_user_id"`             // 外部渠道用户ID（OpenAPI对话端点：douyin/tiktok/taobao等渠道嵌入映射）
 	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
 	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效
-	CreatedAt        time.Time `json:"created_at"`                                        // 注释：创建时间
-	UpdatedAt        time.Time `json:"updated_at"`                                        // 注释：更新时间
+	CreatedAt        time.Time `json:"created_at"`                                        // 创建时间
+	UpdatedAt        time.Time `json:"updated_at"`                                        // 更新时间
 }
 
 // GenerateVisitorKey 生成 32 字节随机十六进制访客密钥（C3 横向越权防线）
@@ -190,6 +190,7 @@ func sourceCode(source string) float64 {
 	return 99
 }
 
+// ageGroupCode 把年龄映射成 T 向量用的分桶码（0 未知~5 老年）
 func ageGroupCode(age int) float64 {
 	if age <= 0 {
 		return 0
@@ -209,6 +210,7 @@ func ageGroupCode(age int) float64 {
 	return 5
 }
 
+// regionCode 把地域名映射成 T 向量用的分桶码（0 未知~7 东北）
 func regionCode(region string) float64 {
 	regionMap := map[string]float64{
 		"":   0,
@@ -226,6 +228,7 @@ func regionCode(region string) float64 {
 	return 99
 }
 
+// careerCode 把职业映射成 T 向量用的分桶码（0 未知~8 教师）
 func careerCode(career string) float64 {
 	careerMap := map[string]float64{
 		"":     0,
@@ -244,6 +247,7 @@ func careerCode(career string) float64 {
 	return 99
 }
 
+// resistanceCode 把抗性类型映射成 T 向量用的分桶码（0 无~4 品牌）
 func resistanceCode(resistance string) float64 {
 	resistanceMap := map[string]float64{
 		"none":    0, // 无抗性
@@ -258,6 +262,7 @@ func resistanceCode(resistance string) float64 {
 	return 0
 }
 
+// customerTypeCode 把客户类型映射成 T 向量分桶码（0 潜客/1 车主）
 func customerTypeCode(ct string) float64 {
 	switch ct {
 	case "potential":

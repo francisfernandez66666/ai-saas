@@ -3,7 +3,6 @@ package industrypack
 
 // ============================================================
 // 行业包 Build / Open（.aipack 打包与开包）
-//
 // Build(源目录) → tar.gz → SHA256 写入 manifest → 私钥签名 manifest
 //   → 公钥封装随机AES key → 组装容器字节
 // Open(容器字节) → 验签 manifest → 解封解密 → 校验内容哈希 → 还原八件套
