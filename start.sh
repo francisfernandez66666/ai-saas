@@ -31,6 +31,15 @@ if [ "$1" = "bg" ]; then
     MODE="bg"
 elif [ "$1" = "noopen" ]; then
     NO_OPEN=true
+elif [ "$1" = "gateway" ]; then
+    MODE="gateway"
+fi
+
+# 网关监听端口（读 .env LLM_GATEWAY_LISTEN，缺省 9091）
+GATEWAY_PORT=9091
+if [ -f "$PROJECT_DIR/.env" ]; then
+  ENV_GW=$(grep -E '^[[:space:]]*LLM_GATEWAY_LISTEN=' "$PROJECT_DIR/.env" | head -1 | cut -d= -f2 | tr -d ' ":')
+  [ -n "$ENV_GW" ] && GATEWAY_PORT="${ENV_GW#:}"
 fi
 
 echo -e "${GREEN}========================================${NC}"
@@ -41,6 +50,27 @@ echo -e "${GREEN}========================================${NC}"
 if [ ! -f "$PROJECT_DIR/go.mod" ]; then
     echo -e "${RED}错误: 未找到go.mod，请确认在ai-scrm项目根目录运行${NC}"
     exit 1
+fi
+
+# ===== AI 网关独立部署模式（P0-1）=====
+if [ "$MODE" = "gateway" ]; then
+    echo -e "${YELLOW}[1/1] 编译 AI 网关...${NC}"
+    cd "$PROJECT_DIR"
+    go build -o "$PROJECT_DIR/ai-gateway" ./cmd/gateway
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}网关编译失败${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}网关编译成功 ✓${NC}"
+    echo ""
+    echo -e "  ${CYAN}健康检查:${NC} http://localhost:$GATEWAY_PORT/health"
+    echo -e "  ${CYAN}对话端点:${NC} http://localhost:$GATEWAY_PORT/v1/chat/completions"
+    echo -e "  ${CYAN}向量端点:${NC} http://localhost:$GATEWAY_PORT/v1/embeddings"
+    echo ""
+    echo -e "${GRAY}Ctrl+C 停止网关 | 业务实例须配 LLM_GATEWAY_URL=http://localhost:$GATEWAY_PORT${NC}"
+    echo -e "${GREEN}------------------------------------------${NC}"
+    "$PROJECT_DIR/ai-gateway"
+    exit 0
 fi
 
 # 停掉旧进程
