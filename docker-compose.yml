@@ -4,7 +4,9 @@ version: '3.8'
 # 用法: docker compose up -d
 services:
   postgres:
-    image: postgres:16-alpine
+    # P1-补 pgvector：换用内置 vector 扩展的 PG 镜像，KB 向量检索走 SQL 索引。
+    # 数据卷 pgdata 不变（沿用原库）；首次启动由 EnsurePgvector 执行 CREATE EXTENSION vector。
+    image: ankane/pgvector:v0.8.0-pg16
     container_name: ai-scrm-pg
     environment:
       POSTGRES_USER: ai_scrm

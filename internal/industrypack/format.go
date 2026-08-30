@@ -46,10 +46,10 @@ type Manifest struct {
 	FormatVersion int       `json:"format_version"` // = FormatVersion
 	Code          string    `json:"code"`           // 包唯一码：auto / auto_rox ...
 	Name          string    `json:"name"`           // 显示名
-	Industry      string    `json:"industry"`
+	Industry      string    `json:"industry"` // 注释：行业
 	Version       string    `json:"version"` // semver
-	Publisher     string    `json:"publisher"`
-	CreatedAt     time.Time `json:"created_at"`
+	Publisher     string    `json:"publisher"` // 注释：发布者
+	CreatedAt     time.Time `json:"created_at"` // 注释：创建时间
 	ContentSHA256 string    `json:"content_sha256"` // hex(sha256(tar.gz))——解密后校验完整性
 	// ---- 三级树形结构（2026-08-26 定稿）：行业 → 企业(=租户) → 部门 ----
 	// industry   行业包：parent_code 为空
@@ -73,50 +73,50 @@ func ValidLevel(l string) bool {
 
 // PackContent 开包后的完整内容（内存态）
 type PackContent struct {
-	Manifest Manifest
+	Manifest Manifest // 注释：包元数据
 	Files    map[string][]byte // 相对文件名 → 内容
 }
 
 // ScriptTemplate scripts.json 元素 → model.Template 映射源
 type ScriptTemplate struct {
-	ID               string   `json:"id"`
-	AnchorType       int      `json:"anchor_type"`
-	SubType          string   `json:"sub_type"`
-	Name             string   `json:"name"`
-	Category         string   `json:"category"`
-	TriggerTags      []string `json:"trigger_tags"`
-	RequiredTags     []string `json:"required_tags"`
-	MinIntent        float64  `json:"min_intent"`
-	MaxIntent        float64  `json:"max_intent"`
-	ApplicableModels []string `json:"applicable_models"`
-	PromptTemplate   string   `json:"prompt_template"`
-	HookTemplate     string   `json:"hook_template"`
-	HookFields       []string `json:"hook_fields"`
-	RequiredFeatures []string `json:"required_features"`
-	Priority         int      `json:"priority"`
-	Status           int      `json:"status"`
+	ID               string   `json:"id"` // 注释：主键ID
+	AnchorType       int      `json:"anchor_type"` // 注释：锚类型
+	SubType          string   `json:"sub_type"` // 注释：子类型
+	Name             string   `json:"name"` // 注释：名称
+	Category         string   `json:"category"` // 注释：分类
+	TriggerTags      []string `json:"trigger_tags"` // 注释：触发标签
+	RequiredTags     []string `json:"required_tags"` // 注释：必含标签
+	MinIntent        float64  `json:"min_intent"` // 注释：最低意向分
+	MaxIntent        float64  `json:"max_intent"` // 注释：最高意向分
+	ApplicableModels []string `json:"applicable_models"` // 注释：适用车型(json)
+	PromptTemplate   string   `json:"prompt_template"` // 注释：抛话术模板
+	HookTemplate     string   `json:"hook_template"` // 注释：钩话术模板
+	HookFields       []string `json:"hook_fields"` // 注释：钩采集字段
+	RequiredFeatures []string `json:"required_features"` // 注释：所需卖点
+	Priority         int      `json:"priority"` // 注释：优先级
+	Status           int      `json:"status"` // 注释：状态
 }
 
 // KbFeature product_kb.json 内 features[] 元素 → model.Feature 映射源
 type KbFeature struct {
-	ID               string            `json:"id"`
-	FeatureName      string            `json:"feature_name"`
-	Category         string            `json:"category"`
-	DescTemplate     string            `json:"desc_template"`
-	ShortDesc        string            `json:"short_desc"`
-	Params           map[string]string `json:"params"`
-	ApplicableTags   []string          `json:"applicable_tags"`
-	ApplicableModels []string          `json:"applicable_models"`
-	Priority         int               `json:"priority"`
-	Status           int               `json:"status"`
+	ID               string            `json:"id"` // 注释：主键ID
+	FeatureName      string            `json:"feature_name"` // 注释：卖点名称
+	Category         string            `json:"category"` // 注释：分类
+	DescTemplate     string            `json:"desc_template"` // 注释：描述模板
+	ShortDesc        string            `json:"short_desc"` // 注释：简短描述
+	Params           map[string]string `json:"params"` // 注释：参数(json)
+	ApplicableTags   []string          `json:"applicable_tags"` // 注释：适用标签(json)
+	ApplicableModels []string          `json:"applicable_models"` // 注释：适用车型(json)
+	Priority         int               `json:"priority"` // 注释：优先级
+	Status           int               `json:"status"` // 注释：状态
 }
 
 // ProductKB product_kb.json 顶层结构（本批消费 features；其余 P2）
 type ProductKB struct {
-	Features []KbFeature      `json:"features"`
+	Features []KbFeature      `json:"features"` // 注释：功能列表
 	Faqs     []map[string]any `json:"faqs"`     // P2: knowledge_fragments
 	Products []map[string]any `json:"products"` // P2
-	Notes    string           `json:"notes"`
+	Notes    string           `json:"notes"` // 注释：备注
 }
 
 // ---- 确定性输出工具（同内容同哈希） ----

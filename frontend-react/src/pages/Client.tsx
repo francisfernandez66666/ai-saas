@@ -2,6 +2,8 @@
 // 首次进入若无 visitor_key 则向后端申请，后续会话持久化复用，保证同一访客身份连续
 import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
+import { useClientWS } from '../lib/realtime'
+import { Msg } from '../types'
 
 const API = '/api/v1'
 // 本地持久化客户身份 ID，避免刷新后会话丢失（匿名访客态）
@@ -9,13 +11,14 @@ const LS_ID = 'scrm_customer_id'
 // C3：访客密钥，匿名访问 /chat/history、/chat/welcome 必须携带，防横向越权
 const LS_KEY = 'scrm_visitor_key'
 
-type Msg = { id?: number | string; conversation_id?: number; sender_type: string; content: string; created_at?: string }
-
 // C 端客户聊天页：匿名访客与 AI 对话，支持人机验证（Turnstile）、会话合并、AI 跟进追问
+// 注：Msg 类型已从 ../types 导入（上方 import），统一领域口径
 // 依赖 /api/v1/chat/history、/api/v1/chat/welcome、/api/v1/chat/test、/api/v1/chat/guest、/api/v1/turnstile/sitekey
 export default function Client() {
   const brand = useBrand()
   const [msgs, setMsgs] = useState<Msg[]>([])
+  const [wsCid, setWsCid] = useState<number | null>(null)
+  const [wsVk, setWsVk] = useState<string | null>(null)
   const [input, setInput] = useState('')
   const [convId, setConvId] = useState<number>(0)
   const [typing, setTyping] = useState(false)
@@ -138,9 +141,9 @@ export default function Client() {
     const params = new URLSearchParams(window.location.search)
     const override = params.get('customer_id')
     const stored = localStorage.getItem(LS_ID)
-    if (override) custId.current = parseInt(override)
-    else if (stored) custId.current = parseInt(stored)
-    else { (async () => { try { const r = await fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }); const j = await r.json(); if (j.code === 0 && j.customer_id) { custId.current = j.customer_id; localStorage.setItem(LS_ID, String(custId.current)); if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key) } } catch {} })() }
+    if (override) { custId.current = parseInt(override); setWsCid(custId.current); setWsVk(localStorage.getItem(LS_KEY) || null) }
+    else if (stored) { custId.current = parseInt(stored); setWsCid(custId.current); setWsVk(localStorage.getItem(LS_KEY) || null) }
+    else { (async () => { try { const r = await fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }); const j = await r.json(); if (j.code === 0 && j.customer_id) { custId.current = j.customer_id; localStorage.setItem(LS_ID, String(custId.current)); if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key); setWsCid(custId.current); setWsVk(j.visitor_key || localStorage.getItem(LS_KEY) || null) } } catch {} })() }
     initTurnstile()
     loadHistory().then(() => { if (convId === 0 && custId.current) callWelcome() })
     setOnline(isWork())
@@ -149,6 +152,9 @@ export default function Client() {
     return () => clearInterval(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // P1-2 实时推送：客户身份就绪后连 WS，收到新消息信号即触发即时轮询（5s 轮询保留兜底）
+  useClientWS(wsCid, wsVk, () => poll())
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', height: '100vh', display: 'flex', flexDirection: 'column', background: '#f7f7f7' }}>

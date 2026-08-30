@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { Button, Dialog, Input, Textarea, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken } from '../lib/api'
+import { useAdvisorWS } from '../lib/realtime'
+import { Msg, Cust, Detail } from '../types'
 
 // 顾问工作台接口前缀与带 token 的请求头构造器
 const API = '/api/v1/advisor'
@@ -13,9 +15,7 @@ const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
 const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
 
 type Stat = { value: number; label: string; color: string }
-type Cust = { id: number; name?: string; phone?: string; interest_model?: string; journey_stage?: string; assigned_user_name?: string; conv_mode?: string; last_message?: string; last_message_at?: string; updated_at?: string }
-type Detail = { customer: any; tags?: { tag_name: string }[]; followups?: any[]; conversations?: any[] }
-type Msg = { sender_type: string; content: string; created_at?: string }
+// Cust / Detail / Msg 已从 ../types 导入（见上方 import），统一领域口径
 
 // 顾问端（移动风格）：首页客户列表/跟进提醒/我的套餐，客户详情含聊天、试驾、标签、AI 接管开关
 // 依赖 /api/v1/advisor/*、/api/v1/chat/history、/api/v1/feedback、/api/v1/billing/my-package
@@ -91,6 +91,12 @@ export default function Advisor() {
     const t = setInterval(async () => { const r = await fetch('/api/v1/chat/history?customer_id=' + detailId + '&limit=50', AUTH()); const j = await r.json(); if (j.code === 0) setMsgs(j.data || []) }, 5000)
     return () => clearInterval(t)
   }, [detailId])
+
+  // P1-2 实时推送：收到新消息信号即触发即时拉取（5s 轮询保留兜底）
+  useAdvisorWS((ev) => {
+    loadCustomers()
+    if (detailId != null && ev?.customer_id === detailId) loadChat(detailId)
+  })
 
   if (!getToken()) return null
   const c = detail?.customer
@@ -234,6 +240,7 @@ function FU({ f, onClick }: { f: any; onClick: () => void }) {
 }
 
 // 客户资料编辑表单：通过 DOM id 直接读取输入框值（非受控），提交到 /advisor/customer/:id/info
+// 疑点：类型里声明了 id 入参但函数未解构使用，实际靠闭包 detailId 提交
 function EditForm({ cur }: { id: number; cur: any }) {
   const lab = { display: 'block', fontSize: 13, color: '#475569', margin: '8px 0 4px' }
   const inp = { width: '100%', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14 }

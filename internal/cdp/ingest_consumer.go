@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"time"
 
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/service"
 )
 
 // ============================================================
@@ -28,6 +30,12 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	{Code: "beh_msg_active", Name: "会话活跃", Category: "behavior"},
 	// M2 补齐（2026-08-25）：payment 子事件此前发布后零消费——CDP 记账收口
 	{Code: "tran_order_paid", Name: "付费转化", Category: "behavior"},
+	// P1-3（2026-08-29）四维补齐：环境维 + 态度维
+	// 环境维：由事件携带的渠道/路由/发生时段时间派生（非行为硬推，属上下文信号）
+	{Code: "env_route", Name: "交互路由", Category: "environment"},
+	{Code: "env_time_slot", Name: "到访时段", Category: "environment"},
+	// 态度维：严禁由行为推导——仅当事件属性显式携带 NLP/零方情绪（emotion）时才打，否则不打
+	{Code: "att_emotion", Name: "情绪态度", Category: "attitude"},
 }
 
 // StartIngestConsumer 注册 user_event 订阅（main 启动时调用一次）
@@ -113,6 +121,32 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		ApplyTag(tid, profile.ID, "tran_order_paid", "1")
 		log.Printf("[CDP] payment 事件已记账 tenant=%d one=%s", tid, oneID)
 	}
+
+	// P1-3 环境维标签：渠道路由 + 到访时段（上下文信号，非行为推导）
+	route, _ := payload.Data.Attributes["route"].(string)
+	if route != "" {
+		ApplyTag(tid, profile.ID, "env_route", route)
+	}
+	slot := "rest"
+	if h := time.Now().Hour(); h >= 9 && h < 18 {
+		slot = "work"
+	}
+	ApplyTag(tid, profile.ID, "env_time_slot", slot)
+
+	// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪（emotion）时打——
+	// 红线：严禁由行为硬推态度；chat.go 发布 conversation_msg 时携带 strategy 情绪即合规
+	emotion, _ := payload.Data.Attributes["emotion"].(string)
+	if emotion != "" {
+		ApplyTag(tid, profile.ID, "att_emotion", emotion)
+	}
+
+	// P2 collector：CDP 事件进数据飞轮（脱敏在 Collect 内完成；URL 空则丢弃）
+	service.Collect("cdp_event", tid, map[string]any{
+		"one_id":    oneID,
+		"route":     route,
+		"time_slot": slot,
+		"emotion":   emotion,
+	})
 	return nil
 }
 

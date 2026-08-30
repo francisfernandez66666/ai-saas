@@ -197,8 +197,8 @@ func OpenAPIUsage(c *gin.Context) {
 
 // validPerms API Key 权限白名单；create 时据此校验入参合法性（默认最小权限，拒绝越权 perm）
 var validPerms = map[string]bool{
-	middleware.PermChatRead: true, middleware.PermCustomerRead: true,
-	middleware.PermCDPRead: true, middleware.PermAll: true,
+	middleware.PermChatRead: true, middleware.PermChatWrite: true,
+	middleware.PermCustomerRead: true, middleware.PermCDPRead: true, middleware.PermAll: true,
 }
 
 // AdminCreateAPIKey POST /api/v1/admin/apikeys

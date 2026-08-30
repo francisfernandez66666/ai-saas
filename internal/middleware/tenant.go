@@ -89,6 +89,8 @@ func InvalidateTenantCache() {
 // ============================================================
 
 // loadTenantByID 按 ID 加载租户
+// 疑点：getCachedTenant 命中过期条目时会先 Delete 再返回 nil，
+// 因此走到 cacheHit(key) 时缓存已空，|| cacheHit(key) 恒为 false，属冗余判断。
 func loadTenantByID(id uint) *model.Tenant {
 	key := "id:" + strconv.FormatUint(uint64(id), 10)
 	if t := getCachedTenant(key); t != nil || cacheHit(key) {

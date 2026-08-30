@@ -5,6 +5,7 @@ import { getToken, setToken, apiJSON } from '../lib/api'
 
 const TabPanel = Tabs.TabPanel
 
+// 系统配置项（分类/类型/值，管理端读写）
 type Cfg = {
   key: string
   category: string

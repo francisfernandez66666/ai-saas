@@ -291,6 +291,8 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 	}
 
 	// 边界处理：不抛锚不能再降了
+	// 疑点：finalAnchor 由上方 for 循环取 AnchorAggressiveness==newAgg 的锚类型赋值，
+	// 其取值范围恒 ≥ 0，finalAnchor<0 分支实际不可达（死代码），可删。
 	if finalAnchor < 0 {
 		finalAnchor = AnchorNoThrow
 	}

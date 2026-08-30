@@ -25,6 +25,14 @@ type Config struct {
 	WorkTime   WorkTimeConfig   // 工作时间配置
 	ReplySpeed ReplySpeedConfig // 回复速度配置（模拟人工）
 	JWT        JWTConfig        // JWT配置
+	Collector  CollectorConfig  // 数据飞轮聚合上报（空=关闭）
+}
+
+// CollectorConfig 数据飞轮批量上报配置（P2 collector）
+// URL 为空时整体关闭（不落任何外部请求）；Key 用于上报鉴权 / 接收端校验
+type CollectorConfig struct {
+	URL string // COLLECTOR_URL：聚合上报端点（HTTPS）
+	Key string // COLLECTOR_KEY：上报/接收鉴权令牌
 }
 
 // MQConfig 消息中心配置（SAAS_PLAN §2.5）
@@ -105,6 +113,19 @@ type AIConfig struct {
 	MockMode    bool              // 是否模拟模式（不调用真实AI）
 	Zhipu       ZhipuConfig       // 智谱GLM详细配置
 	SiliconFlow SiliconFlowConfig // 硅基流动配置（跨平台备用）
+
+	// ---- AI 网关（云端枢纽）：本地部署/SaaS实例统一转发，持有平台厂商Key ----
+	// 启用后本进程不直接持有厂商Key，所有reply阶段请求经网关转发（持有平台Key出网）
+	// 网关做鉴权+余额fail-closed+上游多模型降级；本地仍按租户三桶计费（计费权在租户侧）
+	GatewayURL   string // AI网关地址（OpenAI兼容 /v1/chat/completions），非空即启用网关转发
+	GatewayToken string // 网关鉴权凭证（Bearer），由平台签发
+	GatewayModel string // 网关默认模型名（缺省由网关侧决定）
+
+	// ---- 向量检索 Embedding（P0-4 双层KB）：配置即点亮，未配置回退关键词 ----
+	EmbeddingURL   string // Embedding 端点（OpenAI兼容 /v1/embeddings），非空启用向量检索
+	EmbeddingKey   string // Embedding 端点鉴权（Bearer）
+	EmbeddingModel string // Embedding 模型名（缺省 text-embedding-3-small）
+	EmbeddingDim   int    // 向量维度（pgvector 列定长，须与 EmbeddingModel 输出维度一致，缺省1536）
 
 	// ---- 模拟真人打字 ----
 	// 为什么需要？AI秒回太机械，模拟打字延迟更像真人
@@ -243,6 +264,15 @@ func LoadConfig() *Config {
 				MaxTokens:   getEnvInt("SILICONFLOW_MAX_TOKENS", 1024),
 				Temperature: getEnvFloat("SILICONFLOW_TEMPERATURE", 0.7),
 			},
+			// AI网关（云端枢纽）：本地部署无厂商Key时统一转发
+			GatewayURL:   getEnv("LLM_GATEWAY_URL", ""),
+			GatewayToken: getEnv("LLM_GATEWAY_TOKEN", ""),
+			GatewayModel: getEnv("LLM_GATEWAY_MODEL", ""),
+			// 向量检索 Embedding
+			EmbeddingURL:   getEnv("EMBEDDING_API_URL", ""),
+			EmbeddingKey:   getEnv("EMBEDDING_API_KEY", ""),
+			EmbeddingModel: getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
+			EmbeddingDim:   getEnvInt("EMBEDDING_DIM", 1536), // pgvector 列定长维度
 			// 模拟真人打字配置
 			SimulateTyping: getEnvBool("AI_SIMULATE_TYPING", true),  // 默认开启，更像真人
 			TypingSpeed:    getEnvFloat("AI_TYPING_SPEED", 4.0),     // 4字/秒，接近真人打字速度
@@ -302,8 +332,12 @@ func LoadConfig() *Config {
 			ReplyComplexL1: getEnvIntSlice("REPLY_COMPLEX_L1", []int{60, 120}),
 		},
 		JWT: JWTConfig{
-			Secret:      getEnv("JWT_SECRET", "ai-scrm-secret-key-change-in-production"),
+			Secret:      getEnv("JWT_SECRET", "change_me_jwt_secret"),
 			ExpireHours: getEnvInt("JWT_EXPIRE_HOURS", 24),
+		},
+		Collector: CollectorConfig{
+			URL: getEnv("COLLECTOR_URL", ""),
+			Key: getEnv("COLLECTOR_KEY", ""),
 		},
 	}
 

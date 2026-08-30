@@ -77,12 +77,13 @@ func ApplyTag(tenantID uint, profileID uint, code string, value string) {
 
 // ---- ProfileStore：同步读 API（仅流程引擎/业务系统可调；超时降级由调用方控制）----
 
+// ProfileView 画像 360° 视图（只读聚合，供业务/流程引擎取用）
 type ProfileView struct {
-	OneID  string            `json:"one_id"`
-	Name   string            `json:"name"`
-	Status int               `json:"status"`
-	Tags   map[string]string `json:"tags"`
-	Events int64             `json:"event_count"`
+	OneID  string            `json:"one_id"`      // 归并后的 OneID
+	Name   string            `json:"name"`        // 画像名称
+	Status int               `json:"status"`      // 状态（1=有效）
+	Tags   map[string]string `json:"tags"`        // 标签 code→value
+	Events int64             `json:"event_count"` // 事件总数
 }
 
 // GetProfile 360° 视图：画像基础 + 标签字典联查 + 事件计数

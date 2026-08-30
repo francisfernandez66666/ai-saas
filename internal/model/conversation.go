@@ -14,13 +14,14 @@ import (
 
 // Conversation 会话表
 type Conversation struct {
-	ID             uint   `gorm:"primaryKey" json:"id"`
+	ID             uint   `gorm:"primaryKey" json:"id"` // 注释：主键ID
 	TenantID       uint   `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID（SaaS多租户隔离）
 	CustomerID     uint   `gorm:"index;not null" json:"customer_id"`         // 客户ID
 	AssignedUserID uint   `json:"assigned_user_id"`                          // 归属销售ID
 	FlowInstanceID uint   `json:"flow_instance_id"`                          // 流程实例ID
 	Status         string `gorm:"size:20;default:active" json:"status"`      // 状态: active/closed/transferred
 	Channel        string `gorm:"size:20;default:web" json:"channel"`        // 渠道: web/wechat/phone
+	SessionID      string `gorm:"size:64;index" json:"session_id"`            // 外部会话ID（OpenAPI对话端点：同一external_user_id下多轮会话隔离）
 	Mode           string `gorm:"size:20;default:ai" json:"mode"`            // 当前模式: ai/human/fish(养鱼)
 
 	// ---- 会话状态S ----
@@ -46,8 +47,8 @@ type Conversation struct {
 	// ---- 状态S的JSON存储（扩展用）----
 	StateJSON string `gorm:"type:text" json:"state_json"` // 完整会话状态JSON
 
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	CreatedAt time.Time `json:"created_at"` // 注释：创建时间
+	UpdatedAt time.Time `json:"updated_at"` // 注释：更新时间
 }
 
 // TableName 指定表名

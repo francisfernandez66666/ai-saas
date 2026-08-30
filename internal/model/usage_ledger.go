@@ -24,19 +24,19 @@ const (
 
 // UsageLedger 用量台账（请求级）
 type UsageLedger struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`
-	TenantID         uint      `gorm:"index:idx_ul_tenant_time" json:"tenant_id"`
+	ID               uint      `gorm:"primaryKey" json:"id"` // 注释：主键ID
+	TenantID         uint      `gorm:"index:idx_ul_tenant_time" json:"tenant_id"` // 注释：租户ID
 	CustomerID       uint      `json:"customer_id"`             // 可0（平台内部调用）
 	UserID           uint      `json:"user_id"`                 // 触发人（AI自动=0）
 	Stage            string    `gorm:"size:20" json:"stage"`    // intent|strategy|reply|fallback
 	Provider         string    `gorm:"size:30" json:"provider"` // zhipu|siliconflow
 	Model            string    `gorm:"size:80" json:"model"`    // 具体模型名
-	PromptTokens     int       `json:"prompt_tokens"`
-	CompletionTokens int       `json:"completion_tokens"`
-	TotalTokens      int       `json:"total_tokens"`
+	PromptTokens     int       `json:"prompt_tokens"` // 注释：输入token
+	CompletionTokens int       `json:"completion_tokens"` // 注释：输出token
+	TotalTokens      int       `json:"total_tokens"` // 注释：总token
 	CostMicro        int64     `json:"cost_micro"` // 微元=total_tokens/1000×单价×markup（展示口径，不扣费）
-	LatencyMs        int       `json:"latency_ms"`
-	CreatedAt        time.Time `gorm:"index:idx_ul_tenant_time" json:"created_at"`
+	LatencyMs        int       `json:"latency_ms"` // 注释：延迟(毫秒)
+	CreatedAt        time.Time `gorm:"index:idx_ul_tenant_time" json:"created_at"` // 注释：创建时间
 }
 
 // TableName 指定表名

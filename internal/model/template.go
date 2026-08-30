@@ -54,24 +54,24 @@ type Template struct {
 	// ---- 话术内容 ----
 	// PromptTemplate 抛话术模板，支持占位符
 	// 占位符格式: {{feature_name}} {{customer_name}} {{model}} {{price}} 等
-	PromptTemplate string `gorm:"type:text;not null" json:"prompt_template"`
+	PromptTemplate string `gorm:"type:text;not null" json:"prompt_template"` // 注释：抛话术模板
 	// HookTemplate 钩话术模板（AI接话后用钩子引导客户回复）
-	HookTemplate string `gorm:"type:text" json:"hook_template"`
+	HookTemplate string `gorm:"type:text" json:"hook_template"` // 注释：钩话术模板
 	// HookFields 钩话术需要采集的字段(JSON数组)
-	HookFields string `gorm:"type:text" json:"hook_fields"`
+	HookFields string `gorm:"type:text" json:"hook_fields"` // 注释：钩采集字段
 	// RequiredFeatures 需要的卖点feature_id列表(JSON数组)，用于动态填充
-	RequiredFeatures string `gorm:"type:text" json:"required_features"`
+	RequiredFeatures string `gorm:"type:text" json:"required_features"` // 注释：所需卖点
 
 	// ---- 元数据 ----
 	// DepartmentID 部门维度（三级包架构 2026-08-26）：NULL=租户级（行业/企业包物化）；
 	// 非空=部门专属（部门包物化），仅该部门链上的顾问语境可见
-	DepartmentID *uint     `gorm:"index" json:"department_id"`
+	DepartmentID *uint     `gorm:"index" json:"department_id"` // 注释：部门ID
 	Priority     int       `gorm:"default:0" json:"priority"`    // 优先级，越大越优先
 	UsageCount   int       `gorm:"default:0" json:"usage_count"` // 使用次数
 	Status       int       `gorm:"default:1" json:"status"`      // 状态: 1-启用 0-禁用
 	Version      string    `gorm:"size:20" json:"version"`       // 版本号
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	CreatedAt    time.Time `json:"created_at"` // 注释：创建时间
+	UpdatedAt    time.Time `json:"updated_at"` // 注释：更新时间
 }
 
 // TableName 指定表名

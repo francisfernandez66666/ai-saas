@@ -188,5 +188,18 @@ APICALLS=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
   "SELECT count(*) FROM usage_records WHERE metric='api_calls'" 2>/dev/null | tr -d '[:space:]')
 [ "${APICALLS:-0}" -ge 1 ] && check "api_calls计量明细已落库" y y || check "api_calls计量明细已落库" y n
 
+echo "---- 七、P1/P2 实时监控+健康检查+WS鉴权 ----"
+ST_STATUS=$(curl -s "$B/status" | jsonget "['data']['status']")
+[ -n "$ST_STATUS" ] && check "状态页返回健康分级(status=$ST_STATUS)" y y || check "状态页返回健康分级" y n
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/monitor/health" -H "Authorization: Bearer $TOKEN")
+check "超管健康探测→200" 200 "$CODE"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/ws/advisor")
+check "WS顾问端无token→401" 401 "$CODE"
+
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/ws/client")
+check "WS客户端缺参数→400" 400 "$CODE"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

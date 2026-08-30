@@ -25,6 +25,8 @@ type BrandingResp struct {
 	PrimaryColor    string `json:"primary_color"`
 	SecondaryColor  string `json:"secondary_color"`
 	CustomDomain    string `json:"custom_domain"`
+	CustomCSS       string `json:"custom_css"`
+	CustomJS        string `json:"custom_js"`
 }
 
 // GetPublicBranding GET /api/v1/public/branding
@@ -46,6 +48,8 @@ type brandingUpdateReq struct {
 	FaviconURL   string  `json:"favicon_url"`
 	PrimaryColor string  `json:"primary_color"`
 	CustomDomain *string `json:"custom_domain"` // 指针：可清空（传 null 或空串）
+	CustomCSS    string  `json:"custom_css"`
+	CustomJS     string  `json:"custom_js"`
 }
 
 // applyBrandingUpdate 落库更新并失效租户解析缓存
@@ -60,6 +64,8 @@ func applyBrandingUpdate(tenantID uint, req brandingUpdateReq) (*model.Tenant, e
 		"logo_url":      req.LogoURL,
 		"favicon_url":   req.FaviconURL,
 		"primary_color": req.PrimaryColor,
+		"custom_css":    req.CustomCSS,
+		"custom_js":     req.CustomJS,
 	}
 	if req.CustomDomain != nil {
 		if *req.CustomDomain == "" {
@@ -149,5 +155,7 @@ func brandingData(t *model.Tenant) BrandingResp {
 		PrimaryColor:   t.PrimaryColor,
 		SecondaryColor: t.SecondaryColor,
 		CustomDomain:   cd,
+		CustomCSS:      t.CustomCSS,
+		CustomJS:       t.CustomJS,
 	}
 }

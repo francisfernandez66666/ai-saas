@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import { useBrand } from '../lib/branding'
 
+// 邀请信息（码/链接/奖励余额）
 type RefInfo = {
   invite_code?: string
   invited_count?: number
@@ -9,6 +10,7 @@ type RefInfo = {
   free_token_balance?: number
   token_balance?: number
 }
+// 单条邀请记录（被邀请企业）
 type Rec = {
   tenant_id: number
   company_name: string

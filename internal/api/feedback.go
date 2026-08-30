@@ -163,10 +163,7 @@ func buildFeedbackContext(messageID uint) string {
 	ctx := map[string]string{"ai_reply_excerpt": truncateRunes(msg.Content, 120)}
 	var cust model.Customer
 	if err := db.DB.Select("name, phone, journey_stage").First(&cust, msg.CustomerID).Error; err == nil {
-		phone := cust.Phone
-		if len(phone) == 11 {
-			phone = phone[:3] + "****" + phone[7:]
-		}
+		phone := service.MaskPhone(cust.Phone)
 		ctx["customer_masked"] = cust.Name + "/" + phone
 		ctx["journey_stage"] = cust.JourneyStage
 	}

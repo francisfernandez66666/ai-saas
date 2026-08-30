@@ -15,8 +15,9 @@ import (
 // 业务代码零改动，切 MQ_TYPE=kafka 即上真实总线
 // ============================================================
 
+// LogCenter 进程内事件总线（MQ_TYPE=log 默认降级实现）
 type LogCenter struct {
-	cfg config.MQConfig
+	cfg config.MQConfig // MQ 配置（仅用前缀打日志）
 	// 2026-08-22：改多消费者 fan-out——同 topic 可多个订阅方（CDP 与流程引擎并行消费 user_event，各消费各的流）
 	handlers map[string][]EventHandler
 }

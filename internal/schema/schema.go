@@ -62,44 +62,44 @@ type LoginResponse struct {
 
 // CreateCustomerRequest 创建客户请求
 type CreateCustomerRequest struct {
-	Name           string   `json:"name"`
-	Phone          string   `json:"phone"`
-	WechatID       string   `json:"wechat_id"`
-	Gender         int      `json:"gender"`
-	Age            int      `json:"age"`
-	Region         string   `json:"region"`
-	City           string   `json:"city"`
-	Career         string   `json:"career"`
-	CustomerType   string   `json:"customer_type"`
-	InterestModel  string   `json:"interest_model"`
-	CurrentCar     string   `json:"current_car"`
-	CarAge         float64  `json:"car_age"`
-	Source         string   `json:"source"`
-	Budget         float64  `json:"budget"`
-	DecisionCycle  int      `json:"decision_cycle"`
-	AssignedUserID uint     `json:"assigned_user_id"`
-	Tags           []string `json:"tags"`
-	Remark         string   `json:"remark"`
+	Name           string   `json:"name"` // 注释：名称
+	Phone          string   `json:"phone"` // 注释：手机号
+	WechatID       string   `json:"wechat_id"` // 注释：微信号
+	Gender         int      `json:"gender"` // 注释：性别
+	Age            int      `json:"age"` // 注释：年龄
+	Region         string   `json:"region"` // 注释：地域
+	City           string   `json:"city"` // 注释：城市
+	Career         string   `json:"career"` // 注释：职业
+	CustomerType   string   `json:"customer_type"` // 注释：客户类型
+	InterestModel  string   `json:"interest_model"` // 注释：兴趣车型
+	CurrentCar     string   `json:"current_car"` // 注释：现车
+	CarAge         float64  `json:"car_age"` // 注释：现车年限
+	Source         string   `json:"source"` // 注释：来源
+	Budget         float64  `json:"budget"` // 注释：预算(万元)
+	DecisionCycle  int      `json:"decision_cycle"` // 注释：决策周期(天)
+	AssignedUserID uint     `json:"assigned_user_id"` // 注释：归属销售ID
+	Tags           []string `json:"tags"` // 注释：标签(json)
+	Remark         string   `json:"remark"` // 注释：备注
 }
 
 // UpdateCustomerRequest 更新客户请求
 type UpdateCustomerRequest struct {
-	Name           string   `json:"name"`
-	Phone          string   `json:"phone"`
-	Gender         int      `json:"gender"`
-	Age            int      `json:"age"`
-	Region         string   `json:"region"`
-	Career         string   `json:"career"`
-	InterestModel  string   `json:"interest_model"`
-	Budget         float64  `json:"budget"`
-	DecisionCycle  int      `json:"decision_cycle"`
-	IntentScore    float64  `json:"intent_score"`
-	TrustLevel     float64  `json:"trust_level"`
-	ResistanceType string   `json:"resistance_type"`
-	Tags           []string `json:"tags"`
-	Remark         string   `json:"remark"`
-	AssignedUserID uint     `json:"assigned_user_id"`
-	Status         int      `json:"status"`
+	Name           string   `json:"name"` // 注释：名称
+	Phone          string   `json:"phone"` // 注释：手机号
+	Gender         int      `json:"gender"` // 注释：性别
+	Age            int      `json:"age"` // 注释：年龄
+	Region         string   `json:"region"` // 注释：地域
+	Career         string   `json:"career"` // 注释：职业
+	InterestModel  string   `json:"interest_model"` // 注释：兴趣车型
+	Budget         float64  `json:"budget"` // 注释：预算(万元)
+	DecisionCycle  int      `json:"decision_cycle"` // 注释：决策周期(天)
+	IntentScore    float64  `json:"intent_score"` // 注释：意向分
+	TrustLevel     float64  `json:"trust_level"` // 注释：信任度
+	ResistanceType string   `json:"resistance_type"` // 注释：抗性类型
+	Tags           []string `json:"tags"` // 注释：标签(json)
+	Remark         string   `json:"remark"` // 注释：备注
+	AssignedUserID uint     `json:"assigned_user_id"` // 注释：归属销售ID
+	Status         int      `json:"status"` // 注释：状态
 }
 
 // CustomerListRequest 客户列表请求
@@ -167,9 +167,9 @@ type StrategyInfo struct {
 // ConversationListRequest 会话列表请求
 type ConversationListRequest struct {
 	Pagination
-	CustomerID uint   `form:"customer_id"`
-	Status     string `form:"status"`
-	Mode       string `form:"mode"`
+	CustomerID uint   `form:"customer_id"` // 注释：客户ID
+	Status     string `form:"status"` // 注释：状态
+	Mode       string `form:"mode"` // 注释：当前模式
 }
 
 // ============================================================
@@ -179,8 +179,8 @@ type ConversationListRequest struct {
 // StrategyTestRequest 策略测试请求
 // 支持直接传参数覆盖T向量和S状态，方便测试不同场景
 type StrategyTestRequest struct {
-	CustomerID     uint   `json:"customer_id" binding:"required"`
-	ConversationID uint   `json:"conversation_id"`
+	CustomerID     uint   `json:"customer_id" binding:"required"` // 注释：客户ID
+	ConversationID uint   `json:"conversation_id"` // 注释：会话ID
 	CustomerInput  string `json:"customer_input"` // 客户输入（用于模拟）
 
 	// ---- 以下为可选覆盖参数，传了就用，不传用客户默认值 ----
@@ -199,30 +199,30 @@ type StrategyTestRequest struct {
 // TemplateListRequest 话术模板列表请求
 type TemplateListRequest struct {
 	Pagination
-	AnchorType int    `form:"anchor_type"`
-	Category   string `form:"category"`
-	Status     int    `form:"status"`
-	Keyword    string `form:"keyword"`
+	AnchorType int    `form:"anchor_type"` // 注释：锚类型
+	Category   string `form:"category"` // 注释：分类
+	Status     int    `form:"status"` // 注释：状态
+	Keyword    string `form:"keyword"` // 注释：关键词
 }
 
 // CreateTemplateRequest 创建话术模板请求
 type CreateTemplateRequest struct {
-	ID               string   `json:"id" binding:"required"`
-	AnchorType       int      `json:"anchor_type" binding:"required"`
-	SubType          string   `json:"sub_type"`
-	Name             string   `json:"name" binding:"required"`
-	Category         string   `json:"category"`
-	TriggerTags      []string `json:"trigger_tags"`
-	RequiredTags     []string `json:"required_tags"`
-	MinIntent        float64  `json:"min_intent"`
-	MaxIntent        float64  `json:"max_intent"`
-	ApplicableModels []string `json:"applicable_models"`
-	PromptTemplate   string   `json:"prompt_template" binding:"required"`
-	HookTemplate     string   `json:"hook_template"`
-	HookFields       []string `json:"hook_fields"`
-	RequiredFeatures []string `json:"required_features"`
-	Priority         int      `json:"priority"`
-	Status           int      `json:"status"`
+	ID               string   `json:"id" binding:"required"` // 注释：主键ID
+	AnchorType       int      `json:"anchor_type" binding:"required"` // 注释：锚类型
+	SubType          string   `json:"sub_type"` // 注释：子类型
+	Name             string   `json:"name" binding:"required"` // 注释：名称
+	Category         string   `json:"category"` // 注释：分类
+	TriggerTags      []string `json:"trigger_tags"` // 注释：触发标签
+	RequiredTags     []string `json:"required_tags"` // 注释：必含标签
+	MinIntent        float64  `json:"min_intent"` // 注释：最低意向分
+	MaxIntent        float64  `json:"max_intent"` // 注释：最高意向分
+	ApplicableModels []string `json:"applicable_models"` // 注释：适用车型(json)
+	PromptTemplate   string   `json:"prompt_template" binding:"required"` // 注释：抛话术模板
+	HookTemplate     string   `json:"hook_template"` // 注释：钩话术模板
+	HookFields       []string `json:"hook_fields"` // 注释：钩采集字段
+	RequiredFeatures []string `json:"required_features"` // 注释：所需卖点
+	Priority         int      `json:"priority"` // 注释：优先级
+	Status           int      `json:"status"` // 注释：状态
 }
 
 // ============================================================
@@ -258,9 +258,9 @@ type StatsOverview struct {
 
 // AnchorStats 锚类型统计
 type AnchorStats struct {
-	AnchorType     int     `json:"anchor_type"`
-	AnchorName     string  `json:"anchor_name"`
-	UsageCount     int64   `json:"usage_count"`
-	HookRate       float64 `json:"hook_rate"`
-	ConversionRate float64 `json:"conversion_rate"`
+	AnchorType     int     `json:"anchor_type"` // 注释：锚类型
+	AnchorName     string  `json:"anchor_name"` // 注释：锚类型名
+	UsageCount     int64   `json:"usage_count"` // 注释：使用次数
+	HookRate       float64 `json:"hook_rate"` // 注释：接钩率
+	ConversionRate float64 `json:"conversion_rate"` // 注释：转化率
 }

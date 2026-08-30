@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useBrand } from '../lib/branding'
 
+// 租户套餐（定价页展示）
 type Plan = { name: string; price_monthly_cents: number; highlights?: string; max_users: number; max_customers: number; max_departments: number }
+// AI 商业包（定价页展示）
 type Pkg = { name: string; p_type: string; price_cents: number; ai_calls: number; duration_days?: number; description?: string }
 
 // 定价页：展示套餐（plan）与 AI 商业包（package），数据来自 /api/v1/plans（含 packages 字段）

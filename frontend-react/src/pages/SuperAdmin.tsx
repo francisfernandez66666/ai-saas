@@ -7,12 +7,19 @@ const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken() } })
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
 
+// 租户摘要行（超管租户列表）
 type Tenant = { id: number; name: string; code: string; plan_name?: string; used_customers: number; max_customers?: number; status: string; created_at: string }
+// AI 商业包模型（后台包管理）
 type Pkg = { id: number; code: string; name: string; p_type: string; ai_calls: number; price_cents: number; duration_days?: number; enabled: boolean }
+// 模型成本核算汇总（近 N 天）
 type Cost = { days: number; total_calls: number; total_tokens: number; total_cost_yuan: number; models: { provider: string; model: string; calls: number; tokens: number; cost_yuan: number; cost_share_pct: number }[] }
+// 用户反馈条目（顾问端提交）
 type Fb = { id: number; tenant_id: number; tenant_name?: string; username?: string; target_type: string; content: string; context?: string; status: string; created_at: string }
+// 待确认收款订单（已扫码付款）
 type Pending = { id: number; order_no: string; tenant_id: number; tenant_name?: string; package_name?: string; amount_cents: number; created_at: string }
+// 审计日志记录行
 type Audit = { created_at: string; tenant_id: number; action: string; username?: string; resource?: string; detail?: string; ip?: string }
+// 协议签署记录（用户/隐私）
 type Ag = { id: number; username?: string; tenant_id: number; tenant_name?: string; agreement_type: string; version: string; status: string; signed_at: string }
 
 // 平台超管后台：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标

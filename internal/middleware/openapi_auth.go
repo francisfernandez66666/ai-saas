@@ -33,6 +33,7 @@ import (
 // 开放接口权限常量（最小权限集）
 const (
 	PermChatRead     = "chat.read"
+	PermChatWrite    = "chat.write" // 对话生成（OpenAPI chat/completions）：与站内同池同链路，复用 OrchestrateReply
 	PermCustomerRead = "customer.read"
 	PermCDPRead      = "cdp.read"
 	PermAll          = "all"

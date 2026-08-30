@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -291,15 +292,11 @@ func NotifyLeadCaptured(customerName, phoneMasked, interestModel string) {
 	NotifyGroup(msg)
 }
 
-// MaskEmailAddr 邮箱脱敏（对外展示用）：a***b@domain.com
-func MaskEmailAddr(email string) string {
-	at := strings.Index(email, "@")
-	if at <= 0 {
-		return "***"
-	}
-	local := email[:at]
-	if len(local) > 1 {
-		return local[:1] + "***" + email[at:]
-	}
-	return "*" + email[at:]
+// MaskEmailAddr 邮箱脱敏（对外展示用）：委托集中工具 MaskEmail，保持行为一致
+// emailRe 文本级邮箱识别（仅 ASCII 本地域，覆盖绝大多数 PII 邮箱）
+var emailRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+
+// MaskEmailAddr 文本级邮箱脱敏：仅替换其中邮箱子串，保留手机/中文等其它内容
+func MaskEmailAddr(s string) string {
+	return emailRe.ReplaceAllStringFunc(s, MaskEmail)
 }

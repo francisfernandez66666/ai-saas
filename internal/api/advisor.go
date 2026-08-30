@@ -1169,12 +1169,14 @@ func AdvisorSendMessage(c *gin.Context) {
 		CreatedAt:      now,
 	}
 	db.RQ(c).Create(&humanMsg)
+	// P1-2 实时推送：顾问真人回复通知客户端（前端即时拉取，轮询兜底）
+	notifyWS(middleware.EffectiveTenantID(c), conversation.CustomerID, conversation.ID, "human")
 
 	// P3 数据飞轮（2026-08-26）：顾问真人回复入素材池（优质回复资产回收）
 	// 脱敏：手机号掩码后入库；评分/审核走超管面板
 	go func(msgID uint, convID, custID, uid uint, content string, tid uint) {
 		defer func() { _ = recover() }()
-		masked := maskPhoneInText(content)
+		masked := service.MaskPhoneInText(content)
 		db.DB.Create(&model.KbFeedbackMaterial{
 			TenantID: tid, Conversation: convID, MessageID: msgID,
 			Source: "human", Content: masked,
@@ -1186,27 +1188,6 @@ func AdvisorSendMessage(c *gin.Context) {
 		Message: "发送成功",
 		Data:    humanMsg,
 	})
-}
-
-// maskPhoneInText 文本中11位手机号掩码为 138****5678（P3 素材脱敏）
-func maskPhoneInText(text string) string {
-	runes := []rune(text)
-	digitRun := 0
-	for i := 0; i <= len(runes); i++ {
-		if i < len(runes) && runes[i] >= '0' && runes[i] <= '9' {
-			digitRun++
-			continue
-		}
-		if digitRun == 11 {
-			for j := i - 11; j < i; j++ {
-				if j >= i-7 && j < i-4 {
-					runes[j] = '*'
-				}
-			}
-		}
-		digitRun = 0
-	}
-	return string(runes)
 }
 
 // ============================================================

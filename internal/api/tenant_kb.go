@@ -27,6 +27,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -129,10 +130,12 @@ func TenantKBUpload(c *gin.Context) {
 			Content:  ch,
 			Status:   1,
 		}
+		// P0-4 向量检索：上传即向量化（best-effort）。先落库拿 ID，再回写向量列
 		if err := db.DB.Create(&row).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "message": fmt.Sprintf("第%d片写入失败", i+1)})
 			return
 		}
+		service.EmbedAndSetFragment(&row)
 		inserted++
 	}
 	if cache.DefaultKnowledgeCache != nil {

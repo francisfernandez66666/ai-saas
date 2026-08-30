@@ -489,6 +489,8 @@ func DetectResistance(text string) int {
 	text = strings.ToLower(text)
 
 	// 价格抗性关键词（最多）
+	// 疑点：下面 "比.*贵" 这类含正则通配符的写法，调用方用 strings.Contains 匹配，
+	// 字面量"比.*贵"几乎不可能出现在用户原文里——正则式永远不会命中，等于失效。
 	priceKeywords := []string{
 		"贵", "太贵", "价格高", "便宜点", "优惠", "降价", "贵了",
 		"不值", "性价比", "贵了点", "超出预算", "预算不够",

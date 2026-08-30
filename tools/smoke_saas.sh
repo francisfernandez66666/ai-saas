@@ -13,7 +13,7 @@ echo "==== 注册漏斗 E2E @ $B ===="
 
 # 1. 入驻新租户
 RESP=$(curl -s -X POST $B/api/v1/tenant/signup -H "Content-Type: application/json" \
-  -d "{\"company_name\":\"E2E测试公司\",\"code\":\"e2e-$TAG\",\"username\":\"boss_$TAG\",\"password\":\"boss123456\",\"contact_name\":\"测试老板\"}")
+  -d "{\"company_name\":\"E2E测试公司\",\"code\":\"e2e-$TAG\",\"username\":\"boss_$TAG\",\"password\":\"boss123456\",\"contact_name\":\"测试老板\",\"admin_email\":\"boss@e2e.com\"}")
 CODE=$(echo "$RESP" | python3 -c "import sys,json;print(json.load(sys.stdin).get('code'))" 2>/dev/null)
 check "租户入驻开通试用" 0 "$CODE"
 TENANT_ID=$($PSQL "SELECT id FROM tenants WHERE code='e2e-$TAG'" | tr -d '[:space:]')

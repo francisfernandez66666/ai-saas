@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 
+// 租户白标：品牌名/Logo/主题色等（按 Host 拉取）
 export type Brand = {
   brandName: string
   brandLink: string
@@ -47,8 +48,10 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
           secondaryColor: d.secondary_color,
           platformDefault: !!d.platform_default,
         })
-        // 仅当标题含平台默认名时才替换，避免覆盖已定制标题
-        if (document.title.indexOf('跨山 LexCross') > -1) {
+        // 标题：自定义品牌强制替换（P2 全量白标）；平台默认仅替换含默认名部分
+        if (!d.platform_default && brandName) {
+          document.title = brandName
+        } else if (document.title.indexOf('跨山 LexCross') > -1) {
           document.title = document.title.replace('跨山 LexCross', brandName)
         }
         if (d.favicon_url) {
@@ -60,11 +63,37 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
           }
           l.href = d.favicon_url
         }
+        // Logo 链接注入（供浏览器/爬虫识别，页面内 Logo 由 useBrand().logoUrl 渲染）
+        if (d.logo_url) {
+          let logo = document.querySelector('link[rel="logo"]') as HTMLLinkElement | null
+          if (!logo) {
+            logo = document.createElement('link')
+            logo.rel = 'logo'
+            document.head.appendChild(logo)
+          }
+          logo.href = d.logo_url
+        }
         if (d.primary_color) {
           document.documentElement.style.setProperty('--brand-primary', d.primary_color)
         }
         if (d.secondary_color) {
           document.documentElement.style.setProperty('--brand-secondary', d.secondary_color)
+        }
+        // 白标自定义CSS/JS（P1-5）：按需注入，平台默认不注入
+        if (d.custom_css) {
+          let style = document.getElementById('brand-custom-css') as HTMLStyleElement | null
+          if (!style) {
+            style = document.createElement('style')
+            style.id = 'brand-custom-css'
+            document.head.appendChild(style)
+          }
+          style.textContent = d.custom_css
+        }
+        if (d.custom_js) {
+          const s = document.createElement('script')
+          s.id = 'brand-custom-js'
+          s.textContent = d.custom_js
+          document.body.appendChild(s)
         }
       })
       .catch(() => {})

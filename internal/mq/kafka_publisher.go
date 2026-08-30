@@ -21,8 +21,9 @@ import (
 // 消费者组：Subscribe 登记 → StartConsumers 统一启动，消费前 Inbox 幂等抢占
 // ============================================================
 
+// KafkaCenter Kafka 生产者/消费者组实现（segmentio/kafka-go）
 type KafkaCenter struct {
-	cfg config.MQConfig
+	cfg config.MQConfig // MQ 配置（brokers/前缀等）
 	w   *kafka.Writer
 	// 2026-08-22：多消费者 fan-out（同 topic 多个订阅方，与 LogCenter 语义对齐）
 	handlers map[string][]EventHandler

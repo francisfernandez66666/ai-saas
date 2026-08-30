@@ -30,6 +30,7 @@ type ModelProvider string
 const (
 	ProviderZhipu       ModelProvider = "zhipu"       // 智谱GLM
 	ProviderSiliconFlow ModelProvider = "siliconflow" // 硅基流动
+	ProviderGateway     ModelProvider = "gateway"     // AI 网关（云端枢纽转发）
 	ProviderFallback    ModelProvider = "fallback"    // 模板兜底
 )
 
@@ -59,6 +60,19 @@ func InitRouter() {
 	models := make([]*ModelState, 0)
 
 	cfg := config.GlobalConfig.AI
+
+	// 0. AI 网关（云端枢纽）优先：本地部署/SaaS实例无厂商Key时统一转发
+	//    网关持有平台厂商Key出网，本地仅做租户三桶计费；网关失败自动降级到直连链
+	InitGatewayClient()
+	if DefaultGatewayClient != nil {
+		models = append(models, &ModelState{
+			Provider:         ProviderGateway,
+			ModelName:        DefaultGatewayClient.Model,
+			Available:        true,
+			ConsecutiveFails: 0,
+		})
+		log.Println("[AI路由] 已注入网关模型，reply 阶段优先经网关转发")
+	}
 
 	// 1. 硅基流动 GLM-4-9B（默认模型）
 	// 9B以下模型在硅基流动平台永久免费，几乎不会挂
@@ -145,6 +159,11 @@ func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messag
 	case ProviderSiliconFlow:
 		SiliconFlowDefaultClient.SetModel(modelName)
 		return SiliconFlowDefaultClient.GenerateTextWithUsage(messages, temperature)
+	case ProviderGateway:
+		if DefaultGatewayClient == nil {
+			return "", Usage{}, fmt.Errorf("网关未初始化")
+		}
+		return DefaultGatewayClient.GenerateTextWithUsage(messages, temperature)
 	}
 	return "", Usage{}, fmt.Errorf("未知provider: %s", string(provider))
 }

@@ -3,7 +3,9 @@ import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react
 import { useBrand } from '../lib/branding'
 import { getToken } from '../lib/api'
 
+// 部门树节点（含子节点）
 type Dept = { id: number; name: string; depth: number; path: string; user_count: number; children?: Dept[] }
+// 组织架构成员（成员列表）
 type User = { id: number; username: string; real_name?: string; role: string; department_id?: number; dept_name?: string; status: number }
 
 // 组织架构接口鉴权头与当前用户角色（来自 localStorage，决定可执行的部门/成员操作）
@@ -55,6 +57,7 @@ export default function Org() {
   function openDept(mode: string, id?: number | null, name?: string) {
     setDlg({ mode, id, title: mode === 'add' ? (id ? '新建子部门' : '新建根部门') : mode === 'rename' ? '重命名部门' : '移动部门到…' })
     setFName(name || '')
+    // 疑点：setFParent(id ? null : null) 恒为 null，新建子部门时未预置父部门，用户需手动在下拉里选父级
     setFParent(id ? null : null)
   }
   async function submitDept() {

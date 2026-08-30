@@ -24,6 +24,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/llm"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -133,6 +134,8 @@ func SuperMaterialEvals(c *gin.Context) {
 	db.DB.Model(&m).Updates(map[string]interface{}{
 		"ai_score": out.Score, "ai_eval_note": out.Note,
 	})
+	// 离线评分（零成本护栏，与 LLM evals 阶段互补）
+	auto := service.ScoreReplyOffline(m.Content, nil, nil)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "AI 评分完成",
-		"data": gin.H{"score": out.Score, "note": out.Note}})
+		"data": gin.H{"score": out.Score, "note": out.Note, "auto_score": auto.Score, "auto_reasons": auto.Reasons}})
 }

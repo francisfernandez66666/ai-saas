@@ -588,6 +588,14 @@ func GetSimpleReplyDelay() time.Duration {
 //	到店倾向客户：线下偏移=0（客户要来店了，顾问得秒回，只算打字速度）
 //	非工作时间：18:00-次日9:00及周末
 func CalcHumanlikeDelay(tenantID uint, replyText string, mergeWaitDuration time.Duration, mergeCount int, isStoreVisit bool) time.Duration {
+	// 修复：模拟模式(开发调试)跳过真人延迟。否则 mock 下仍会 sleep 满 max_reply_delay(75s)
+	// 叠加 25s 合并窗口超过客户端 60s 超时，开发联调时表现为"对话挂死"。
+	// AI_MOCK_MODE=true 是开发调试信号，延迟无意义，直接返回 0。
+	if config.GlobalConfig.AI.MockMode {
+		log.Printf("[模拟延迟] 模拟模式开启，跳过真人延迟直接返回(0s)")
+		return 0
+	}
+
 	// 1. 打字时长：回复字数 / 40字每分钟
 	runeCount := len([]rune(replyText))
 	if runeCount <= 0 {

@@ -25,6 +25,8 @@ type Tenant struct {
 	BrandLink          string     `gorm:"size:255" json:"brand_link"`                              // 品牌外链（点击品牌名跳转）
 	PrimaryColor       string     `gorm:"size:7" json:"primary_color"`                             // 主题色 #hex
 	SecondaryColor     string     `gorm:"size:7" json:"secondary_color"`                           // 辅助色
+	CustomCSS          string     `gorm:"type:text" json:"custom_css"`                             // 白标自定义CSS（注入<head>，P1-5）
+	CustomJS           string     `gorm:"type:text" json:"custom_js"`                              // 白标自定义JS（注入<body>尾，P1-5）
 	ContactName        string     `gorm:"size:50" json:"contact_name"`                             // 联系人
 	ContactPhone       string     `gorm:"size:20" json:"contact_phone"`                            // 联系手机
 	ContactEmail       string     `gorm:"size:100" json:"contact_email"`                           // 联系邮箱

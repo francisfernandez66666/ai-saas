@@ -16,9 +16,9 @@ import (
 
 // Usage 单次 LLM 调用的 token 用量
 type Usage struct {
-	PromptTokens     int
-	CompletionTokens int
-	TotalTokens      int
+	PromptTokens     int // 输入 token 数
+	CompletionTokens int // 输出 token 数
+	TotalTokens      int // 总 token 数
 }
 
 // IsZero 是否无有效用量（mock/规则兜底路径）

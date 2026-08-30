@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 
+// 企业知识库条目（我的知识库列表）
 type Kb = { id: number; title: string; category?: string }
 
 // /app 账号设置：改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）

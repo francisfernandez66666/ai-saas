@@ -165,6 +165,25 @@ func isHanOrWordR(r rune) bool {
 	return unicode.Is(unicode.Han, r) || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
+// mergeFragmentsByID 合并两个片段集并按 ID 去重（近邻结果优先保留）
+func mergeFragmentsByID(a, b []model.KnowledgeFragment) []model.KnowledgeFragment {
+	seen := map[uint]bool{}
+	out := make([]model.KnowledgeFragment, 0, len(a)+len(b))
+	for _, f := range a {
+		if !seen[f.ID] {
+			seen[f.ID] = true
+			out = append(out, f)
+		}
+	}
+	for _, f := range b {
+		if !seen[f.ID] {
+			seen[f.ID] = true
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
 // extractKeywords 提取关键词token（≥2字的连续汉字/字母数字段）
 func extractKeywords(input string) []string {
 	input = strings.ToLower(input)
@@ -211,15 +230,36 @@ func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.K
 	if len(query) == 0 {
 		return nil
 	}
+	// 查询向量（仅一次）：未启用向量客户端则为空 → 跳过语义分量
+	var queryEmb []float32
+	if DefaultEmbeddingClient != nil {
+		queryEmb = DefaultEmbeddingClient.Embed(userInput)
+	}
+
 	var rows []model.KnowledgeFragment
-	db.DB.Where("tenant_id = ? AND status = 1 AND category = ?", tenantID, "企业知识").
-		Order("id DESC").Limit(300).Find(&rows)
+	if pgvectorEnabled && len(queryEmb) > 0 {
+		// P1-补 pgvector：SQL 向量近邻召回候选集（租户隔离 + 已向量化），再走混合打分
+		qvec := toVectorLiteral(queryEmb)
+		db.DB.Raw(`SELECT * FROM knowledge_fragments WHERE tenant_id = ? AND status = 1 AND category = ? AND embedding IS NOT NULL ORDER BY embedding <=> ?::vector LIMIT ?`,
+			tenantID, "企业知识", qvec, limit*8+50).Scan(&rows)
+		// 补充历史未向量化片段（embedding IS NULL），避免 ANN 漏检；与近邻结果按 ID 去重
+		var legacy []model.KnowledgeFragment
+		db.DB.Where("tenant_id = ? AND status = 1 AND category = ? AND embedding IS NULL", tenantID, "企业知识").
+			Order("id DESC").Limit(300).Find(&legacy)
+		rows = mergeFragmentsByID(rows, legacy)
+	}
+	if len(rows) == 0 {
+		// 回退：全量载入走原关键词+内存余弦路径
+		db.DB.Where("tenant_id = ? AND status = 1 AND category = ?", tenantID, "企业知识").
+			Order("id DESC").Limit(300).Find(&rows)
+	}
 
 	// 评分（2026-08-26 v2）：按关键词逐词计分，单词贡献封顶2（部分命中也给分）
 	// 总分 = 内容分 + 标题分×3；阈值 ≥2（此前整句二元组并集+阈值3 会漏掉短词强命中）
+	// P0-4 向量检索：启用向量客户端时，叠加查询向量与片段向量的余弦相似度（语义召回）
 	type scored struct {
 		frag  model.KnowledgeFragment
-		score int
+		score float64
 	}
 	var hits []scored
 	tokens := extractKeywords(userInput)
@@ -250,8 +290,16 @@ func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.K
 			contentScore += cb
 			titleScore += tbh
 		}
-		total := contentScore + titleScore*3
-		if total >= 2 {
+		total := float64(contentScore + titleScore*3)
+		// 语义分量：余弦相似度(0~1)映射为加权分（与关键词分同量级混合）
+		if queryEmb != nil {
+			if fEmb := embeddingFromJSON(f.EmbeddingJSON); len(fEmb) > 0 {
+				sim := cosineSimilarity(queryEmb, fEmb)
+				total += float64(sim) * 6.0 // 语义命中权重（近似一次强关键词匹配）
+			}
+		}
+		// 阈值：纯关键词阈值≥2；含向量分量时相似度>0.3 即视为命中
+		if total >= 2 || (queryEmb != nil && embeddingFromJSON(f.EmbeddingJSON) != nil && cosineSimilarity(queryEmb, embeddingFromJSON(f.EmbeddingJSON)) > 0.3) {
 			hits = append(hits, scored{f, total})
 		}
 	}

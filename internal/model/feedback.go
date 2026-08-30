@@ -24,8 +24,8 @@ type Feedback struct {
 	Status     string     `gorm:"size:20;default:open;index" json:"status"`    // open|resolved
 	HandleNote string     `gorm:"type:text" json:"handle_note"`                // 处理备注
 	HandledBy  uint       `json:"handled_by"`                                  // 处理人
-	CreatedAt  time.Time  `json:"created_at"`
-	HandledAt  *time.Time `json:"handled_at"`
+	CreatedAt  time.Time  `json:"created_at"` // 注释：创建时间
+	HandledAt  *time.Time `json:"handled_at"` // 注释：处理时间
 }
 
 // TableName 指定表名

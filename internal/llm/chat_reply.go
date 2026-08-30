@@ -100,7 +100,10 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 
 	// 模拟模式：直接用策略中心的模板话术兜底
 	// 修复：从SystemConfigService读取mock_mode，后台开关即时生效
-	if service.DefaultSystemConfigService.GetBool("mock_mode", config.GlobalConfig.AI.MockMode) {
+	// 修复：AI_MOCK_MODE 环境变量应作为模拟模式的权威信号。
+	// 原有 GetBool("mock_mode", env) 会被种子写死的系统配置 false 覆盖，导致 env 失效、
+	// 开发环境实际走真实 LLM 调用（慢且可能无 key 报错）。改为 env 或 系统配置任一为真即模拟。
+	if config.GlobalConfig.AI.MockMode || service.DefaultSystemConfigService.GetBool("mock_mode", false) {
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 
