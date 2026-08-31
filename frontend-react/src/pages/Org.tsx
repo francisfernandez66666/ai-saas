@@ -60,6 +60,7 @@ export default function Org() {
     setTree(t)
     // 递归展平部门树
     const flat: Dept[] = []
+    // 递归遍历部门树，把所有节点压平到 flat 数组（供下拉选择/列表展示）
     const walk = (ns: Dept[]) => ns.forEach((n) => { flat.push(n); if (n.children) walk(n.children) })
     walk(t)
     setDepts(flat)

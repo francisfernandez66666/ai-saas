@@ -177,6 +177,13 @@ subprocess.Popen(["./ai-scrm"], stdin=subprocess.DEVNULL,
 PY
 for i in $(seq 1 30); do sleep 2; c=$(curl -s -o /dev/null -w "%{http_code}" --max-time 3 "$B/health" 2>/dev/null); [ "$c" = "200" ] && break; done
 $PSQL "UPDATE tenant_users SET must_change_password=false WHERE tenant_id IN (SELECT id FROM tenants WHERE code LIKE 'uat%')" >/dev/null
+# UAT修复(2026-08-31)：重启后 seed 会把仍用出厂弱密码的 admin 重标 must_change_password=true
+# （M3 首登强改密），导致第八节用重启前旧 token 改开关被 MustChangePasswordGuard 拦成 403，
+# token_billing 双开关从未生效 → 三桶扣减全绿不扣。重启后补清默认租户 admin 标记并刷新超管 token。
+$PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
+ADMIN_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
+AH="Authorization: Bearer $ADMIN_TOKEN"
 STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='BO_UAT_T2'"); check "僵尸单已写入待小时巡检ExpireCheck关闭" closed "$STALE"
 
 echo ""

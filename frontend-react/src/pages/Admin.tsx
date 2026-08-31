@@ -142,6 +142,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
     zhipu_glm4_flash: 'GLM-4-Flash (智谱)',
     template_fallback: '模板兜底（不调用AI）',
   }
+  // 调整模型降级优先级：按方向(上/下)交换相邻项并回写编辑态
   const move = (i: number, dir: -1 | 1) => {
     const arr = [...models]
     const j = i + dir
@@ -194,8 +195,10 @@ export default function Admin() {
   const [loginErr, setLoginErr] = useState('')
   const [all, setAll] = useState<Cfg[]>([])
   const [edits, setEditsState] = useState<Record<string, string>>({})
+  // 编辑单个配置项的辅助函数（保持 edits 状态不可变更新）
   const setEdits = (k: string, v: string) => setEditsState((s) => ({ ...s, [k]: v }))
 
+  // 后台管理员登录：提交账号密码到 /auth/login，成功后存 token 并加载配置
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoginErr('')
@@ -212,6 +215,7 @@ export default function Admin() {
     loadAll()
   }
 
+  // 拉取全部系统配置并回填编辑态（含各分类参数与平台级开关）
   async function loadAll() {
     const r = await fetch('/api/v1/admin/config', { headers: { Authorization: 'Bearer ' + getToken() } })
     const j = await r.json()
@@ -224,6 +228,7 @@ export default function Admin() {
   }
   useEffect(() => { if (logged) loadAll() }, [logged])
 
+  // 批量保存配置：string 类型做 JSON 序列化，其余直接字符串化后 PUT /admin/config
   async function saveAll() {
     const updates = all.map((c) => {
       const v = edits[c.key] ?? c.value
@@ -241,11 +246,13 @@ export default function Admin() {
     if (j.code === 0) { MessagePlugin.success('配置已保存并热加载'); loadAll() }
     else MessagePlugin.error('保存失败: ' + (j.message || ''))
   }
+  // 恢复所有配置为系统默认值（调 /admin/config/reset，二次确认防误触）
   async function resetAll() {
     if (!confirm('确定恢复所有配置为默认值？不可撤销')) return
     await fetch('/api/v1/admin/config/reset', { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } })
     MessagePlugin.success('已恢复默认'); loadAll()
   }
+  // 延迟归零调试：把所有数值型延迟参数清零并切秒回模式，便于实时性验证
   async function zeroDelayAll() {
     if (!confirm('将所有延迟参数清零并切换为秒回模式？')) return
     const e = { ...edits }
@@ -274,6 +281,7 @@ export default function Admin() {
     )
   }
 
+  // 按分类筛选配置项，供各 Tab 面板按分类分组渲染
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
   const noAction = ['customers', 'flow_engine', 'tags', 'audit', 'openapi', 'usage', 'referral', 'branding'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
@@ -356,6 +364,7 @@ function CustomersTab() {
   const [showChat, setShowChat] = useState(false)
     // 匿名访客（用户名以"访客_"开头）在 UI 上统一展示为"客户"，避免泄露原始标识
   const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
+  // 客户头像占位字符：访客取"客"，普通客户取姓名首字符
   const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
 
   // 按阶段筛选 + 分页加载客户线索列表
@@ -561,6 +570,7 @@ const CAT_COLOR: Record<string, string> = { intent: 'bg-indigo-50 text-indigo-60
 function TagSystemTab() {
   const [byCat, setByCat] = useState<Record<string, TableRowData[]>>({})
   const [loading, setLoading] = useState(true)
+  // 加载标签体系：拉取全部标签并按 category 分组（intent/source/car/type/status）
   const load = async () => {
     setLoading(true)
     const { res, json } = await apiJSON('/api/v1/admin/tags?page_size=500')

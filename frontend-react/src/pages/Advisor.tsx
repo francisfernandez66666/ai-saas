@@ -50,9 +50,13 @@ export default function Advisor() {
   const [fbText, setFbText] = useState('')
   const chatRef = useRef<HTMLDivElement>(null)
 
+  // 加载工作台统计：今日线索/意向客户等汇总数字
   const loadStats = async () => { const j = await AUTH(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
+  // 加载客户列表：按当前状态筛选标签拉取，最多50条
   const loadCustomers = async () => { const j = await AUTH(API + '/customers?status=' + status + '&page_size=50'); if (j.code === 0) setList((j.data?.list) || []) }
+  // 加载跟进提醒列表（今日待跟进/逾期）
   const loadFollowups = async () => { const j = await AUTH(API + '/followups'); if (j.code === 0) setFollowups(j.data || []) }
+  // 加载当前租户套餐与三桶余额，用于顶栏额度展示
   const loadQuota = async () => { const j = await AUTH('/api/v1/billing/my-package'); if (j.code === 0) setQuota(j.data) }
 
   // 路由守卫：无 token 直接跳登录；否则加载统计、客户列表、全部标签
@@ -61,14 +65,18 @@ export default function Advisor() {
   useEffect(() => { if (view === 'followup') loadFollowups(); if (view === 'me') loadQuota() }, [view])
   useEffect(() => { if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight }, [msgs])
 
+  // 打开客户详情：加载客户信息、会话与试驾记录，定位当前会话并同步AI回复开关
   async function openDetail(id: number) {
     setDetailId(id)
     const j = await AUTH(API + '/customer/' + id)
     if (j.code === 0 && j.data) { setDetail(j.data); const conv = (j.data.conversations && j.data.conversations[0]); setConvId(conv ? conv.id : null); setAiOn(conv ? conv.is_ai_reply_enabled !== false : true) }
     loadChat(id); loadTestDrives(id)
   }
+  // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
   async function loadChat(id: number) { const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50'); if (j.code === 0) setMsgs(j.data || []) }
+  // 拉取客户试驾单列表
   async function loadTestDrives(id: number) { const j = await AUTH(API + '/test-drives?customer_id=' + id); setTestDrives(j.data || []) }
+  // 人工发送消息：调用顾问端 chat/send 接口，成功后追加到本地消息列表
   async function send() {
     if (!input.trim() || !detailId) return
     const content = input; setInput('')
@@ -76,17 +84,21 @@ export default function Advisor() {
     if (j.code === 0) { if (j.data?.conversation_id) setConvId(j.data.conversation_id); setMsgs((m) => [...m, { sender_type: 'human', content, created_at: new Date().toISOString() }]) }
     else MessagePlugin.error('发送失败')
   }
+  // 切换AI自动回复开关（需要存在活跃会话）
   async function toggleAI() {
     if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
     const j = await AUTH(API + '/chat/toggle-ai-reply', { method: 'POST', body: { conversation_id: convId } })
     if (j.code === 0) setAiOn(j.data.is_ai_reply_enabled)
   }
+  // 加载全部标签（用于客户标签编辑弹窗的选项）
   async function loadAllTags() { const j = await AUTH('/api/v1/admin/tags'); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
+  // 保存客户标签：提交勾选标签到 /customer/:id/tags 后刷新详情
   async function saveTags() {
     if (!detailId) return
     const j = await AUTH(API + '/customer/' + detailId + '/tags', { method: 'PUT', body: { tags: checkedTags } })
     if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
   }
+  // 提交用户反馈（产品建议/吐槽），走 /api/v1/feedback
   async function submitFeedback() {
     if (!fbText.trim()) return
     const j = await AUTH('/api/v1/feedback', { method: 'POST', body: { content: fbText, target_type: 'feature' } })
@@ -222,6 +234,7 @@ export default function Advisor() {
     </div>
   )
 
+  // 保存客户资料编辑：从表单DOM读取姓名/手机/车型/预算/备注后 PUT /customer/:id/info
   async function saveEdit() {
     if (!detailId) return
     const body: any = {}

@@ -141,6 +141,13 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// 注册试用包额度：新租户注册自动发放 free 包时的 AI 调用次数
 	{Category: "billing", Key: "trial_ai_calls", Value: "500", ValueType: "number", Description: "注册试用包AI调用次数(次)", DefaultValue: "500", SortOrder: 4},
+	// ---- 支付网关 sdk 配置（2026-08-31 UAT 修复）----
+	// 平台级支付网关参数：必须在此预置系统层种子行，admin/config 才能写入系统层(tenant_id=0)，
+	// 否则 BatchUpdate 静默0行、webhook/loadGatewayProvider 读系统层永远拿到空值（验签必败）。
+	{Category: "billing", Key: "pay_gateway_url", Value: "\"\"", ValueType: "string", Description: "支付网关端点(OpenAI式HTTP API，sdk模式下单/查单用)", DefaultValue: "\"\"", SortOrder: 13},
+	{Category: "billing", Key: "pay_gateway_app_id", Value: "\"\"", ValueType: "string", Description: "支付网关应用ID(商户标识)", DefaultValue: "\"\"", SortOrder: 14},
+	{Category: "billing", Key: "pay_gateway_key", Value: "\"\"", ValueType: "string", Description: "支付网关验签密钥(HMAC-SHA256，与网关创建支付/回调验签对称，敏感勿外泄)", DefaultValue: "\"\"", SortOrder: 15},
+	{Category: "billing", Key: "pay_gateway_notify_url", Value: "\"\"", ValueType: "string", Description: "支付网关异步通知回调地址(收到到账后回调本系统webhook)", DefaultValue: "\"\"", SortOrder: 16},
 
 	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
 	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
@@ -711,6 +718,10 @@ var PlatformLevelKeys = map[string]bool{
 	"token_billing_enabled":            true, // P1.5(2026-08-26)：Token三桶扣减引擎总闸，默认关=灰度兼容现状
 	"feedback_collector_url":           true, // P3：数据飞轮回流collector端点(空=关闭)
 	"register_email_daily_limit":       true, // 防薅v2(2026-08-26)：账号锚限流阈值
+	"pay_gateway_url":                  true, // UAT修复(2026-08-31)：支付网关端点(平台级)——写入系统层供 webhook/网关读取
+	"pay_gateway_app_id":               true, // UAT修复(2026-08-31)：支付网关应用ID(平台级)
+	"pay_gateway_key":                  true, // UAT修复(2026-08-31)：支付网关验签密钥(平台级)——不入租户覆盖层，否则 webhook 验签永远失败
+	"pay_gateway_notify_url":           true, // UAT修复(2026-08-31)：支付网关异步通知地址(平台级)
 }
 
 // GetInterval 解析[min,max]格式的配置项，返回区间内的随机整数值

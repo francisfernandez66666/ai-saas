@@ -19,7 +19,10 @@ tmp/
 .DS_Store
 
 # 大型二进制与本地数据（不入库）
-server
+# 修复(2026-09-01)：原裸规则 `server` 会匹配任意层级的 server 目录，
+# 导致主服务源码 cmd/server/ 整个被 git 忽略（webhook 修复等改动无法提交）。
+# 改为 /server 仅忽略根目录编译产物，cmd/server/ 源码正常入库。
+/server
 tessdata/
 CHANGES.diff
 *.part6
