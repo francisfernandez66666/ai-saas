@@ -203,6 +203,9 @@ func maskPhone(p string) string {
 // 修复根因：客户已留资后，AI不应再注入到店追问策略，不应再问"留个手机号"
 // 已留资 = journey_stage >= lead_captured（与状态机定义一致）
 func IsLeadCaptured(customer *model.Customer) bool {
+	if customer == nil {
+		return false
+	}
 	if customer.JourneyStage == model.JourneyLeadCaptured ||
 		customer.JourneyStage == model.JourneyArrived ||
 		customer.JourneyStage == model.JourneyOrdered ||
