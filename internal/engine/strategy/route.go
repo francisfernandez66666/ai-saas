@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心：紧迫判定（Step5）、路由决策（Step6）与意向反哺（Step7）。
 package strategy
 
 import (

@@ -1,4 +1,4 @@
-// Package service：internal/service 模块（自动补包注释）。
+// Package service 业务服务层测试：数据飞轮批量上报接收与 PII 递归脱敏。
 package service
 
 import "testing"

@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为客户域——预置 10 个模拟客户 + 5+ 条关键词打标规则。
 package seed
 
 import (

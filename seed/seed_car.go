@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为车型域——预置品牌/车型/竞品数据（约 2400 行大文件）。
 package seed
 
 import (

@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为商业化域——预置订阅套餐（subscription_plans）与商业包（packages）。
 package seed
 
 import (

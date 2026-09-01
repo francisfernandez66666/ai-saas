@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为公共辅助——JSON 序列化工具（jsonArr/jsonParams 等）。
 package seed
 
 import (

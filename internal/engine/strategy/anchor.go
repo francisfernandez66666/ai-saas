@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心：锚派发打分（Step1）、softmax 归一化（Step2）与到店意图/抗性检测。
 package strategy
 
 import (

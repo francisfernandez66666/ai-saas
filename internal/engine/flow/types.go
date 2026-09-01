@@ -1,4 +1,4 @@
-// Package flow：internal/engine/flow 模块（自动补包注释）。
+// Package flow 流程引擎：类型定义（Engine/FlowContext/NodeResult 与节点类型常量）。
 package flow
 
 // ============================================================

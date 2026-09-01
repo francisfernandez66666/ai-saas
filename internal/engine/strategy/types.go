@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心：输入/输出/权重等类型定义（StrategyInput/AnchorWeight 等）。
 package strategy
 
 import (

@@ -1,4 +1,4 @@
-// Package service：internal/service 模块（自动补包注释）。
+// Package service 业务服务层测试：话术离线评分（纯函数预筛）与 LLM 深度评估钩子。
 package service
 
 import "testing"

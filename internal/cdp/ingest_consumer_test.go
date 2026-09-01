@@ -1,4 +1,4 @@
-// Package cdp：internal/cdp 模块（自动补包注释）。
+// Package cdp 数据飞轮（CDP 摄入）测试：覆盖 IngestConsumer 事件写入收口、去重与租户隔离。
 package cdp
 
 import "testing"

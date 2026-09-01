@@ -1,4 +1,4 @@
-// Package flow：internal/engine/flow 模块（自动补包注释）。
+// Package flow 流程引擎：会话编排（OrchestrateReply）与流程实例/结果发布。
 package flow
 
 // ============================================================

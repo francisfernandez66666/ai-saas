@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为流程域——预置默认对话流程定义 default_chat_flow。
 package seed
 
 import (

@@ -1,4 +1,4 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：本文件为账号域——预置 1 个管理员 + 3 个销售（弱密码出厂强制首登改密）。
 package seed
 
 import (

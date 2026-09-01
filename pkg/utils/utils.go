@@ -1,4 +1,4 @@
-// Package utils：pkg/utils 模块（自动补包注释）。
+// Package utils 通用工具集：密码哈希/校验、数学（softmax/相似度）、随机串、字符串距离等纯函数。
 package utils
 
 import (

@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心测试：覆盖抗性检测等核心推理步骤。
 package strategy
 
 import "testing"

@@ -1,4 +1,5 @@
-// Package seed：seed 模块（自动补包注释）。
+// Package seed 种子数据填充：同包多文件按域拆分（tenant/kb/flow/customer/car/billing/util/data）。
+// 本文件为知识库域——预置五大类标签（意向/属性/抗性/价值/行为）+ 标签↔权重映射，供打标规则引用。
 package seed
 
 import (

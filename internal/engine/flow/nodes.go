@@ -1,4 +1,4 @@
-// Package flow：internal/engine/flow 模块（自动补包注释）。
+// Package flow 流程引擎：节点分发与各类节点执行（start/strategy/ai/human/condition/tag_update/wait/end）。
 package flow
 
 import (

@@ -1,4 +1,4 @@
-// Package service：internal/service 模块（自动补包注释）。
+// Package service 业务服务层测试：AI 用量配额扣减（原子预留/并发超额/灰度放行），经 testutil 连真库。
 package service
 
 import (

@@ -1,4 +1,4 @@
-// Package service：internal/service 模块（自动补包注释）。
+// Package service 业务服务层测试：手机号/邮箱/姓名脱敏（掩码）与文本内脱敏替换。
 package service
 
 import "testing"

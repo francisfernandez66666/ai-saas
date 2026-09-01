@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心：最终回复生成（strategy→llm 桥接，业务层唯一 LLM 出口）。
 package strategy
 
 import (

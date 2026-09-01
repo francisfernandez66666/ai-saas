@@ -1,4 +1,4 @@
-// Package gateway：internal/gateway 模块（自动补包注释）。
+// Package gateway AI 网关测试：租户签名校验（HMAC）等网关鉴权路径。
 package gateway
 
 import (

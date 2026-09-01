@@ -1,4 +1,4 @@
-// Package utils：pkg/utils 模块（自动补包注释）。
+// Package utils 通用工具集：工作时间判定与模拟人工回复延迟计算（用于 AI 回复更像真人）。
 package utils
 
 import (

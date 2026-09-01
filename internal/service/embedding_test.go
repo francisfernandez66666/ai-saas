@@ -1,4 +1,4 @@
-// Package service：internal/service 模块（自动补包注释）。
+// Package service 业务服务层测试：向量嵌入客户端降级与关键词回退路径。
 package service
 
 import "testing"

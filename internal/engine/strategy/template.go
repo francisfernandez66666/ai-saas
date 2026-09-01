@@ -1,4 +1,4 @@
-// Package strategy：internal/engine/strategy 模块（自动补包注释）。
+// Package strategy 策略中心：话术模板召回（Step4，按锚/标签/阶段匹配）。
 package strategy
 
 import (
