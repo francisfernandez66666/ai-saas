@@ -26,7 +26,7 @@ type HealthStatus string
 
 const (
 	// StatusOK 正常状态：指标在健康范围内
-	StatusOK   HealthStatus = "ok"
+	StatusOK HealthStatus = "ok"
 	// StatusWarn 告警状态：指标达到警告阈值，需关注但暂不影响服务
 	StatusWarn HealthStatus = "warn"
 	// StatusCrit 严重状态：指标达到严重阈值，触发企微/钉钉群主动通知
@@ -36,12 +36,12 @@ const (
 // HealthCheck 单指标探测结果
 // 每个指标独立探测，包含当前值、阈值和描述
 type HealthCheck struct {
-	Name   string       `json:"name"`   // 指标名称（如 db, merge_queue_depth, goroutines）
-	Status HealthStatus `json:"status"` // 当前健康分级
-	Value  string       `json:"value"`  // 当前值（字符串格式，方便展示）
+	Name   string       `json:"name"`    // 指标名称（如 db, merge_queue_depth, goroutines）
+	Status HealthStatus `json:"status"`  // 当前健康分级
+	Value  string       `json:"value"`   // 当前值（字符串格式，方便展示）
 	WarnAt string       `json:"warn_at"` // 警告阈值
 	CritAt string       `json:"crit_at"` // 严重阈值
-	Desc   string       `json:"desc"`   // 指标描述（中文）
+	Desc   string       `json:"desc"`    // 指标描述（中文）
 }
 
 // HealthSnapshot 一次完整探测结果

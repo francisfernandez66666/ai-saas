@@ -180,12 +180,26 @@ func evaluateSingleMaterial(tenantID uint, m *model.KbFeedbackMaterial) BatchEva
 	return result
 }
 
+// EvalLLMFunc 由 main.go 组合根注入：调用 LLM 对素材内容做深度评估。
+// 返回评分（0-5）和评估理由；未注入/nil 时 evaluateWithLLM 直接跳过（纯函数预筛兜底）。
+// 用函数变量而非直接 import llm/strategy 的原因：
+//   - llm→service 已成环（llm 依赖 service 落账），service 反向 import 必成环；
+//   - 业务层禁止直连 internal/llm 红线。
+//
+// main.go 注入适配器指向 strategy.GenerateEvals → llm.GenerateEvalsText（与 kb_material 同桥）。
+var EvalLLMFunc func(tenantID uint, content string) (float64, []string)
+
 // evaluateWithLLM 调用LLM进行深度评估（可选）
-// 返回评分（0-5）和评估理由；未配置evals模型时返回0（跳过LLM评估）
+// 返回评分（0-5）和评估理由；未注入钩子/调用失败时返回0（跳过LLM评估，纯函数预筛兜底）
 func evaluateWithLLM(tenantID uint, content string) (float64, []string) {
-	// TODO: 接入 stage_models evals 阶段模型
-	// 当前版本先返回0，后续版本接入LLM评估
-	return 0, nil
+	if EvalLLMFunc == nil {
+		return 0, nil
+	}
+	score, reasons := EvalLLMFunc(tenantID, content)
+	if score <= 0 {
+		return 0, nil
+	}
+	return score, reasons
 }
 
 // StartBatchEvaluator 启动批量评估定时任务（main.go 调用）

@@ -28,12 +28,14 @@ var httpTotal uint64
 // ---- AI 调用成功率计数 ----
 // aiSuccessTotal AI调用成功次数，llm层在真模型成功返回后调用IncAISuccess递增
 var aiSuccessTotal uint64
+
 // aiFailureTotal AI调用失败次数，全模型失败降级模板时调用IncAIFailure递增
 var aiFailureTotal uint64
 
 // ---- 支付成功率计数 ----
 // paymentPaidTotal 支付成功次数，订单确认到账/发放后调用IncPaymentPaid递增
 var paymentPaidTotal uint64
+
 // paymentFailedTotal 支付失败/关闭次数，订单超时关闭/退款时调用IncPaymentFailed递增
 var paymentFailedTotal uint64
 
@@ -197,7 +199,7 @@ func RenderPrometheus() string {
 	b = append(b, fmt.Sprintf("ai_scrm_tenants_expiring_7d %d\n", expiring)...)
 
 	// ---- P1-2 指标6：磁盘水位（0~1，1=满）----
-// 磁盘使用率超过阈值可能影响日志写入和数据库操作
+	// 磁盘使用率超过阈值可能影响日志写入和数据库操作
 	diskRatio, diskOK := diskUsedRatio()
 	if diskOK {
 		b = append(b, "# HELP ai_scrm_disk_used_ratio disk used ratio (0..1)\n"...)

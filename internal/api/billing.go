@@ -174,7 +174,7 @@ func ManualConfirmPaid(c *gin.Context) {
 		return
 	}
 
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 订单已按 id+tenant_id 前置限定（跨租户在 rls_scope_test 已验证 404 守卫），此更新安全
 	res := db.DB.Model(&model.BillingOrder{}).Where("id = ?", order.ID).
 		Update("manual_confirm", true)
 	if res.Error != nil {

@@ -105,10 +105,9 @@ func SuperPackUpload(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "manifest.pack_level 非法")
 		return
 	}
-	// 树形校验：企业包必须指到已存在的行业包；部门包必须指到已存在的企业包
+	// 父包校验：IndustryPack 为全局目录表（无 tenant_id），跨租户共享是预期语义
 	if pc.Manifest.ParentCode != "" {
 		var parentCnt int64
-		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 		db.DB.Model(&model.IndustryPack{}).
 			Where("code = ? AND status = ?", pc.Manifest.ParentCode, "active").Count(&parentCnt)
 		if parentCnt == 0 {
@@ -129,7 +128,7 @@ func SuperPackUpload(c *gin.Context) {
 	}
 
 	var row model.IndustryPack
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 按 code+version 查重：全局目录表（无 tenant_id），跨租户查重是预期
 	isNew := db.DB.Where("code = ? AND version = ?", pc.Manifest.Code, pc.Manifest.Version).
 		First(&row).Error != nil
 	row.Code = pc.Manifest.Code
@@ -176,7 +175,7 @@ func SuperPackStatus(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "status 必须为 active/disabled")
 		return
 	}
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 超管专属(SuperRequired 守卫)：全局目录按 id 更新是预期，非租户会话被 403 前置拦截
 	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
 		Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
@@ -427,12 +426,11 @@ func TenantPackCurrent(c *gin.Context) {
 	if db.DB.Where("tenant_id = ?", ti.ID).First(&bind).Error == nil {
 		out["bound"] = true
 		var ind model.IndustryPack
-		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+		// PackID 来自上方按 tenant_id 查出的绑定行，读全局目录表对应包（跨租户查空在 rls_scope_test 已验证）
 		db.DB.Select("id,code,name,industry,version,pack_level").First(&ind, bind.PackID)
 		out["industry"] = ind
 		if bind.EnterprisePackID != nil {
 			var ent model.IndustryPack
-			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 			db.DB.Select("id,code,name,industry,version,pack_level").First(&ent, *bind.EnterprisePackID)
 			out["enterprise"] = ent
 		}
@@ -560,7 +558,7 @@ func SuperPackShare(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "share 必须为 0 或 1")
 		return
 	}
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 超管专属(SuperRequired 守卫)：全局目录按 id 更新是预期，跨租户由守卫放行
 	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
 		Update("share_cross_dept", *req.Share)
 	if res.Error != nil || res.RowsAffected == 0 {

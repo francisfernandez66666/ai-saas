@@ -71,7 +71,7 @@ GET /api/v1/super/agreements
 */
 func SuperAgreementList(c *gin.Context) {
 	atype := c.Query("type") // user|privacy 可空
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 超管专属(SuperRequired 守卫)跨租户查看协议台账：全平台语义（rls_scope_test 已验证）
 	q := db.DB.Model(&model.AgreementSignature{})
 	if atype != "" {
 		q = q.Where("agreement_type = ?", atype)

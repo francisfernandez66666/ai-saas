@@ -42,7 +42,7 @@ func SuperMaterialList(c *gin.Context) {
 	if pageSize < 1 || pageSize > 100 {
 		pageSize = 20
 	}
-	// TODO-RLS: verify tenant scope (super/platform cross-tenant path)
+	// 超管专属(SuperRequired 守卫)跨租户素材池列表：全平台语义（rls_scope_test 已验证）
 	q := db.DB.Model(&model.KbFeedbackMaterial{})
 	if st := c.Query("status"); st != "" {
 		q = q.Where("status = ?", st)

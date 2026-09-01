@@ -39,10 +39,10 @@ var DefaultEmbeddingClient EmbeddingClient
 // httpEmbeddingClient OpenAI 兼容 /v1/embeddings 实现
 // 通过HTTP调用远端向量化服务，支持OpenAI API格式
 type httpEmbeddingClient struct {
-	url   string        // 向量化服务端点URL
-	token string        // API密钥
-	model string        // 向量模型名（如 text-embedding-3-small）
-	http  *http.Client  // HTTP客户端（30s超时）
+	url   string       // 向量化服务端点URL
+	token string       // API密钥
+	model string       // 向量模型名（如 text-embedding-3-small）
+	http  *http.Client // HTTP客户端（30s超时）
 }
 
 // embeddingRequest OpenAI 兼容 /v1/embeddings 请求体（输入文本 + 模型名）

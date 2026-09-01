@@ -20,6 +20,7 @@ import (
 	statemachine "ai-scrm/internal/state_machine"
 	"ai-scrm/seed"
 	"context"
+	"encoding/json"
 	"log"
 	"os"
 	"path/filepath"
@@ -98,6 +99,37 @@ func main() {
 	ai.InitSiliconFlowClient()
 	ai.InitRouter()
 	service.InitEmbeddingClient() // P0-4 向量检索：未配置 EMBEDDING_* 自动回退关键词
+
+	// 7.3 注入 evals 阶段深度评估钩子（数据飞轮批量评估用）
+	// 解环：llm→service 已成环且业务层禁直连 llm，service.evals.go 通过函数变量调用本适配器；
+	// 适配器经 strategy.GenerateEvals → llm.GenerateEvalsText 走 stage_models evals 阶段模型。
+	service.EvalLLMFunc = func(tenantID uint, content string) (float64, []string) {
+		prompt := "你是销售话术质量评估器。对下面这条汽车销售回复打分(0-5，支持一位小数)，并给出不超过50字的理由。" +
+			"评估维度：口语自然度、需求针对性、推进有效性。只输出 JSON：{\"score\":数字,\"note\":\"理由\"}\n\n回复内容：\n" + content
+		messages := []ai.ChatMessage{{Role: "user", Content: prompt}}
+		reply, err := strategy.GenerateEvals(tenantID, messages, 0.2)
+		if err != nil {
+			log.Printf("[DataFlywheel] evals LLM 评估失败 tenant=%d: %v", tenantID, err)
+			return 0, nil
+		}
+		var out struct {
+			Score float64 `json:"score"`
+			Note  string  `json:"note"`
+		}
+		if start := strings.Index(reply, "{"); start >= 0 {
+			if end := strings.LastIndex(reply, "}"); end > start {
+				_ = json.Unmarshal([]byte(reply[start:end+1]), &out)
+			}
+		}
+		if out.Score <= 0 || out.Score > 5 {
+			return 0, nil // 解析失败/越界视为无效，回退纯函数预筛
+		}
+		reasons := []string{}
+		if out.Note != "" {
+			reasons = append(reasons, out.Note)
+		}
+		return out.Score, reasons
+	}
 
 	// 7.5 内嵌 AI 网关（P0-1）：仅在"本进程即网关"模式启动（GatewayListen 非空 且 非网关客户端）。
 	// 防环：若同时配了 LLM_GATEWAY_URL（本进程是网关客户端），则不开内嵌网关，避免自转发死循环；

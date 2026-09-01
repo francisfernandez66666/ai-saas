@@ -155,7 +155,7 @@ func SuperResolveFeedback(c *gin.Context) {
 	}
 	now := time.Now()
 	uidV, _ := c.Get("user_id")
-	// TODO-RLS: verify tenant scope (super/platform cross-tenant path)
+	// 超管专属(SuperRequired 守卫)跨租户处理反馈：非超管会话被 403 前置拦截（rls_scope_test 已验证）
 	res := db.DB.Model(&model.Feedback{}).
 		Where("id = ? AND status = 'open'", req.ID).
 		Updates(map[string]interface{}{

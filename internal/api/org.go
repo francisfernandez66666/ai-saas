@@ -107,6 +107,7 @@ deptInScope 判断目标部门是否落在操作者的管辖范围内。
 参数：
   - s: 操作者作用域
   - deptPath: 目标部门的物化路径
+
 返回：bool，true表示目标部门在操作者管辖范围内
 */
 func deptInScope(s orgScope, deptPath string) bool {
@@ -124,9 +125,11 @@ canAssignRole 判断操作者是否有权分配指定角色给其他用户。
 权限矩阵：
   - super_admin/tenant_admin：可分配所有角色
   - dept_admin：只能分配dept_admin和user角色
+
 参数：
   - operator: 操作者作用域
   - targetRole: 要分配的目标角色
+
 返回：bool，true表示有分配权限
 */
 func canAssignRole(operator orgScope, targetRole string) bool {
@@ -222,7 +225,7 @@ func GetDepartmentTree(c *gin.Context) {
 type deptCreateReq struct {
 	Name      string `json:"name" binding:"required"` // 部门名称，必填
 	ParentID  *uint  `json:"parent_id"`               // 父部门ID，为空表示创建根部门（仅tenant_admin可操作）
-	SortOrder int    `json:"sort_order"`               // 排序权重，数字越小越靠前
+	SortOrder int    `json:"sort_order"`              // 排序权重，数字越小越靠前
 }
 
 /*
@@ -323,7 +326,7 @@ func CreateDepartment(c *gin.Context) {
 
 // deptUpdateReq 更新部门的请求结构体，所有字段均为可选
 type deptUpdateReq struct {
-	Name        *string `json:"name"`         // 新部门名称
+	Name        *string `json:"name"`          // 新部门名称
 	NewParentID *uint   `json:"new_parent_id"` // 移动到的新父部门ID，实现部门调整
 	SortOrder   *int    `json:"sort_order"`    // 新的排序权重
 }
@@ -468,11 +471,11 @@ func DeleteDepartment(c *gin.Context) {
 
 // userCreateReq 创建用户的请求结构体
 type userCreateReq struct {
-	Username     string `json:"username" binding:"required"` // 用户名，全局唯一
-	Password     string `json:"password" binding:"required"` // 密码，系统会自动哈希处理
-	RealName     string `json:"real_name"`                   // 真实姓名，可选
-	Phone        string `json:"phone"`                       // 手机号，可选
-	Role         string `json:"role" binding:"required"`     // 角色，必须符合权限矩阵
+	Username     string `json:"username" binding:"required"`      // 用户名，全局唯一
+	Password     string `json:"password" binding:"required"`      // 密码，系统会自动哈希处理
+	RealName     string `json:"real_name"`                        // 真实姓名，可选
+	Phone        string `json:"phone"`                            // 手机号，可选
+	Role         string `json:"role" binding:"required"`          // 角色，必须符合权限矩阵
 	DepartmentID uint   `json:"department_id" binding:"required"` // 所属部门ID，必须在操作者管辖范围内
 }
 

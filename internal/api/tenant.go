@@ -103,7 +103,7 @@ func TenantSignup(c *gin.Context) {
 	if service.EmailVerifyEnabled() && req.AdminEmail != "" {
 		daily := svc.GetInt("register_email_daily_limit", 3)
 		var cnt int64
-		// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+		// 防薅按 email 全局计数（跨租户累计）：同邮箱换租户注册也须被闸门拦截（rls_scope_test 已验证）
 		db.DB.Model(&model.TenantAuditLog{}).
 			Where("action = ? AND created_at >= CURRENT_DATE AND detail LIKE ?",
 				"tenant_signup", fmt.Sprintf(`%%"email":"%s"%%`, req.AdminEmail)).
@@ -117,7 +117,7 @@ func TenantSignup(c *gin.Context) {
 		ip := c.ClientIP()
 		if dailyLimit := svc.GetInt("register_ip_daily_limit", 3); dailyLimit > 0 {
 			var cnt int64
-			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+			// 防薅按 IP 全局计数（跨租户累计）：同 IP 换租户注册也须被闸门拦截
 			db.DB.Model(&model.TenantAuditLog{}).
 				Where("action = ? AND ip = ? AND created_at >= CURRENT_DATE", "tenant_signup", ip).
 				Count(&cnt)
@@ -129,7 +129,7 @@ func TenantSignup(c *gin.Context) {
 		}
 		if minGap := svc.GetInt("register_ip_min_interval_sec", 60); minGap > 0 {
 			var last time.Time
-			// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+			// 防薅按 IP 查最近注册时间（跨租户累计）：同 IP 短间隔换租户注册也拦截
 			db.DB.Model(&model.TenantAuditLog{}).
 				Select("created_at").
 				Where("action = ? AND ip = ?", "tenant_signup", ip).
@@ -166,9 +166,8 @@ func TenantSignup(c *gin.Context) {
 	// 行业兜底（UAT定稿②）：未填或未知行业不拒绝，回落通用行业(general)
 	industry = resolveIndustry(industry)
 
-	// 默认套餐：personal（不存在则置空由超管补配）；Max* 字段用于新建租户配额上限
+	// 默认套餐：personal（全局目录表无 tenant_id，注册跨租户读取是预期）
 	var plan model.SubscriptionPlan
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
 	db.DB.Where("code = ?", "personal").First(&plan)
 
 	hashed, err := utils.HashPassword(req.Password)
@@ -330,7 +329,7 @@ func CheckTenantCode(c *gin.Context) {
 // packages 返回新商业包体系（试用/包月/增量），两者并存过渡
 func ListPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
-	// TODO-RLS: verify tenant scope (cross-tenant/platform/signup/global-preset path)
+	// 定价目录全局共享（无 tenant_id），所有会话可见是预期（rls_scope_test 已验证）
 	if err := db.DB.Where("is_active = ?", true).Order("sort_order ASC, id ASC").Find(&plans).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return

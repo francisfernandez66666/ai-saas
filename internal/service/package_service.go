@@ -27,9 +27,11 @@ import (
 
 // GrantPackage 按包类型发放权益到租户
 // 三类包的发放语义（对齐实施文档 §二）：
-//   free       注册试用包：max_ai_calls_monthly += 包含量（叠加，不覆盖）
-//   paid       包月包：expired_at 顺延 duration_days、max_ai_calls_monthly = 包含量
-//   increment  AI增量包：ai_call_balance += 包含量（买断资产，月度重置不触碰）
+//
+//	free       注册试用包：max_ai_calls_monthly += 包含量（叠加，不覆盖）
+//	paid       包月包：expired_at 顺延 duration_days、max_ai_calls_monthly = 包含量
+//	increment  AI增量包：ai_call_balance += 包含量（买断资产，月度重置不触碰）
+//
 // tx 传 nil 走全局 DB；订单确认链路传事务句柄保证"改单+发放"原子
 func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 	if tx == nil {

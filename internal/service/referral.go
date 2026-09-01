@@ -92,6 +92,7 @@ func EnsureInviteCode(tenantID uint) (string, error) {
 // ApplyReferralBinding 注册事务内调用：首绑邀请关系 + 双向发放奖励
 //   - 受邀租户：写入 InvitedByTenantID（仅当为空——首绑唯一）+ 发放注册免费桶
 //   - 邀请租户：免费桶余额叠加 + 有效期顺延
+//
 // refCode 无效（不存在/自邀/非 trial|active）时静默忽略（只记日志），不阻断注册
 func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, inviteeEmail string) {
 	refCode = upperTrim(refCode)
@@ -206,17 +207,17 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 // ReferralInfo 邀请信息聚合出参
 // 包含邀请码、邀请统计、参数快照和当前token余额
 type ReferralInfo struct {
-	InviteCode       string     `json:"invite_code"`        // 租户邀请码
-	InvitedCount     int64      `json:"invited_count"`       // 累计成功绑定数
-	PaidCount        int64      `json:"paid_count"`          // 其中已完成首笔付费数
-	BonusPerSignup   int64      `json:"bonus_per_signup"`    // 参数快照：每邀1人token
-	ExtDaysPerSignup int        `json:"ext_days_per_signup"` // 参数快照：每邀1人延长天数
-	BonusOnPaid      int64      `json:"bonus_on_paid"`       // 参数快照：受邀人付费后得永久token
-	TrialTokenAmount int64      `json:"trial_token_amount"`  // 参数快照：注册赠送
-	TrialValidDays   int        `json:"trial_valid_days"`    // 参数快照：免费有效天数
-	FreeTokenBalance int64      `json:"free_token_balance"`  // 我的③桶现状（免费体验桶）
+	InviteCode       string     `json:"invite_code"`           // 租户邀请码
+	InvitedCount     int64      `json:"invited_count"`         // 累计成功绑定数
+	PaidCount        int64      `json:"paid_count"`            // 其中已完成首笔付费数
+	BonusPerSignup   int64      `json:"bonus_per_signup"`      // 参数快照：每邀1人token
+	ExtDaysPerSignup int        `json:"ext_days_per_signup"`   // 参数快照：每邀1人延长天数
+	BonusOnPaid      int64      `json:"bonus_on_paid"`         // 参数快照：受邀人付费后得永久token
+	TrialTokenAmount int64      `json:"trial_token_amount"`    // 参数快照：注册赠送
+	TrialValidDays   int        `json:"trial_valid_days"`      // 参数快照：免费有效天数
+	FreeTokenBalance int64      `json:"free_token_balance"`    // 我的③桶现状（免费体验桶）
 	FreeTokenExpires *time.Time `json:"free_token_expires_at"` // ③桶过期时间
-	TokenBalance     int64      `json:"token_balance"`       // 我的②桶现状（永久余额桶）
+	TokenBalance     int64      `json:"token_balance"`         // 我的②桶现状（永久余额桶）
 }
 
 // GetReferralInfo 聚合当前租户的邀请信息（EnsureInviteCode 幂等补码）

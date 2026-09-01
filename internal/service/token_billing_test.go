@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"ai-scrm/internal/db"
+	"ai-scrm/internal/testutil"
 )
 
 // ============================================================
@@ -158,8 +158,6 @@ func TestGrantTrialBucketNoTx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode: 跳过 DB 依赖测试")
 	}
-	if err := db.Init(); err != nil {
-		t.Skipf("DB 不可用，跳过: %v", err)
-	}
+	testutil.SetupTestDB(t)
 	GrantTrialBucket(nil, 999999, "test@example.com")
 }

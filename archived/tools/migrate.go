@@ -1,3 +1,7 @@
+//go:build ignore
+
+// 说明：本文件为 SQLite→PostgreSQL 一次性迁移工具（已完成使命，2026-09-01 归档至 archived/）。
+// 加 build ignore 标签排除出常规构建，避免 go build ./... 每次多编译一个 main 包。
 // ============================================================
 // SQLite → PostgreSQL 数据迁移工具
 //

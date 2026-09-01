@@ -72,11 +72,11 @@ func SuperUsageCost(c *gin.Context) {
 	}
 	// costRow 单模型成本聚合行，按 provider/model 维度归因（含占比便于定位高成本模型）
 	type costRow struct {
-		Provider     string  `json:"provider"`      // 模型供应商
-		Model        string  `json:"model"`         // 模型名称
-		Calls        int64   `json:"calls"`         // 调用次数
-		Tokens       int64   `json:"tokens"`        // Token消耗量
-		CostYuan     float64 `json:"cost_yuan"`     // 费用（元）
+		Provider     string  `json:"provider"`       // 模型供应商
+		Model        string  `json:"model"`          // 模型名称
+		Calls        int64   `json:"calls"`          // 调用次数
+		Tokens       int64   `json:"tokens"`         // Token消耗量
+		CostYuan     float64 `json:"cost_yuan"`      // 费用（元）
 		CostSharePct float64 `json:"cost_share_pct"` // 费用占全平台百分比
 	}
 	// 构建响应列表，同时计算各模型费用占比

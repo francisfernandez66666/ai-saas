@@ -24,11 +24,11 @@ import (
 // 登录防爆破策略常量
 const (
 	// maxFailures 窗口内最大失败次数，超过触发锁定
-	maxFailures    = 5
+	maxFailures = 5
 	// windowDuration 失败计数窗口，10分钟内的失败次数累计
 	windowDuration = 10 * time.Minute
 	// lockDuration 触发后锁定时长，锁定期间拒绝登录
-	lockDuration   = 15 * time.Minute
+	lockDuration = 15 * time.Minute
 )
 
 // attemptRec 内存版守卫记录：单键的失败计数 + 窗口起点 + 锁定截止（零值=未锁）
@@ -41,9 +41,9 @@ type attemptRec struct {
 
 // 登录防爆破内存存储
 var (
-	guardMu   sync.Mutex                              // 互斥锁，保护attempts map并发安全
-	attempts  = map[string]*attemptRec{}               // 键格式：u:{username} / ip:{ip}:{username}
-	lastSweep = time.Now()                             // 上次惰性清理时间
+	guardMu   sync.Mutex                 // 互斥锁，保护attempts map并发安全
+	attempts  = map[string]*attemptRec{} // 键格式：u:{username} / ip:{ip}:{username}
+	lastSweep = time.Now()               // 上次惰性清理时间
 )
 
 // ErrLocked 登录锁定错误（携带剩余时间）
@@ -64,7 +64,7 @@ func loginKeys(username, ip string) []string {
 func redisCountKey(k string) string { return "lg:cnt:" + k }
 
 // redisLockKey 生成Redis版锁定键
-func redisLockKey(k string) string  { return "lg:lock:" + k }
+func redisLockKey(k string) string { return "lg:lock:" + k }
 
 // loginRedisKeys 返回某次登录涉及的全部 Redis 键（双层）
 // 返回计数键和锁定键两个数组，分别用于失败计数和锁定状态

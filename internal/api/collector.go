@@ -33,8 +33,8 @@ POST /api/v1/collector
 功能：接收外部数据事件，经鉴权后按事件 ID 幂等去重。
 
 鉴权逻辑：
-  1. 检查 COLLECTOR_KEY 是否配置（未配置则拒绝，避免成为无鉴权入口）
-  2. 校验请求头 X-Collector-Key 是否匹配
+ 1. 检查 COLLECTOR_KEY 是否配置（未配置则拒绝，避免成为无鉴权入口）
+ 2. 校验请求头 X-Collector-Key 是否匹配
 
 幂等去重：
   - 事件 ID 为空时自动生成随机 ID
