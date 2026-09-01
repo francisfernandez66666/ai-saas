@@ -79,7 +79,7 @@ func (c *KafkaCenter) StartConsumers(ctx context.Context) {
 	}
 }
 
-// consumeLoop 消费（自动补注释，原为缺注释的顶层声明）。
+// consumeLoop 单个 topic 的 Kafka 消费循环：同组多实例分摊分区，成功消息提交 offset，失败重试
 func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string) {
 	fullTopic := c.cfg.TopicPrefix + topic
 	reader := kafka.NewReader(kafka.ReaderConfig{

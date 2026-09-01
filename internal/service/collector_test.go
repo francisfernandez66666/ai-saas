@@ -3,7 +3,7 @@ package service
 
 import "testing"
 
-// TestAnonymizeText 测试（自动补注释，原为缺注释的顶层声明）。
+// TestAnonymizeText 验证文本匿名化：手机号/邮箱被掩码替换
 func TestAnonymizeText(t *testing.T) {
 	got := AnonymizeText("手机13800001111 邮箱a@b.com")
 	want := "手机1380***1111 邮箱a***@b.com"
@@ -12,7 +12,7 @@ func TestAnonymizeText(t *testing.T) {
 	}
 }
 
-// TestAnonymizePayload 测试（自动补注释，原为缺注释的顶层声明）。
+// TestAnonymizePayload 验证嵌套 payload 递归脱敏：map/list 内敏感信息都被掩码，且不改动原数据
 func TestAnonymizePayload(t *testing.T) {
 	in := map[string]any{
 		"text":   "联系13800001111",

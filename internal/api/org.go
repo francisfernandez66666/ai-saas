@@ -733,5 +733,5 @@ func GetManagedUsers(c *gin.Context) {
 	RespOK(c, "success", rows)
 }
 
-// _ 变量定义（自动补注释）。
+// 占位引用：保证 gorm 库被显式依赖（避免未来清理 import 时误删）
 var _ = gorm.ErrRecordNotFound

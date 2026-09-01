@@ -307,10 +307,10 @@ func migrateCustomerTags() error {
 	return nil
 }
 
-// RoutePrice 变量定义（自动补注释）。
+// RoutePrice 样本路由节点标识（迁移测试用常量）
 const RoutePrice = "RoutePrice"
 
-// main 程序入口（自动补注释，原为缺注释的顶层声明）。
+// main CDP 数据迁移工具入口：初始化数据库 → 执行迁移 → 校验结果
 func main() {
 	// 确保数据库已初始化
 	if err := db.Init(); err != nil {
@@ -325,7 +325,7 @@ func main() {
 	verifyMigration()
 }
 
-// verifyMigration 验证（自动补注释，原为缺注释的顶层声明）。
+// verifyMigration 迁移后校验：对关键表做行数统计并打印，人工确认迁移完整性
 func verifyMigration() {
 	log.Println("\n--- 验证迁移结果 ---")
 

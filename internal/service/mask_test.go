@@ -3,7 +3,7 @@ package service
 
 import "testing"
 
-// TestMaskPhone 测试（自动补注释，原为缺注释的顶层声明）。
+// TestMaskPhone 验证手机号掩码（11位中间加星，非11位原样）
 func TestMaskPhone(t *testing.T) {
 	cases := map[string]string{
 		"13800001111": "138****1111",
@@ -17,7 +17,7 @@ func TestMaskPhone(t *testing.T) {
 	}
 }
 
-// TestMaskEmail 测试（自动补注释，原为缺注释的顶层声明）。
+// TestMaskEmail 验证邮箱掩码（首尾字符保留，中间加星；无@原样）
 func TestMaskEmail(t *testing.T) {
 	cases := map[string]string{
 		"alice@example.com": "a***e@example.com",
@@ -32,7 +32,7 @@ func TestMaskEmail(t *testing.T) {
 	}
 }
 
-// TestMaskName 测试（自动补注释，原为缺注释的顶层声明）。
+// TestMaskName 验证姓名掩码（单字原样/双字尾字/三字保两头）
 func TestMaskName(t *testing.T) {
 	cases := map[string]string{
 		"张三":  "*三",
@@ -47,7 +47,7 @@ func TestMaskName(t *testing.T) {
 	}
 }
 
-// TestMaskPhoneInText 测试（自动补注释，原为缺注释的顶层声明）。
+// TestMaskPhoneInText 验证长文本内混排的多个手机号都被掩码
 func TestMaskPhoneInText(t *testing.T) {
 	got := MaskPhoneInText("联系 13800001111 或 13912345678 谢谢")
 	want := "联系 1380***1111 或 1391***5678 谢谢"

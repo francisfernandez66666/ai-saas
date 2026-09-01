@@ -1,13 +1,13 @@
-// SuperAdmin.tsx：前端页面/模块（自动补注释）。
+// 平台超管后台页（SuperAdmin）：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 import { useState, useEffect } from 'react'
 import { Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { AUTH, apiJSON } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
 
-// FB_TYPES 常量/变量（自动补注释）。
+// FB_TYPES 反馈类型码 → 中文名（反馈列表列渲染）
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
-// TYPE_NAMES 常量/变量（自动补注释）。
+// TYPE_NAMES 商业包类型码 → 中文名（包管理列表列渲染）
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
 
 // 租户摘要行（超管租户列表）

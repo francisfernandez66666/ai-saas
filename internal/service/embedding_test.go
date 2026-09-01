@@ -3,7 +3,7 @@ package service
 
 import "testing"
 
-// TestCosineSimilarity 测试（自动补注释，原为缺注释的顶层声明）。
+// TestCosineSimilarity 验证余弦相似度：相同向量≈1、正交=0、维度不一致=0
 func TestCosineSimilarity(t *testing.T) {
 	a := []float32{1, 0, 0}
 	b := []float32{1, 0, 0}
@@ -20,7 +20,7 @@ func TestCosineSimilarity(t *testing.T) {
 	}
 }
 
-// TestSqrt32 测试（自动补注释，原为缺注释的顶层声明）。
+// TestSqrt32 验证 float32 开平方边界（0 与常规值）
 func TestSqrt32(t *testing.T) {
 	if s := sqrt32(0); s != 0 {
 		t.Errorf("sqrt(0)=0 got %f", s)
@@ -30,7 +30,7 @@ func TestSqrt32(t *testing.T) {
 	}
 }
 
-// TestToVectorLiteral 测试（自动补注释，原为缺注释的顶层声明）。
+// TestToVectorLiteral 验证向量字面量格式化：缺省维度补零到 1536 维
 func TestToVectorLiteral(t *testing.T) {
 	// 缺省维度 1536：短向量补零，长向量裁剪
 	got := toVectorLiteral([]float32{0.1, 0.2})
@@ -50,7 +50,7 @@ func TestToVectorLiteral(t *testing.T) {
 	}
 }
 
-// TestBigramSet 测试（自动补注释，原为缺注释的顶层声明）。
+// TestBigramSet 验证中文字符二元组分词（用于关键词分词回退）
 func TestBigramSet(t *testing.T) {
 	bs := bigramSet("越野车")
 	// 相邻两字二元组：越野、野车（共2）

@@ -29,7 +29,7 @@ type ipWindow struct {
 	resetAt time.Time
 }
 
-// 常量/变量定义块（自动补注释）。
+// ipLimitMap 固定窗口限流表（bucket:tenant:ip → 窗口），ipLimitMu 保护并发访问，lastSweepAt 记录上次清扫时刻
 var (
 	ipLimitMu   sync.Mutex
 	ipLimitMap  = map[string]*ipWindow{} // key -> window

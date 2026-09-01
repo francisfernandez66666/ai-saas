@@ -30,10 +30,10 @@ import (
 
 const turnstileVerifyURL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 
-// turnstileClient 变量定义（自动补注释）。
+// turnstileClient 调用 Cloudflare siteverify 校验接口的 HTTP 客户端（5s 超时，避免拖慢主链路）
 var turnstileClient = &http.Client{Timeout: 5 * time.Second}
 
-// turnstileVerifyResp 结构体/类型定义（自动补注释）。
+// turnstileVerifyResp Cloudflare siteverify 校验响应结构
 type turnstileVerifyResp struct {
 	Success    bool     `json:"success"`
 	ErrorCodes []string `json:"error-codes"`

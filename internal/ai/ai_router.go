@@ -27,7 +27,7 @@ import (
 // ModelProvider 模型提供商标识
 type ModelProvider string
 
-// 常量/变量定义块（自动补注释）。
+// ModelProvider 标识 AI 提供商，取值见 Provider* 常量（zhipu/siliconflow/gateway/fallback）
 const (
 	ProviderZhipu       ModelProvider = "zhipu"       // 智谱GLM
 	ProviderSiliconFlow ModelProvider = "siliconflow" // 硅基流动

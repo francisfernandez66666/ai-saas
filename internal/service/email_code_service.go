@@ -25,7 +25,7 @@ import (
 //   同邮箱 60s 冷却 / 单 IP 每日 20 封 / 10 分钟有效 / 错误 5 次作废
 // ============================================================
 
-// 常量/变量定义块（自动补注释）。
+// emailCodeTTL 验证码有效期；emailCooldown 同邮箱发送冷却；emailIPDailyCap 单IP每日上限；emailMaxAttempts 最大错误尝试次数
 const (
 	emailCodeTTL     = 10 * time.Minute // 有效期
 	emailCooldown    = 60 * time.Second // 同邮箱发送冷却

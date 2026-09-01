@@ -3,7 +3,7 @@ package service
 
 import "testing"
 
-// TestScoreReplyOffline 测试（自动补注释，原为缺注释的顶层声明）。
+// TestScoreReplyOffline 验证离线回复评分：空/过短/命中锚词/含违规词四种情形
 func TestScoreReplyOffline(t *testing.T) {
 	// 空回复 = 0
 	if r := ScoreReplyOffline("", nil, nil); r.Score != 0 {

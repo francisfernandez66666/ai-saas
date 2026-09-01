@@ -104,7 +104,7 @@ func TestConsumeAIQuotaConcurrentOverflow(t *testing.T) {
 
 // ---- test helpers ----
 
-// getUsedAI 获取（自动补注释，原为缺注释的顶层声明）。
+// getUsedAI 读取指定租户已用 AI 次数（测试断言用）
 func getUsedAI(tenant uint) int64 {
 	var used int64
 	db.DB.Model(&model.Tenant{}).Where("id = ?", tenant).
@@ -112,7 +112,7 @@ func getUsedAI(tenant uint) int64 {
 	return used
 }
 
-// setTenantQuota 设置（自动补注释，原为缺注释的顶层声明）。
+// setTenantQuota 直接写库设置租户配额（max/balance/used），构造并发测试前提
 func setTenantQuota(t *testing.T, tenant uint, maxAI, balance, used int) {
 	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", tenant).Updates(map[string]interface{}{
 		"max_ai_calls":    maxAI,
@@ -123,7 +123,7 @@ func setTenantQuota(t *testing.T, tenant uint, maxAI, balance, used int) {
 	}
 }
 
-// createTestTenant 创建（自动补注释，原为缺注释的顶层声明）。
+// createTestTenant 创建单测租户（code=unit_test_tenant，已存在则复用，返回租户ID）
 func createTestTenant(t *testing.T) uint {
 	var cnt int64
 	db.DB.Model(&model.Tenant{}).Where("code = ?", "unit_test_tenant").Count(&cnt)
@@ -140,7 +140,7 @@ func createTestTenant(t *testing.T) uint {
 	return tt.ID
 }
 
-// cleanupTestTenant 函数（自动补注释，原为缺注释的顶层声明）。
+// cleanupTestTenant 删除单测租户（测试收尾清理，幂等）
 func cleanupTestTenant(t *testing.T, id uint) {
 	_ = db.DB.Where("id = ?", id).Delete(&model.Tenant{}).Error
 }

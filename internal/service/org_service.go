@@ -46,13 +46,13 @@ type orgCacheEntry struct {
 	expireAt time.Time   // 本地缓存过期时间
 }
 
-// 常量/变量定义块（自动补注释）。
+// orgCacheTTL 本地缓存有效期；orgVerKeyPrefix Redis 版本戳键前缀（按 userID 记版本）
 const (
 	orgCacheTTL     = 30 * time.Second
 	orgVerKeyPrefix = "userv:"
 )
 
-// 常量/变量定义块（自动补注释）。
+// orgCache 组织上下文进程内缓存（userID → *orgCacheEntry），多实例下配合 Redis 版本戳近实时失效
 var (
 	orgCache sync.Map // userID(uint) → *orgCacheEntry
 )

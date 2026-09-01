@@ -3,7 +3,7 @@ package cdp
 
 import "testing"
 
-// TestIsPriceInquiry 测试（自动补注释，原为缺注释的顶层声明）。
+// TestIsPriceInquiry 验证价格询问意图识别的典型用例（正向与负向）
 func TestIsPriceInquiry(t *testing.T) {
 	cases := []struct {
 		text string

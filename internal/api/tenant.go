@@ -27,10 +27,10 @@ import (
 // 配套：子域名占用检查、套餐公开查询（定价页用）
 // ============================================================
 
-// tenantCodeRe 变量定义（自动补注释）。
+// tenantCodeRe 租户子域名标识正则：小写字母开头，后接小写字母/数字/连字符，总长 3-20 位
 var tenantCodeRe = regexp.MustCompile(`^[a-z][a-z0-9-]{2,19}$`)
 
-// signupReq 结构体/类型定义（自动补注释）。
+// signupReq 租户注册请求体：企业信息 + 管理员账号 + 可选的邮箱验证码/邀请码/行业
 type signupReq struct {
 	CompanyName  string `json:"company_name" binding:"required"`
 	Code         string `json:"code" binding:"required"` // 子域名标识，注册后不可改

@@ -21,7 +21,7 @@ import (
 // 行为：读写 + version 乐观锁 + 心跳；巡检由 sweeper.go 负责
 // ============================================================
 
-// ErrVersionConflict 变量定义（自动补注释）。
+// ErrVersionConflict 乐观锁版本冲突错误：并发更新状态机时以此提示调用方重试
 var ErrVersionConflict = errors.New("状态机版本冲突（并发更新），请重试")
 
 // Get 按流程实例ID读取状态机（不存在返回 nil, nil）

@@ -27,7 +27,7 @@ import (
 //   - 各实例每 5s 轮询版本戳，发现其他实例的更新则本地重载（不回弹，防乒乓）
 // ============================================================
 
-// redisKeyTagVer 变量定义（自动补注释）。
+// redisKeyTagVer 标签缓存多实例失效的 Redis 版本戳键名（Reload 时 INCR，各实例轮询比对）
 const redisKeyTagVer = "cachever:tags"
 
 // TagCacheManager 标签缓存管理器

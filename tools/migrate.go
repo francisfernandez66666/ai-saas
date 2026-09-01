@@ -30,7 +30,7 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// main 程序入口（自动补注释，原为缺注释的顶层声明）。
+// main SQLite 存量数据迁移到 PostgreSQL 的工具入口：读 .env 配置 → 连接两端库 → 逐表搬运
 func main() {
 	log.Println("========================================")
 	log.Println("  SQLite → PostgreSQL 数据迁移工具")

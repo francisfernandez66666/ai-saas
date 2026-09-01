@@ -10,15 +10,15 @@ import { Msg, Cust, Detail } from '../types'
 
 // 顾问工作台接口前缀
 const API = '/api/v1/advisor'
-// STAGE_LABELS 常量/变量（自动补注释）。
+// STAGE_LABELS 客户旅程阶段码 → 中文名（列表/详情展示用）
 const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
-// STAGE_COLORS 常量/变量（自动补注释）。
+// STAGE_COLORS 阶段码 → Tailwind 徽标样式（状态标签配色）
 const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
-// TABS 常量/变量（自动补注释）。
+// TABS 客户列表顶部筛选页签（值 + 中文文案）
 const TABS = [{ k: 'all', t: '全部' }, { k: 'pending', t: '待跟进' }, { k: 'following', t: '跟进中' }, { k: 'arrived', t: '已到店' }, { k: 'test_drive', t: '已试驾' }]
-// H 常量/变量（自动补注释）。
+// H 客户姓名的展示处理：匿名访客统一显示为"客户"（避免泄露原始标识）
 const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
-// HI 常量/变量（自动补注释）。
+// HI 客户头像占位字符：访客取"客"，普通客户取姓名首字符
 const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
 
 // 首页统计卡片的数据结构（数值 + 文案 + 颜色）

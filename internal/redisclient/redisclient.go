@@ -32,7 +32,7 @@ var rdb *redis.Client
 // instanceID 本实例标识（锁值，安全解锁用：只删自己的锁）
 var instanceID string
 
-// init 初始化（自动补注释，原为缺注释的顶层声明）。
+// init 进程启动时生成实例 ID（作为分布式锁值），保证仅能解锁自己持有的锁
 func init() {
 	b := make([]byte, 8)
 	_, _ = rand.Read(b)
@@ -255,7 +255,7 @@ func DrainList(key string) []string {
 	return nil
 }
 
-// randomHex 随机（自动补注释，原为缺注释的顶层声明）。
+// randomHex 用 crypto/rand 生成 n 字节随机数的十六进制串（分布式锁值/唯一后缀）
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

@@ -211,7 +211,7 @@ func TextSimilarity(s1, s2 string) float64 {
 	return 1.0 - float64(dist)/float64(maxLen)
 }
 
-// minInt 取最小值（自动补注释，原为缺注释的顶层声明）。
+// minInt 返回三个 int 中的最小值（编辑距离计算用）
 func minInt(a, b, c int) int {
 	m := a
 	if b < m {

@@ -20,7 +20,7 @@ type Cfg = {
   default_value?: string
 }
 
-// CATEGORY_TABS 常量/变量（自动补注释）。
+// CATEGORY_TABS 后台管理分类页签（value=配置分类 key，label=页签文案）
 const CATEGORY_TABS: { value: string; label: string }[] = [
   { value: 'reply_speed', label: '⚡ 回复速度' },
   { value: 'strategy', label: '🎯 策略引擎' },
@@ -318,7 +318,7 @@ export default function Admin() {
   )
 }
 
-// PanelContent 函数（自动补注释）。
+// PanelContent 按页签分类分发渲染：配置类走 ConfigPanels，其余页签进入各自专属 Tab 组件
 function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[] }) {
   if (CONFIG_CATS.includes(tab)) return <ConfigPanels cfgs={configsFor(tab)} edits={edits} setEdits={setEdits} />
   if (tab === 'customers') return <CustomersTab />
@@ -332,7 +332,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   return <Placeholder name={tab} />
 }
 
-// Placeholder 函数（自动补注释）。
+// Placeholder 未迁移模块的占位面板（提示下一轮迭代补齐）
 function Placeholder({ name }: { name: string }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
@@ -344,9 +344,9 @@ function Placeholder({ name }: { name: string }) {
 
 // ------------------------- 客户线索 -------------------------
 const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
-// STAGE_COLORS 常量/变量（自动补注释）。
+// STAGE_COLORS 客户阶段徽标配色（Tailwind class，key 对齐 STAGE_LABELS）
 const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
-// STATUS_OPTS 常量/变量（自动补注释）。
+// STATUS_OPTS 客户阶段筛选选项（空串=全部）
 const STATUS_OPTS = ['', 'ai_connected', 'human_connected', 'lead_captured', 'arrived', 'ordered', 'delivered', 'lost']
 
 // 客户线索 Tab：按阶段筛选、分页加载客户，抽屉展示详情/试驾单/聊天记录
@@ -553,7 +553,7 @@ const TAG_CATS = [
   { key: 'type', name: '客户类型', tags: ['首次咨询', '回头客', '转介绍'] },
   { key: 'status', name: '跟进状态', tags: ['待跟进', '跟进中', '已试驾', '已到店', '已战败'] },
 ]
-// AUTO_TAG_RULES 常量/变量（自动补注释）。
+// AUTO_TAG_RULES 自动打标规则说明（触发条件 → 自动标签 → 所属分类，只读展示）
 const AUTO_TAG_RULES = [
   { trigger: '消息中出现手机号', tag: '已留资', category: '跟进状态' },
   { trigger: '消息中提到试驾', tag: '高意向', category: '意向等级' },
@@ -564,7 +564,7 @@ const AUTO_TAG_RULES = [
   { trigger: '消息中提到朋友推荐', tag: '转介绍', category: '客户类型' },
   { trigger: '客户首次发送消息', tag: '首次咨询', category: '客户类型' },
 ]
-// CAT_COLOR 常量/变量（自动补注释）。
+// CAT_COLOR 标签分类 → 徽标配色（key 对齐 TAG_CATS 的 key）
 const CAT_COLOR: Record<string, string> = { intent: 'bg-indigo-50 text-indigo-600', source: 'bg-emerald-50 text-emerald-600', car: 'bg-cyan-50 text-cyan-600', type: 'bg-amber-50 text-amber-600', status: 'bg-rose-50 text-rose-600' }
 // 标签体系 Tab：接后端 /admin/tags CRUD（按 category 分组）；自动打标规则只读
 function TagSystemTab() {

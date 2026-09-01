@@ -127,7 +127,7 @@ func recordAudit(env Envelope, status string) {
 	}()
 }
 
-// extractEventType 提取（自动补注释，原为缺注释的顶层声明）。
+// extractEventType 从消息负载中提取 event_type 字段（用于审计落库事件名定位），缺失时返回 "unknown"
 func extractEventType(payload []byte) string {
 	var m map[string]json.RawMessage
 	if json.Unmarshal(payload, &m) == nil {
@@ -141,7 +141,7 @@ func extractEventType(payload []byte) string {
 	return "unknown"
 }
 
-// randomHex 随机（自动补注释，原为缺注释的顶层声明）。
+// randomHex 用 crypto/rand 生成 n 字节随机数的十六进制串（事件ID/锁值等）
 func randomHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)

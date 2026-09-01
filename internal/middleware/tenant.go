@@ -41,18 +41,18 @@ type TenantInfo struct {
 
 // ---- 解析缓存（进程内，多实例下各实例独立缓存，30s 内租户封禁延迟生效，可接受）----
 
-// tenantCacheEntry 结构体/类型定义（自动补注释）。
+// tenantCacheEntry 租户解析缓存条目：tenant=nil 记为负缓存（不存在/不可用），避免穿透打库
 type tenantCacheEntry struct {
 	tenant   *model.Tenant // nil = 负缓存（不存在/不可用）
 	expireAt time.Time
 }
 
-// 常量/变量定义块（自动补注释）。
+// resolveCache 进程内租户解析缓存（sync.Map，键含 host/code/id 前缀区分查询维度）
 var (
 	resolveCache sync.Map // key: "host:xxx" / "code:xxx" / "id:n" → *tenantCacheEntry
 )
 
-// 常量/变量定义块（自动补注释）。
+// tenantCacheTTL 租户正缓存有效期；tenantNegCacheTTL 负缓存有效期（更短，防扫描打库）
 const (
 	tenantCacheTTL    = 30 * time.Second // 正缓存：租户信息 30 秒
 	tenantNegCacheTTL = 10 * time.Second // 负缓存：不存在的域名 10 秒，防扫描打库

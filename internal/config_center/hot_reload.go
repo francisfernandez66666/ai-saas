@@ -29,7 +29,7 @@ import (
 // HotReloadHook 热加载钩子签名：tenantID=触发租户(0=系统层)，action=seed/upgrade/rollback
 type HotReloadHook func(tenantID uint, action string, scope string)
 
-// hotReloadHooks 变量定义（自动补注释）。
+// hotReloadHooks 已注册的热加载钩子列表（Seed/Upgrade/Rollback 事件触发时依次调用）
 var hotReloadHooks []HotReloadHook
 
 // RegisterHotReloadHook 注册热加载钩子（main 启动时调用，须在 StartCfgEventConsumer 之前）
