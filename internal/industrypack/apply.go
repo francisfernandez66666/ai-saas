@@ -10,7 +10,8 @@ package industrypack
 //   - templates/features：id 前缀 pk_{code}_；先删后插（同层级内幂等换版本）
 //     召回过滤规则见 strategy.templatesForTenant（预置0全员可见+租户匹配+部门链匹配）
 //   - prompts/params/mindset：JSON 存 system_configs 租户覆盖层键（消费端 P2 接通）
-//   - flows/tags：本批校验合法性并跳过导入（日志明示 P2 接入）
+//   - flows：本批校验合法性并跳过导入；tag_rules 因引用插入后生成的 TargetTagID、跨包映射耦合高，
+//     均留 P2 标签引擎专项接入（tags 已物化见 materializeTags，2026-09 同步注释修正）
 // 继承链应用逻辑（自底向上）：最底层部门包→父部门包→…→顶层部门包
 //   →企业租户包→行业包。内容类(模板/卖点)为链上并集；参数类就近覆盖(P2)。
 // ============================================================

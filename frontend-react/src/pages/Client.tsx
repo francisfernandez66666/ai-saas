@@ -147,8 +147,7 @@ export default function Client() {
         // 身份合并（OneID）：服务端可能将本次访客合并到已有客户，需同步更新本地 ID 与持久化
         const merged = j.data.merged_customer_id || j.data.mergedCustomerId
         if (merged && merged > 0 && merged !== custId.current) { custId.current = merged; localStorage.setItem(LS_ID, String(merged)) }
-        // C3：服务端下发的访客密钥持久化，供 history/welcome 携带
-        if (j.data.visitor_key) localStorage.setItem(LS_KEY, j.data.visitor_key)
+        // C3：访客密钥已在 CreateGuest 时持久化（chat/test 不返回，此处无需重复处理）
         // 替换临时消息 ID 为真实数据库 ID
         const dbId = j.data.customer_msg_id
         if (dbId) setMsgs((m) => m.map((x) => x.id === temp.id ? { ...x, id: dbId } : x))

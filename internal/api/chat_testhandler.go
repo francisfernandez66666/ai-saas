@@ -398,12 +398,16 @@ func ChatTest(c *gin.Context) {
 			log.Printf("[到店倾向-未留资线索-测试接口] 客户%d 第二段追问已发送", cid)
 		}(customer.ID, conv.ID, secondReply, tenantID)
 
+		// 修复Bug(2026-09-03)：补 follow_up 键——两段式到店倾向第二段为异步延迟落库，
+		// 前端 Client.tsx 依赖 j.data.follow_up.delay_seconds 提前展示"正在输入"节奏；
+		// 此前该键缺失导致前端无法感知第二段即将到来，跟进节奏提示静默失效。
 		RespOK(c, "success", gin.H{
 			"conversation_id":    conv.ID,
 			"ai_reply":           firstReply,
 			"route_result":       "store_visit_fast",
 			"customer_msg_id":    customerMsg.ID,
 			"assistant_messages": []model.Message{storeVisitMsg},
+			"follow_up":          gin.H{"delay_seconds": int(service.GetStoreVisitSecondDelay().Seconds())},
 		})
 		return
 	}

@@ -64,7 +64,7 @@ export default function AppSettings() {
     if (!newEmail) return
     // H6 修复：换绑邮箱应调用绑定专用验证码接口 /auth/email/code，
     // 原 /auth/email-code 是注册验证码接口，导致换绑验证码校验失败、换绑永久坏掉。
-    await AUTH('/api/v1/auth/email/code', { method: 'POST', body: { email: newEmail } })
+    await AUTH('/api/v1/auth/email/code', { method: 'POST', body: { new_email: newEmail } })
     // 发送后进入 60s 倒计时，禁止重复点击
     setCd(60)
     const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)
