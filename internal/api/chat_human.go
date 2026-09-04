@@ -101,8 +101,11 @@ func HumanReply(c *gin.Context) {
 
 // GetMessages 获取会话消息列表
 func GetMessages(c *gin.Context) {
-	conversationID := c.Param("id")
-
+	// 健壮性收口(2026-09-05)：conversation_id 为 uint 列，非法 ID 直接 400，不再打进 PG(22P02)
+	conversationID, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var messages []model.Message
 	db.RQ(c).Where("conversation_id = ?", conversationID).
 		Order("created_at ASC").

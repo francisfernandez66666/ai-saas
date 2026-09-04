@@ -202,8 +202,13 @@ func TenantKBDelete(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	// 健壮性收口(2026-09-05)：uint 主键入口校验，非法 ID 直接 400，不再触 DB
+	kid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	res := db.DB.Where("id = ? AND tenant_id = ? AND category = ?",
-		c.Param("id"), ti.ID, "企业知识").Delete(&model.KnowledgeFragment{})
+		kid, ti.ID, "企业知识").Delete(&model.KnowledgeFragment{})
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "片段不存在")
 		return

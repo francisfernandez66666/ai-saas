@@ -49,6 +49,9 @@ type AIRouter struct {
 	mu          sync.RWMutex  // 并发保护
 	models      []*ModelState // 模型列表（按优先级排序）
 	coolDownSec int           // 失败后冷却时间（秒）
+	// callOverride 测试注入点（2026-09-05 降级演练用例）：非 nil 时替代 callProvider，
+	// 用于故障注入（429/超时/余额耗尽/全链失败）而无需真实厂商 Key；生产恒为 nil
+	callOverride func(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error)
 }
 
 // Router 默认路由器实例
@@ -201,7 +204,15 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 		triedCount++
 		log.Printf("[AI路由] → 尝试第%d个模型: [%s] %s", idx+1, model.Provider, model.ModelName)
 
-		reply, usage, err := r.callProvider(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
+		var reply string
+		var usage Usage
+		var err error
+		if r.callOverride != nil {
+			// 测试注入路径（故障演练），生产恒走 callProvider
+			reply, usage, err = r.callOverride(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
+		} else {
+			reply, usage, err = r.callProvider(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
+		}
 
 		if err == nil && reply != "" {
 			// 成功，重置失败计数

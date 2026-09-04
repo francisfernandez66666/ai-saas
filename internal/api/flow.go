@@ -35,8 +35,11 @@ func GetFlowList(c *gin.Context) {
 // GetFlow 获取单个流程定义详情
 // 根据URL参数ID查询，不存在时返回404
 func GetFlow(c *gin.Context) {
-	id := c.Param("id")
-
+	// 健壮性收口(2026-09-05)：FlowDefinition 为 uint 主键，非法 ID 直接 400，不再打进 PG(22P02)
+	id, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var flowDef model.FlowDefinition
 	result := db.PQ(c).First(&flowDef, id)
 	if result.Error != nil {
@@ -121,8 +124,11 @@ func AdvanceFlow(c *gin.Context) {
 // GetFlowInstance 获取单个流程实例详情
 // 根据实例ID查询，用于查看流程执行状态和历史
 func GetFlowInstance(c *gin.Context) {
-	id := c.Param("id")
-
+	// 健壮性收口(2026-09-05)：uint 主键入口校验，非法不再触 DB
+	id, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var instance model.FlowInstance
 	result := db.PQ(c).First(&instance, id)
 	if result.Error != nil {

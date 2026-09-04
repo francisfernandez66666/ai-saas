@@ -14,6 +14,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"ai-scrm/internal/schema"
 	"github.com/gin-gonic/gin"
@@ -154,4 +155,18 @@ respFailStatus 业务错误响应（携带准确 HTTP 状态码）
 */
 func respFailStatus(c *gin.Context, httpStatus int, code RespCode, msg string) {
 	RespErr(c, httpStatus, int(code), msg)
+}
+
+// PathUintID 解析路径参数 :id 为正整数（健壮性收口 2026-09-05）。
+// 修改原因：此前各处直接把 c.Param("id") 字符串拼进 SQL（如 super.go 空 ID 打到 PG
+// 报 22P02 invalid input syntax for bigint），既产生无效 SQL 噪音又使错误口径 404/500 漂移。
+// 现统一在入口校验：非法（空/非数字/0）直接 400，不触 DB。
+// 返回 ok=false 时已写好响应，调用方直接 return 即可。
+func PathUintID(c *gin.Context) (uint, bool) {
+	n, err := strconv.ParseUint(c.Param("id"), 10, 64)
+	if err != nil || n == 0 {
+		RespErr(c, http.StatusBadRequest, int(CodeParamErr), "ID 非法")
+		return 0, false
+	}
+	return uint(n), true
 }

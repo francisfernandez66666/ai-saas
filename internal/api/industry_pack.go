@@ -176,7 +176,12 @@ func SuperPackStatus(c *gin.Context) {
 		return
 	}
 	// 超管专属(SuperRequired 守卫)：全局目录按 id 更新是预期，非租户会话被 403 前置拦截
-	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
+	// 健壮性收口(2026-09-05)：uint 主键入口校验，非法不再触 DB
+	pid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", pid).
 		Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "包不存在")
@@ -591,7 +596,12 @@ func SuperPackShare(c *gin.Context) {
 		return
 	}
 	// 超管专属(SuperRequired 守卫)：全局目录按 id 更新是预期，跨租户由守卫放行
-	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", c.Param("id")).
+	// 健壮性收口(2026-09-05)：uint 主键入口校验，非法不再触 DB
+	pid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", pid).
 		Update("share_cross_dept", *req.Share)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "包不存在")

@@ -68,8 +68,13 @@ func CreateBillingOrder(c *gin.Context) {
 // GetBillingOrder GET /api/v1/billing/orders/:id —— 收银台轮询
 func GetBillingOrder(c *gin.Context) {
 	tid := tenantIDOf(c)
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法直接 400，不再以脏值打到 PG(22P02)
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var order model.BillingOrder
-	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
+	if err := db.DB.Where("id = ? AND tenant_id = ?", oid, tid).First(&order).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
@@ -227,8 +232,13 @@ func SuperPendingOrders(c *gin.Context) {
 // SuperConfirmOrder POST /api/v1/super/orders/:id/confirm —— 超管确认到账
 // 幂等：重复 confirm 命中 MarkOrderPaid RowsAffected=0，不二次发放
 func SuperConfirmOrder(c *gin.Context) {
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB（超管跨租户，无需租户锚）
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var order model.BillingOrder
-	if err := db.DB.First(&order, c.Param("id")).Error; err != nil {
+	if err := db.DB.First(&order, oid).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
@@ -324,8 +334,13 @@ func BillingWebhook(c *gin.Context) {
 // RefundOrder POST /api/v1/billing/orders/:id/refund —— 管理员发起退款（幂等）
 func RefundOrder(c *gin.Context) {
 	tid := tenantIDOf(c)
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var order model.BillingOrder
-	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
+	if err := db.DB.Where("id = ? AND tenant_id = ?", oid, tid).First(&order).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
@@ -335,15 +350,25 @@ func RefundOrder(c *gin.Context) {
 		return
 	}
 	writeOrderAudit(c, tid, "order_refund", o)
-	msg := map[bool]string{true: "退款成功（已支付→已退款）", false: "订单当前状态不可退款或已退过"}[flowed]
-	RespOK(c, msg, o)
+	// 毛边3修复(2026-09-05)：此前 flowed=false 也返回 code=0（成功码配失败语义），
+	// 对接方易误判为退款成功；改为 409 + 业务错误码，明确"状态机拒绝"
+	if !flowed {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "订单当前状态不可退款或已退过")
+		return
+	}
+	RespOK(c, "退款成功（已支付→已退款）", o)
 }
 
 // RequestInvoice POST /api/v1/billing/orders/:id/invoice —— 申请发票
 func RequestInvoice(c *gin.Context) {
 	tid := tenantIDOf(c)
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var order model.BillingOrder
-	if err := db.DB.Where("id = ? AND tenant_id = ?", c.Param("id"), tid).First(&order).Error; err != nil {
+	if err := db.DB.Where("id = ? AND tenant_id = ?", oid, tid).First(&order).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}

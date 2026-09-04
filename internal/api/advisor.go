@@ -46,17 +46,17 @@ type editTagsRequest struct {
 
 // editCustomerInfoRequest 编辑客户信息请求
 type editCustomerInfoRequest struct {
-	Name           string  `json:"name"`           // 客户姓名
-	Phone          string  `json:"phone"`          // 手机号
-	Age            int     `json:"age"`            // 年龄
-	Gender         int     `json:"gender"`         // 性别: 0-未知 1-男 2-女
-	Region         string  `json:"region"`         // 地域
-	City           string  `json:"city"`           // 城市
-	Career         string  `json:"career"`         // 职业
-	InterestProduct string `json:"interest_model"` // 兴趣产品
-	Budget         float64 `json:"budget"`         // 预算（万元）
-	Remark         string  `json:"remark"`         // 备注
-	JourneyStage   string  `json:"journey_stage"`  // 客户旅程阶段
+	Name            string  `json:"name"`           // 客户姓名
+	Phone           string  `json:"phone"`          // 手机号
+	Age             int     `json:"age"`            // 年龄
+	Gender          int     `json:"gender"`         // 性别: 0-未知 1-男 2-女
+	Region          string  `json:"region"`         // 地域
+	City            string  `json:"city"`           // 城市
+	Career          string  `json:"career"`         // 职业
+	InterestProduct string  `json:"interest_model"` // 兴趣产品
+	Budget          float64 `json:"budget"`         // 预算（万元）
+	Remark          string  `json:"remark"`         // 备注
+	JourneyStage    string  `json:"journey_stage"`  // 客户旅程阶段
 }
 
 // followupRequest 设置跟进提醒请求

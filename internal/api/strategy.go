@@ -68,7 +68,7 @@ func GetTemplateList(c *gin.Context) {
 
 // GetTemplate 获取话术模板详情
 func GetTemplate(c *gin.Context) {
-	id := c.Param("id")
+	id := c.Param("id") // 注意：Template 主键为字符串（语义化ID），此处分类型校验无意义，维持字符串查询
 
 	var template model.Template
 	result := db.PQ(c).First(&template, id)
@@ -141,7 +141,7 @@ func CreateTemplate(c *gin.Context) {
 
 // UpdateTemplate 更新话术模板
 func UpdateTemplate(c *gin.Context) {
-	id := c.Param("id")
+	id := c.Param("id") // 注意：Template 主键为字符串（语义化ID），维持字符串查询
 
 	var template model.Template
 	result := db.RQ(c).First(&template, id)

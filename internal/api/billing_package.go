@@ -160,8 +160,13 @@ func SuperPackageCreate(c *gin.Context) {
 // SuperPackageUpdate PUT /api/v1/super/packages/:id
 // 修复：改用指针可选字段——启停场景只传 {enabled}，原 required 绑定会直接400
 func SuperPackageUpdate(c *gin.Context) {
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
+	pid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var pkg model.Package
-	if err := db.DB.First(&pkg, c.Param("id")).Error; err != nil {
+	if err := db.DB.First(&pkg, pid).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "商业包不存在")
 		return
 	}
@@ -223,8 +228,13 @@ func SuperPackageUpdate(c *gin.Context) {
 // SuperPackageDelete DELETE /api/v1/super/packages/:id
 // 已有订单引用时软处理：仅下架不物理删（订单审计完整性优先）
 func SuperPackageDelete(c *gin.Context) {
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
+	pid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var pkg model.Package
-	if err := db.DB.First(&pkg, c.Param("id")).Error; err != nil {
+	if err := db.DB.First(&pkg, pid).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "商业包不存在")
 		return
 	}

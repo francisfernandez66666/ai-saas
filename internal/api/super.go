@@ -88,7 +88,11 @@ func SuperTenantStatus(c *gin.Context) {
 		RespErr(c, 400, 400, "非法状态")
 		return
 	}
-	id := c.Param("id")
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法直接 400，不再以空串/非数字打到 PG(22P02)
+	id, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	res := db.DB.Model(&model.Tenant{}).Where("id = ?", id).Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, 404, 404, "租户不存在")
@@ -97,10 +101,9 @@ func SuperTenantStatus(c *gin.Context) {
 
 	// 写入审计日志
 	uidV, _ := c.Get("user_id")
-	targetTenantID, _ := strconv.ParseUint(id, 10, 64)
 	db.DB.Create(&model.TenantAuditLog{
-		TenantID: uint(targetTenantID), UserID: toUintSafe(uidV), Action: "super_tenant_status",
-		Resource: "tenant:" + id, Detail: `{"to":"` + req.Status + `"}`,
+		TenantID: id, UserID: toUintSafe(uidV), Action: "super_tenant_status",
+		Resource: "tenant:" + strconv.FormatUint(uint64(id), 10), Detail: `{"to":"` + req.Status + `"}`,
 		IP: c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 	// 租户解析缓存失效，封禁即时生效
@@ -113,8 +116,13 @@ func SuperTenantStatus(c *gin.Context) {
 // 幂等设计：已存在 trial_granted 审计记录的租户拒绝重复发放
 // 流转路径：review/trial/suspended → trial，发放7天试用期
 func SuperGrantTrial(c *gin.Context) {
+	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
+	tid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
 	var t model.Tenant
-	if err := db.DB.First(&t, c.Param("id")).Error; err != nil {
+	if err := db.DB.First(&t, tid).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "租户不存在")
 		return
 	}

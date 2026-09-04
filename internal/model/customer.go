@@ -169,6 +169,9 @@ func RegisterModelCodeResolver(fn func(product string) float64) {
 	modelCodeResolver = fn
 }
 
+// modelCode 按车型名解析车型码（T 向量车型特征的取值入口）
+// 优先走外部注入的 resolver（industry_semantics 行业语义层注册，泛行业化后产品枚举不再硬编码在 model 包）；
+// 未注入或解析失败返回 0（未知车型中性值）
 func modelCode(model string) float64 {
 	if resolver := modelCodeResolver; resolver != nil {
 		return resolver(model)

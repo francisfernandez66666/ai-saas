@@ -99,25 +99,25 @@ func CreateCustomer(c *gin.Context) {
 
 	// 构建客户对象
 	customer := &model.Customer{
-		Name:           req.Name,
-		Phone:          req.Phone,
-		WechatID:       req.WechatID,
-		Gender:         req.Gender,
-		Age:            req.Age,
-		Region:         req.Region,
-		City:           req.City,
-		Career:         req.Career,
+		Name:            req.Name,
+		Phone:           req.Phone,
+		WechatID:        req.WechatID,
+		Gender:          req.Gender,
+		Age:             req.Age,
+		Region:          req.Region,
+		City:            req.City,
+		Career:          req.Career,
 		CustomerType:    req.CustomerType,
 		InterestProduct: req.InterestProduct,
 		CurrentProduct:  req.CurrentProduct,
 		ProductAge:      req.ProductAge,
 		Source:          req.Source,
-		Budget:         req.Budget,
-		DecisionCycle:  req.DecisionCycle,
-		AssignedUserID: req.AssignedUserID,
-		Remark:         req.Remark,
-		VisitorKey:     model.GenerateVisitorKey(), // C3：创建即下发访客密钥
-		Status:         1,
+		Budget:          req.Budget,
+		DecisionCycle:   req.DecisionCycle,
+		AssignedUserID:  req.AssignedUserID,
+		Remark:          req.Remark,
+		VisitorKey:      model.GenerateVisitorKey(), // C3：创建即下发访客密钥
+		Status:          1,
 	}
 
 	// 设置标签
