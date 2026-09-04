@@ -1,0 +1,32 @@
+[
+  {
+    "code": "新手启动",
+    "name": "新手启动",
+    "category": "客群标签",
+    "description": "首次出海建站，需要全链路扶持"
+  },
+  {
+    "code": "品牌升级",
+    "name": "品牌升级",
+    "category": "客群标签",
+    "description": "已有站点，希望强化品牌化运营"
+  },
+  {
+    "code": "营销增长",
+    "name": "营销增长",
+    "category": "需求",
+    "description": "关注广告投放与ROI提升"
+  },
+  {
+    "code": "数据驱动",
+    "name": "数据驱动",
+    "category": "需求",
+    "description": "关注经营数据与利润核算"
+  },
+  {
+    "code": "履约效率",
+    "name": "履约效率",
+    "category": "需求",
+    "description": "关注物流妥投与退货时效"
+  }
+]

@@ -1,0 +1,61 @@
+{
+  "notes": "抖创传媒行业包——自媒体/直播电商卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_positioning",
+      "feature_name": "账号定位与起号",
+      "category": "定位",
+      "desc_template": "基于您的人设基因与目标人群做账号定位，slogan、封面、内容栏目一次定好，前30天稳定起号节奏，避开新手常见的定位漂移坑。",
+      "short_desc": "人设定位+内容栏目一次定稿",
+      "applicable_models": ["代运营标准版", "代运营增长版"],
+      "applicable_tags": ["新手起号", "账号定位"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_shortvideo",
+      "feature_name": "短视频内容链路",
+      "category": "内容",
+      "desc_template": "选题库+脚本+拍摄+剪辑+发布全链路代做，每条视频配数据分析与迭代建议，周更3-5条稳定输出，爆款素材复制放大。",
+      "short_desc": "选题到剪辑全链路，周更3-5条",
+      "applicable_models": ["代运营标准版", "代运营增长版"],
+      "applicable_tags": ["内容提效", "稳定更新"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_live",
+      "feature_name": "直播带货陪跑",
+      "category": "直播",
+      "desc_template": "从直播间搭建、话术脚本到开播节奏全程陪跑，主播培训+复盘优化，前3场新直播有效GMV可预期提升30%以上。",
+      "short_desc": "搭建到复盘陪跑，GMV可期提升",
+      "applicable_models": ["代运营增长版", "直播陪跑版"],
+      "applicable_tags": ["直播增长"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_commerce",
+      "feature_name": "橱窗与私域转化",
+      "category": "变现",
+      "desc_template": "商品橱窗挂载、爆品团购、粉丝群沉淀+朋友圈复购一气呵成，内容流量转私域复购，摆脱单一广告带货依赖。",
+      "short_desc": "橱窗+私域复购双轮变现",
+      "applicable_models": ["代运营增长版"],
+      "applicable_tags": ["直播增长", "变现策略"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_data",
+      "feature_name": "数据复盘与避坑",
+      "category": "数据",
+      "desc_template": "周报+月报数据复盘，涨粉曲线、完播率、GMV漏斗逐项拆解，平台规则变更同步提醒，帮您避坑限流。",
+      "short_desc": "周月报复盘，逐项拆解数据",
+      "applicable_models": ["代运营标准版", "代运营增长版"],
+      "applicable_tags": ["数据驱动"],
+      "priority": 8,
+      "status": 1
+    }
+  ]
+}

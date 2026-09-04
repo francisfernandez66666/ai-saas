@@ -303,8 +303,8 @@ func Chat(c *gin.Context) {
 
 	// 第一层：硬边界拦截（0延迟，不走AI，不进队列）
 	// 在入口用原始消息检测，不依赖合并后的内容
-	if service.IsOffTopic(req.Content) {
-		reply := service.GetOffTopicReply(req.Content)
+	if service.IsOffTopicForTenant(tenantID, req.Content) {
+		reply := service.GetOffTopicReplyForTenant(tenantID, req.Content)
 		log.Printf("[硬边界][trace=%s] 客户%d 拦截无关话题(入队前): %q → %q", trace, customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
 		// 保存AI拦截回复消息到DB
 		offTopicMsg := model.Message{
@@ -334,7 +334,7 @@ func Chat(c *gin.Context) {
 	// A. 客户已留资（journey_stage >= lead_captured）→ 跳过本层，走正常流程（AI或人工接管）
 	// B. 当前消息包含手机号 → 已留资线索：标记留资+分配顾问（基于手机号校验）+确认回复
 	// C. 当前消息无手机号 → 未留资线索：关闭引导+两段式追问，推迟分配顾问到手机号回复时
-	if strategy.IsStoreVisitIntent(req.Content) {
+	if service.IsStoreVisitIntentForTenant(tenantID, req.Content) {
 		// ---- 前置拦截：已留资客户不再走到店快速通道 ----
 		// 修复根因：客户之前已留资（如第二轮回复给了手机号），再次表达到店意向时
 		// 不应再问"留个手机号"，应直接走正常AI对话或人工接管
@@ -841,7 +841,7 @@ skipStoreVisitFast:
 	// 修复：AI回复不能秒到，必须模拟真人：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	// 放在SetReply之前，确保所有请求（主请求+合并等待请求）都经过延迟后再返回
-	isStoreVisit := strategy.IsStoreVisitIntent(mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
+	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
 	log.Printf("[Chat] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 

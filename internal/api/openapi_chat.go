@@ -11,7 +11,7 @@ package api
 // 设计要点：
 //   1. 鉴权：Bearer sk_（OpenAPIAuth）→ RequirePerm(chat.write)
 //   2. 会话归属：external_user_id + session_id → 服务端全量持久化（Customer + Conversation）
-//   3. 计费：与站内同池同链路（ConsumeAIQuota + DeductTokensActual 在 llm 层统一走）
+//   3. 计费：与站内同池同链路（CheckTokenAvailability 前置闸 + SinkRecordUsage 三桶扣减在 llm 层统一走）
 //   4. 硬边界/留资：与站内一致（无关话题拦截、到店倾向留资合并+分配顾问）
 // ============================================================
 
@@ -126,15 +126,15 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	}
 
 	// 5. 硬边界：无关话题拦截（0延迟，不走AI，不消耗配额）
-	if service.IsOffTopic(userInput) {
-		reply := service.GetOffTopicReply(userInput)
+	if service.IsOffTopicForTenant(tenantID, userInput) {
+		reply := service.GetOffTopicReplyForTenant(tenantID, userInput)
 		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "offtopic_hardbound")
 		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
 		return
 	}
 
 	// 6. 到店倾向/留资（外部渠道同样捕获线索 → 合并+留资+分配顾问）
-	if strategy.IsStoreVisitIntent(userInput) && !isCapturedStage(customer.JourneyStage) {
+	if service.IsStoreVisitIntentForTenant(tenantID, userInput) && !isCapturedStage(customer.JourneyStage) {
 		if phone := phoneRegex.FindString(userInput); phone != "" {
 			if mergedID := chatflow.MergeCustomerByPhone(customer, phone); mergedID > 0 {
 				var reloaded model.Customer

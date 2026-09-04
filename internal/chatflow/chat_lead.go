@@ -160,7 +160,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 
 	// 商业化批次一顺手做（2026-08-23）：留资成功 → 企微群机器人推送
 	// SCRM 最高价值触达：销售群实时收到"新留资线索"通知（手机号脱敏）
-	service.NotifyLeadCaptured(customer.Name, maskPhone(phoneMatch), customer.InterestModel)
+	service.NotifyLeadCaptured(customer.Name, maskPhone(phoneMatch), customer.InterestProduct)
 
 	// Phase C（2026-08-22）：业务结果回流 → 推进流程主干（编排层消费 flow_result）
 	// 注意：不直接 import flow 包（会形成 chatflow→flow→strategy→llm→chatflow 环），
@@ -448,14 +448,14 @@ func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) 
 	if customer.Phone != "" {
 		sb.WriteString(fmt.Sprintf("· 手机号：%s\n", service.MaskPhone(customer.Phone)))
 	}
-	if customer.InterestModel != "" {
-		sb.WriteString(fmt.Sprintf("· 兴趣车型：%s\n", customer.InterestModel))
+	if customer.InterestProduct != "" {
+		sb.WriteString(fmt.Sprintf("· 兴趣产品：%s\n", customer.InterestProduct))
 	}
-	if customer.CurrentCar != "" {
-		sb.WriteString(fmt.Sprintf("· 现在开的车：%s\n", customer.CurrentCar))
+	if customer.CurrentProduct != "" {
+		sb.WriteString(fmt.Sprintf("· 当前在用产品：%s\n", customer.CurrentProduct))
 	}
 	if customer.Budget > 0 {
-		sb.WriteString(fmt.Sprintf("· 购车预算：%.0f万\n", customer.Budget))
+		sb.WriteString(fmt.Sprintf("· 预算：%.0f万\n", customer.Budget))
 	}
 	if customer.Region != "" || customer.City != "" {
 		sb.WriteString(fmt.Sprintf("· 地域：%s %s\n", customer.Region, customer.City))
@@ -685,7 +685,7 @@ func CountOffTopicRepeats(customerID uint) int {
 
 	offtopicCount := 0
 	for _, msg := range recentMsgs {
-		if service.IsOffTopic(msg.Content) {
+		if service.IsOffTopicForTenant(msg.TenantID, msg.Content) {
 			offtopicCount++
 		}
 	}
@@ -704,7 +704,7 @@ func CountTotalOffTopic(customerID uint) int {
 		Order("id ASC").Find(&allMsgs)
 	offtopicCount := 0
 	for _, msg := range allMsgs {
-		if service.IsOffTopic(msg.Content) {
+		if service.IsOffTopicForTenant(msg.TenantID, msg.Content) {
 			offtopicCount++
 		}
 	}
@@ -718,7 +718,7 @@ func CountConsecutiveOnTopic(customerID uint) int {
 		Order("id DESC").Limit(10).Find(&recentMsgs)
 	count := 0
 	for _, msg := range recentMsgs {
-		if !service.IsOffTopic(msg.Content) {
+		if !service.IsOffTopicForTenant(msg.TenantID, msg.Content) {
 			count++
 		} else {
 			break

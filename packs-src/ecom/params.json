@@ -1,0 +1,4 @@
+{
+  "store_visit_first_delay": [10, 15],
+  "store_visit_second_delay": [25, 45]
+}

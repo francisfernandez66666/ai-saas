@@ -257,6 +257,38 @@ func applyAncestorChain(tenantID uint, startParentCode string) error {
 	return nil
 }
 
+// BindTenantToIndustryPack 按行业 code 绑定行业包到租户（注册即时落包，泛行业化 P4）
+// 幂等：该租户已绑定任意包则跳过；行业 code 无 active 行业包或 general 则跳过（留待默认包兜底）。
+// 返回是否成功绑定；失败仅告警不阻断注册。
+func BindTenantToIndustryPack(tenantID uint, industry string) bool {
+	if tenantID == 0 || industry == "" || industry == "general" {
+		return false
+	}
+	var cnt int64
+	db.DB.Model(&model.TenantPackBinding{}).Where("tenant_id = ?", tenantID).Count(&cnt)
+	if cnt > 0 {
+		return false
+	}
+	ipc, ipack, err := openActivePackByCode(industry)
+	if err != nil || ipack.PackLevel != industrypack.LevelIndustry {
+		log.Printf("[行业包] 租户%d 行业[%s]无 active 行业包，跳过注册落包: %v", tenantID, industry, err)
+		return false
+	}
+	if _, err := industrypack.ApplyToTenant(ipc, tenantID, 0); err != nil {
+		log.Printf("[行业包] 租户%d 行业包物化失败 %s: %v", tenantID, industry, err)
+		return false
+	}
+	if err := db.DB.Create(&model.TenantPackBinding{
+		TenantID: tenantID, PackID: ipack.ID, PackCode: ipack.Code,
+		AppliedVersion: ipack.Version,
+	}).Error; err != nil {
+		log.Printf("[行业包] 租户%d 行业包绑定写入失败 %s: %v", tenantID, industry, err)
+		return false
+	}
+	log.Printf("[行业包] 注册即时落包: 租户%d ← 行业包 %s v%s", tenantID, ipack.Code, ipack.Version)
+	return true
+}
+
 // AutoApplyDefaultIndustryPack 启动期自动应用默认行业包（auto_rox 落地）
 // 对所有尚未绑定任何包的租户，绑定 DEFAULT_INDUSTRY_PACK_CODE（默认 "auto"）行业包，
 // 可选叠加 DEFAULT_ENTERPRISE_PACK_CODE 企业包。幂等：已绑定租户跳过。
@@ -566,4 +598,70 @@ func SuperPackShare(c *gin.Context) {
 		return
 	}
 	RespOK(c, fmt.Sprintf("跨部门共享已置为 %d", *req.Share), nil)
+}
+
+// AutoRegisterLocalPacks 启动期自动上架 data/packs 目录下的预置行业包（泛行业化 P4）
+// 目标：data/packs/*.aipack 随代码分发，注册即入库 active——resolveIndustry 依赖 industry_packs
+// 的 code 命中，否则新行业（realty/b2b/...）注册时全部回落 general。
+// 幂等：按 code+version 查重，已存在则只补 status=active 不回写内容。
+// 依赖：keys 目录存在（打包-分发共用同一对密钥）；解包失败仅告警跳过，不影响启动。
+func AutoRegisterLocalPacks() {
+	entries, err := os.ReadDir(packStoreDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			log.Println("[行业包] data/packs 目录不存在，跳过自动上架")
+			return
+		}
+		log.Printf("[行业包] 扫描 data/packs 失败: %v", err)
+		return
+	}
+	keys, err := packKeys()
+	if err != nil {
+		log.Printf("[行业包] 密钥未就绪，跳过自动上架: %v", err)
+		return
+	}
+	registered := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".aipack") {
+			continue
+		}
+		path := filepath.Join(packStoreDir, e.Name())
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			log.Printf("[行业包] 读取 %s 失败: %v（跳过）", e.Name(), err)
+			continue
+		}
+		pc, err := industrypack.Open(raw, keys)
+		if err != nil {
+			log.Printf("[行业包] 解包 %s 失败: %v（跳过）", e.Name(), err)
+			continue
+		}
+		m := pc.Manifest
+		var row model.IndustryPack
+		isNew := db.DB.Where("code = ? AND version = ?", m.Code, m.Version).First(&row).Error != nil
+		row.Code = m.Code
+		row.Name = m.Name
+		row.Industry = m.Industry
+		row.Version = m.Version
+		row.PackLevel = m.PackLevel
+		row.ParentCode = m.ParentCode
+		row.FileName = e.Name()
+		row.FilePath = path
+		row.FileSize = int64(len(raw))
+		row.ContentSHA256 = m.ContentSHA256
+		row.Status = "active"
+		row.UploadedBy = 0 // 存储种子，平台级
+		if isNew {
+			if err := db.DB.Create(&row).Error; err != nil {
+				log.Printf("[行业包] 注册 %s v%s 失败: %v", m.Code, m.Version, err)
+				continue
+			}
+		} else if err := db.DB.Model(&row).Update("status", "active").Error; err != nil {
+			log.Printf("[行业包] 激活 %s v%s 失败: %v", m.Code, m.Version, err)
+			continue
+		}
+		registered++
+		log.Printf("[行业包] 自动上架: code=%s name=%s v%s level=%s", m.Code, m.Name, m.Version, m.PackLevel)
+	}
+	log.Printf("[行业包] 自动上架完成，共注册 %d 个包", registered)
 }

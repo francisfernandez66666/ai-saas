@@ -42,62 +42,24 @@ func RecordAICall(tenantID uint) {
 	}()
 }
 
-// ConsumeAIQuota H4：原子地"判定+预留+计量"一次 AI 调用，替代原 CheckAIQuota(读判)
-// 与 RecordAICall(后增) 两步分离写法造成的并发超额。
-// 返回 false 表示配额已满（调用方应降级为规则话术，不发起模型请求）。
+// ConsumeAIQuota 用量累计统计（P1 计费统一 2026-09-03 起降级为统计旁路）
 //
-// 关键修复：在 enforced 且 used<max 时，用条件 UPDATE
+// 历史职责（H4）：原子地"判定+预留+计量"一次 AI 调用，超额即返回 false 降级规则话术。
+// 计费统一后：token 三桶扣减（UsageSink 批量落库）成为唯一计费闸，
+// 本函数**恒放行**（不再拦截），仅负责 used_ai_calls 累计计数 + usage_records 明细（看板口径）。
 //
-//	UPDATE tenants SET used_ai_calls=used_ai_calls+1 WHERE id=? AND used_ai_calls<?
-//
-// 原子地完成"判定+预留"，并发请求不会再出现 used_ai_calls 超过 max 仍被放行。
+// 返回值恒 true：调用方（chat_reply/gateway）不再需要按"次"降级，改由 CheckTokenAvailability 前置闸拦截。
 func ConsumeAIQuota(tenantID uint) bool {
 	if tenantID == 0 {
 		return true // 无租户语境（平台内部）不限
 	}
-	used, max, balance, err := GetTenantQuotaView(tenantID)
-	if err != nil {
-		log.Printf("[Usage] 配额查询失败 tenant=%d: %v", tenantID, err)
-		RecordAICall(tenantID)
-		return true // 查询异常放行（fail-open，避免计量故障影响客户对话）
+	// SQL 原子递增（并发安全），仅统计不拦截
+	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
+		UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1")).Error; err != nil {
+		log.Printf("[Usage] 计数失败 tenant=%d: %v", tenantID, err)
 	}
-
-	enforced := DefaultSystemConfigService.GetBool("billing_enforced", false)
-	if !enforced {
-		if max != 0 && used >= max && balance <= 0 {
-			log.Printf("[Usage] [灰度] 租户%d 已超配额(used=%d max=%d)，billing_enforced=false 放行仅留痕", tenantID, used, max)
-		}
-		// 仍累计计数 + 明细，供看板
-		db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
-			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
-		RecordAICall(tenantID)
-		return true
-	}
-
-	if max == 0 {
-		// 0=不限，仍计数 + 明细
-		db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
-			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
-		RecordAICall(tenantID)
-		return true
-	}
-	if used < max {
-		// 原子预留一个名额：仅当仍 < max 时 +1，避免并发超额
-		res := db.DB.Model(&model.Tenant{}).Where("id = ? AND COALESCE(used_ai_calls,0) < ?", tenantID, max).
-			UpdateColumn("used_ai_calls", gorm.Expr("COALESCE(used_ai_calls,0)+1"))
-		if res.RowsAffected == 1 {
-			RecordAICall(tenantID)
-			return true
-		}
-		// 竞态落空（被其他并发抢先占满），转增量余额
-	}
-	// 月配额已超 或 竞态落空：尝试扣增量余额（原子 UPDATE ... WHERE balance>0，防并发超扣）
-	if DeductBalance(tenantID) {
-		log.Printf("[Usage] 租户%d 月配额已超/满，本次走增量余额（扣1次）", tenantID)
-		RecordAICall(tenantID)
-		return true
-	}
-	return false
+	RecordAICall(tenantID)
+	return true
 }
 
 // ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（H4 修复，2026-08-22 初版）
@@ -128,6 +90,7 @@ func ResetAllTenantsMonthlyUsageIfDue() int {
 	if res.RowsAffected > 0 {
 		log.Printf("[Usage] 月度用量重置完成：%d 个租户 used_ai_calls/monthly_token_used 清零（reset_at→%s）",
 			res.RowsAffected, monthStart)
+		InvalidateAllShadows() // 计费统一：月度重置批量改写三桶后整体失效影子余额
 	}
 	return int(res.RowsAffected)
 }

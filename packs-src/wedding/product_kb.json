@@ -1,0 +1,61 @@
+{
+  "notes": "满庭芳婚庆行业包——高端婚礼定制卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_venue",
+      "feature_name": "人气场地档期",
+      "category": "场地",
+      "desc_template": "与城市数十家星级酒店、庄园、山顶露台长期合作，热门档期提前锁定vip通道，免费带看+现场试吃，一次敲定场地与布置双重优惠。",
+      "short_desc": "热门场地vip档期+免费带看",
+      "applicable_models": ["经典婚宴", "高定婚礼"],
+      "applicable_tags": ["场地优先", "高定客户"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_four_heroes",
+      "feature_name": "四大金刚团队",
+      "category": "团队",
+      "desc_template": "摄影、摄像、司仪、化妆四大金刚全部自营常驻，人设风格试看后再定，不满意免费换；司仪脚本深度定制，控场能力有口皆碑。",
+      "short_desc": "四大金刚自营，人设试看再定",
+      "applicable_models": ["高定婚礼"],
+      "applicable_tags": ["品质追求", "高定客户"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_planning",
+      "feature_name": "全案策划与还原",
+      "category": "策划",
+      "desc_template": "策划师一对一全案设计，主题、舞美、花艺、灯光原样落地，婚礼当日专职执行督导全程值守，效果图与现场还原度95%以上。",
+      "short_desc": "一对一全案策划，现场高还原",
+      "applicable_models": ["高定婚礼"],
+      "applicable_tags": ["高定客户", "品质追求"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_budget",
+      "feature_name": "透明预算配置",
+      "category": "费用",
+      "desc_template": "预算分档透明列项，可细化到单束花材、单机位时长，无隐形消费；支持分期付款，收到效果成片后再结尾款。",
+      "short_desc": "预算透明可分期，成片后结尾款",
+      "applicable_models": ["经典婚宴", "高定婚礼"],
+      "applicable_tags": ["价格敏感"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_styling",
+      "feature_name": "试妆造型定制",
+      "category": "造型",
+      "desc_template": "新娘免费试妆试纱，根据脸型礼服量身定制妆容发型；同步提供新郎、父母妆造，全家一起美美出席。",
+      "short_desc": "新娘免费试妆+全家妆造",
+      "applicable_models": ["经典婚宴", "高定婚礼"],
+      "applicable_tags": ["品质追求"],
+      "priority": 8,
+      "status": 1
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "notes": "企云通B2B企业服务行业包——SCRM/CRM卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_lead_capture",
+      "feature_name": "多渠道获客统一收口",
+      "category": "获客",
+      "desc_template": "企点通打通官网表单、企业微信、公众号、广告投放等12+渠道，线索自动去重标签汇总到一个后台，销售不再来回切系统，人均线索量提升约40%。",
+      "short_desc": "12+渠道线索统一收口自动打标",
+      "applicable_models": ["企云通专业版", "企云通旗舰版"],
+      "applicable_tags": ["获客提效", "管理决策"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_flow_engine",
+      "feature_name": "客户旅程自动化",
+      "category": "转化",
+      "desc_template": "可视化流程编排：新客进入→自动打标→AI首次触达→超7天未跟进自动提醒→认领人超时自动流转，把跟进动作标准化，转化周期平均缩短30%。",
+      "short_desc": "可视化流程编排，跟进自动化流转",
+      "applicable_models": ["企云通旗舰版"],
+      "applicable_tags": ["管理决策", "销售提效"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_dashboard",
+      "feature_name": "经营数据看板",
+      "category": "管理",
+      "desc_template": "老板视图实时看线索量、跟进率、成交漏斗、团队排行；支持自定义报表与钉钉/企微日报推送，管理决策不用再等周报。",
+      "short_desc": "实时经营看板+自动日报推送",
+      "applicable_models": ["企云通专业版", "企云通旗舰版"],
+      "applicable_tags": ["管理决策", "组织管理"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_deploy",
+      "feature_name": "私有化与合规部署",
+      "category": "安全",
+      "desc_template": "支持公有云SaaS、私有化、混合云三种部署，客户数据全量加密存储，满足等保三级与GDPR审计要求，集团级客户可私有化到自有机房。",
+      "short_desc": "三种部署形态，数据全量加密",
+      "applicable_models": ["企云通旗舰版"],
+      "applicable_tags": ["管理决策"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_ai_assist",
+      "feature_name": "销售AI助手",
+      "category": "AI能力",
+      "desc_template": "话术推荐、客户画像摘要、产品问答、跟进纪要自动生成，基于企业知识库训练专属问答，新人上手周期从1个月压缩到一周。",
+      "short_desc": "AI话术/纪要/问答，新人快速上手",
+      "applicable_models": ["企云通旗舰版"],
+      "applicable_tags": ["销售提效"],
+      "priority": 9,
+      "status": 1
+    }
+  ]
+}

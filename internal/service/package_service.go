@@ -55,6 +55,7 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 				return res.Error
 			}
 			log.Printf("[Package] 试用包(token制)已发放 tenant=%d pkg=%s +%dtoken/%d天", tenantID, pkg.Code, pkg.TokenAmount, days)
+			InvalidateShadow(tenantID) // 计费统一：发放后失效影子余额
 			return nil
 		}
 		// 试用包：月配额叠加（注册联动发 trial_ai_calls 次）
@@ -96,6 +97,7 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 		}
 		log.Printf("[Package] 包月包已生效 tenant=%d pkg=%s 月配额=%d次 到期=%s",
 			tenantID, pkg.Code, pkg.AICalls, newExpiry.Format("2006-01-02"))
+		InvalidateShadow(tenantID) // 计费统一：订阅额度变更后失效影子余额
 		return nil
 
 	case model.PackageTypeIncrement:
@@ -107,6 +109,7 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 				return res.Error
 			}
 			log.Printf("[Package] 增量包(token制)已入账 tenant=%d pkg=%s +%dtoken(永久)", tenantID, pkg.Code, pkg.TokenAmount)
+			InvalidateShadow(tenantID) // 计费统一：充值入账后失效影子余额
 			return nil
 		}
 		// 增量包：买断余额累加（月度重置任务只清 used_ai_calls，不碰 ai_call_balance）
@@ -121,20 +124,6 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 	default:
 		return fmt.Errorf("未知包类型: %s", pkg.PType)
 	}
-}
-
-// DeductBalance 原子扣减增量余额：UPDATE ... WHERE balance>0 天然防并发超扣
-// 利用SQL的WHERE条件保证原子性，无需额外锁
-// 返回 false = 无可用余额
-func DeductBalance(tenantID uint) bool {
-	res := db.DB.Model(&model.Tenant{}).
-		Where("id = ? AND COALESCE(ai_call_balance,0) > 0", tenantID).
-		UpdateColumn("ai_call_balance", gorm.Expr("ai_call_balance - 1"))
-	if res.Error != nil {
-		log.Printf("[Package] 增量余额扣减失败 tenant=%d: %v", tenantID, res.Error)
-		return false
-	}
-	return res.RowsAffected > 0
 }
 
 // GetTenantQuotaView 读租户配额三要素（月已用/月上限/增量余额）

@@ -38,8 +38,13 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 	// neutral=冷静专业 / warm=略带热情 / enthusiastic=热情主动
 	toneStyle := service.DefaultSystemConfigService.GetString("tone_style", "warm")
 
-	// 人设——根据tone_style动态调整
-	sb.WriteString(getTonePersona(toneStyle))
+	// 人设——优先行业包配置，缺省按tone_style动态调整
+	// 泛行业化（P2）：industry.salesperson 由行业包注入，空回退内置汽车人设
+	if persona := service.IndustrySalespersonForTenant(tenantID); persona != "" {
+		sb.WriteString(persona)
+	} else {
+		sb.WriteString(getTonePersona(toneStyle))
+	}
 	sb.WriteString("\n")
 
 	// P2 双层KB（2026-08-26）：行业/企业包定制指令注入（prompts.json → pack_prompts_{code} 键）
@@ -77,7 +82,9 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 	sb.WriteString("6. 不说「有什么可以帮您」，说「你想了解啥」\n")
 	sb.WriteString("7. 绝对不能让客户觉得在跟AI聊天\n")
 	sb.WriteString("8. 【称呼铁律】客户留了姓名时，用「姓+先生/女士」称呼，如客户说「小张」→叫「张先生」，客户说「李美」→叫「李女士」。绝不直接叫昵称（如「小张」「美美」），显得不专业。不确定性别时用「张先生/女士」\n")
-	sb.WriteString("9. 【领域约束】你只聊车、品牌、用车生活相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回车：「这个我还真不太懂，不过你说的这个让我想到，你是不是对智能化挺感兴趣的？咱车的智能座舱你可能会有兴趣」或「哈哈这块我不太行，咱们还是聊聊你用车的事吧」。绝不装全能、绝不硬答无关领域\n")
+	// 修复：领域约束句行业化（P2）——industry.domain_constraint 覆盖，缺省回退汽车版
+	// 旧硬编码：你只聊车、品牌、用车生活相关的话题…（保留为回退文案）
+	sb.WriteString("9. 【领域约束】" + domainConstraintText(tenantID) + "\n")
 	sb.WriteString("10. 【称呼铁律-硬编码】不知道客户真实姓名时，用「您好」开头。绝对禁止以「访客xxx」「访客_xxxx」等临时ID称呼客户，这会让客户觉得在被AI敷衍\n\n")
 
 	// 核心规则——根据锚类型和留资状态区分
@@ -534,6 +541,15 @@ func BuildFallbackReply(strategyOutput *strategytypes.StrategyOutput, canPromote
 // 修复：语气风格从后台配置(tone_style)读取，动态调整prompt
 // neutral=冷静专业 / warm=略带热情 / enthusiastic=热情主动
 // ============================================================
+
+// domainConstraintText 领域约束句子（泛行业化 P2）
+// 行业包可通过 industry.domain_constraint 配置「只聊什么」，缺省回退汽车版文案
+func domainConstraintText(tenantID uint) string {
+	if s := service.IndustryDomainConstraintForTenant(tenantID); s != "" {
+		return s
+	}
+	return "你只聊车、品牌、用车生活相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回车：「这个我还真不太懂，不过你说的这个让我想到，你是不是对智能化挺感兴趣的？咱车的智能座舱你可能会有兴趣」或「哈哈这块我不太行，咱们还是聊聊你用车的事吧」。绝不装全能、绝不硬答无关领域"
+}
 
 // getTonePersona 根据语气风格返回人设描述
 func getTonePersona(tone string) string {

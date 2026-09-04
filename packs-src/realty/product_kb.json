@@ -1,0 +1,61 @@
+{
+  "notes": "链上地产行业包——新房/二手房卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_location",
+      "feature_name": "板块地段价值",
+      "category": "地段",
+      "desc_template": "该板块近三年二手房成交价年复合增长约5%，地铁X号线规划站点距离项目约800米，周边商业综合体、三甲医院均已落地，自住与保值兼顾。",
+      "short_desc": "地铁沿线+成熟配套，板块增值稳",
+      "applicable_models": ["阳光城·澜庭", "滨江壹号"],
+      "applicable_tags": ["刚需首套", "改善置换"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_layout",
+      "feature_name": "户型得房率",
+      "category": "户型",
+      "desc_template": "本户型建筑面积118㎡，赠送南向阳台与飘窗后得房率约86%，三房两卫动静分区，主卧套房设计带独立衣帽间，适合三代同堂。",
+      "short_desc": "得房率86%，三房两卫主卧套房",
+      "applicable_models": ["阳光城·澜庭"],
+      "applicable_tags": ["刚需首套", "改善置换"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_school",
+      "feature_name": "学区与教育配套",
+      "category": "学区",
+      "desc_template": "项目对口XX实验小学与XX中学（近年中考升学率位列全区前三），周边还有2所私立国际幼儿园，孩子上学步行10分钟内可达。",
+      "short_desc": "双学区对口，教育资源丰富",
+      "applicable_models": ["阳光城·澜庭", "滨江壹号"],
+      "applicable_tags": ["有孩家庭"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_finance",
+      "feature_name": "贷款与税费方案",
+      "category": "金融",
+      "desc_template": "首套房首付最低20%，目前LPR加点后首套利率约3.8%，二套约4.4%。二手房可走带押过户，税费按满五唯一情况可省个税，具体可帮您逐项测算。",
+      "short_desc": "首付20%起，支持带押过户",
+      "applicable_models": ["阳光城·澜庭", "滨江壹号"],
+      "applicable_tags": ["刚需首套", "价格敏感"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_service",
+      "feature_name": "带看与售后保障",
+      "category": "服务",
+      "desc_template": "全程一对一资深顾问带看，支持VR线上看房；成交后提供物业交割、户口迁移、学位占用核验等一站式售后，合同全程法务审核。",
+      "short_desc": "一对一带看+一站式交房服务",
+      "applicable_models": ["阳光城·澜庭", "滨江壹号"],
+      "applicable_tags": ["有孩家庭", "改善置换"],
+      "priority": 8,
+      "status": 1
+    }
+  ]
+}

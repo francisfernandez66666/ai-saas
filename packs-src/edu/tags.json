@@ -1,0 +1,32 @@
+[
+  {
+    "code": "语言备考",
+    "name": "语言备考",
+    "category": "需求",
+    "description": "关注雅思托福出分效率"
+  },
+  {
+    "code": "背景提升",
+    "name": "背景提升",
+    "category": "需求",
+    "description": "关注科研/实习/竞赛软实力"
+  },
+  {
+    "code": "目标冲刺",
+    "name": "目标冲刺",
+    "category": "需求",
+    "description": "目标院校明确，冲排名对标"
+  },
+  {
+    "code": "时间紧迫",
+    "name": "时间紧迫",
+    "category": "客群标签",
+    "description": "申请时间线紧张，需快速方案"
+  },
+  {
+    "code": "价格敏感",
+    "name": "价格敏感",
+    "category": "客群标签",
+    "description": "关注费用与奖学金规划"
+  }
+]

@@ -26,13 +26,14 @@ type Customer struct {
 	City             string    `gorm:"size:50" json:"city"`                               // 城市
 	Career           string    `gorm:"size:50" json:"career"`                             // 职业
 	CustomerType     string    `gorm:"size:20;default:potential" json:"customer_type"`    // 客户身份: potential(潜客)/owner(车主)
-	InterestModel    string    `gorm:"size:50" json:"interest_model"`                     // 兴趣车型
-	CurrentCar       string    `gorm:"size:50" json:"current_car"`                        // 现有车型
-	CarAge           float64   `json:"car_age"`                                           // 现车年限
-	Source           string    `gorm:"size:30" json:"source"`                             // 流量来源
-	Budget           float64   `json:"budget"`                                            // 预算（万元）
-	DecisionCycle    int       `json:"decision_cycle"`                                    // 决策周期（天）
-	StoreVisited     int       `gorm:"default:0" json:"store_visited"`                    // 到店状态: 0-未到店 1-已到店 2-多次到店
+	// 泛行业化（P3）：字段名去汽车专属词（InterestModel→InterestProduct 等），gorm column 锁定原列名避免 DB 迁移，JSON tag 保留兼容前端
+	InterestProduct string  `gorm:"column:interest_model;size:50" json:"interest_model"` // 兴趣产品
+	CurrentProduct  string  `gorm:"column:current_car;size:50" json:"current_car"`       // 当前在用的产品
+	ProductAge      float64 `gorm:"column:car_age" json:"car_age"`                       // 现用产品年限
+	Source          string  `gorm:"size:30" json:"source"`                               // 流量来源
+	Budget          float64 `json:"budget"`                                              // 预算（万元）
+	DecisionCycle   int     `json:"decision_cycle"`                                      // 决策周期（天）
+	OfflineTouch    int     `gorm:"column:store_visited;default:0" json:"store_visited"` // 线下接触状态: 0-未接触 1-已接触 2-多次接触
 	TrustLevel       float64   `gorm:"default:0.3" json:"trust_level"`                    // 信任度 0-1
 	IntentScore      float64   `gorm:"default:0.2" json:"intent_score"`                   // 意向分 0-1
 	PriceSensitivity float64   `gorm:"default:0.5" json:"price_sensitivity"`              // 价格敏感度 0-1
@@ -127,8 +128,8 @@ func (c *Customer) BuildBaseTVector() [32]float64 {
 	t[0] = c.IntentScore                     // 意向分
 	t[1] = c.PriceSensitivity                // 价格敏感度
 	t[2] = c.BrandAwareness                  // 品牌认知度
-	t[3] = modelCode(c.InterestModel)        // 兴趣车型编码
-	t[4] = float64(c.StoreVisited)           // 到店状态
+	t[3] = modelCode(c.InterestProduct)      // 兴趣产品编码
+	t[4] = float64(c.OfflineTouch)           // 线下接触状态
 	t[5] = float64(c.DecisionCycle)          // 决策周期
 	t[6] = c.TrustLevel                      // 信任度
 	t[7] = sourceCode(c.Source)              // 流量来源编码
@@ -136,8 +137,8 @@ func (c *Customer) BuildBaseTVector() [32]float64 {
 	t[9] = ageGroupCode(c.Age)               // 年龄段编码
 	t[10] = regionCode(c.Region)             // 地域编码
 	t[11] = careerCode(c.Career)             // 职业圈层编码
-	t[12] = 0                                // 用车场景（multi-hot简化为单值）
-	t[13] = c.CarAge                         // 现车年限
+	t[12] = 0                                // 使用场景（multi-hot简化为单值）
+	t[13] = c.ProductAge                     // 现用产品年限
 	t[14] = resistanceCode(c.ResistanceType) // 抗性类型编码
 	t[15] = customerTypeCode(c.CustomerType) // 客户身份编码
 	t[16] = 0                                // 地域商圈编码
@@ -157,20 +158,22 @@ func (c *Customer) SaveTVector(t [32]float64) {
 // 为什么要编码？T向量是数值向量，需要做特征编码
 // ============================================================
 
-// modelCode 兴趣车型→编码（T向量输入维度）
+// modelCode 兴趣产品→编码（T向量输入维度）
+// 泛行业化（P2.2）：不再内置汽车车型字典，改由业务层注入解析器
+// （当前为 engine/strategy 的动态产品注册表，行业包切换即换注册数据）。
+// 注入器未设置返回0（未知），不产生任何行业语义。
+var modelCodeResolver func(product string) float64
+
+// RegisterModelCodeResolver 由引擎层注册行业无关的兴趣产品编码器
+func RegisterModelCodeResolver(fn func(product string) float64) {
+	modelCodeResolver = fn
+}
+
 func modelCode(model string) float64 {
-	modelMap := map[string]float64{
-		"":         0,
-		"越野SUV-X1": 1,
-		"越野SUV-X3": 2,
-		"越野SUV-X5": 3,
-		"越野SUV-X7": 4,
-		"皮卡系列":     5,
+	if resolver := modelCodeResolver; resolver != nil {
+		return resolver(model)
 	}
-	if code, ok := modelMap[model]; ok {
-		return code
-	}
-	return 99 // 其他车型
+	return 0 // 未注入编码器，兴趣产品维度置零（探知行业外产品）
 }
 
 // sourceCode 来源渠道→编码（T向量输入维度）

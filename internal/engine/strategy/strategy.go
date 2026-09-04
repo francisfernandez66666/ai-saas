@@ -377,9 +377,9 @@ afterAnchorSelection:
 
 			// 动态填充卖点（M1: 同规则过滤卖点库，防跨租户卖点串入）
 			customer := &model.Customer{
-				ID:            input.CustomerID,
-				InterestModel: modelFromTVector(tVector),
-				Name:          "客户", // 这里简化，实际应从DB获取
+				ID:               input.CustomerID,
+				InterestProduct: modelFromTVector(tVector),
+				Name:             "客户", // 这里简化，实际应从DB获取
 			}
 			promptText, hookText, _ := FillTemplate(template, customer, featuresForTenant(e.features, input.TenantID, recallScope))
 			output.PromptText = promptText
@@ -456,6 +456,7 @@ afterAnchorSelection:
 var carModelRegistry []string
 
 // refreshCarModelRegistry 从 car_models 装载车型注册表（code=i 对应 registry[i-1]）
+// 泛行业化（P2.2）：同步注入 model 包的兴趣产品编码器，行业包注册表即编码字典
 func refreshCarModelRegistry() {
 	var models []model.CarModel
 	if err := db.DB.Where("status = ?", 1).Order("sort ASC, id ASC").Find(&models).Error; err != nil {
@@ -467,11 +468,20 @@ func refreshCarModelRegistry() {
 		regs = append(regs, models[i].Name)
 	}
 	carModelRegistry = regs
+	// 注入编码器：注册表内产品 code=i+1，未命中归 99（其他产品）
+	model.RegisterModelCodeResolver(func(product string) float64 {
+		for i, name := range regs {
+			if name == product {
+				return float64(i + 1)
+			}
+		}
+		return 99
+	})
 	log.Printf("[策略引擎] 车型注册表已装载 %d 个车型", len(regs))
 }
 
 // modelFromTVector 从T向量获取车型
-// 优先走动态车型注册表（car_models 表）；注册表为空或越界时回退硬编码映射，保证不崩。
+// 泛行业化（P2.2）：仅依赖动态注册表（car_models），移除硬编码兜底映射
 func modelFromTVector(tVector [32]float64) string {
 	modelCode := int(tVector[3])
 	if modelCode == 0 {
@@ -482,17 +492,6 @@ func modelFromTVector(tVector [32]float64) string {
 	}
 	if modelCode > 0 && modelCode-1 < len(carModelRegistry) && carModelRegistry[modelCode-1] != "" {
 		return carModelRegistry[modelCode-1]
-	}
-	// 回退硬编码（兼容车型表未初始化场景）
-	modelMap := map[int]string{
-		1: "越野SUV-X1",
-		2: "越野SUV-X3",
-		3: "越野SUV-X5",
-		4: "越野SUV-X7",
-		5: "皮卡系列",
-	}
-	if name, ok := modelMap[modelCode]; ok {
-		return name
 	}
 	return ""
 }

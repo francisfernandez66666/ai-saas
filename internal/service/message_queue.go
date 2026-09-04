@@ -782,43 +782,17 @@ var carRelatedKeywords = []string{
 // IsOffTopic 检测用户输入是否为无关话题
 // 返回：true=无关话题应拦截，false=正常话题放行
 // 逻辑：先查白名单（车相关→放行），再查黑名单（无关→拦截）
+// 泛行业化：委托行业语义读取层（系统默认层），行业包可配置白/黑名单
 func IsOffTopic(content string) bool {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return false
-	}
-
-	// 第一步：白名单检测——消息中包含任何车相关关键词，直接放行
-	lower := strings.ToLower(trimmed)
-	for _, kw := range carRelatedKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return false // 含车相关词，放行
-		}
-	}
-
-	// 第二步：黑名单检测——不含车相关词，但命中无关话题关键词，拦截
-	for _, kw := range offTopicKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return true // 命中黑名单且无白名单词，拦截
-		}
-	}
-
-	return false // 不在黑名单，放行
+	return IsOffTopicForTenant(0, content)
 }
 
 // GetOffTopicReply 返回无关话题的硬拦截引导话术
 // 不走AI，0延迟，直接返回预设话术
 // 话术设计原则：自然引导回车，不生硬拒绝，不暴露拦截机制
+// 泛行业化：委托行业语义读取层（系统默认层），行业包可配置话术集合
 func GetOffTopicReply(content string) string {
-	replies := []string{
-		"哈哈这块我确实不太行，咱们还是聊车吧？你平时用车都干啥？",
-		"这个我还真不懂，不过你平时有没有自驾出行的需求？",
-		"哈哈我是卖车的，专业对口才靠谱，你想了解哪款？",
-		"这块超纲了哈，我对车倒是门儿清，有啥想了解的？",
-	}
-	// 用内容长度做简单散列，避免同一个人总收到同一条
-	idx := len([]rune(content)) % len(replies)
-	return replies[idx]
+	return GetOffTopicReplyForTenant(0, content)
 }
 
 // ============================================================

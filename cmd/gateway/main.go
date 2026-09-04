@@ -31,7 +31,7 @@ func main() {
 	cfg := config.LoadConfig()
 	gin.SetMode(cfg.Server.Mode)
 
-	// 1. Redis（计量闸 ConsumeAIQuota 依赖分布式锁；未启用则内存降级）
+	// 1. Redis（分布式锁/看门狗选主；计费闸 CheckTokenAvailability 已收敛到 token 三桶，不依赖 Redis）
 	redisclient.Init(cfg.Redis)
 
 	// 2. 数据库（计量/配额/usage 落账所需表；AutoMigrate 幂等）
@@ -45,6 +45,9 @@ func main() {
 
 	// 4. 系统配置（配额阈值、计费开关等热参）
 	service.InitSystemConfigService()
+
+	// 4.1 实时计量批量落库（P1 计费统一 2026-09-03：网关侧三桶扣减收敛到 UsageSink）
+	service.InitUsageSink()
 
 	// 5. AI 客户端与路由（网关持有平台厂商 Key，负责多模型降级出网）
 	ai.InitClient()

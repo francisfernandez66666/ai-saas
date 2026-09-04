@@ -1,0 +1,72 @@
+{
+  "notes": "海帆跨境行业包——独立站DTC出海卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_site",
+      "feature_name": "高转化独立站搭建",
+      "category": "建站",
+      "desc_template": "15天极速上线可承接转化的Shopify定制站，移动端适配+国际支付+多币种+本地化语言包，平均转化率比模板站高约2-3倍。",
+      "short_desc": "15天上线定制独立站，转化率高",
+      "applicable_models": ["基础建站版", "品牌增长版"],
+      "applicable_tags": ["新手启动", "品牌升级"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_selection",
+      "feature_name": "选品与数据分析",
+      "category": "选品",
+      "desc_template": "基于海外社媒趋势+平台热销数据帮您筛品测款，周度数据复盘跟进广告ROI，帮您砍掉低效品，集中弹药打蓝海款。",
+      "short_desc": "数据驱动选品测款+周度复盘",
+      "applicable_models": ["品牌增长版"],
+      "applicable_tags": ["数据驱动", "新手启动"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_ad",
+      "feature_name": "海外广告投放",
+      "category": "营销",
+      "desc_template": "Google + Meta + TikTok三平台代投，素材本地化拍摄，A/B测款持续优化，ROAS稳定2.5+，广告预算实时透明可见。",
+      "short_desc": "三平台代投，ROAS稳定2.5+",
+      "applicable_models": ["品牌增长版", "代投服务"],
+      "applicable_tags": ["营销增长", "数据驱动"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_logistics",
+      "feature_name": "海外仓与履约",
+      "category": "物流",
+      "desc_template": "美国/欧洲/东南亚海外仓一件代发，头程+尾程全链路可追踪，破损丢件包赔，妥投率99.2%，退换货流程海外本地化。",
+      "short_desc": "海外仓代发，妥投率99.2%",
+      "applicable_models": ["基础建站版", "品牌增长版"],
+      "applicable_tags": ["履约效率"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_compliance",
+      "feature_name": "合规与收款",
+      "category": "合规",
+      "desc_template": "同步完成平台账号认证、VAT税务、合规审查与多币种收款方案，覆盖主流国家市场法规，避免收款冻结风险。",
+      "short_desc": "认证税务收款合规一站式",
+      "applicable_models": ["品牌增长版"],
+      "applicable_tags": ["新手启动"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_accounting",
+      "feature_name": "经营核算与回款",
+      "category": "财务",
+      "desc_template": "跨境电商专用经营核算：订单利润自动汇总、头程尾程费用拆分、退税补贴跟进，收款资金快速回笼，账目清晰可导出。",
+      "short_desc": "订单利润自动核算，资金快回笼",
+      "applicable_models": ["基础建站版", "品牌增长版"],
+      "applicable_tags": ["新手启动", "数据驱动"],
+      "priority": 8,
+      "status": 1
+    }
+  ]
+}

@@ -254,6 +254,10 @@ func TenantSignup(c *gin.Context) {
 		return
 	}
 
+	// 泛行业化 P4：注册即按所选行业落行业包（realty/b2b/...），
+	// 库存不存在或 general 时跳过，由启动钩子 AutoApplyDefaultIndustryPack 的默认包兜底
+	BindTenantToIndustryPack(ten.ID, industry)
+
 	// P1.5(2026-08-26)：注册赠礼统一收口到 GrantTrialBucket（事务内已发，双唯一防撞库）
 	// 移除遗留 grantTrialPackage 双发路径；审核态租户桶已预置、放行前无法消耗
 

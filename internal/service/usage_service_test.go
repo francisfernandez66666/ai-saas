@@ -58,10 +58,11 @@ func TestConsumeAIQuotaNonEnforced(t *testing.T) {
 	}
 }
 
-// TestConsumeAIQuotaConcurrentOverflow 并发超额（P2-1 核心）
-// 月配额设小（如 50），100 并发请求，成功次数应 ≤ 50（条件 UPDATE 原子预留）。
+// TestConsumeAIQuotaConcurrentStats 并发统计（P2-1 改造后语义）
+// 计费统一（2026-09-03）：ConsumeAIQuota 降级为统计旁路恒放行，
+// 并发调用应全部成功且 used_ai_calls 精确累计 N（SQL 原子递增，不丢数）。
 // 依赖 DB：经 testutil.SetupTestDB 统一初始化（不可用则自动跳过）。
-func TestConsumeAIQuotaConcurrentOverflow(t *testing.T) {
+func TestConsumeAIQuotaConcurrentStats(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short mode: 跳过 DB 依赖测试")
 	}
@@ -70,15 +71,7 @@ func TestConsumeAIQuotaConcurrentOverflow(t *testing.T) {
 	tenant := testutil.CreateTenant(t)
 	defer testutil.CleanupTenant(t, tenant)
 
-	// 设月配额 50、已用 0、余额 0（强制走月配额闸门）
-	setTenantQuota(t, tenant, 50, 0, 0)
-	// 强制 enforced=true 走原子预留路径
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = &SystemConfigService{
-		cache: map[string]string{"billing_enforced": "true"},
-	}
-	defer func() { DefaultSystemConfigService = old }()
-
+	before := getUsedAI(tenant)
 	const N = 100
 	var okCount int32
 	var wg sync.WaitGroup
@@ -92,11 +85,12 @@ func TestConsumeAIQuotaConcurrentOverflow(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if okCount > 50 {
-		t.Errorf("并发超额：成功次数 %d > 配额 50（条件UPDATE未生效）", okCount)
+	if okCount != N {
+		t.Errorf("统计旁路应恒放行：成功 %d / %d", okCount, N)
 	}
-	if okCount == 0 {
-		t.Errorf("并发超额：成功次数 0（配额未生效？）")
+	after := getUsedAI(tenant)
+	if after != before+N {
+		t.Errorf("used_ai_calls 应累计 +%d: before=%d after=%d", N, before, after)
 	}
 }
 
@@ -108,16 +102,4 @@ func getUsedAI(tenant uint) int64 {
 	db.DB.Model(&model.Tenant{}).Where("id = ?", tenant).
 		Pluck("used_ai_calls", &used)
 	return used
-}
-
-// setTenantQuota 直接写库设置租户配额（max/balance/used），构造并发测试前提
-// 注意：列名用 max_ai_calls_monthly（model.Tenant.MaxAICalls 的 column 名），旧写 max_ai_calls 不存在
-func setTenantQuota(t *testing.T, tenant uint, maxAI, balance, used int) {
-	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", tenant).Updates(map[string]interface{}{
-		"max_ai_calls_monthly": maxAI,
-		"ai_call_balance":      balance,
-		"used_ai_calls":        used,
-	}).Error; err != nil {
-		t.Fatalf("setTenantQuota: %v", err)
-	}
 }

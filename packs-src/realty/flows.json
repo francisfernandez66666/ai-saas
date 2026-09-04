@@ -1,0 +1,14 @@
+[
+  {
+    "code": "welcome_nurture",
+    "name": "新客看房培育流程",
+    "description": "新客进入后的标准培育动线：AI接待→探需求→引导带看留资",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始"},
+      {"id": "ai_chat", "type": "ai_chat", "name": "AI接待"},
+      {"id": "wait_lead", "type": "wait", "name": "等待留资预约"}
+    ],
+    "edges": [{"from": "start", "to": "ai_chat"}, {"from": "ai_chat", "to": "wait_lead"}],
+    "start_node_id": "start"
+  }
+]

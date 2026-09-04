@@ -87,6 +87,8 @@ func (r DeductResult) String() string {
 
 // DeductTokensActual 按实际用量三桶顺序扣减（事务 + 行锁，原子）
 // tokens = 本次请求真实消耗（usage.TotalTokens）；任何前置闸门未开时为 no-op。
+// 2026-09-03 计费统一：本函数由 UsageSink 批量落库调用（每租户每 flush 周期一次），
+// 业务层不再直接 `go DeductTokensActual`，而是投递 SinkRecordUsage 统一计量。
 func DeductTokensActual(tenantID uint, tokens int64) {
 	if tenantID == 0 || tokens <= 0 || !TokenBillingEnabled() {
 		return
@@ -202,6 +204,8 @@ func GrantTrialBucket(tx *gorm.DB, tenantID uint, email string) {
 		return
 	}
 	log.Printf("[TokenBilling] 注册赠送 %d token(%d天有效) → 租户%d", amount, days, tenantID)
+	// 2026-09-03 计费统一：发放后失效影子余额，避免 sink 影子停留在旧值误判不足
+	InvalidateShadow(tenantID)
 }
 
 // minInt64 取两 int64 较小值（三桶扣减分配时限制单次扣减上限用）

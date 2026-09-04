@@ -103,8 +103,8 @@ func ChatTest(c *gin.Context) {
 	// 原来所有消息都先进合并队列(25s)，再到GenerateAIReply里才查硬边界和到店倾向——太晚了
 
 	// 第一层：硬边界拦截（0延迟，不走AI，不进队列）
-	if service.IsOffTopic(req.Content) {
-		reply := service.GetOffTopicReply(req.Content)
+	if service.IsOffTopicForTenant(tenantID, req.Content) {
+		reply := service.GetOffTopicReplyForTenant(tenantID, req.Content)
 		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
 		// 查找或创建活跃会话
 		var conv model.Conversation
@@ -161,7 +161,7 @@ func ChatTest(c *gin.Context) {
 	// A. 客户已留资 → 跳过，走正常流程
 	// B. 当前消息含手机号 → 已留资线索：标记留资+分配顾问（基于手机号校验）+确认回复
 	// C. 当前消息无手机号 → 未留资线索：关闭引导+两段式追问，推迟分配顾问到手机号回复时
-	if strategy.IsStoreVisitIntent(req.Content) {
+	if service.IsStoreVisitIntentForTenant(tenantID, req.Content) {
 		// ---- 前置拦截：已留资客户不再走到店快速通道 ----
 		if customer.JourneyStage == model.JourneyLeadCaptured ||
 			customer.JourneyStage == model.JourneyArrived ||
@@ -685,7 +685,7 @@ skipStoreVisitFastTest:
 
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
-	isStoreVisit := strategy.IsStoreVisitIntent(mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
+	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
 	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 

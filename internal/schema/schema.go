@@ -70,16 +70,16 @@ type CreateCustomerRequest struct {
 	Region         string   `json:"region"`           // 注释：地域
 	City           string   `json:"city"`             // 注释：城市
 	Career         string   `json:"career"`           // 注释：职业
-	CustomerType   string   `json:"customer_type"`    // 注释：客户类型
-	InterestModel  string   `json:"interest_model"`   // 注释：兴趣车型
-	CurrentCar     string   `json:"current_car"`      // 注释：现车
-	CarAge         float64  `json:"car_age"`          // 注释：现车年限
-	Source         string   `json:"source"`           // 注释：来源
-	Budget         float64  `json:"budget"`           // 注释：预算(万元)
-	DecisionCycle  int      `json:"decision_cycle"`   // 注释：决策周期(天)
-	AssignedUserID uint     `json:"assigned_user_id"` // 注释：归属销售ID
-	Tags           []string `json:"tags"`             // 注释：标签(json)
-	Remark         string   `json:"remark"`           // 注释：备注
+	CustomerType     string   `json:"customer_type"`     // 注释：客户类型
+	InterestProduct  string   `json:"interest_model"`    // 注释：兴趣产品
+	CurrentProduct   string   `json:"current_car"`       // 注释：当前在用产品
+	ProductAge       float64  `json:"car_age"`           // 注释：现用产品年限
+	Source           string   `json:"source"`            // 注释：来源
+	Budget           float64  `json:"budget"`            // 注释：预算(万元)
+	DecisionCycle    int      `json:"decision_cycle"`    // 注释：决策周期(天)
+	AssignedUserID   uint     `json:"assigned_user_id"`  // 注释：归属销售ID
+	Tags             []string `json:"tags"`              // 注释：标签(json)
+	Remark           string   `json:"remark"`            // 注释：备注
 }
 
 // UpdateCustomerRequest 更新客户请求
@@ -89,9 +89,9 @@ type UpdateCustomerRequest struct {
 	Gender         int      `json:"gender"`           // 注释：性别
 	Age            int      `json:"age"`              // 注释：年龄
 	Region         string   `json:"region"`           // 注释：地域
-	Career         string   `json:"career"`           // 注释：职业
-	InterestModel  string   `json:"interest_model"`   // 注释：兴趣车型
-	Budget         float64  `json:"budget"`           // 注释：预算(万元)
+	Career          string   `json:"career"`           // 注释：职业
+	InterestProduct string   `json:"interest_model"`   // 注释：兴趣产品
+	Budget          float64  `json:"budget"`           // 注释：预算(万元)
 	DecisionCycle  int      `json:"decision_cycle"`   // 注释：决策周期(天)
 	IntentScore    float64  `json:"intent_score"`     // 注释：意向分
 	TrustLevel     float64  `json:"trust_level"`      // 注释：信任度

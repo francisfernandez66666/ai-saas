@@ -1,0 +1,26 @@
+[
+  {
+    "code": "高定客户",
+    "name": "高定客户",
+    "category": "客群标签",
+    "description": "追求个性化高定与品质执行的准新人"
+  },
+  {
+    "code": "品质追求",
+    "name": "品质追求",
+    "category": "需求",
+    "description": "看重团队实力与现场还原度"
+  },
+  {
+    "code": "场地优先",
+    "name": "场地优先",
+    "category": "需求",
+    "description": "先锁场地档期再定方案"
+  },
+  {
+    "code": "价格敏感",
+    "name": "价格敏感",
+    "category": "客群标签",
+    "description": "关注透明预算与分期方案"
+  }
+]

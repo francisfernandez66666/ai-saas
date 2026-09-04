@@ -94,6 +94,9 @@ func main() {
 	// 6.5 初始化系统配置服务（从DB加载可调参数到内存，支持热加载）
 	service.InitSystemConfigService()
 
+	// 6.6 实时计量批量落库（P1 计费统一 2026-09-03：三桶扣减收敛到 UsageSink 批量落库）
+	service.InitUsageSink()
+
 	// 7. 初始化AI客户端
 	ai.InitClient()
 	ai.InitSiliconFlowClient()
@@ -294,6 +297,9 @@ func main() {
 	// 8.47 行业包自动应用（auto_rox 落地）：对未绑定任何包的租户绑定默认行业/企业包（幂等）
 	go func() {
 		defer func() { _ = recover() }()
+		// 泛行业化 P4：先自动上架 data/packs 预置行业包（入库 industry_packs），
+		// 否则 resolveIndustry 无法识别 realty/b2b/... 等新行业，注册一律回落 general
+		api.AutoRegisterLocalPacks()
 		api.AutoApplyDefaultIndustryPack()
 	}()
 

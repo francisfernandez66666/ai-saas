@@ -44,7 +44,7 @@ check "个人版子部门受配额限制(403)" 403 "$CHILD"
 BAD=$(curl -s -X POST $B/api/v1/auth/login -H "Content-Type: application/json" \
   -d "{\"username\":\"boss_$TAG\",\"password\":\"boss123456\",\"tenant_code\":\"acme\"}" \
   | python3 -c "import sys,json;print(json.load(sys.stdin).get('code'))" 2>/dev/null)
-check "错误企业码登录被拒" 401 "$BAD"
+check "错误企业码登录被拒" 40101 "$BAD"
 
 # 5. 超管登录 → 列表含新租户 → 停用后该租户域名访问被拒 → 恢复
 AT=$(curl -s -X POST $B/api/v1/auth/login -H "Content-Type: application/json" \

@@ -198,6 +198,7 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 		return
 	}
 	log.Printf("[Referral] 付费永久奖励到账：受邀=%d 的邀请人=%d +%d token(永久)", invitedTenantID, *invited.InvitedByTenantID, bonus)
+	InvalidateShadow(*invited.InvitedByTenantID) // 计费统一：奖励入账后失效影子余额
 	_ = tx.Create(&model.RewardClaim{
 		GrantType: "referral_paid", TenantID: *invited.InvitedByTenantID,
 		Email: inviteeEmailLower, RefID: &invitedTenantID,

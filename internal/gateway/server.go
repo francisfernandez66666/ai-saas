@@ -3,12 +3,13 @@
 // 角色：平台级出网枢纽。本地/SaaS 实例不再直连厂商 Key，所有 reply/evals 等阶段请求
 // 经此处转发。网关持有平台厂商 Key 并做：
 //  1. 鉴权（HMAC 签名还原租户）
-//  2. 余额 fail-closed（ConsumeAIQuota 原子闸，超额即拒）
+//  2. 余额 fail-closed（CheckTokenAvailability 三桶前置闸，超额即拒）
 //  3. 上游多模型降级（复用 ai.Router）
-//  4. 计量落账（RecordUsage + DeductTokensActual 三桶扣减）
+//  4. 计量落账（RecordUsage + SinkRecordUsage → UsageSink 三桶扣减）
 //  5. 素材采集（脱敏对话异步回流，供数据飞轮）
 //
-// 与本地实例职责切分：启用网关后，计费权上收网关，本地跳过自身的 ConsumeAIQuota/RecordUsage/DeductTokensActual。
+// 与本地实例职责切分：启用网关后，计费权上收网关，本地跳过自身的计量/扣减。
+// （2026-09-03 计费统一：ConsumeAIQuota 已降级为统计旁路恒 true，不再作为拦截闸。）
 package gateway
 
 import (
@@ -130,14 +131,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		temp = 0.7
 	}
 
-	// 1. fail-closed 计量闸：超额直接拒绝，本地实例不再重复判定
-	if !service.ConsumeAIQuota(tenantID) {
-		c.JSON(http.StatusForbidden, gin.H{
-			"error": gin.H{"message": "AI 配额已用尽，请升级套餐或联系平台"},
-			"code":  "quota_exhausted",
-		})
-		return
-	}
+	// 1. 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计计数），
+	//    真正的 fail-closed 闸是下方 CheckTokenAvailability（三桶前置检查）+ SinkRecordUsage（批量扣减）
+	service.ConsumeAIQuota(tenantID)
 	// 1b. Token 三桶前置检查（防零余额仍消耗厂商额度）：与本地 chat_reply 同口径
 	if !service.CheckTokenAvailability(tenantID) {
 		c.JSON(http.StatusForbidden, gin.H{
@@ -161,7 +157,8 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	// 3. 计量落账 + 三桶扣减（与本地同链路，但此处为唯一计量方）
 	service.RecordUsage(tenantID, 0, 0, stage, provider, modelName,
 		usage.PromptTokens, usage.CompletionTokens, time.Since(start).Milliseconds())
-	go service.DeductTokensActual(tenantID, int64(usage.TotalTokens))
+	// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库
+	service.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
 
 	// 4. 素材采集（脱敏对话异步回流，供数据飞轮；未配置 Collector.URL 自动跳过）
 	go s.collectMaterial(tenantID, stage, req.Messages, reply)
@@ -224,11 +221,8 @@ func (s *Server) handleEmbeddings(c *gin.Context) {
 		return
 	}
 
-	// 计费闸（向量化也计入配额）
-	if !service.ConsumeAIQuota(tenantID) {
-		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": "AI 配额已用尽"}, "code": "quota_exhausted"})
-		return
-	}
+	// 计费闸（向量化也计入配额）：ConsumeAIQuota 统计旁路（恒 true），扣减走 SinkRecordUsage
+	service.ConsumeAIQuota(tenantID)
 
 	data := make([]gin.H, 0, len(texts))
 	totalTok := 0
@@ -238,7 +232,8 @@ func (s *Server) handleEmbeddings(c *gin.Context) {
 		data = append(data, gin.H{"object": "embedding", "index": i, "embedding": vec})
 	}
 	service.RecordUsage(tenantID, 0, 0, "embedding", "embedding", req.Model, totalTok, 0, 0)
-	go service.DeductTokensActual(tenantID, int64(totalTok))
+	// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库
+	service.SinkRecordUsage(tenantID, int64(totalTok))
 
 	c.JSON(http.StatusOK, embeddingResponse{
 		Data:  data,

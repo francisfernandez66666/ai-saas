@@ -1,0 +1,26 @@
+[
+  {
+    "code": "刚需首套",
+    "name": "刚需首套",
+    "category": "客户类型",
+    "description": "首次购房客户，关注总价与首付比例"
+  },
+  {
+    "code": "改善置换",
+    "name": "改善置换",
+    "category": "客户类型",
+    "description": "卖旧买新客户，关注户型面积与居住品质"
+  },
+  {
+    "code": "有孩家庭",
+    "name": "有孩家庭",
+    "category": "客群标签",
+    "description": "关注学区、教育与社区安全"
+  },
+  {
+    "code": "价格敏感",
+    "name": "价格敏感",
+    "category": "客群标签",
+    "description": "关注性价比与贷款方案"
+  }
+]

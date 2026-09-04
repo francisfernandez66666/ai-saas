@@ -39,61 +39,50 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 修复：只靠提示词软约束不够，AI还是会回答无关话题
 	// 硬边界 = 代码层拦截，命中无关话题直接返回引导话术，不走AI
 	// 白名单优先：消息含车相关词则放行（"帮我写个试驾报告"→含"试驾"→不拦截）
-	if service.IsOffTopic(userInput) {
-		reply := service.GetOffTopicReply(userInput)
+	if service.IsOffTopicForTenant(customer.TenantID, userInput) {
+		reply := service.GetOffTopicReplyForTenant(customer.TenantID, userInput)
 		log.Printf("[硬边界] 拦截无关话题，引导回车")
 		return reply
 	}
 
-	// ---- 询价硬拦截：客户问价格，一律引导到店试驾后细谈，不走AI ----
-	// 硬编码：不依赖prompt，直接在代码层拦截替换
-	// 句式参考：「要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀」
-	// 可以AI自由发挥，但核心意图不变：引导到店试驾→体验后出报价
-	priceKeywords := []string{
-		"多少钱", "什么价", "报价", "价格", "价位", "售价", "贵不贵",
-		"怎么卖", "怎么算", "落地价", "优惠多少", "便宜多少",
-		"车价", "售价多少", "多少钱一辆", "多少钱一台",
-	}
-	for _, kw := range priceKeywords {
-		if strings.Contains(userInput, kw) {
-			log.Printf("[询价硬拦截] 客户%d 询价关键词: %s, 引导到店试驾", customer.ID, kw)
-			leadCapturedGuiding := chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0
-			if leadCapturedGuiding {
-				// 已留资且引导关闭：纯陈述引导，不再反问
-				replies := []string{
-					"价格得看具体配置和您的需求来定，要不帮您约个试驾，体验过后我再根据您的配置需求做个报价",
-					"车价跟配置和选装方案有关，建议您先到店试驾体验一下，试好了我按您的需求出个详细报价",
-					"具体价格得看您选什么配置，要不先约个试驾，您亲身感受后再根据您的需求给您报价",
-				}
-				rand.Seed(time.Now().UnixNano())
-				return replies[rand.Intn(len(replies))]
-			}
-			// 未留资或引导未关闭：可以带一句反问引导
+	// ---- 询价硬拦截：客户问价格，一律引导到店，不进AI ----
+	// 泛行业化（P2.4）：关键词从 industry.price_keywords 读取，行业包可配置；空回退汽车默认
+	priceKeywords := service.IndustryPriceKeywordsForTenant(customer.TenantID)
+	if service.ContainsKeywordForTenant(userInput, priceKeywords) {
+		log.Printf("[询价硬拦截] 客户%d 触发询价硬拦截, 引导到店", customer.ID)
+		leadCapturedGuiding := chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0
+		if leadCapturedGuiding {
+			// 已留资且引导关闭：纯陈述引导，不再反问
 			replies := []string{
-				"要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀",
-				"价格得看配置来定，要不先帮您约个试驾，您试完车我按您的需求做个详细报价，行不",
-				"车价跟具体配置有关，要不我帮您安排个试驾，体验好了我按您的需求出个报价，您看咋样",
+				"价格得看具体配置和您的需求来定，要不帮您约个试驾，体验过后我再根据您的配置需求做个报价",
+				"车价跟配置和选装方案有关，建议您先到店试驾体验一下，试好了我按您的需求出个详细报价",
+				"具体价格得看您选什么配置，要不先约个试驾，您亲身感受后再根据您的需求给您报价",
 			}
 			rand.Seed(time.Now().UnixNano())
 			return replies[rand.Intn(len(replies))]
 		}
+		// 未留资或引导未关闭：可以带一句反问引导
+		replies := []string{
+			"要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀",
+			"价格得看配置来定，要不先帮您约个试驾，您试完车我按您的需求做个详细报价，行不",
+			"车价跟具体配置有关，要不我帮您安排个试驾，体验好了我按您的需求出个报价，您看咋样",
+		}
+		rand.Seed(time.Now().UnixNano())
+		return replies[rand.Intn(len(replies))]
 	}
 
 	// 促单锁：提前计算canPromote，确保所有路径（含兜底）都受控
 	// 修复：原来canPromote声明在MockMode检查之后，前两处BuildFallbackReply调用无法传入
 	canPromote := customer.CanPromote()
 
-	// ---- 计量与配额（SaaS 计费）：硬边界拦截不消耗配额，走到这里才算一次 AI 回复 ----
-	// H4：ConsumeAIQuota 原子地完成"判定+预留+计量"，消除并发超额
+	// 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计 used_ai_calls），
+	// 真正的计费闸是下方 CheckTokenAvailability（前置拦截） + SinkRecordUsage（批量扣减）
 	tenantID := customer.TenantID
 
 	// 网关模式：计费权已上收 AI 网关（网关侧做 fail-closed 计量），本地跳过自身计量避免重复扣减
 	gatewayMode := ai.DefaultGatewayClient != nil && tenantID != 0
 	if !gatewayMode {
-		if !service.ConsumeAIQuota(tenantID) {
-			log.Printf("[Usage] 租户%d AI 配额已超限，本次降级为规则话术（不发起模型请求）", tenantID)
-			return ai.BuildFallbackReply(strategyOutput, canPromote)
-		}
+		service.ConsumeAIQuota(tenantID) // 统计旁路：恒放行，仅累计计数
 
 		// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
 		// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
@@ -161,7 +150,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 1. 系统Prompt（人设 + 卖点知识 + 价格管控 + 促单锁 + 到店转化策略）
 	hasArrived := customer.HasArrived() // 判断客户是否已到店，用于价格管控
 	// canPromote已在函数顶部声明，此处不再重复
-	isStoreVisit := strategytypes.IsStoreVisitIntent(userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
+	isStoreVisit := service.IsStoreVisitIntentForTenant(customer.TenantID, userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
 	modelID := getCustomerModelID(customer)
 	systemPrompt := ai.BuildSystemPrompt(customer.TenantID, features, modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
 
@@ -242,7 +231,9 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
 			usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
 		// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
-		go service.DeductTokensActual(tenantID, int64(usage.TotalTokens))
+		// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库，
+		// 消除并发下扣减顺序不保证的竞态（每租户每 flush 周期单事务扣减）
+		service.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
 	}
 
 	// 数据飞轮：脱敏对话素材回流（P3，供行业包自动迭代）；未配置 Collector.URL 自动丢弃
@@ -392,11 +383,11 @@ func getConversationHistory(conversationID uint, maxRounds int) []ai.ChatMessage
 
 // getCustomerModelID 获取客户兴趣车型对应的知识库车型ID
 // 用于对比锚时注入知识库素材
-// 如果客户没有明确兴趣车型，返回默认车型（极石第一款），保证知识库始终注入
+// 如果客户没有明确兴趣产品，返回默认产品（行业包第一个），保证知识库始终注入
 func getCustomerModelID(customer *model.Customer) uint {
-	// 有兴趣车型时，按名称匹配
-	if customer.InterestModel != "" {
-		carModel := cache.DefaultKnowledgeCache.GetModelByName(customer.InterestModel)
+	// 有兴趣产品时，按名称匹配
+	if customer.InterestProduct != "" {
+		carModel := cache.DefaultKnowledgeCache.GetModelByName(customer.InterestProduct)
 		if carModel != nil {
 			return carModel.ID
 		}

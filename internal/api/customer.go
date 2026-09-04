@@ -107,11 +107,11 @@ func CreateCustomer(c *gin.Context) {
 		Region:         req.Region,
 		City:           req.City,
 		Career:         req.Career,
-		CustomerType:   req.CustomerType,
-		InterestModel:  req.InterestModel,
-		CurrentCar:     req.CurrentCar,
-		CarAge:         req.CarAge,
-		Source:         req.Source,
+		CustomerType:    req.CustomerType,
+		InterestProduct: req.InterestProduct,
+		CurrentProduct:  req.CurrentProduct,
+		ProductAge:      req.ProductAge,
+		Source:          req.Source,
 		Budget:         req.Budget,
 		DecisionCycle:  req.DecisionCycle,
 		AssignedUserID: req.AssignedUserID,
@@ -207,8 +207,8 @@ func UpdateCustomer(c *gin.Context) {
 	if req.Career != "" {
 		customer.Career = req.Career
 	}
-	if req.InterestModel != "" {
-		customer.InterestModel = req.InterestModel
+	if req.InterestProduct != "" {
+		customer.InterestProduct = req.InterestProduct
 	}
 	if req.Budget != 0 {
 		customer.Budget = req.Budget

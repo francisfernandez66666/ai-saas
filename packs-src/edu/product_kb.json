@@ -1,0 +1,61 @@
+{
+  "notes": "星辰教育行业包——留学/语言培训卖点知识库（2026-09-03 泛行业化 P4 预置）",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_planning",
+      "feature_name": "一对一名校规划",
+      "category": "规划",
+      "desc_template": "资深规划师按您的GPA、语言成绩、实习背景定制选校方案，覆盖美英澳港新主流院校，含时间线拆解与背景提升清单，先测评后规划，目标更落地。",
+      "short_desc": "专属规划师定制选校+时间线",
+      "applicable_models": ["硕士申请计划"],
+      "applicable_tags": ["目标院校明确", "背景提升"],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_language",
+      "feature_name": "雅思托福冲刺班",
+      "category": "语言",
+      "desc_template": "分阶段小班+1对1模考点评，写作口语逐项批改，独家题库命中率高；近年高分学员占比超六成，出分周期平均比自学快3个月。",
+      "short_desc": "小班+模考点评，出分快3个月",
+      "applicable_models": ["雅思冲刺班", "托福冲刺班"],
+      "applicable_tags": ["语言备考", "时间紧迫"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_essay",
+      "feature_name": "文书与背景提升",
+      "category": "文书",
+      "desc_template": "藤校背景导师带队打磨个人陈述、简历与推荐信，深挖学生独特经历；科研/实习/竞赛背景提升项目全年滚动开班，补齐软实力短板。",
+      "short_desc": "名校导师文书+背景提升项目",
+      "applicable_models": ["硕士申请计划"],
+      "applicable_tags": ["背景提升", "目标冲刺"],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_scholarship",
+      "feature_name": "奖学金与费用规划",
+      "category": "费用",
+      "desc_template": "帮您逐校筛奖学金项目、学费与生活费预算，提供分期方案；每年协助学员争取到总计数百万奖助学金，降低留学经济压力。",
+      "short_desc": "逐校奖学金筛选+费用分期",
+      "applicable_models": ["硕士申请计划", "本科申请计划"],
+      "applicable_tags": ["价格敏感"],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_visa",
+      "feature_name": "签证与行前服务",
+      "category": "服务",
+      "desc_template": "从签证材料准备、模拟面签到行前住宿、购汇一条龙服务，驻外团队提供抵达后落地支持，全程无忧。",
+      "short_desc": "签证行前一条龙+落地支持",
+      "applicable_models": ["硕士申请计划", "本科申请计划"],
+      "applicable_tags": ["目标院校明确"],
+      "priority": 8,
+      "status": 1
+    }
+  ]
+}

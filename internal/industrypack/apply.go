@@ -25,6 +25,7 @@ import (
 	"ai-scrm/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // IDPrefix 包物化ID前缀 —— 含租户域（2026-08-26 修复跨租户主键冲突）
@@ -308,8 +309,13 @@ func materializeTags(pc *PackContent, tx *gorm.DB, tenantID uint) (int, error) {
 			Description: it.Description,
 			Status:      1,
 		}
-		if err := tx.Create(&row).Error; err != nil {
-			log.Printf("[IndustryPack] 标签 %q 物化失败(可能重名跳过): %v", it.Name, err)
+		result := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&row)
+		if result.Error != nil {
+			log.Printf("[IndustryPack] 标签 %q 物化失败: %v", it.Name, result.Error)
+			continue
+		}
+		if result.RowsAffected == 0 {
+			log.Printf("[IndustryPack] 标签 %q 重名跳过(租户%d)", it.Name, tenantID)
 			continue
 		}
 		count++

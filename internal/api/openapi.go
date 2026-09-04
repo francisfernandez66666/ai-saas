@@ -78,14 +78,14 @@ func OpenAPICustomers(c *gin.Context) {
 	// 手机号默认脱敏（mask=false 显式关闭；开放渠道默认最小暴露）
 	mask := c.DefaultQuery("mask", "true") == "true"
 	type item struct {
-		ID             uint   `json:"id"`
-		Name           string `json:"name"`
-		Phone          string `json:"phone"`
-		JourneyStage   string `json:"journey_stage"`
-		InterestModel  string `json:"interest_model"`
-		Source         string `json:"source"`
-		AssignedUserID uint   `json:"assigned_user_id"`
-		CreatedAt      string `json:"created_at"`
+		ID              uint   `json:"id"`
+		Name            string `json:"name"`
+		Phone           string `json:"phone"`
+		JourneyStage    string `json:"journey_stage"`
+		InterestProduct string `json:"interest_model"`
+		Source          string `json:"source"`
+		AssignedUserID  uint   `json:"assigned_user_id"`
+		CreatedAt       string `json:"created_at"`
 	}
 	list := make([]item, 0, len(customers))
 	for _, cu := range customers {
@@ -95,7 +95,7 @@ func OpenAPICustomers(c *gin.Context) {
 		}
 		list = append(list, item{
 			ID: cu.ID, Name: cu.Name, Phone: p,
-			JourneyStage: cu.JourneyStage, InterestModel: cu.InterestModel,
+			JourneyStage: cu.JourneyStage, InterestProduct: cu.InterestProduct,
 			Source: cu.Source, AssignedUserID: cu.AssignedUserID,
 			CreatedAt: cu.CreatedAt.Format("2006-01-02 15:04:05"),
 		})

@@ -1,0 +1,32 @@
+[
+  {
+    "code": "获客提效",
+    "name": "获客提效",
+    "category": "痛点",
+    "description": "关注多渠道线索汇总与自动打标"
+  },
+  {
+    "code": "销售提效",
+    "name": "销售提效",
+    "category": "痛点",
+    "description": "关注跟进自动化与AI助手"
+  },
+  {
+    "code": "管理决策",
+    "name": "管理决策",
+    "category": "角色",
+    "description": "管理者/老板，关注经营看板与ROI"
+  },
+  {
+    "code": "组织管理",
+    "name": "组织管理",
+    "category": "角色",
+    "description": "关注权限、培训与团队协作"
+  },
+  {
+    "code": "价格敏感",
+    "name": "价格敏感",
+    "category": "倾向",
+    "description": "关注按人单价与预算方案"
+  }
+]

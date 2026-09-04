@@ -1,0 +1,14 @@
+[
+  {
+    "code": "welcome_nurture",
+    "name": "新客婚礼筹备流程",
+    "description": "准新人进入后的标准筹备动线",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始"},
+      {"id": "ai_chat", "type": "ai_chat", "name": "AI接待"},
+      {"id": "wait_lead", "type": "wait", "name": "等待留资约面谈"}
+    ],
+    "edges": [{"from": "start", "to": "ai_chat"}, {"from": "ai_chat", "to": "wait_lead"}],
+    "start_node_id": "start"
+  }
+]

@@ -1,0 +1,14 @@
+[
+  {
+    "code": "welcome_nurture",
+    "name": "新客出海培育流程",
+    "description": "独立站出海客户进入后的标准培育动线",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始"},
+      {"id": "ai_chat", "type": "ai_chat", "name": "AI接待"},
+      {"id": "wait_lead", "type": "wait", "name": "等待留资约演示"}
+    ],
+    "edges": [{"from": "start", "to": "ai_chat"}, {"from": "ai_chat", "to": "wait_lead"}],
+    "start_node_id": "start"
+  }
+]

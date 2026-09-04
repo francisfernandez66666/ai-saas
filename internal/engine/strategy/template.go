@@ -180,7 +180,7 @@ func FillTemplate(
 func matchFeatures(template *model.Template, customer *model.Customer, features []model.Feature) []model.Feature {
 	requiredFeatIDs := template.GetRequiredFeatures()
 	customerTags := customer.GetTags()
-	customerModel := customer.InterestModel
+	customerModel := customer.InterestProduct
 
 	var matched []model.Feature
 
@@ -260,7 +260,7 @@ func fillPlaceholders(text string, customer *model.Customer, features []model.Fe
 	// 通用占位符
 	replaceMap := map[string]string{
 		"{{customer_name}}": customer.Name,
-		"{{model}}":         customer.InterestModel,
+		"{{model}}":         customer.InterestProduct,
 		"{{budget}}":        fmt.Sprintf("%.0f万", customer.Budget),
 		"{{region}}":        customer.Region,
 	}

@@ -1,0 +1,38 @@
+[
+  {
+    "code": "新手起号",
+    "name": "新手起号",
+    "category": "客群标签",
+    "description": "0-1阶段需要定位与起号扶持"
+  },
+  {
+    "code": "账号定位",
+    "name": "账号定位",
+    "category": "需求",
+    "description": "需要明确人设定位与内容栏目"
+  },
+  {
+    "code": "内容提效",
+    "name": "内容提效",
+    "category": "需求",
+    "description": "需要持续稳定的内容产出"
+  },
+  {
+    "code": "直播增长",
+    "name": "直播增长",
+    "category": "需求",
+    "description": "需要直播带货陪跑与转化提升"
+  },
+  {
+    "code": "变现策略",
+    "name": "变现策略",
+    "category": "需求",
+    "description": "关注橱窗与私域复购变现"
+  },
+  {
+    "code": "数据驱动",
+    "name": "数据驱动",
+    "category": "需求",
+    "description": "关注涨粉与GMV数据复盘"
+  }
+]
