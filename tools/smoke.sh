@@ -1,4 +1,6 @@
 #!/bin/bash
+# DB 连接：TEST_DB_URL 环境变量覆盖（CI 用 ci_pass），默认本地 dev 库
+PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 # ============================================================
 # AI-SCRM SaaS 安全红线冒烟测试（Phase S 验收脚本）
 # 用法: ./tools/smoke.sh [端口]   默认 9090
@@ -25,15 +27,15 @@ jsonget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval('d'+sy
 echo "==== AI-SCRM SaaS 安全冒烟测试 @ $B ===="
 
 # ---- 准备：确保存在第二个测试租户 acme ----
-psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
+psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -c \
   "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
    SELECT 'acme-test', 'acme', 'personal', 'active', NOW(), NOW()
    WHERE NOT EXISTS (SELECT 1 FROM tenants WHERE code='acme');" >/dev/null 2>&1
-ACME_ID=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc "SELECT id FROM tenants WHERE code='acme'" | tr -d '[:space:]')
+ACME_ID=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc "SELECT id FROM tenants WHERE code='acme'" | tr -d '[:space:]')
 
 # ---- 准备（M3）：清除默认账号首登强改密标记，模拟"已改密"状态 ----
 # （出厂弱密码检测逻辑见 seed.go——改过密码的账号重启后不会被重新标记）
-psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
+psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -c \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3');" >/dev/null 2>&1
 
 echo "---- 一、租户解析 fail-closed ----"
@@ -60,7 +62,7 @@ check "超管指定不存在租户→拒绝" 403 "$CODE"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}")
 check "超管显式切换到acme租户" 200 "$CODE"
 
-AUDIT=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+AUDIT=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT count(*) FROM tenant_audit_logs WHERE action='super_admin_access'" 2>/dev/null | tr -d '[:space:]')
 [ "${AUDIT:-0}" -ge 1 ] && check "超管访问审计日志已落库" y y || check "超管访问审计日志已落库" y n
 
@@ -84,7 +86,7 @@ check "销售token打其他租户域名→一致性拦截" 403 "$CODE"
 IDS=$(curl -s "$B/api/v1/advisor/customers?page_size=100" -H "Authorization: Bearer $STOKEN" | \
   python3 -c "import sys,json;l=json.load(sys.stdin)['data']['list'];print(','.join(str(c['id']) for c in l))" 2>/dev/null)
 if [ -n "$IDS" ]; then
-  BAD=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  BAD=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
     "SELECT count(*) FROM customers WHERE id IN ($IDS) AND tenant_id <> 1" 2>/dev/null | tr -d '[:space:]')
   [ "${BAD:-1}" = "0" ] && check "客户列表无跨租户数据混入(共$(echo $IDS | tr ',' ' ' | wc -w | tr -d ' ')条全属租户1)" y y \
                          || check "客户列表无跨租户数据混入(混入${BAD}条)" y n
@@ -94,7 +96,7 @@ fi
 
 echo "---- 四、M3 首登强制改密拦截 ----"
 # 置标记 → 登录响应带标记 → 鉴权接口403拦截 → 改密清除标记后放行
-psql postgresql://ai_scrm:dev123@localhost/ai_scrm -c \
+psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -c \
   "UPDATE tenant_users SET must_change_password=true WHERE username='admin';" >/dev/null 2>&1
 
 FTOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
@@ -140,7 +142,7 @@ GRANT=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
   -d "{\"order_id\":$ORDER}" | jsonget "['data']['granted']")
 [ "$GRANT" = "True" ] && check "模拟到账→权益发放(granted)" y y || check "模拟到账→权益发放" y n
 
-BALANCE=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+BALANCE=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
 [ "${BALANCE:-0}" -ge 1000000 ] && check "增量余额已入账(token=$BALANCE)" y y || check "增量余额已入账(token=$BALANCE)" y n
 
@@ -149,7 +151,7 @@ GRANT2=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
   -d "{\"order_id\":$ORDER}" | jsonget "['data']['granted']")
 [ "$GRANT2" = "False" ] && check "重复支付幂等(不二次发放)" y y || check "重复支付幂等" y n
 
-BALANCE2=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+BALANCE2=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
 [ "$BALANCE2" = "$BALANCE" ] && check "幂等后余额未重复累计" y y || check "幂等后余额未重复累计($BALANCE→$BALANCE2)" y n
 
@@ -170,21 +172,21 @@ check "有效Key读客户列表→200" 200 "$CODE"
 # 隔离断言：Key归属acme，返回客户必须全属acme租户
 OID_LIST=$(curl -s "$B/openapi/v1/customers?page_size=50" -H "Authorization: Bearer ${SK}" | \
   python3 -c "import sys,json;l=json.load(sys.stdin)['data']['list'];print(','.join(str(c['id']) for c in l) or '0')" 2>/dev/null)
-BAD_OWNERS=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+BAD_OWNERS=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT count(*) FROM customers WHERE id IN (${OID_LIST:-0}) AND tenant_id <> ${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
 [ "${BAD_OWNERS:-1}" = "0" ] && check "Key隔离：返回客户全属归属租户" y y || check "Key隔离：混入${BAD_OWNERS}条他租户客户" y n
 
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/usage" -H "Authorization: Bearer ${SK}")
 check "越权perm(customer.read打usage)→403" 403 "$CODE"
 
-KEYID=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+KEYID=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT id FROM api_keys WHERE key_prefix='${SK:0:10}' LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 curl -s -o /dev/null -X POST "$B/api/v1/admin/apikeys/$KEYID/disable" \
   -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/openapi/v1/customers" -H "Authorization: Bearer ${SK}")
 check "停用Key即时生效→401" 401 "$CODE"
 
-APICALLS=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+APICALLS=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT count(*) FROM usage_records WHERE metric='api_calls'" 2>/dev/null | tr -d '[:space:]')
 [ "${APICALLS:-0}" -ge 1 ] && check "api_calls计量明细已落库" y y || check "api_calls计量明细已落库" y n
 

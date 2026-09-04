@@ -4,7 +4,7 @@
 # 覆盖：套餐查询→入驻→企业码登录→组织管理→超管封禁/恢复
 # ============================================================
 B=http://localhost:9090
-PSQL="psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc"
+PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 PASS=0; FAIL=0
 check(){ if [ "$2" = "$3" ]; then echo "  PASS  $1 ($3)"; PASS=$((PASS+1)); else echo "  FAIL  $1 期望=$2 实际=$3"; FAIL=$((FAIL+1)); fi }
 

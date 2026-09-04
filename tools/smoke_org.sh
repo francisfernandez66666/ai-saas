@@ -11,7 +11,7 @@ B="http://localhost:${PORT}"
 PASS=0; FAIL=0
 check() { if [ "$2" = "$3" ]; then echo "  PASS  $1 ($3)"; PASS=$((PASS+1)); else echo "  FAIL  $1 期望=$2 实际=$3"; FAIL=$((FAIL+1)); fi; }
 jsonget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval('d'+sys.argv[1]))" "$1" 2>/dev/null; }
-PSQL="psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc"
+PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 
 echo "==== 组织架构冒烟测试 @ $B ===="
 RUN_TAG="$(date +%H%M%S)$RANDOM"
@@ -64,7 +64,7 @@ TOTAL=$(curl -s "$B/api/v1/advisor/customers?page_size=100" -H "Authorization: B
 check "空子树管理员看不到任何客户(fail-closed)" 0 "${TOTAL:-ERR}"
 
 echo "---- 三、角色分配合法性 ----"
-RO_B=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+RO_B=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT id FROM departments WHERE name LIKE '烟测部B_%' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/org/users" \
   -H "Authorization: Bearer $DA_TOKEN" -H "Content-Type: application/json" \
@@ -82,7 +82,7 @@ curl -s -o /dev/null -X POST "$B/api/v1/org/users" \
   -d "{\"username\":\"$RO_USER\",\"password\":\"ro123456\",\"role\":\"readonly\",\"department_id\":$ROOT_ID}"
 RO_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
   -d "{\"username\":\"$RO_USER\",\"password\":\"ro123456\"}" | jsonget "['data']['token']")
-CID=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+CID=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT id FROM customers WHERE tenant_id=1 AND assigned_user_id>0 ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/advisor/customer/$CID/tags" \
   -H "Authorization: Bearer $RO_TOKEN" -H "Content-Type: application/json" \
@@ -94,7 +94,7 @@ check "readonly 挂根可只读查看" 200 "$CODE"
 
 echo "---- 五、清理烟测账号 ----"
 for U in "$DA_USER" "$RO_USER"; do
-  UID_=$(psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc \
+  UID_=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
     "SELECT id FROM tenant_users WHERE username='$U'" 2>/dev/null | tr -d '[:space:]')
   [ -n "$UID_" ] && curl -s -o /dev/null -X PUT "$B/api/v1/org/users/$UID_" \
     -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"status":0}'

@@ -4,8 +4,8 @@
 # 用法: ./tools/uat.sh 9090    （结束自动恢复全部开关）
 # ============================================================
 B="http://localhost:${1:-9090}"
-PSQL="psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc"
-Q(){ psql postgresql://ai_scrm:dev123@localhost/ai_scrm -tAc "$1"; }
+PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
+Q(){ psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc "$1"; }
 PASS=0; FAIL=0; FAILED_CASES=""
 
 check(){ if [ "$2" = "$3" ]; then PASS=$((PASS+1)); echo "  PASS  $1";
