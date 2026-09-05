@@ -38,6 +38,8 @@ describe('token 生命周期', () => {
 })
 
 describe('角色分流 redirectByRole', () => {
+  // mockLocation 把 window.location 整体替换为可写对象（jsdom 下 href 可赋值），
+  // 供 redirectByRole 断言跳转目标；每例重建防用例间串扰
   function mockLocation() {
     const href = { href: '' } as Location
     Object.defineProperty(window, 'location', { value: href, configurable: true })

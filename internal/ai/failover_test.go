@@ -148,6 +148,7 @@ func newTestRouter(names []string, call func(attempt int, provider ModelProvider
 	return r, &calls
 }
 
+// routerMessages 构造测试用消息样本（角色=user，固定中文问候，供路由器降级用例复用）
 func routerMessages() []ChatMessage {
 	return []ChatMessage{{Role: "user", Content: "你好"}}
 }
