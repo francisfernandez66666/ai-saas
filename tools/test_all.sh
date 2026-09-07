@@ -81,8 +81,12 @@ go build -o ai-scrm ./cmd/server && verdict "go build ./cmd/server" $?
 # ---------- 阶段三：E2E 层（四套断言脚本） ----------
 step "E2E 层：起服务（端口 ${PORT}）"
 ./stop.sh >/dev/null 2>&1 || true
+# 兜底清端口：stop.sh 依赖 .pid 文件，nohup 直启未写时会残留旧进程占端口
+pkill -f '^\./ai-scrm' >/dev/null 2>&1 || true
+sleep 1
 nohup ./ai-scrm > ai-scrm.log 2>&1 &
-for i in $(seq 1 40); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$PORT/health" && break; done
+echo $! > .pid
+for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$PORT/health" && break; done
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1 || true
 
