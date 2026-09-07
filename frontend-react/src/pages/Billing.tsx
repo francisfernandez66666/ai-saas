@@ -113,9 +113,9 @@ export default function Billing() {
   if (!getToken()) return null
 
   return (
-    <div style={{ background: '#f5f7fa', minHeight: '100vh', padding: 24, color: '#2d3748' }}>
-      {/* 顶栏：标题 + 支付方式说明 */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 }}>
+    <div className="px-4 py-4 lg:px-6" style={{ background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
+      {/* 顶栏：标题 + 支付方式说明；移动端允许换行避免挤出视口 */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, gap: 10, flexWrap: 'wrap' }}>
         <div><h2 style={{ marginBottom: 4 }}>订阅与收银台</h2><div style={{ color: '#718096', fontSize: 13 }}>AI 调用按"次"计费 · 增量包买断不过期</div></div>
         <div><span style={{ fontSize: 12, color: '#718096' }}>{payMode === 'static_qr' ? '收款方式：扫码转账+平台人工确认' : payMode === 'sdk' ? '收款方式：在线支付' : '测试环境：支持模拟支付'}</span>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
       </div>
@@ -149,7 +149,8 @@ export default function Billing() {
       {/* 订单列表 */}
       <h2 style={{ fontSize: 17 }}>我的订单</h2>
       <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>待支付订单可继续操作；已到账订单权益即时发放</p>
-      <table style={{ width: '100%', background: '#fff', borderRadius: 10, borderCollapse: 'collapse', overflow: 'hidden', boxShadow: '0 3px 14px rgba(0,0,0,.06)' }}>
+      <div className="overflow-x-auto">
+      <table style={{ width: '100%', background: '#fff', borderRadius: 10, borderCollapse: 'collapse', overflow: 'hidden', boxShadow: '0 3px 14px rgba(0,0,0,.06)' }} className="min-w-[620px]">
         <thead><tr style={{ background: '#fafafa', color: '#4a5568' }}><th style={th}>订单号</th><th style={th}>金额</th><th style={th}>渠道</th><th style={th}>状态</th><th style={th}>创建时间</th><th style={th}>操作</th></tr></thead>
         <tbody>
           {orders.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: '#718096' }}>暂无订单，订阅商业包后生成</td></tr>}
@@ -165,6 +166,7 @@ export default function Billing() {
           ))}
         </tbody>
       </table>
+      </div>
 
       {/* 支付弹窗：展示订单信息与支付操作 */}
       <Dialog header="订单支付" visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>

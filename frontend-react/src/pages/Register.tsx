@@ -217,9 +217,10 @@ const wrap: React.CSSProperties = {
 const card: React.CSSProperties = {
   background: '#fff',
   borderRadius: 12,
-  padding: 36,
+  padding: 'clamp(20px, 5vw, 36px)',
   boxShadow: '0 4px 24px rgba(0,0,0,.08)',
   width: 'min(420px, 92vw)',
+  maxWidth: '100vw',
 }
 // 副标题（试用说明）样式
 const sub: React.CSSProperties = { color: '#718096', fontSize: 13, marginBottom: 22 }

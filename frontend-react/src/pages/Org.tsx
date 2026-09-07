@@ -153,8 +153,8 @@ export default function Org() {
 
   return (
     <div style={{ background: '#f5f7fa', padding: 22, minHeight: '100vh', color: '#2d3748' }}>
-      {/* 左右分栏：部门树 + 成员列表 */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(280px,38%) 1fr', gap: 18, maxWidth: 1200, margin: '0 auto' }}>
+      {/* 左右分栏：部门树 + 成员列表；移动端(<768px)降为单栏上下堆叠 */}
+      <div className="grid grid-cols-1 gap-[18px] max-w-[1200px] mx-auto lg:grid-cols-[minmax(280px,38%)_1fr]">
         {/* 左侧：部门树面板 */}
         <div style={panel}>
           <div style={top}><h3>部门树</h3><div><Button size="small" theme="primary" onClick={() => openDept('add')}>＋新建根部门</Button>　<button onClick={() => location.href = '/'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--pri)' }}>首页</button></div></div>
@@ -163,7 +163,9 @@ export default function Org() {
         {/* 右侧：成员列表面板 */}
         <div style={panel}>
           <div style={top}><h3>成员 · <span>{curDeptName}</span></h3><Button size="small" theme="primary" onClick={openUser}>＋添加成员</Button></div>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          {/* 移动端表格横向滚动，避免 5 列挤压溢出视口 */}
+          <div className="overflow-x-auto">
+          <table style={{ width: '100%', borderCollapse: 'collapse' }} className="min-w-[560px]">
             <thead><tr style={{ borderBottom: '1px solid #edf2f7' }}><th style={th}>账号</th><th style={th}>姓名</th><th style={th}>角色</th><th style={th}>部门</th><th style={th}>状态</th></tr></thead>
             <tbody>
               {users.length === 0 && <tr><td colSpan={5} style={{ ...td, color: '#a0aec0' }}>暂无成员</td></tr>}
@@ -178,6 +180,7 @@ export default function Org() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       </div>
 

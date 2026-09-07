@@ -206,8 +206,8 @@ export default function SuperAdmin() {
   ]
 
   return (
-    <div style={{ background: '#f5f7fa', padding: 24, minHeight: '100vh', color: '#2d3748' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+    <div className="px-4 py-4 lg:px-6" style={{ background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0 }}>平台租户管理</h2>
         <div style={{ fontSize: 13 }}>当前超管：<b>{me}</b>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
       </div>

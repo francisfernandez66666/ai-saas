@@ -34,9 +34,9 @@ export default function Pricing() {
   }, [])
 
   return (
-    <div style={{ fontFamily: '-apple-system, PingFang SC, sans-serif', background: '#f5f7fa', minHeight: '100vh', padding: '40px 20px', color: '#2d3748' }}>
+    <div className="px-4 py-8 lg:px-5" style={{ fontFamily: '-apple-system, PingFang SC, sans-serif', background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
       {/* 租户套餐区域 */}
-      <h1 style={{ textAlign: 'center', marginBottom: 8 }}>选择适合您的套餐</h1>
+      <h1 className="text-xl sm:text-2xl" style={{ textAlign: 'center', marginBottom: 8 }}>选择适合您的套餐</h1>
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 36 }}>全部套餐支持免费试用 · 随时升降级</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
         {plans.map((p, i) => {

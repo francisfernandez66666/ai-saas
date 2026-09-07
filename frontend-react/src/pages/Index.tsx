@@ -36,18 +36,18 @@ export default function Index() {
         alignItems: 'center',
         justifyContent: 'center',
         background: 'linear-gradient(135deg, var(--pri) 0%, #764ba2 100%)',
-        padding: '40px 20px',
+        padding: '32px 16px',
       }}
     >
       <div style={{ textAlign: 'center', maxWidth: 900, margin: '0 auto' }}>
         {/* 品牌 Logo */}
         {logo}
-        {/* 品牌名称 */}
-        <h1 style={{ fontSize: 42, fontWeight: 800, marginBottom: 16, letterSpacing: 2, color: '#1a202c' }}>
+        {/* 品牌名称：clamp 随视口缩放，移动端不溢出 */}
+        <h1 style={{ fontSize: 'clamp(26px, 6vw, 42px)', fontWeight: 800, marginBottom: 16, letterSpacing: 2, color: '#1a202c', lineHeight: 1.2, wordBreak: 'break-word' }}>
           {brand.brandName}
         </h1>
         {/* 平台定位语 */}
-        <p style={{ fontSize: 18, color: '#4a5568', marginBottom: 32 }}>车企AI驱动的智能客户关系管理平台</p>
+        <p style={{ fontSize: 'clamp(14px, 3.5vw, 18px)', color: '#4a5568', marginBottom: 32 }}>车企AI驱动的智能客户关系管理平台</p>
 
         {/* 核心能力卡片网格 */}
         <div

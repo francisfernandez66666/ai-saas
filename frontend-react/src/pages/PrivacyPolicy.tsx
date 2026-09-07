@@ -3,14 +3,15 @@
  * 展示《个人信息保护法》等合规条款，无业务接口依赖
  * 纯静态内容，注册即视为同意
  */
-// 正文容器样式（最大宽度居中，行高宽松）
+// 正文容器样式（最大宽度居中，行高宽松；移动端 padding 收紧避免长文本贴边）
 const body: React.CSSProperties = {
   fontFamily: '-apple-system,"PingFang SC","Microsoft YaHei",sans-serif',
   maxWidth: 860,
   margin: '0 auto',
-  padding: '32px 20px',
+  padding: 'clamp(16px, 4vw, 32px) clamp(14px, 4vw, 20px)',
   color: '#1f2937',
   lineHeight: 1.8,
+  wordBreak: 'break-word',
 }
 // 一级标题样式（主色下边框）
 const h1: React.CSSProperties = { fontSize: 24, borderBottom: '2px solid var(--pri)', paddingBottom: 10 }

@@ -295,7 +295,7 @@ export default function Admin() {
         </div>
         <span style={{ fontSize: 13, color: '#6b7280' }}>已连接</span>
       </header>
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px' }}>
+      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 16px' }}>
         <Tabs value={tab} onChange={(v) => setTab(v as string)} size="medium">
           {CATEGORY_TABS.map((t) => (
             <TabPanel key={t.value} value={t.value} label={t.label}>
@@ -305,7 +305,7 @@ export default function Admin() {
         </Tabs>
       </div>
       {!noAction && (
-        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 24px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           <p style={{ fontSize: 13, color: '#6b7280' }}>修改参数后点击"保存配置"，即时生效，无需重启</p>
           <div style={{ display: 'flex', gap: 12 }}>
             <Button theme="warning" variant="outline" onClick={zeroDelayAll}>⚡ 延迟归零</Button>
@@ -806,7 +806,7 @@ function OpenApiTab() {
       </div>
       {showCreate && (
         <div className="bg-white rounded-lg shadow-sm p-4 mb-4">
-          <Input value={name} onChange={(v) => setName(v)} placeholder="Key 名称（如：BI系统对接）" style={{ width: 280, marginRight: 12 }} />
+          <Input value={name} onChange={(v) => setName(v)} placeholder="Key 名称（如：BI系统对接）" style={{ width: 'min(280px,100%)', marginRight: 12, marginBottom: 8 }} />
           {['customer.read', 'cdp.read', 'chat.read'].map((p) => (
             <label key={p} style={{ marginRight: 12, fontSize: 13 }}>
               <input type="checkbox" checked={perms.includes(p)} onChange={(e) => { const ck = (e.target as HTMLInputElement).checked; setPerms(ck ? [...perms, p] : perms.filter((x) => x !== p)) }} /> {PERM_LABELS[p]}
@@ -873,9 +873,9 @@ function ReferralTab() {
   )
 }
 
-// 登录卡片样式（未登录态使用）
-const card: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 24, width: 320, boxShadow: '0 4px 24px rgba(0,0,0,.08)' }
+// 登录卡片样式（未登录态使用；移动端限宽防溢出）
+const card: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 24, width: 'min(320px, 92vw)', boxShadow: '0 4px 24px rgba(0,0,0,.08)' }
 // 登录输入框样式
 const inp: React.CSSProperties = { width: '100%', padding: 10, border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14, marginBottom: 12 }
 // 后台顶部栏样式
-const header: React.CSSProperties = { background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '16px 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }
+const header: React.CSSProperties = { background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }
