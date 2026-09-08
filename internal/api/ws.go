@@ -13,8 +13,13 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
+	"strings"
+	"sync"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
@@ -75,6 +80,67 @@ func notifyWSTyping(tenantID, customerID, conversationID uint, isTyping bool) {
 	realtime.DefaultHub.PublishTyping(tenantID, customerID, conversationID, isTyping)
 }
 
+// wsWSOrigins WS 跨域白名单（同源恒放行，其余需命中白名单）：
+// 与 CORS 中间件共用 CORS_ALLOWED_ORIGINS，另含本地开发来源兜底。
+// 供自定义握手校验带 Origin 头的连接（防跨站 WebSocket 劫持）。
+var wsOriginsOnce sync.Once
+var wsOrigins map[string]bool
+
+func initWSOrigins() {
+	wsOriginsOnce.Do(func() {
+		wsOrigins = map[string]bool{}
+		for _, o := range strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
+			o = strings.TrimSpace(o)
+			if o != "" {
+				wsOrigins[o] = true
+			}
+		}
+		// 本地开发来源默认放行（与 CORS 中间件对齐）
+		for _, o := range []string{"http://localhost:5173", "http://127.0.0.1:5173"} {
+			wsOrigins[o] = true
+		}
+	})
+}
+
+// wsServer 构造带自定义握手的 WebSocket Server。
+//
+// 修复背景（2026-09-08 UAT 审计）：x/net/websocket 默认 `websocket.Handler`
+// 内置 checkOrigin 对"无 Origin 头"的请求一律返回空体 403——非浏览器客户端
+// （服务端多端接入/未来 OpenAPI 通道）无法建连。
+//
+// 自定义握手语义：
+//
+//	无 Origin 头   → 放行（浏览器必带 Origin，此为非浏览器客户端，未来多端/OpenAPI 走这里）
+//	有 Origin 头   → 同源 或 命中白名单 放行；否则拒绝
+//	              （注意库默认实现对任意 Origin 都不校验 Host，此处顺带加固跨站劫持防线）
+func wsServer(handler func(*websocket.Conn)) *websocket.Server {
+	return &websocket.Server{
+		Handler:   handler,
+		Handshake: wsHandshakeCheck,
+	}
+}
+
+// wsHandshakeCheck WS 自定义握手鉴权（独立函数便于单测/复用）。
+// 返回 nil 表示放行；返回 error 表示拒绝（x/net/websocket 会回写 403 空体）。
+func wsHandshakeCheck(_ *websocket.Config, req *http.Request) error {
+	initWSOrigins()
+	origin := req.Header.Get("Origin")
+	if origin == "" {
+		return nil // 非浏览器客户端（无 Origin 头）：放行，未来多端/OpenAPI 走这里
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return fmt.Errorf("非法 Origin: %s", origin)
+	}
+	if u.Host == req.Host {
+		return nil // 同源：浏览器站内建连
+	}
+	if wsOrigins[origin] || wsOrigins[u.Host] {
+		return nil // 显式白名单来源（嵌入页/对接方）
+	}
+	return fmt.Errorf("跨域 WebSocket 拒绝: %s", origin)
+}
+
 // WSAdvisor 顾问端 WebSocket 连接
 // GET /api/v1/ws/advisor?token=<JWT>
 // 顾问登录后建立 WS 长连接，接收本租户所有客户的新消息通知
@@ -93,7 +159,7 @@ func WSAdvisor(c *gin.Context) {
 		return
 	}
 	// 升级 HTTP 连接为 WebSocket，注册客户端到 Hub
-	handler := websocket.Handler(func(ws *websocket.Conn) {
+	wsServer(func(ws *websocket.Conn) {
 		cl := realtime.NewClient(claims.TenantID, claims.UserID, 0)
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
@@ -114,8 +180,7 @@ func WSAdvisor(c *gin.Context) {
 				return
 			}
 		}
-	})
-	handler.ServeHTTP(c.Writer, c.Request)
+	}).ServeHTTP(c.Writer, c.Request)
 }
 
 // WSClient C端（客户）WebSocket 连接
@@ -136,7 +201,7 @@ func WSClient(c *gin.Context) {
 		return
 	}
 	// 升级 HTTP 连接为 WebSocket，注册到 Hub（仅监听该客户的消息）
-	handler := websocket.Handler(func(ws *websocket.Conn) {
+	wsServer(func(ws *websocket.Conn) {
 		cl := realtime.NewClient(cust.TenantID, 0, uint(cid))
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
@@ -155,6 +220,5 @@ func WSClient(c *gin.Context) {
 				return
 			}
 		}
-	})
-	handler.ServeHTTP(c.Writer, c.Request)
+	}).ServeHTTP(c.Writer, c.Request)
 }

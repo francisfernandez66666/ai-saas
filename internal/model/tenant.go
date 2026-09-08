@@ -150,6 +150,7 @@ type BillingOrder struct {
 	Status              string     `gorm:"size:20" json:"status"`               // pending/paid/refunding/refunded/closed/expired
 	PaidAt              *time.Time `json:"paid_at"`                             // 支付时间（unpaid 为零值）
 	RefundedAt          *time.Time `json:"refunded_at"`                         // 退款时间
+	RefundAmountCents   int        `json:"refund_amount_cents"`                 // 实际退款金额（分）：按剩余比例计算，≤AmountCents；0=无剩余可退
 	ExpireAt            *time.Time `json:"expire_at"`                           // 订单超时未支付自动关闭
 	PaymentData         string     `json:"payment_data"`                        // 支付平台回调原始数据
 	ManualConfirm       bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）

@@ -2,6 +2,7 @@
 package api
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -346,6 +347,11 @@ func RefundOrder(c *gin.Context) {
 	}
 	o, flowed, err := service.MarkOrderRefunded(order.ID)
 	if err != nil {
+		// 已全部消耗无剩余可退：409 明确拒绝而非 500（退款语义对齐 2026-09-08）
+		if errors.Is(err, service.ErrRefundNoRemaining) {
+			RespErr(c, http.StatusConflict, int(CodeBizErr), err.Error())
+			return
+		}
 		RespErr(c, http.StatusInternalServerError, 500, err.Error())
 		return
 	}
