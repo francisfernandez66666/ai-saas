@@ -4,7 +4,7 @@
  * 依赖接口：/api/v1/auth/register-config、/api/v1/tenant/check-code、/api/v1/auth/email-code、/api/v1/tenant/signup
  */
 import { useState, useEffect, useRef } from 'react'
-import { Button, Input, MessagePlugin } from 'tdesign-react'
+import { Button, Input, Select, MessagePlugin } from 'tdesign-react'
 import { apiJSON } from '../lib/api'
 import { useBrand } from '../lib/branding'
 
@@ -20,10 +20,13 @@ export default function Register() {
   const brand = useBrand()
   // 平台是否开启邮箱验证（来自 register-config 热开关）
   const [emailVerifyOn, setEmailVerifyOn] = useState(false)
+  // 可选行业列表（来自 register-config；P1-2 2026-09-08：注册选行业 → 落行业包）
+  const [industries, setIndustries] = useState<{ code: string; name: string }[]>([])
   // 开通表单数据
   const [form, setForm] = useState({
     company_name: '',   // 企业名称
     code: '',           // 访问标识（子域名，如 acme）
+    industry: '',       // 所属行业（行业包 code，空=通用行业 general）
     username: '',       // 管理员账号
     password: '',       // 管理员密码
     admin_email: '',    // 管理员邮箱
@@ -41,9 +44,10 @@ export default function Register() {
   const timer = useRef<number | null>(null)
 
   useEffect(() => {
-    // 加载注册配置：获取邮箱验证是否开启
+    // 加载注册配置：获取邮箱验证是否开启 + 可选行业列表（P1-2：注册选行业落包）
     apiJSON('/api/v1/auth/register-config').then(({ json }) => {
       if (json?.data?.email_verify_enabled) setEmailVerifyOn(true)
+      if (Array.isArray(json?.data?.industries)) setIndustries(json.data.industries)
     })
     // 邀请注册：URL 带 ?ref= 时展示邀请返利横幅（注册双方获赠 token）
     const ref = new URLSearchParams(location.search).get('ref')
@@ -156,6 +160,15 @@ export default function Register() {
           <Label>访问标识 *（将作为子域名 acme.example.com）</Label>
           <Input value={form.code} onChange={(v) => { setForm({ ...form, code: v }); checkCode(v) }} placeholder="小写字母开头，3-20位" />
           <div style={{ fontSize: 13, minHeight: 18, color: codeTip.ok ? '#38a169' : '#e53e3e' }}>{codeTip.text}</div>
+          {/* 所属行业：选填，选择后注册即落对应行业包（默认=通用行业 general） */}
+          <Label>所属行业（选填，决定预置话术/知识包）</Label>
+          <Select
+            value={form.industry || 'general'}
+            onChange={(v) => setForm({ ...form, industry: String(v || '') })}
+            options={industries.map((i) => ({ label: i.name, value: i.code }))}
+            clearable={false}
+            placeholder="请选择所属行业"
+          />
           <Label>管理员账号 *</Label>
           <Input value={form.username} onChange={set('username')} placeholder="登录用户名" />
           <Label>管理员密码 *（至少6位）</Label>

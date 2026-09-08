@@ -27,8 +27,21 @@ import (
 
 // RegisterConfig GET /api/v1/auth/register-config （免登录公开）
 func RegisterConfig(c *gin.Context) {
+	// 2026-09-08：追加下发可选行业列表（注册漏斗「所属行业」下拉数据源 → signup.industry 落包）。
+	// 语义：general 恒为默认兜底项（resolveIndustry 未命中回落），其后为已上架行业级包。
+	// 前端提交的 industry 值 = 行业包 code（BindTenantToIndustryPack/openActivePackByCode 均按 code 匹配）。
+	industries := []gin.H{{"code": "general", "name": "通用行业"}}
+	var packs []model.IndustryPack
+	db.DB.Model(&model.IndustryPack{}).
+		Where("pack_level = ? AND status = ?", "industry", "active").
+		Order("id ASC").
+		Find(&packs)
+	for _, p := range packs {
+		industries = append(industries, gin.H{"code": p.Code, "name": p.Name})
+	}
 	RespOK(c, "", gin.H{
 		"email_verify_enabled": service.EmailVerifyEnabled(),
+		"industries":           industries,
 	})
 }
 

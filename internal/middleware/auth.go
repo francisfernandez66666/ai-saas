@@ -115,6 +115,34 @@ func JWTAuth() gin.HandlerFunc {
 	}
 }
 
+// OptionalJWTAuth 可选鉴权中间件（2026-09-08 修复 /chat/history 越权/403 双端契约）
+//
+// 背景：/api/v1/chat/history 同时服务匿名 C 端（visitor_key 鉴权）与登录 B 端（JWT）。
+// 原实现该路由注册在 v1.Use(JWTAuth...) 之前，永远不跑 JWTAuth → CheckVisitorKey 的
+// 登录态分支（依赖 c.Get("user_id")）恒不命中 → 顾问/管理员拉聊天记录一律 403。
+//
+// 语义：携带合法 Bearer token 时注入 claims 上下文（user_id/role/tenant_id），
+// 匿名/无 token/坏 token 一律放行（交由调用方 visitor_key 校验兜底），
+// 不拒绝任何请求——它只是「有则注入」，不是鉴权闸。
+func OptionalJWTAuth() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		authHeader := c.GetHeader("Authorization")
+		if authHeader != "" {
+			parts := strings.SplitN(authHeader, " ", 2)
+			if len(parts) == 2 && parts[0] == "Bearer" {
+				if claims, err := ParseToken(parts[1]); err == nil {
+					c.Set("user_id", claims.UserID)
+					c.Set("username", claims.Username)
+					c.Set("role", claims.Role)
+					c.Set("tenant_id", claims.TenantID)
+				}
+				// 坏 token 不拒绝：匿名路径（visitor_key）仍由调用方校验，避免误伤 C 端
+			}
+		}
+		c.Next()
+	}
+}
+
 // AdminRequired 管理员权限中间件
 // 需要先经过JWTAuth中间件
 // 支持：super_admin(超级管理员) / tenant_admin(租户管理员) / admin(传统管理员，兼容旧数据)

@@ -485,7 +485,10 @@ func registerRoutes(r *gin.Engine) {
 	v1.POST("/chat/welcome", middleware.IPRateLimit("chat_welcome", 30, time.Minute), api.Welcome)
 
 	// 聊天历史查询（免登录，客户端和销售端共用）
-	v1.GET("/chat/history", api.GetChatHistory)
+	// 2026-09-08 修复：该路由注册在 v1.Use(JWTAuth...) 之前永远不挂 JWT，
+	// CheckVisitorKey 登录态分支（依赖 user_id）恒不命中 → 顾问/管理员拉历史 403。
+	// 挂 OptionalJWTAuth：有合法 Bearer 即注入身份（B端放行），匿名仍走 visitor_key 校验（C端不变）。
+	v1.GET("/chat/history", middleware.OptionalJWTAuth(), api.GetChatHistory)
 
 	// 延迟清零接口（免登录，顾问/管理员点击"立即回复"按钮时调用）
 	// 修复问题3：顾问发完人工消息后，AI的模拟延迟还没结束，客户等太久
@@ -516,6 +519,7 @@ func registerRoutes(r *gin.Engine) {
 		middleware.MustChangePasswordGuard(), middleware.ReadonlyWriteGuard())
 	{
 		advisorGroup.GET("/list", api.GetAdvisorList)                     // 顾问列表（切换身份用）
+		advisorGroup.GET("/tags", api.GetTagList)                         // 标签目录只读（2026-09-08 修复：顾问页标签弹窗调 /admin/tags 被 AdminRequired 403）
 		advisorGroup.GET("/stats", api.GetAdvisorStats)                   // 工作台数据统计
 		advisorGroup.GET("/customers", api.GetAdvisorCustomers)           // 客户列表
 		advisorGroup.GET("/customer/:id", api.GetAdvisorCustomerDetail)   // 客户详情

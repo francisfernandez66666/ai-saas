@@ -579,7 +579,11 @@ skipStoreVisitFast:
 		// 修复问题2：instant模式下简单消息跳过延迟直接回复
 		replyDelayModeSimple := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 		if replyDelayModeSimple != "instant" {
-			// 修复：简单消息不能秒回，加20-45秒随机延迟，模拟真人看到消息后思考再回复\n			simpleDelay := service.GetSimpleReplyDelay()\n			chatflow.CancellableSleep(customer.ID, simpleDelay)
+			// 修复（2026-09-08）：原修复把两行代码以字面量 \n 卷进 // 注释，
+			// if 块恒空 → 简单消息秒回，simple_msg_delay(默认8秒) 配置项失效。
+			// 恢复为可执行代码：非 instant 模式先 sleep 再回复，模拟真人思考节奏。
+			simpleDelay := service.GetSimpleReplyDelay()
+			chatflow.CancellableSleep(customer.ID, simpleDelay)
 		}
 
 		simpleReply := service.GetSimpleReply(req.Content)

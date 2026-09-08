@@ -91,7 +91,9 @@ export default function Advisor() {
     if (j.code === 0) setAiOn(j.data.is_ai_reply_enabled)
   }
   // 加载全部标签（用于客户标签编辑弹窗的选项）
-  async function loadAllTags() { const j = await AUTH('/api/v1/admin/tags'); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
+  // 2026-09-08 修复：原调 /api/v1/admin/tags 被 AdminRequired 拦（sales/user 403）→ 弹窗选项恒空。
+  // 后端已开放 advisor 组只读路由 /api/v1/advisor/tags（无 AdminRequired，PQ 租户+预置可见）。
+  async function loadAllTags() { const j = await AUTH('/api/v1/advisor/tags'); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
   // 保存客户标签：提交勾选标签到 /customer/:id/tags 后刷新详情
   async function saveTags() {
     if (!detailId) return
