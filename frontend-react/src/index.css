@@ -7,6 +7,16 @@
 :root {
   --pri: #4f46e5;
   --pri-ink: #ffffff;
+  /* 全站语义令牌（UI 统一，各页面取色统一走这里） */
+  --bg: #f5f7fa;
+  --card: #ffffff;
+  --border: #e5e7eb;
+  --text: #1f2937;
+  --text-sub: #6b7280;
+  --text-muted: #9ca3af;
+  --success: #16a34a;
+  --warning: #d97706;
+  --danger: #dc2626;
   /* TDesign React 主题变量（覆盖默认蓝为品牌紫） */
   --td-brand-color: #4f46e5;
   --td-brand-color-hover: #6366f1;

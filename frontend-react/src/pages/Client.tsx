@@ -8,6 +8,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
 import { Msg } from '../types'
+import { collectFreshMessages, filterReplyMessages, promoteTempMessage } from '../lib/chat'
 
 // API 基础路径
 const API = '/api/v1'
@@ -15,6 +16,8 @@ const API = '/api/v1'
 const LS_ID = 'scrm_customer_id'
 // C3：访客密钥，匿名访问 /chat/history、/chat/welcome 必须携带，防横向越权
 const LS_KEY = 'scrm_visitor_key'
+// 模块级访客创建去重：StrictMode 双挂载/连续进入页面时，防止并发重复建客
+let guestPromise: Promise<{ code: number; customer_id: number; visitor_key?: string }> | null = null
 
 /**
  * C 端客户聊天页组件
@@ -36,6 +39,8 @@ export default function Client() {
   const [input, setInput] = useState('')
   // 当前会话 ID（用于历史记录查询）
   const [convId, setConvId] = useState<number>(0)
+  // 会话 ID 引用：轮询/欢迎判断走 ref，避免闭包捕获首帧旧值导致逻辑错乱
+  const convIdRef = useRef<number>(0)
   // 是否显示"正在输入"状态
   const [typing, setTyping] = useState(false)
   // 在线状态（受工作时段影响）
@@ -79,7 +84,11 @@ export default function Client() {
     if (j.code === 0 && j.data) {
       setMsgs(j.data)
       localIds.current = new Set(j.data.filter((m: Msg) => m.id != null).map((m: Msg) => String(m.id)))
-      if (j.data.length > 0) setConvId(j.data[j.data.length - 1].conversation_id || 0)
+      if (j.data.length > 0) {
+        const cid = j.data[j.data.length - 1].conversation_id || 0
+        setConvId(cid)
+        convIdRef.current = cid
+      }
     }
   }
   /**
@@ -90,7 +99,9 @@ export default function Client() {
     const r = await fetch(`${API}/chat/welcome`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current, visitor_key: localStorage.getItem(LS_KEY) || '' }) })
     const j = await r.json()
     if (j.code === 0 && j.data) {
-      setConvId(j.data.conversation_id || 0)
+      const cid = j.data.conversation_id || 0
+      setConvId(cid)
+      convIdRef.current = cid
       const w = j.data.welcome_message
       if (w) { setMsgs((m) => [...m, w]); localIds.current.add(String(w.id)) }
     } else {
@@ -101,21 +112,25 @@ export default function Client() {
   /**
    * 轮询新消息：每 5s 调用一次
    * 按 convId 查询当前会话，无新消息时保持静默
+   * 修复：用函数式 setState 追加新消息，避免闭包捕获旧 msgs 把整条列表替换掉
    */
   async function poll() {
-    let url = convId ? `${API}/chat/history?conversation_id=${convId}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
+    const cid = convIdRef.current
+    let url = cid ? `${API}/chat/history?conversation_id=${cid}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
     try {
       const r = await fetch(url); const j = await r.json()
       if (j.code === 0 && j.data && j.data.length) {
-        let hasNew = false
-        const next = [...msgs]
-        j.data.forEach((m: Msg) => {
-          if (m.id != null && !localIds.current.has(String(m.id))) {
-            next.push(m); localIds.current.add(String(m.id)); hasNew = true
-            if (m.conversation_id && !convId) setConvId(m.conversation_id)
-          }
-        })
-        if (hasNew) { setMsgs(next); setTyping(false); scrollBottom() }
+        // 从历史全量里挑出"未见过"的新消息（按 ID 去重，只追加不替换）
+        const fresh = collectFreshMessages(j.data as Msg[], localIds.current)
+        if (fresh.length) {
+          j.data.forEach((m: Msg) => {
+            if (m.conversation_id && !convIdRef.current) convIdRef.current = m.conversation_id
+          })
+          setConvId(convIdRef.current)
+          setMsgs((m) => [...m, ...fresh])
+          setTyping(false)
+          scrollBottom()
+        }
       }
     } catch {}
   }
@@ -143,22 +158,24 @@ export default function Client() {
       const r = await fetch(`${API}/chat/test`, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tsHeaders()), body: JSON.stringify({ customer_id: custId.current, content }) })
       const j = await r.json()
       if (j.code === 0 && j.data) {
-        if (j.data.conversation_id) setConvId(j.data.conversation_id)
+        if (j.data.conversation_id) { setConvId(j.data.conversation_id); convIdRef.current = j.data.conversation_id }
         // 身份合并（OneID）：服务端可能将本次访客合并到已有客户，需同步更新本地 ID 与持久化
         const merged = j.data.merged_customer_id || j.data.mergedCustomerId
         if (merged && merged > 0 && merged !== custId.current) { custId.current = merged; localStorage.setItem(LS_ID, String(merged)) }
         // C3：访客密钥已在 CreateGuest 时持久化（chat/test 不返回，此处无需重复处理）
-        // 替换临时消息 ID 为真实数据库 ID
+        // 替换临时消息 ID 为真实数据库 ID；若轮询已把该条消息加进来了，则直接移除临时气泡防重复
         const dbId = j.data.customer_msg_id
-        if (dbId) setMsgs((m) => m.map((x) => x.id === temp.id ? { ...x, id: dbId } : x))
+        if (dbId) setMsgs((m) => promoteTempMessage(m, String(temp.id), dbId))
         // 解析 AI 回复（支持多种响应格式）
+        // 修复：过滤 system 型瞬时确认语 + 已由轮询先到达的同 ID 消息，避免重复气泡/引导词循环
         let replies: Msg[] = []
         if (j.data.assistant_messages?.length) replies = j.data.assistant_messages
         else if (j.data.message?.content) replies = [j.data.message]
         else if (j.data.ai_reply) replies = [{ id: Date.now(), sender_type: 'ai', content: j.data.ai_reply, created_at: new Date().toISOString() }]
-        if (replies.length) {
-          setMsgs((m) => [...m, ...replies])
-          replies.forEach((rp) => rp.id != null && localIds.current.add(String(rp.id)))
+        const freshReplies = filterReplyMessages(replies, localIds.current)
+        if (freshReplies.length) {
+          setMsgs((m) => [...m, ...freshReplies])
+          freshReplies.forEach((rp) => rp.id != null && localIds.current.add(String(rp.id)))
           setTyping(false); scrollBottom()
         }
         // 服务端下发的 AI 跟进追问：按延迟秒数提前 2s 显示"正在输入"，展示 15s 后收起
@@ -194,18 +211,37 @@ export default function Client() {
 
   useEffect(() => {
     // 初始化客户身份：优先从 URL 参数读取，其次从 localStorage 读取，最后申请新访客身份
-    const params = new URLSearchParams(window.location.search)
-    const override = params.get('customer_id')
-    const stored = localStorage.getItem(LS_ID)
-    if (override) { custId.current = parseInt(override); setWsCid(custId.current); setWsVk(localStorage.getItem(LS_KEY) || null) }
-    else if (stored) { custId.current = parseInt(stored); setWsCid(custId.current); setWsVk(localStorage.getItem(LS_KEY) || null) }
-    else { (async () => { try { const r = await fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }); const j = await r.json(); if (j.code === 0 && j.customer_id) { custId.current = j.customer_id; localStorage.setItem(LS_ID, String(custId.current)); if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key); setWsCid(custId.current); setWsVk(j.visitor_key || localStorage.getItem(LS_KEY) || null) } } catch {} })() }
-    // 初始化人机验证
+    // 修复：串行 await 访客创建 → 历史加载 → 欢迎判断，消除身份竞态与重复欢迎
     initTurnstile()
-    // 加载历史消息，无会话时获取欢迎语
-    loadHistory().then(() => { if (convId === 0 && custId.current) callWelcome() })
-    // 设置在线状态
     setOnline(isWork())
+    ;(async () => {
+      const params = new URLSearchParams(window.location.search)
+      const override = params.get('customer_id')
+      const stored = localStorage.getItem(LS_ID)
+      let cid = override ? parseInt(override) : (stored ? parseInt(stored) : 0)
+      if (cid > 0) {
+        custId.current = cid
+        setWsCid(cid); setWsVk(localStorage.getItem(LS_KEY) || null)
+      } else {
+        try {
+          // 访客创建去重：复用模块级进行中的请求，StrictMode 双挂载不重复建客
+          if (!guestPromise) {
+            guestPromise = fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }).then((r) => r.json()).finally(() => { guestPromise = null })
+          }
+          const j = await guestPromise
+          if (j.code === 0 && j.customer_id) {
+            cid = j.customer_id
+            custId.current = cid
+            localStorage.setItem(LS_ID, String(cid))
+            if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key)
+            setWsCid(cid); setWsVk(j.visitor_key || localStorage.getItem(LS_KEY) || null)
+          }
+        } catch {}
+      }
+      await loadHistory()
+      // 仅当该客户还没有任何会话/历史时才发欢迎语，避免刷新或切页重复出现"顾问正在接通中"
+      if (convIdRef.current === 0 && custId.current) await callWelcome()
+    })()
     // 每 5s 轮询新消息与在线状态
     const t = setInterval(() => { setOnline(isWork()); poll() }, 5000)
     return () => clearInterval(t)
@@ -216,9 +252,9 @@ export default function Client() {
   useClientWS(wsCid, wsVk, () => poll())
 
   return (
-    <div style={{ maxWidth: 480, margin: '0 auto', height: '100vh', display: 'flex', flexDirection: 'column', background: '#f7f7f7' }}>
-      {/* 顶栏：品牌 Logo/名称 + 在线状态 */}
-      <header style={{ background: brand.primaryColor || '#16a34a', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+    <div style={{ maxWidth: 480, margin: '0 auto', height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg, #f5f7fa)' }}>
+      {/* 顶栏：品牌 Logo/名称 + 在线状态（主色统一走品牌/--pri） */}
+      <header style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', padding: '12px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {brand.logoUrl && <img src={brand.logoUrl} alt="" style={{ height: 24, borderRadius: 4 }} />}
           <span style={{ fontWeight: 600 }}>{brand.brandName}</span>
@@ -226,14 +262,14 @@ export default function Client() {
         <span style={{ fontSize: 12 }}>{online ? '🟢 在线' : '🌙 离线'}</span>
       </header>
 
-      {/* 消息列表区域：根据 sender_type 区分客户消息（右侧绿色）与 AI/系统消息（左侧白色） */}
+      {/* 消息列表区域：根据 sender_type 区分客户消息（右侧主色）与 AI/系统消息（左侧白色） */}
       <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {msgs.map((m, i) => {
-          if (m.sender_type === 'system') return <div key={i} style={{ textAlign: 'center', fontSize: 12, color: '#9ca3af' }}>{m.content}</div>
+          if (m.sender_type === 'system') return <div key={i} style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted, #9ca3af)' }}>{m.content}</div>
           const mine = m.sender_type === 'customer'
           return (
             <div key={i} style={{ display: 'flex', justifyContent: mine ? 'flex-end' : 'flex-start' }}>
-              <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: 12, fontSize: 14, lineHeight: 1.5, color: mine ? '#fff' : '#1f2937', background: mine ? '#16a34a' : '#fff', border: mine ? 'none' : '1px solid #f0f0f0' }}>
+              <div style={{ maxWidth: '75%', padding: '8px 12px', borderRadius: 12, fontSize: 14, lineHeight: 1.5, color: mine ? '#fff' : 'var(--text, #1f2937)', background: mine ? (brand.primaryColor || 'var(--pri, #4f46e5)') : '#fff', border: mine ? 'none' : '1px solid var(--border, #e5e7eb)' }}>
                 {m.content}
                 {m.created_at && <div style={{ fontSize: 10, opacity: 0.7, textAlign: 'right', marginTop: 2 }}>{new Date(m.created_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</div>}
               </div>
@@ -241,16 +277,16 @@ export default function Client() {
           )
         })}
         {/* "正在输入"状态提示 */}
-        {typing && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><div style={{ background: '#fff', border: '1px solid #f0f0f0', borderRadius: 12, padding: '10px 14px', fontSize: 14, color: '#9ca3af' }}>正在输入…</div></div>}
+        {typing && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><div style={{ background: '#fff', border: '1px solid var(--border, #e5e7eb)', borderRadius: 12, padding: '10px 14px', fontSize: 14, color: 'var(--text-muted, #9ca3af)' }}>正在输入…</div></div>}
       </div>
 
       {/* 人机验证区域（Turnstile）：站点开启时展示 */}
       {tsEnabled && !tsOk && <div id="ts-box" style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }} />}
 
       {/* 输入区域：文本输入框 + 发送按钮 */}
-      <div style={{ background: '#fff', borderTop: '1px solid #e5e7eb', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" style={{ flex: 1, padding: '10px 12px', border: '1px solid #e5e7eb', borderRadius: 20, outline: 'none', fontSize: 14 }} />
-        <button onClick={send} disabled={(tsEnabled && !tsOk)} style={{ background: brand.primaryColor || '#16a34a', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
+      <div style={{ background: '#fff', borderTop: '1px solid var(--border, #e5e7eb)', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
+        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
+        <button onClick={send} disabled={(tsEnabled && !tsOk)} style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
       </div>
     </div>
   )

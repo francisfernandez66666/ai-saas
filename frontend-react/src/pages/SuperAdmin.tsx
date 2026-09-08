@@ -1,9 +1,13 @@
 // 平台超管后台页（SuperAdmin）：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 import { useState, useEffect } from 'react'
-import { Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
+import { Layout, Menu, Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { AUTH, apiJSON } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
+
+// 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
+const { Header, Aside, Content } = Layout
+const { MenuItem, MenuGroup } = Menu
 
 // FB_TYPES 反馈类型码 → 中文名（反馈列表列渲染）
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
@@ -58,6 +62,8 @@ export default function SuperAdmin() {
   const [bd, setBd] = useState({ custom_domain: '', brand_name: '', brand_link: '', logo_url: '', favicon_url: '', primary_color: '', secondary_color: '' })
   // 白标保存结果提示
   const [bdMsg, setBdMsg] = useState('')
+  // 当前菜单页（左侧正式菜单切换，不再纵向堆叠全部功能）
+  const [view, setView] = useState('tenants')
 
   // 拉取租户列表
   async function load() {
@@ -206,83 +212,124 @@ export default function SuperAdmin() {
   ]
 
   return (
-    <div className="px-4 py-4 lg:px-6" style={{ background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0 }}>平台租户管理</h2>
-        <div style={{ fontSize: 13 }}>当前超管：<b>{me}</b>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
-      </div>
-      <Input value={kw} onChange={(v) => setKw(v)} placeholder="按名称/标识搜索" style={{ maxWidth: 280, marginBottom: 14 }} />
-      <div className="bg-white rounded-lg shadow-sm overflow-hidden mb-6"><Table rowKey="id" data={filtered} columns={tenantCols} size="small" /></div>
-
-      <Section title="AI 商业包管理" desc="公开定价页与租户订阅入口实时读取；已有订单引用的包删除时自动转下架">
-        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <input id="pCode" placeholder="标识(如 pro_8000)" style={{ width: 130, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-          <input id="pName" placeholder="名称" style={{ width: 110, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-          <select id="pType" defaultValue="paid" style={{ width: 120, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }}>
-            <option value="paid">包月</option><option value="increment">增量买断</option><option value="free">试用</option>
-          </select>
-          <input id="pCalls" placeholder="AI次数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-          <input id="pPrice" placeholder="售价分" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-          <input id="pDays" placeholder="有效天数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-          <Button theme="primary" onClick={createPkg}>新增</Button>
+    <Layout style={{ minHeight: '100vh', background: '#f5f7fa' }}>
+      <Header style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>平台超管中心</span>
+          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>super_admin</span>
         </div>
-        <Table rowKey="id" data={pkgs} columns={pkgCols} size="small" />
-      </Section>
-
-      <Section title={<>模型成本核算 <span style={{ fontSize: 13, color: '#718096' }}>{cost ? `近${cost.days}天 · 共${cost.total_calls}次 / ${cost.total_tokens} tokens / ¥${cost.total_cost_yuan}` : ''}</span></>}>
-        <Table rowKey="model" data={cost?.models || []} columns={[
-          { colKey: 'provider', title: '供应商', width: 120 }, { colKey: 'model', title: '模型', width: 160 }, { colKey: 'calls', title: '调用次数', width: 100 },
-          { colKey: 'tokens', title: 'Tokens', width: 120 }, { colKey: 'cost_yuan', title: '成本(¥)', width: 110, cell: (p: CellProps) => '¥' + p.row.cost_yuan.toFixed(4) },
-          { colKey: 'cost_share_pct', title: '占比', width: 140, cell: (p: CellProps) => <div style={{ background: '#edf2f7', borderRadius: 4, overflow: 'hidden', width: 90, height: 8 }}><div style={{ background: 'var(--pri)', height: '100%', width: Math.min(100, p.row.cost_share_pct) + '%' }} /></div> },
-        ]} size="small" empty="暂无用量数据（真实AI对话后生成）" />
-      </Section>
-
-      <Section title="用户反馈" desc="顾问端AI回复气泡「反馈」提交，新反馈推群机器人">
-        <div style={{ marginBottom: 12 }}><Select value={fbStatus} onChange={(v) => setFbStatus(v as string)} options={[{ label: '待处理', value: 'open' }, { label: '已处理', value: 'resolved' }, { label: '全部', value: '' }]} style={{ width: 160 }} /></div>
-        <Table rowKey="id" data={fbs} columns={fbCols} size="small" empty="暂无反馈" />
-      </Section>
-
-      <Section title={<>待确认收款 <span style={{ fontSize: 13, color: '#975a16' }}>{pendings.length ? `(${pendings.length}笔待核实)` : ''}</span></>} desc="租户已扫码付款并点击「我已付费」，请核对账户到账后确认发放权益（重复确认自动幂等跳过）">
-        <Table rowKey="id" data={pendings} columns={pendingCols} size="small" empty="暂无待确认收款" />
-      </Section>
-
-      <Section title="审计日志">
-        <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-          <select id="aAction" defaultValue="" style={sel}><option value="">全部动作</option><option value="order_manual_confirm_critical">我已付费(critical)</option><option value="order_paid_confirm">订单确认发放</option><option value="order_paid_mock">模拟支付</option><option value="super_admin_access">超管访问</option><option value="super_tenant_status">租户封禁/恢复</option><option value="tenant_signup">租户注册</option><option value="apikey_create">API Key签发</option></select>
-          <input id="aTenant" type="number" placeholder="按租户ID过滤" style={{ ...sel, width: 130 }} />
-          <input id="aFrom" type="date" style={sel} /> <span style={{ color: '#718096' }}>至</span> <input id="aTo" type="date" style={sel} />
-          <Button theme="primary" onClick={loadAudit}>查询</Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 13, color: '#6b7280' }}>{me}</span>
+          <a href="/admin" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>租户后台</a>
+          <Button size="small" variant="outline" onClick={() => { localStorage.clear(); location.href = '/login' }}>退出</Button>
         </div>
-        <Table rowKey="id" data={audits} columns={auditCols} size="small" empty="暂无记录" />
-      </Section>
-
-      <Section title="协议签署" desc="用户注册即视为同意《用户协议》《隐私政策》">
-        <div style={{ marginBottom: 12 }}><Select value={agType} onChange={(v) => setAgType(v as string)} options={[{ label: '全部协议', value: '' }, { label: '用户协议', value: 'user' }, { label: '隐私政策', value: 'privacy' }]} style={{ width: 160 }} /></div>
-        <Table rowKey="id" data={ags} columns={agCols} size="small" empty="暂无签署记录" />
-      </Section>
-
-      <Section title="品牌定制（白标）" desc="为任意租户设置自定义访问域名、显示品牌名、Logo、主题色与外链。保存后按自定义域名访问即生效。">
-        <div style={{ display: 'flex', gap: 10, marginBottom: 12, alignItems: 'center' }}>
-          <Select value={bdTenant} onChange={(v) => setBdTenant(v as number)} options={tenants.map((t) => ({ label: `#${t.id} ${t.name}（${t.code}）`, value: t.id }))} placeholder="选择租户" style={{ width: 280 }} />
-          <Button theme="primary" onClick={loadBdTenant}>读取</Button>
-        </div>
-        <div style={{ maxWidth: 640 }} className="grid grid-cols-1 gap-3">
-          <Field label="自定义访问域名" v={bd.custom_domain} set={(x) => setBd({ ...bd, custom_domain: x })} ph="如 crm.your-company.com（留空用平台子域名）" />
-          <Field label="显示品牌名" v={bd.brand_name} set={(x) => setBd({ ...bd, brand_name: x })} ph="如 极石汽车" />
-          <Field label="品牌外链" v={bd.brand_link} set={(x) => setBd({ ...bd, brand_link: x })} ph="https://www.your-company.com" />
-          <Field label="Logo 图片地址" v={bd.logo_url} set={(x) => setBd({ ...bd, logo_url: x })} ph="https://.../logo.png" />
-          <Field label="Favicon" v={bd.favicon_url} set={(x) => setBd({ ...bd, favicon_url: x })} ph="https://.../favicon.ico" />
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <Field label="主题主色" v={bd.primary_color} set={(x) => setBd({ ...bd, primary_color: x })} ph="#4f46e5" />
-            <Field label="主题辅色" v={bd.secondary_color} set={(x) => setBd({ ...bd, secondary_color: x })} ph="#6366f1" />
+      </Header>
+      <Layout>
+        <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
+          <Menu value={view} onChange={(v) => setView(v as string)} style={{ borderRight: 'none' }}>
+            <MenuGroup title="平台管理">
+              <MenuItem value="tenants">租户管理</MenuItem>
+              <MenuItem value="packages">AI 商业包</MenuItem>
+              <MenuItem value="cost">模型成本核算</MenuItem>
+              <MenuItem value="feedbacks">用户反馈</MenuItem>
+              <MenuItem value="pending">待确认收款</MenuItem>
+              <MenuItem value="audit">审计日志</MenuItem>
+              <MenuItem value="agreements">协议签署</MenuItem>
+              <MenuItem value="branding">品牌定制（白标）</MenuItem>
+            </MenuGroup>
+          </Menu>
+        </Aside>
+        <Content style={{ padding: '20px 24px', minWidth: 0 }}>
+          <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+            {view === 'tenants' && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>
+                  <h2 style={{ margin: 0, fontSize: 18 }}>租户管理</h2>
+                  <Input value={kw} onChange={(v) => setKw(v)} placeholder="按名称/标识搜索" style={{ maxWidth: 280 }} />
+                </div>
+                <div className="bg-white rounded-lg shadow-sm overflow-hidden"><Table rowKey="id" data={filtered} columns={tenantCols} size="small" /></div>
+              </>
+            )}
+            {view === 'packages' && (
+              <Section title="AI 商业包管理" desc="公开定价页与租户订阅入口实时读取；已有订单引用的包删除时自动转下架">
+                <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <input id="pCode" placeholder="标识(如 pro_8000)" style={{ width: 130, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                  <input id="pName" placeholder="名称" style={{ width: 110, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                  <select id="pType" defaultValue="paid" style={{ width: 120, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }}>
+                    <option value="paid">包月</option><option value="increment">增量买断</option><option value="free">试用</option>
+                  </select>
+                  <input id="pCalls" placeholder="AI次数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                  <input id="pPrice" placeholder="售价分" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                  <input id="pDays" placeholder="有效天数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+                  <Button theme="primary" onClick={createPkg}>新增</Button>
+                </div>
+                <Table rowKey="id" data={pkgs} columns={pkgCols} size="small" />
+              </Section>
+            )}
+            {view === 'cost' && (
+              <Section title={<>模型成本核算 <span style={{ fontSize: 13, color: '#718096' }}>{cost ? `近${cost.days}天 · 共${cost.total_calls}次 / ${cost.total_tokens} tokens / ¥${cost.total_cost_yuan}` : ''}</span></>}>
+                <Table rowKey="model" data={cost?.models || []} columns={[
+                  { colKey: 'provider', title: '供应商', width: 120 }, { colKey: 'model', title: '模型', width: 160 }, { colKey: 'calls', title: '调用次数', width: 100 },
+                  { colKey: 'tokens', title: 'Tokens', width: 120 }, { colKey: 'cost_yuan', title: '成本(¥)', width: 110, cell: (p: CellProps) => '¥' + p.row.cost_yuan.toFixed(4) },
+                  { colKey: 'cost_share_pct', title: '占比', width: 140, cell: (p: CellProps) => <div style={{ background: '#edf2f7', borderRadius: 4, overflow: 'hidden', width: 90, height: 8 }}><div style={{ background: '#4f46e5', height: '100%', width: Math.min(100, p.row.cost_share_pct) + '%' }} /></div> },
+                ]} size="small" empty="暂无用量数据（真实AI对话后生成）" />
+              </Section>
+            )}
+            {view === 'feedbacks' && (
+              <Section title="用户反馈" desc="顾问端AI回复气泡「反馈」提交，新反馈推群机器人">
+                <div style={{ marginBottom: 12 }}><Select value={fbStatus} onChange={(v) => setFbStatus(v as string)} options={[{ label: '待处理', value: 'open' }, { label: '已处理', value: 'resolved' }, { label: '全部', value: '' }]} style={{ width: 160 }} /></div>
+                <Table rowKey="id" data={fbs} columns={fbCols} size="small" empty="暂无反馈" />
+              </Section>
+            )}
+            {view === 'pending' && (
+              <Section title={<>待确认收款 <span style={{ fontSize: 13, color: '#975a16' }}>{pendings.length ? `(${pendings.length}笔待核实)` : ''}</span></>} desc="租户已扫码付款并点击「我已付费」，请核对账户到账后确认发放权益（重复确认自动幂等跳过）">
+                <Table rowKey="id" data={pendings} columns={pendingCols} size="small" empty="暂无待确认收款" />
+              </Section>
+            )}
+            {view === 'audit' && (
+              <Section title="审计日志">
+                <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <select id="aAction" defaultValue="" style={sel}><option value="">全部动作</option><option value="order_manual_confirm_critical">我已付费(critical)</option><option value="order_paid_confirm">订单确认发放</option><option value="order_paid_mock">模拟支付</option><option value="super_admin_access">超管访问</option><option value="super_tenant_status">租户封禁/恢复</option><option value="tenant_signup">租户注册</option><option value="apikey_create">API Key签发</option></select>
+                  <input id="aTenant" type="number" placeholder="按租户ID过滤" style={{ ...sel, width: 130 }} />
+                  <input id="aFrom" type="date" style={sel} /> <span style={{ color: '#718096' }}>至</span> <input id="aTo" type="date" style={sel} />
+                  <Button theme="primary" onClick={loadAudit}>查询</Button>
+                </div>
+                <Table rowKey="id" data={audits} columns={auditCols} size="small" empty="暂无记录" />
+              </Section>
+            )}
+            {view === 'agreements' && (
+              <Section title="协议签署" desc="用户注册即视为同意《用户协议》《隐私政策》">
+                <div style={{ marginBottom: 12 }}><Select value={agType} onChange={(v) => setAgType(v as string)} options={[{ label: '全部协议', value: '' }, { label: '用户协议', value: 'user' }, { label: '隐私政策', value: 'privacy' }]} style={{ width: 160 }} /></div>
+                <Table rowKey="id" data={ags} columns={agCols} size="small" empty="暂无签署记录" />
+              </Section>
+            )}
+            {view === 'branding' && (
+              <Section title="品牌定制（白标）" desc="为任意租户设置自定义访问域名、显示品牌名、Logo、主题色与外链。保存后按自定义域名访问即生效。">
+                <div style={{ display: 'flex', gap: 10, marginBottom: 12, alignItems: 'center' }}>
+                  <Select value={bdTenant} onChange={(v) => setBdTenant(v as number)} options={tenants.map((t) => ({ label: `#${t.id} ${t.name}（${t.code}）`, value: t.id }))} placeholder="选择租户" style={{ width: 280 }} />
+                  <Button theme="primary" onClick={loadBdTenant}>读取</Button>
+                </div>
+                <div style={{ maxWidth: 640 }} className="grid grid-cols-1 gap-3">
+                  <Field label="自定义访问域名" v={bd.custom_domain} set={(x) => setBd({ ...bd, custom_domain: x })} ph="如 crm.your-company.com（留空用平台子域名）" />
+                  <Field label="显示品牌名" v={bd.brand_name} set={(x) => setBd({ ...bd, brand_name: x })} ph="如 极石汽车" />
+                  <Field label="品牌外链" v={bd.brand_link} set={(x) => setBd({ ...bd, brand_link: x })} ph="https://www.your-company.com" />
+                  <Field label="Logo 图片地址" v={bd.logo_url} set={(x) => setBd({ ...bd, logo_url: x })} ph="https://.../logo.png" />
+                  <Field label="Favicon" v={bd.favicon_url} set={(x) => setBd({ ...bd, favicon_url: x })} ph="https://.../favicon.ico" />
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field label="主题主色" v={bd.primary_color} set={(x) => setBd({ ...bd, primary_color: x })} ph="#4f46e5" />
+                    <Field label="主题辅色" v={bd.secondary_color} set={(x) => setBd({ ...bd, secondary_color: x })} ph="#6366f1" />
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <Button theme="primary" onClick={saveBd}>保存品牌配置</Button>
+                    <span style={{ fontSize: 13, color: bdMsg.includes('✅') ? '#16a34a' : '#dc2626' }}>{bdMsg}</span>
+                  </div>
+                </div>
+              </Section>
+            )}
           </div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Button theme="primary" onClick={saveBd}>保存品牌配置</Button>
-            <span style={{ fontSize: 13, color: bdMsg.includes('✅') ? '#16a34a' : '#dc2626' }}>{bdMsg}</span>
-          </div>
-        </div>
-      </Section>
-    </div>
+        </Content>
+      </Layout>
+    </Layout>
   )
 }
 

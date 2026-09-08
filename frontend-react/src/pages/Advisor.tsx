@@ -168,9 +168,9 @@ export default function Advisor() {
       {view === 'me' && (
         <div style={{ padding: 16 }}>
           {quota && <div style={{ background: '#fff', borderRadius: 12, padding: 16, marginBottom: 16, display: 'flex', gap: 20 }}>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: '#4c51bf' }}>{quota.used_ai_calls}/{quota.max_ai_calls || '∞'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>本月AI调用</span></div>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: '#4c51bf' }}>{quota.ai_call_balance}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>增量余额</span></div>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: '#4c51bf' }}>{quota.expired_at ? new Date(quota.expired_at).toLocaleDateString() : '-'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>到期日</span></div>
+            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.used_ai_calls}/{quota.max_ai_calls || '∞'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>本月AI调用</span></div>
+            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.ai_call_balance}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>增量余额</span></div>
+            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.expired_at ? new Date(quota.expired_at).toLocaleDateString() : '-'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>到期日</span></div>
           </div>}
           <Button theme="primary" block onClick={() => setFbOpen(true)}>提交产品反馈</Button>
         </div>

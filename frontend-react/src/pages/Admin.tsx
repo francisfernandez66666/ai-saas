@@ -2,13 +2,15 @@
 // 顶部文件级说明；各子 Tab 函数见下方对应位置（CustomersTab / FlowEngineTab / TagSystemTab / BrandingTab / AuditTab / OpenApiTab / UsageTab / ReferralTab）
 // 依赖接口见各 Tab 注释与 Admin 组件顶部注释（/admin/config、/admin/tags、/admin/audit-logs、/admin/apikeys、/admin/usage/summary、/admin/referral/*、/admin/tenant/branding）
 import { useState, useEffect, useRef } from 'react'
-import { Tabs, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
+import { Layout, Menu, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken, setToken, apiJSON } from '../lib/api'
+import { resolveJsonMode } from '../lib/jsonMode'
 import type { TableRowData, CellProps } from '../types'
 
-// Tabs 面板的子组件别名，用于下方按分类渲染配置面板
-const TabPanel = Tabs.TabPanel
+// 后台管理布局组件（左侧正式菜单 + 右侧内容区）
+const { Header, Aside, Content } = Layout
+const { MenuItem, MenuGroup } = Menu
 
 // 系统配置项（分类/类型/值，管理端读写）
 type Cfg = {
@@ -20,22 +22,38 @@ type Cfg = {
   default_value?: string
 }
 
-// CATEGORY_TABS 后台管理分类页签（value=配置分类 key，label=页签文案）
-const CATEGORY_TABS: { value: string; label: string }[] = [
-  { value: 'reply_speed', label: '⚡ 回复速度' },
-  { value: 'strategy', label: '🎯 策略引擎' },
-  { value: 'mental_stage', label: '🧠 心智阶段' },
-  { value: 'ai_chain', label: '🤖 AI链路' },
-  { value: 'customers', label: '👥 客户线索' },
-  { value: 'flow_engine', label: '📋 流程引擎' },
-  { value: 'tags', label: '🏷️ 标签体系' },
-  { value: 'billing', label: '💰 商业化' },
-  { value: 'notify', label: '📣 触达通知' },
-  { value: 'audit', label: '📜 审计日志' },
-  { value: 'openapi', label: '🔑 开放平台' },
-  { value: 'usage', label: '📊 用量' },
-  { value: 'referral', label: '🎁 邀请推广' },
-  { value: 'branding', label: '🎨 品牌定制' },
+// MENU 左侧正式菜单分组（店端运营 / 系统管理 两段，link 项跳转独立页面）
+// 设计目标：区分"店端工作台"与"系统管理后台"，用正式菜单切换，不再横向平铺
+type MenuItemDef = { k: string; label: string; link?: string }
+const MENU_GROUPS: { title: string; items: MenuItemDef[] }[] = [
+  {
+    title: '店端运营',
+    items: [
+      { k: 'dashboard', label: '工作台' },
+      { k: 'customers', label: '客户线索' },
+      { k: 'advisor', label: '顾问工作台', link: '/advisor' },
+      { k: 'billing', label: '收银台', link: '/billing' },
+    ],
+  },
+  {
+    title: '系统管理',
+    items: [
+      { k: 'reply_speed', label: '回复速度' },
+      { k: 'strategy', label: '策略引擎' },
+      { k: 'mental_stage', label: '心智阶段' },
+      { k: 'ai_chain', label: 'AI链路' },
+      { k: 'commercial', label: '商业化' },
+      { k: 'notify', label: '触达通知' },
+      { k: 'tags', label: '标签体系' },
+      { k: 'flow_engine', label: '流程引擎' },
+      { k: 'org', label: '组织架构', link: '/org' },
+      { k: 'openapi', label: '开放平台' },
+      { k: 'usage', label: '用量' },
+      { k: 'referral', label: '邀请推广' },
+      { k: 'branding', label: '品牌定制' },
+      { k: 'audit', label: '审计日志' },
+    ],
+  },
 ]
 
 // 走通用配置面板（ConfigPanels）渲染的分类；其余分类由专属 Tab 组件处理
@@ -88,12 +106,18 @@ function ConfigPanels({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
   return <div className="grid grid-cols-1 md:grid-cols-2 gap-4">{cards}</div>
 }
 
-// JSON 类型配置编辑器：区分数字数组/字符串数组/纯文本三种形态的可视化编辑
+// JSON 类型配置编辑器：按形态分发渲染（修复 2026-09-08：anchor_weights 等"对象数组"
+// 原会被当字符串渲染导致 React error #31 整页崩溃，现统一走形态判定 → 对象数组回退文本编辑）
 function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChange: (v: string) => void }) {
+  // 形态判定抽成纯函数（resolveJsonMode，lib/jsonMode.ts），便于单测覆盖
+  const mode = resolveJsonMode(value)
   let parsed: Array<number | string> | null = null
   try { parsed = JSON.parse(value) } catch { parsed = null }
-  if (Array.isArray(parsed)) {
-    if (parsed.length > 0 && typeof parsed[0] === 'number') {
+  if (mode === 'objectArray') {
+    // 对象数组（如策略锚权重 7 组 weights）：无通用可视化控件，退回文本编辑，保持可读写
+    return <Textarea value={value} onChange={(v) => onChange(v)} autosize={{ minRows: 4, maxRows: 12 }} />
+  }
+  if (mode === 'numberArray') {
       return (
         <div className="flex flex-wrap items-center gap-2">
           {parsed.map((n, i) => (
@@ -114,7 +138,8 @@ function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChang
           <Button size="small" variant="outline" theme="primary" onClick={() => onChange(JSON.stringify([...parsed, 0]))}>+ 添加</Button>
         </div>
       )
-    }
+  }
+  if (mode === 'stringArray') {
     return (
       <div className="flex flex-wrap items-center gap-2">
         {parsed.map((s: string, i: number) => (
@@ -187,7 +212,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
 // 依赖 /api/v1/admin/config（读写重置）、/api/v1/auth/login、/api/v1/admin/audit-logs、/api/v1/admin/apikeys、/api/v1/admin/usage/summary、/api/v1/admin/referral/*
 export default function Admin() {
   const brand = useBrand()
-  const [tab, setTab] = useState('reply_speed')
+  const [tab, setTab] = useState('dashboard')
   const [logged, setLogged] = useState(!!getToken())
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -283,45 +308,77 @@ export default function Admin() {
 
   // 按分类筛选配置项，供各 Tab 面板按分类分组渲染
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
-  const noAction = ['customers', 'flow_engine', 'tags', 'audit', 'openapi', 'usage', 'referral', 'branding'].includes(tab)
+  // 需要展示"保存配置"操作条的分类（仅配置类页签），其余页签为只读/业务面板
+  const noAction = ['dashboard', 'customers', 'advisor', 'org', 'flow_engine', 'tags', 'audit', 'openapi', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
+  const role = localStorage.getItem('role') || ''
+  const userName = localStorage.getItem('username') || ''
+
+  // 菜单点击：link 项跳转独立页面（店端/组织/收银台），其余切换面板
+  const onMenuClick = (item: MenuItemDef) => {
+    if (item.link) { location.href = item.link; return }
+    setTab(item.k)
+  }
 
   return (
-    <div style={{ minHeight: '100vh', background: '#f9fafb' }}>
-      <header style={header}>
+    <Layout style={{ minHeight: '100vh', background: '#f5f7fa' }}>
+      <Header style={header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {logo}
-          <h1 style={{ fontSize: 18, fontWeight: 700 }}>AI自动化SCRM - 后台管理</h1>
+          <h1 style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>管理中心</h1>
+          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{role === 'super_admin' ? '平台超管' : '租户后台'}</span>
         </div>
-        <span style={{ fontSize: 13, color: '#6b7280' }}>已连接</span>
-      </header>
-      <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 16px' }}>
-        <Tabs value={tab} onChange={(v) => setTab(v as string)} size="medium">
-          {CATEGORY_TABS.map((t) => (
-            <TabPanel key={t.value} value={t.value} label={t.label}>
-              <PanelContent tab={t.value} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
-            </TabPanel>
-          ))}
-        </Tabs>
-      </div>
-      {!noAction && (
-        <div style={{ maxWidth: 1100, margin: '0 auto', padding: '0 16px 24px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
-          <p style={{ fontSize: 13, color: '#6b7280' }}>修改参数后点击"保存配置"，即时生效，无需重启</p>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <Button theme="warning" variant="outline" onClick={zeroDelayAll}>⚡ 延迟归零</Button>
-            <Button theme="default" variant="outline" onClick={resetAll}>↩ 恢复默认</Button>
-            <Button theme="primary" onClick={saveAll}>💾 保存配置</Button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <a href="/client" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>客户对话页</a>
+          <a href="/pricing" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>定价</a>
+          <a href="/app" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>移动端</a>
+          <span style={{ fontSize: 13, color: '#6b7280' }}>{userName}</span>
+          <Button size="small" variant="outline" onClick={() => { localStorage.clear(); location.href = '/login' }}>退出</Button>
+        </div>
+      </Header>
+      <Layout>
+        <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
+          <Menu value={tab} onChange={(v) => setTab(v as string)} style={{ borderRight: 'none' }}>
+            {MENU_GROUPS.map((g) => (
+              <MenuGroup key={g.title} title={g.title}>
+                {g.items.map((it) => (
+                  <MenuItem key={it.k} value={it.k} onClick={() => onMenuClick(it)}>{it.label}</MenuItem>
+                ))}
+              </MenuGroup>
+            ))}
+            {role === 'super_admin' && (
+              <MenuGroup title="平台级">
+                <MenuItem value="super_link" onClick={() => { location.href = '/super' }}>平台超管后台</MenuItem>
+              </MenuGroup>
+            )}
+          </Menu>
+        </Aside>
+        <Content style={{ padding: '20px 24px', minWidth: 0 }}>
+          <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+            <PanelContent tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+            {!noAction && (
+              <div style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 16px' }}>
+                <p style={{ fontSize: 13, color: '#6b7280' }}>修改参数后点击"保存配置"，即时生效，无需重启</p>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <Button theme="warning" variant="outline" onClick={zeroDelayAll}>⚡ 延迟归零</Button>
+                  <Button theme="default" variant="outline" onClick={resetAll}>↩ 恢复默认</Button>
+                  <Button theme="primary" onClick={saveAll}>💾 保存配置</Button>
+                </div>
+              </div>
+            )}
           </div>
-        </div>
-      )}
-    </div>
+        </Content>
+      </Layout>
+    </Layout>
   )
 }
 
-// PanelContent 按页签分类分发渲染：配置类走 ConfigPanels，其余页签进入各自专属 Tab 组件
+// PanelContent 按菜单项分发渲染：配置类走 ConfigPanels，其余进入各自专属面板组件
 function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[] }) {
-  if (CONFIG_CATS.includes(tab)) return <ConfigPanels cfgs={configsFor(tab)} edits={edits} setEdits={setEdits} />
+  if (tab === 'dashboard') return <DashboardTab />
   if (tab === 'customers') return <CustomersTab />
+  if (CONFIG_CATS.includes(tab)) return <ConfigPanels cfgs={configsFor(tab)} edits={edits} setEdits={setEdits} />
+  if (tab === 'commercial') return <ConfigPanels cfgs={configsFor('billing')} edits={edits} setEdits={setEdits} />
   if (tab === 'flow_engine') return <FlowEngineTab configs={all} />
   if (tab === 'tags') return <TagSystemTab />
   if (tab === 'branding') return <BrandingTab />
@@ -330,6 +387,76 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   if (tab === 'usage') return <UsageTab />
   if (tab === 'referral') return <ReferralTab />
   return <Placeholder name={tab} />
+}
+
+// 工作台（Dashboard）：店端运营概览 + 常用功能快捷入口
+// 依赖 /api/v1/advisor/stats、/api/v1/advisor/customers
+function DashboardTab() {
+  const [stats, setStats] = useState<{ label: string; value: number; color?: string }[]>([])
+  const [recent, setRecent] = useState<TableRowData[]>([])
+  // 快捷入口卡片：店端/收银台/组织/客户对话
+  const entries = [
+    { title: '顾问工作台', desc: '客户会话、跟进、AI接管', icon: '🧑‍💼', href: '/advisor' },
+    { title: '收银台', desc: '三桶余额、套餐充值、发票', icon: '💰', href: '/billing' },
+    { title: '组织架构', desc: '部门树与成员管理', icon: '🏢', href: '/org' },
+    { title: '客户对话页', desc: 'C端访客聊天入口', icon: '💬', href: '/client' },
+    { title: '定价方案', desc: '套餐与 AI 商业包', icon: '🧾', href: '/pricing' },
+    { title: '移动端工作台', desc: '/app 一站式入口', icon: '📱', href: '/app' },
+  ]
+  useEffect(() => {
+    fetch('/api/v1/advisor/stats', { headers: { Authorization: 'Bearer ' + getToken() } }).then((r) => r.json()).then((j) => { if (j.code === 0) setStats(j.data || []) }).catch(() => {})
+    fetch('/api/v1/advisor/customers?status=&page=1&page_size=8&assigned=all', { headers: { Authorization: 'Bearer ' + getToken() } }).then((r) => r.json()).then((j) => { if (j.code === 0) setRecent((j.data?.list) || []) }).catch(() => {})
+  }, [])
+  const STAGE_CN: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
+  return (
+    <div className="space-y-6">
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h3 className="text-base font-bold text-gray-800 mb-1">今日概览</h3>
+        <p className="text-xs text-gray-400 mb-4">核心经营指标（全部客户，含未分配）</p>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {stats.length === 0 && <p className="text-sm text-gray-400 col-span-full py-6 text-center">加载中…</p>}
+          {stats.map((s, i) => (
+            <div key={i} className="bg-gray-50 rounded-lg p-4 text-center">
+              <b style={{ fontSize: 22, color: '#1f2937' }}>{s.value}</b>
+              <p className="text-xs text-gray-500 mt-1">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h3 className="text-base font-bold text-gray-800 mb-4">快捷入口</h3>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {entries.map((e) => (
+            <a key={e.title} href={e.href} className="flex items-center gap-3 bg-gray-50 hover:bg-gray-100 rounded-lg p-4 border border-gray-100 no-underline">
+              <span style={{ fontSize: 22 }}>{e.icon}</span>
+              <span>
+                <b className="block text-sm text-gray-800">{e.title}</b>
+                <span className="block text-xs text-gray-400 mt-0.5">{e.desc}</span>
+              </span>
+            </a>
+          ))}
+        </div>
+      </div>
+      <div className="bg-white rounded-xl border border-gray-200 p-5">
+        <h3 className="text-base font-bold text-gray-800 mb-4">最新客户线索</h3>
+        <div className="space-y-2">
+          {recent.length === 0 && <p className="text-sm text-gray-400 py-4 text-center">暂无客户</p>}
+          {recent.map((l) => (
+            <div key={l.id} className="flex items-center justify-between bg-gray-50 rounded-lg px-4 py-3">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 bg-white rounded-full border border-gray-200 flex items-center justify-center text-xs font-medium text-gray-500">{((l.name || '客')[0])}</div>
+                <div>
+                  <span className="text-sm font-medium text-gray-800">{l.name && !l.name.startsWith('访客_') ? l.name : '客户'}</span>
+                  <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500">{STAGE_CN[l.journey_stage] || l.journey_stage || '-'}</span>
+                </div>
+              </div>
+              <span className="text-xs text-gray-400">{l.last_message ? l.last_message.slice(0, 24) : '暂无消息'}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 // Placeholder 未迁移模块的占位面板（提示下一轮迭代补齐）

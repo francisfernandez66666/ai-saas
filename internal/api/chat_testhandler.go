@@ -139,6 +139,9 @@ func ChatTest(c *gin.Context) {
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&offTopicMsg)
+		// P1-1 实时推送：客户消息 + AI拦截回复（顾问端即时感知，客户端即时更新）
+		notifyWSWithContent(tenantID, customer.ID, conv.ID, "customer", customerMsg.ID, req.Content, customer.Name, customerMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+		notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", offTopicMsg.ID, reply, "AI顾问", offTopicMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 		// 修复问题7：硬边界拦截路径也调用AutoTagFromText，确保无关话题场景也打标签
 		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content)
 		if tagErr == nil && len(autoTags) > 0 {
@@ -337,6 +340,9 @@ func ChatTest(c *gin.Context) {
 				CreatedAt:      time.Now(),
 			}
 			db.RQ(c).Create(&leadMsg)
+			// P1-1 实时推送：客户消息 + 留资确认回复
+			notifyWSWithContent(tenantID, customer.ID, conv.ID, "customer", customerMsg.ID, req.Content, customer.Name, customerMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+			notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", leadMsg.ID, leadCapturedReply, "AI顾问", leadMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 			RespOK(c, "success", gin.H{
 				"conversation_id":    conv.ID,
@@ -374,6 +380,9 @@ func ChatTest(c *gin.Context) {
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&storeVisitMsg)
+		// P1-1 实时推送：客户消息 + 第一段快速回复
+		notifyWSWithContent(tenantID, customer.ID, conv.ID, "customer", customerMsg.ID, req.Content, customer.Name, customerMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+		notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", storeVisitMsg.ID, firstReply, "AI顾问", storeVisitMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 		// 第二段追问（异步，25-45秒后发出，收集预约信息）
 		// 修复Bug2（2026-08-22）：同主路径——脱离请求生命周期写库，显式租户盖章+错误检查
@@ -471,6 +480,13 @@ skipStoreVisitFastTest:
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&simpleMsg)
+		// P1-1 实时推送：客户消息 + 简单回复（conversation_id 已回填）
+		var simpleCustMsg model.Message
+		db.RQ(c).First(&simpleCustMsg, testCustomerMsgID)
+		if simpleCustMsg.ID > 0 {
+			notifyWSWithContent(tenantID, customer.ID, conv.ID, "customer", simpleCustMsg.ID, simpleCustMsg.Content, customer.Name, simpleCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+		}
+		notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", simpleMsg.ID, simpleReply, "AI顾问", simpleMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 		// 修复问题7：简单消息路径也调用AutoTagFromText，确保简单消息场景也打标签
 		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content)
@@ -590,6 +606,12 @@ skipStoreVisitFastTest:
 				conversation.LastMessageAt = &now
 				db.RQ(c).Save(&conversation)
 				db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
+				// P1-1 实时推送：人工接管态客户消息（顾问端即时感知，列表/详情即时更新）
+				var lockedCustMsg model.Message
+				db.RQ(c).First(&lockedCustMsg, testCustomerMsgID)
+				if lockedCustMsg.ID > 0 {
+					notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", lockedCustMsg.ID, lockedCustMsg.Content, customer.Name, lockedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+				}
 				c.JSON(http.StatusOK, schema.Response{
 					Code:    0,
 					Message: "success",
@@ -614,6 +636,12 @@ skipStoreVisitFastTest:
 				conversation.LastMessageAt = &now
 				db.RQ(c).Save(&conversation)
 				db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
+				// P1-1 实时推送：顾问刚回复过、跳过AI时的客户消息，顾问端即时感知
+				var skipCustMsg model.Message
+				db.RQ(c).First(&skipCustMsg, testCustomerMsgID)
+				if skipCustMsg.ID > 0 {
+					notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", skipCustMsg.ID, skipCustMsg.Content, customer.Name, skipCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+				}
 
 				c.JSON(http.StatusOK, schema.Response{
 					Code:    0,
@@ -760,6 +788,13 @@ skipStoreVisitFastTest:
 	}
 	db.RQ(c).Create(&aiMsg)
 	publishConversationMsg(tenantID, customer.ID, strategyOutput.RouteResult, state.Emotion)
+	// P1-1 实时推送：主流程客户消息（conversation_id 已回填）+ AI回复，顾问端/客户端即时更新
+	var mergedCustMsg model.Message
+	db.RQ(c).First(&mergedCustMsg, testCustomerMsgID)
+	if mergedCustMsg.ID > 0 {
+		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", mergedCustMsg.ID, mergedCustMsg.Content, customer.Name, mergedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+	}
+	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai", aiMsg.ID, aiReply, "AI顾问", aiMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 	// ---- 更新会话状态 ----
 	conversation.LastMessageAt = &aiMsg.CreatedAt
