@@ -1,12 +1,13 @@
 // Package api 2026-09-08 审计修复批次自动化测试
 //
 // 覆盖本次四个修复点：
-//   P0-1 /chat/history 鉴权（顾问端拉聊天历史 403）：OptionalJWTAuth 注入登录态放行，
-//        匿名 visitor_key 校验不变、错 visitor_key 仍 403
-//   P1-1 顾问标签弹窗恒空（/admin/tags 403）：advisor 只读路由 200、admin 路由对 sales 仍 403
-//   P1-2 注册选行业落包：register-config 下发 industries（general 兜底 + active 行业包）
-//   P0-2 简单消息延迟（chat_main.go:582）：延迟依赖的 GetSimpleReplyDelay/CancellableSleep
-//        已在 internal/service/delay_rules_test.go 与 internal/chatflow 单测覆盖，本文件不再重复
+//
+//	P0-1 /chat/history 鉴权（顾问端拉聊天历史 403）：OptionalJWTAuth 注入登录态放行，
+//	     匿名 visitor_key 校验不变、错 visitor_key 仍 403
+//	P1-1 顾问标签弹窗恒空（/admin/tags 403）：advisor 只读路由 200、admin 路由对 sales 仍 403
+//	P1-2 注册选行业落包：register-config 下发 industries（general 兜底 + active 行业包）
+//	P0-2 简单消息延迟（chat_main.go:582）：延迟依赖的 GetSimpleReplyDelay/CancellableSleep
+//	     已在 internal/service/delay_rules_test.go 与 internal/chatflow 单测覆盖，本文件不再重复
 //
 // 依赖：本地 PostgreSQL（testutil.SetupTestDB，DB 不可用时自动 Skip）。
 package api
