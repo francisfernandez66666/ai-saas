@@ -158,8 +158,14 @@ type BillingOrder struct {
 	InvoiceStatus       string     `gorm:"size:20" json:"invoice_status"`       // 发票状态
 	QRContent           string     `gorm:"type:text" json:"qr_content"`         // 收款码内容（URL/base64，下单时从系统配置快照）
 	Remark              string     `json:"remark"`                              // 备注
-	CreatedAt           time.Time  `json:"created_at"`                          // 创建时间
-	UpdatedAt           time.Time  `json:"updated_at"`                          // 更新时间
+	// ---- 换包升级差额抵扣（2026-09-09）----
+	// 语义：租户已有生效付费订阅且换订不同付费包 → 旧包剩余价值按比例抵扣新包金额，
+	// 新包从今天起算即时生效（GrantPackageUpgrade），旧单作废但保留退款闸门防双重回收。
+	ReplaceSub         bool   `gorm:"default:false" json:"replace_sub"`           // 是否换包升级（差额抵扣订单标记）
+	UpgradeOffsetCents int    `gorm:"default:0" json:"upgrade_offset_cents"`      // 旧包抵扣金额（分）
+	UpgradeBaseOrderID uint   `gorm:"index;default:0" json:"upgrade_base_order_id"` // 被抵扣的旧订单ID（0=非升级单）
+	CreatedAt          time.Time `json:"created_at"`                              // 创建时间
+	UpdatedAt          time.Time `json:"updated_at"`                              // 更新时间
 }
 
 // ============================================================

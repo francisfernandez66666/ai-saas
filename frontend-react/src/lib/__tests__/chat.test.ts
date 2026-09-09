@@ -1,7 +1,7 @@
 // 前端聊天纯逻辑单测（2026-09-08 本轮修复覆盖）
 // 场景：聊天记录不固化(轮询替换全列表) / 回复不实时(轮询闭包) / 引导词循环(system 过滤) / 临时消息防重
 import { describe, expect, it } from 'vitest'
-import { collectFreshMessages, filterReplyMessages, promoteTempMessage, ChatMsg } from '../chat'
+import { collectFreshMessages, filterReplyMessages, promoteTempMessage, promoteTempAndRegister, dropSystemNotice, ChatMsg } from '../chat'
 import { resolveJsonMode } from '../jsonMode'
 
 describe('collectFreshMessages 轮询去重追加', () => {
@@ -82,6 +82,52 @@ describe('promoteTempMessage 临时消息替换 DB ID', () => {
   it('未匹配到临时消息时原样返回', () => {
     const msgs: ChatMsg[] = [{ id: 7, sender_type: 'customer', content: 'x' }]
     expect(promoteTempMessage(msgs, 'temp_none', 8)).toHaveLength(1)
+  })
+})
+
+describe('promoteTempAndRegister 替换临时消息并登记 dbId（2026-09-09 双气泡修复）', () => {
+  it('HTTP 响应先到：临时气泡换成 dbId，且 dbId 进 knownIds，poll 后续拉到历史不再二次追加', () => {
+    const known = new Set(['temp_900'])
+    const msgs: ChatMsg[] = [{ id: 'temp_900', sender_type: 'customer', content: '在吗' }]
+    // 1) HTTP 响应处理：替换 + 登记 dbId
+    const afterResp = promoteTempAndRegister(msgs, 'temp_900', 42, known)
+    expect(afterResp).toHaveLength(1)
+    expect(afterResp[0].id).toBe(42)
+    expect(known.has('42')).toBe(true)
+    // 2) 随后 poll/WS 拉历史返回同一条消息（dbId=42）
+    const fresh = collectFreshMessages([{ id: 42, sender_type: 'customer', content: '在吗' }], known)
+    expect(fresh).toHaveLength(0)
+  })
+
+  it('轮询先到达：同 dbId 已在列表时移除临时气泡，且 knownIds 登记不重复', () => {
+    const known = new Set(['42'])
+    const msgs: ChatMsg[] = [
+      { id: 'temp_901', sender_type: 'customer', content: '在吗' },
+      { id: 42, sender_type: 'customer', content: '在吗' },
+    ]
+    const after = promoteTempAndRegister(msgs, 'temp_901', 42, known)
+    expect(after).toHaveLength(1)
+    expect(after[0].id).toBe(42)
+    expect(known.has('42')).toBe(true)
+  })
+})
+
+describe('dropSystemNotice 清理瞬时系统占位（2026-09-09）', () => {
+  it('移除指定文案的 system 占位，保留真实回复', () => {
+    const msgs: ChatMsg[] = [
+      { sender_type: 'system', content: '顾问可能正在忙碌中，请稍候' },
+      { id: 51, sender_type: 'ai', content: '真实回复' },
+      { sender_type: 'system', content: '消息发送失败，请重试~' },
+    ]
+    const next = dropSystemNotice(msgs, '顾问可能正在忙碌中，请稍候')
+    expect(next).toHaveLength(2)
+    expect(next.find((m) => m.content === '顾问可能正在忙碌中，请稍候')).toBeUndefined()
+    expect(next.find((m) => m.id === 51)).toBeTruthy()
+  })
+
+  it('列表无该占位时原样返回', () => {
+    const msgs: ChatMsg[] = [{ id: 1, sender_type: 'ai', content: 'x' }]
+    expect(dropSystemNotice(msgs, '顾问可能正在忙碌中，请稍候')).toHaveLength(1)
   })
 })
 

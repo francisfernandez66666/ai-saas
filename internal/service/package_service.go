@@ -25,7 +25,7 @@ import (
 //   月配额未超 → 直接用；已超且增量余额>0 → 原子扣余额；都没有 → 降级规则话术
 // ============================================================
 
-// GrantPackage 按包类型发放权益到租户
+// GrantPackage 按包类型发放权益到租户（默认语义）
 // 三类包的发放语义（对齐实施文档 §二）：
 //
 //	free       注册试用包：max_ai_calls_monthly += 包含量（叠加，不覆盖）
@@ -34,6 +34,20 @@ import (
 //
 // tx 传 nil 走全局 DB；订单确认链路传事务句柄保证"改单+发放"原子
 func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
+	return grantPackage(tx, tenantID, pkg, false)
+}
+
+// GrantPackageUpgrade 换包升级发放（2026-09-09）：
+// 与 GrantPackage 唯一差异在 paid 包：到期日从【今天】起算，而非从旧到期日顺延——
+// 旧包剩余价值已在订单创建时按比例抵扣（CreateOrderForPackage 差额抵扣），
+// 新包即时生效替换旧订阅。free/increment 语义与 GrantPackage 完全一致。
+// 调用方须保证订单已置 ReplaceSub=true（否则为普通续订顺延，走 GrantPackage）。
+func GrantPackageUpgrade(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
+	return grantPackage(tx, tenantID, pkg, true)
+}
+
+// grantPackage 发放公共实现；replace=true 时 paid 包从今天起算（换包升级语义）
+func grantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package, replace bool) error {
 	if tx == nil {
 		tx = db.DB
 	}
@@ -74,8 +88,9 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 			return err
 		}
 		base := time.Now()
-		// 未到期续订：从当前到期日顺延；已到期/首订：从现在起算
-		if t.ExpiredAt != nil && t.ExpiredAt.After(base) {
+		// 换包升级（replace=true）：从今天起算，忽略旧到期日；
+		// 普通续订：从当前到期日顺延；已到期/首订：从现在起算
+		if !replace && t.ExpiredAt != nil && t.ExpiredAt.After(base) {
 			base = *t.ExpiredAt
 		}
 		newExpiry := base.AddDate(0, 0, pkg.DurationDays)
@@ -95,8 +110,8 @@ func GrantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package) error {
 		if res.Error != nil {
 			return res.Error
 		}
-		log.Printf("[Package] 包月包已生效 tenant=%d pkg=%s 月配额=%d次 到期=%s",
-			tenantID, pkg.Code, pkg.AICalls, newExpiry.Format("2006-01-02"))
+		log.Printf("[Package] 包月包已生效 tenant=%d pkg=%s 月配额=%d次 到期=%s (replace=%v)",
+			tenantID, pkg.Code, pkg.AICalls, newExpiry.Format("2006-01-02"), replace)
 		InvalidateShadow(tenantID) // 计费统一：订阅额度变更后失效影子余额
 		return nil
 

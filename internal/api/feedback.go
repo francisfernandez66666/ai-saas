@@ -181,16 +181,27 @@ func buildFeedbackContext(messageID uint) string {
 	if messageID == 0 {
 		return ""
 	}
-	var msg model.Message
-	if err := db.DB.Select("customer_id, content").First(&msg, messageID).Error; err != nil {
+	// 2026-09-09：原实现 2 次查询（先查 message 再查 customer）→ 改 1 次 JOIN 一次取回，
+	// 消除"逐条反馈 2 次往返"的 N+1 开销。左连接保证消息存在即可返回（客户可能已删）。
+	var row struct {
+		Content      string
+		CustName     string
+		CustPhone    string
+		JourneyStage string
+	}
+	err := db.DB.Table("messages").
+		Select("messages.content, customers.name AS cust_name, customers.phone AS cust_phone, customers.journey_stage").
+		Joins("LEFT JOIN customers ON customers.id = messages.customer_id").
+		Where("messages.id = ?", messageID).
+		Scan(&row).Error
+	if err != nil || row.Content == "" {
 		return ""
 	}
-	ctx := map[string]string{"ai_reply_excerpt": truncateRunes(msg.Content, 120)}
-	var cust model.Customer
-	if err := db.DB.Select("name, phone, journey_stage").First(&cust, msg.CustomerID).Error; err == nil {
-		phone := service.MaskPhone(cust.Phone)
-		ctx["customer_masked"] = cust.Name + "/" + phone
-		ctx["journey_stage"] = cust.JourneyStage
+	ctx := map[string]string{"ai_reply_excerpt": truncateRunes(row.Content, 120)}
+	if row.CustName != "" || row.CustPhone != "" {
+		phone := service.MaskPhone(row.CustPhone)
+		ctx["customer_masked"] = row.CustName + "/" + phone
+		ctx["journey_stage"] = row.JourneyStage
 	}
 	b, _ := json.Marshal(ctx)
 	return string(b)

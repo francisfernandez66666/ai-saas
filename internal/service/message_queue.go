@@ -54,6 +54,7 @@ type CustomerQueue struct {
 	currentBatch        uint64                  // 当前批次ID，每次新批次递增，防止跨批次消息混合
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
 	redisLock           *redisclient.LockHandle // 跨实例分布式锁句柄（Redis模式处理者持有）
+	lastActivity        time.Time               // 最近活跃时间（空闲队列回收依据，2026-09-09）
 }
 
 // getProcessingLockTimeout 获取processing锁超时时间
@@ -137,7 +138,37 @@ func (s *MessageQueueService) getQueue(key string) *CustomerQueue {
 		q.cond = sync.NewCond(&q.mu)
 		s.queues[key] = q
 	}
+	// 2026-09-09：标记活跃（空闲回收依据），锁内更新无竞争
+	q.mu.Lock()
+	q.lastActivity = time.Now()
+	q.mu.Unlock()
 	return q
+}
+
+// SweepIdleQueues 巡检删除长时间空闲的客户队列（2026-09-09 内存治理）。
+// 背景：queues map 只增不删，长跑后内存随客户数单调增长。
+// 规则：最近 idleTimeout 内无任何活跃 且 不在 processing/simpleProcessing 中 且 无积压待合并消息
+// 的队列直接移除；正在处理的队列即便超时也保留（processing 锁 90s/600s 自愈逻辑负责，不能误删）。
+// 返回本次清理的队列数。由后台定时任务周期调用（如每 60s）。
+func (s *MessageQueueService) SweepIdleQueues(idleTimeout time.Duration) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cutoff := time.Now().Add(-idleTimeout)
+	removed := 0
+	for k, q := range s.queues {
+		q.mu.Lock()
+		active := q.processing || q.simpleProcessing || len(q.pending) > 0 || q.lastActivity.After(cutoff)
+		q.mu.Unlock()
+		if active {
+			continue
+		}
+		delete(s.queues, k)
+		removed++
+	}
+	if removed > 0 {
+		log.Printf("[合并队列] 空闲队列回收 %d 个（空闲>%s），当前 %d 个", removed, idleTimeout, len(s.queues))
+	}
+	return removed
 }
 
 // EnqueueAndWait 消息入队并等待回复
@@ -588,96 +619,27 @@ func GetSimpleReplyDelay() time.Duration {
 //	到店倾向客户：线下偏移=0（客户要来店了，顾问得秒回，只算打字速度）
 //	非工作时间：18:00-次日9:00及周末
 func CalcHumanlikeDelay(tenantID uint, replyText string, mergeWaitDuration time.Duration, mergeCount int, isStoreVisit bool) time.Duration {
-	// 修复：模拟模式(开发调试)跳过真人延迟。否则 mock 下仍会 sleep 满 max_reply_delay(75s)
-	// 叠加 25s 合并窗口超过客户端 60s 超时，开发联调时表现为"对话挂死"。
+	// 修复：模拟模式(开发调试)跳过真人延迟。否则 mock 下仍会 sleep 满延迟
+	// 叠加合并窗口超过客户端 60s 超时，开发联调时表现为"对话挂死"。
 	// AI_MOCK_MODE=true 是开发调试信号，延迟无意义，直接返回 0。
 	if config.GlobalConfig.AI.MockMode {
 		log.Printf("[模拟延迟] 模拟模式开启，跳过真人延迟直接返回(0s)")
 		return 0
 	}
 
-	// 1. 打字时长：回复字数 / 40字每分钟
-	runeCount := len([]rune(replyText))
-	if runeCount <= 0 {
-		runeCount = 1
-	}
-	typingMinutes := float64(runeCount) / 40.0
-	typingDelay := time.Duration(typingMinutes * 60.0 * float64(time.Second))
+	// 2026-09-09 用户决策：大幅缩短回复延迟，固定 5~15s 随机模拟"输入节奏"。
+	// 背景：旧公式 = 打字时长(40字/分) + 线下偏移(30~180s，按闲忙/早晚分档)，最慢可达 75s+，
+	// 叠加 25s 合并窗口与 AI 调用后，客户端实际要干等近 2 分钟——触发前端 60s
+	// "顾问可能正在忙碌中，请稍候" 占位，且旧实现让延迟阻塞 AI 回复落库与 WS 推送
+	// （回复生成后不能实时入库，进程崩溃即丢）。现改为固定小延迟，回复生成即实时可见。
+	// 保留参数签名以降低调用方改动面；旧配置键 reply_min_delay/max_reply_delay/
+	// offline_offset_* 在本路径不再读取。
+	minSec, maxSec := 5, 15
+	sec := minSec + rand.Intn(maxSec-minSec+1)
+	delay := time.Duration(sec) * time.Second
 
-	// 2. 判断工作/非工作时间
-	now := time.Now()
-	hour := now.Hour()
-	isWeekend := now.Weekday() == time.Saturday || now.Weekday() == time.Sunday
-	isOffWork := isWeekend || hour < 9 || hour >= 18
-
-	// 3. 线下工作偏移：模拟顾问在忙其他事
-	// 修复：线下偏移6个值改为从后台配置读取，无需发版即可调节
-	// 到店倾向客户：线下偏移=0，顾问必须快速响应来店客户
-	var offlineOffset time.Duration
-	if isStoreVisit {
-		// 到店倾向：去掉线下偏移，只算打字速度-合并抵扣
-		// 业务逻辑：客户说"想去看看""想试驾"，顾问必须快速响应
-		offlineOffset = 0
-	} else if runeCount < 20 {
-		// 简单问题
-		if isOffWork {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_offwork_simple", 60)) * time.Second
-		} else {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_work_simple", 30)) * time.Second
-		}
-	} else if runeCount <= 80 {
-		// 中等问题（绝大部分情况）
-		if isOffWork {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_offwork_medium", 120)) * time.Second
-		} else {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_work_medium", 60)) * time.Second
-		}
-	} else {
-		// 复杂问题
-		if isOffWork {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_offwork_complex", 180)) * time.Second
-		} else {
-			offlineOffset = time.Duration(DefaultSystemConfigService.GetInt("offline_offset_work_complex", 90)) * time.Second
-		}
-	}
-
-	// 4. 合并等待抵扣：合并了N条消息时，客户已经等了 mergeWindow*N 秒
-	// 修复：fallback值从8→25，与合并窗口配置同步
-	var mergeCredit time.Duration
-	if mergeCount > 1 {
-		mergeWindow := time.Duration(DefaultSystemConfigService.GetIntForTenant(tenantID, "merge_window_seconds", 25)) * time.Second
-		mergeCredit = mergeWindow * time.Duration(mergeCount)
-	}
-
-	// 5. 总延迟 = 打字 + 线下偏移 - 合并抵扣
-	totalDelay := typingDelay + offlineOffset - mergeCredit
-	if totalDelay < 0 {
-		totalDelay = 0
-	}
-
-	// 6. AI回复最低延迟红线：15秒
-	// 业务逻辑：AI回复不能秒到，必须模拟真人思考+打字时间
-	// 即便合并抵扣把总延迟扣到0，正式AI回复也至少等15秒
-	// 简单消息走独立快速通道(8秒)，不走这个函数
-	minDelay := time.Duration(DefaultSystemConfigService.GetInt("reply_min_delay", 15)) * time.Second
-	if totalDelay < minDelay {
-		totalDelay = minDelay
-	}
-
-	// 7. AI回复最大延迟硬顶：75秒（后台可调）
-	// 修复：总回复时长不能超过2分钟。合并窗口25秒 + AI调用~10秒 + 模拟延迟 ≤ 120秒
-	// 所以模拟延迟硬顶75秒，确保：25 + 10 + 75 = 110秒 ≤ 2分钟
-	// 后台调max_reply_delay即时生效，不需要改代码发版
-	maxDelay := time.Duration(DefaultSystemConfigService.GetInt("max_reply_delay", 75)) * time.Second
-	if totalDelay > maxDelay {
-		log.Printf("[模拟延迟] 硬顶触发: 原延迟%.1fs > 硬顶%.1fs, 截断", totalDelay.Seconds(), maxDelay.Seconds())
-		totalDelay = maxDelay
-	}
-
-	log.Printf("[模拟延迟] 字数=%d, 打字=%.1fs, 线下偏移=%.1fs(工作=%v,到店=%v), 合并抵扣=%.1fs(合并%d条), 最低红线=%.1fs, 硬顶=%.1fs, 总延迟=%.1fs",
-		runeCount, typingDelay.Seconds(), offlineOffset.Seconds(), !isOffWork, isStoreVisit, mergeCredit.Seconds(), mergeCount, minDelay.Seconds(), maxDelay.Seconds(), totalDelay.Seconds())
-
-	return totalDelay
+	log.Printf("[模拟延迟] 固定小延迟 %ds（区间 %d~%ds，瞬时需 reply_delay_mode=instant）", sec, minSec, maxSec)
+	return delay
 }
 
 // GetSimpleReply 简单消息的预设快速回复

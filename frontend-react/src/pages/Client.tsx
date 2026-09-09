@@ -8,7 +8,7 @@ import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
 import { Msg } from '../types'
-import { collectFreshMessages, filterReplyMessages, promoteTempMessage } from '../lib/chat'
+import { collectFreshMessages, filterReplyMessages, promoteTempAndRegister, dropSystemNotice } from '../lib/chat'
 
 // API 基础路径
 const API = '/api/v1'
@@ -163,9 +163,14 @@ export default function Client() {
         const merged = j.data.merged_customer_id || j.data.mergedCustomerId
         if (merged && merged > 0 && merged !== custId.current) { custId.current = merged; localStorage.setItem(LS_ID, String(merged)) }
         // C3：访客密钥已在 CreateGuest 时持久化（chat/test 不返回，此处无需重复处理）
-        // 替换临时消息 ID 为真实数据库 ID；若轮询已把该条消息加进来了，则直接移除临时气泡防重复
+        // 替换临时消息 ID 为真实数据库 ID；同时把 dbId 登记进 localIds（promoteTempAndRegister），
+        // 避免 HTTP 响应先到时 poll/WS 再拉一次历史，同一条客户消息被二次渲染成双气泡。
         const dbId = j.data.customer_msg_id
-        if (dbId) setMsgs((m) => promoteTempMessage(m, String(temp.id), dbId))
+        if (dbId) {
+          setMsgs((m) => promoteTempAndRegister(m, String(temp.id), dbId, localIds.current))
+          // 收到有效响应即清理长延迟插入的"顾问可能正在忙碌中"占位，避免占位+真实回复并存
+          setMsgs((m) => dropSystemNotice(m, '顾问可能正在忙碌中，请稍候'))
+        }
         // 解析 AI 回复（支持多种响应格式）
         // 修复：过滤 system 型瞬时确认语 + 已由轮询先到达的同 ID 消息，避免重复气泡/引导词循环
         let replies: Msg[] = []

@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/json"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -250,6 +251,15 @@ func main() {
 		}
 	}()
 
+	// 9.46 消息合并队列空闲回收（2026-09-09 内存治理）：每60s删除空闲>15min的客户队列
+	// 纯内存结构，多实例各自清理各自内存，无需 Redis 选主（idempotent）
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		for range ticker.C {
+			service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
+		}
+	}()
+
 	// 8.49 订阅生命周期 + 对账（P2）：每 6 小时生成续费订单并对账补救发放失败单
 	go func() {
 		ticker := time.NewTicker(6 * time.Hour)
@@ -400,7 +410,23 @@ func registerRoutes(r *gin.Engine) {
 		log.Println("[FE] React SPA 已挂载: / + /app/")
 
 		// ---- Prometheus 指标端点（P2 监控闭环，零依赖；文本格式由 service.RenderPrometheus 生成）----
+		// 2026-09-09 鉴权加固：配置 METRICS_TOKEN 时须携带 Authorization: Bearer <token>；
+		// 未配置时仅允许 loopback 访问（127.0.0.1/::1）——公网/容器外部无法读取内部指标，杜绝信息泄露。
+		metricsToken := os.Getenv("METRICS_TOKEN")
 		r.GET("/metrics", func(c *gin.Context) {
+			if metricsToken != "" {
+				auth := c.GetHeader("Authorization")
+				if auth != "Bearer "+metricsToken {
+					c.Status(http.StatusForbidden)
+					return
+				}
+			} else {
+				host := c.ClientIP()
+				if host != "127.0.0.1" && host != "::1" && host != "::ffff:127.0.0.1" {
+					c.Status(http.StatusForbidden)
+					return
+				}
+			}
 			c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 			c.String(200, service.RenderPrometheus())
 		})

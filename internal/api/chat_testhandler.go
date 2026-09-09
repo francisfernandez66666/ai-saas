@@ -507,6 +507,17 @@ skipStoreVisitFastTest:
 	if !shouldProcess {
 		// Bug 1 修复：合并请求只返回合并状态，不返回完整AI回复
 		// 前端收到 merged=true 时，不渲染新消息气泡，等主请求的回复即可
+		// 修复(2026-09-09)：合并消息也必须立即回填会话并推送顾问端。
+		// 原实现在此处直接 return：本条客户消息 conversation_id 永远是 0，
+		// 按会话拉历史查不到（聊天记录存储不稳定），顾问端也看不到（不实时）。
+		// 会话可能尚未创建（冷启动合并窗口内），查不到则跳过，由主请求批量回填兜底。
+		var activeConv model.Conversation
+		db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
+			Order("updated_at DESC").Limit(1).Find(&activeConv)
+		if activeConv.ID > 0 {
+			db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", activeConv.ID)
+			notifyWSWithContent(tenantID, customer.ID, activeConv.ID, "customer", testCustomerMsgID, req.Content, customer.Name, time.Now().Format("2006-01-02T15:04:05Z"))
+		}
 		RespOK(c, "success", gin.H{
 			"merged":          true,
 			"merged_note":     "本条消息已与先前的消息合并处理，回复将在主请求中返回",
@@ -562,6 +573,28 @@ skipStoreVisitFastTest:
 	}
 
 	convMu.Unlock()
+
+	// 修复(2026-09-09)：会话已确定，立即回填该请求客户消息的 conversation_id 与合并后内容，
+	// 并推送顾问端。
+	// 原实现在模拟延迟结束后才回填——期间该消息 conversation_id=0，按会话维度的历史查询
+	// 查不到（聊天记录存储不稳定），刷新即"消失"；顾问端也到回复时才能看到。
+	// 现在会话一经确定就落库回填，消息立即进入会话历史，满足"实时入库"。
+	if mergedContent != req.Content {
+		// 合并窗口导致内容变化，更新DB中的客户消息content
+		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Updates(map[string]interface{}{
+			"conversation_id": conversation.ID,
+			"content":         mergedContent,
+			"emotion":         strategy.DetectEmotion(mergedContent),
+		})
+	} else {
+		// 内容没变，只更新conversation_id（之前暂填0）
+		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
+	}
+	var backfilledCustMsg model.Message
+	db.RQ(c).First(&backfilledCustMsg, testCustomerMsgID)
+	if backfilledCustMsg.ID > 0 {
+		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", backfilledCustMsg.ID, backfilledCustMsg.Content, customer.Name, backfilledCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+	}
 
 	// ---- 人工接管模式：顾问超时未回则AI回复，已回则跳过AI ----
 	aiTimeout := service.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
@@ -711,6 +744,29 @@ skipStoreVisitFastTest:
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
 	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
+	// ---- 保存AI回复消息 ----
+	// 修复(2026-09-09)：AI 回复生成后立即落库 + WS 推送，放在模拟延迟之前。
+	// 原实现把落库/推送放在 CancellableSleep 之后——等待延迟(最长可达约75s)期间
+	// DB 里根本没有这条回复：刷新即丢失（存储不稳定），客户端/顾问端也收不到
+	// （不实时），进程崩溃整条回复都没了。现在生成即入库，延迟仅影响 HTTP 响应的
+	// 返回节奏，不影响数据落盘与实时可见。
+	aiMsg := model.Message{
+		ConversationID: conversation.ID,
+		CustomerID:     customer.ID,
+		SenderType:     "ai",
+		Content:        aiReply,
+		MessageType:    "text",
+		AnchorType:     strategyOutput.FinalAnchor,
+		TemplateID:     strategyOutput.TemplateID,
+		RouteResult:    strategyOutput.RouteResult,
+		IntentScore:    tVector[0],
+		CreatedAt:      time.Now(),
+	}
+	db.RQ(c).Create(&aiMsg)
+	publishConversationMsg(tenantID, customer.ID, strategyOutput.RouteResult, state.Emotion)
+	// P1-1 实时推送：AI回复即时可见（客户消息已在 convMu.Unlock 后推送过，此处勿重复）
+	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai", aiMsg.ID, aiReply, "AI顾问", aiMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
@@ -757,44 +813,6 @@ skipStoreVisitFastTest:
 
 	// 回复写入队列缓存，唤醒所有等待的请求
 	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, aiReply)
-
-	// ---- 修复问题4：更新之前存的客户消息 ----
-	// 原来客户消息在EnqueueAndWait之后才存DB，F5刷新会丢失
-	// 现在已提前存DB，这里只需更新conversation_id和合并后的内容
-	if mergedContent != req.Content {
-		// 合并窗口导致内容变化，更新DB中的客户消息content
-		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Updates(map[string]interface{}{
-			"conversation_id": conversation.ID,
-			"content":         mergedContent,
-			"emotion":         strategy.DetectEmotion(mergedContent),
-		})
-	} else {
-		// 内容没变，只更新conversation_id（之前暂填0）
-		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
-	}
-
-	// ---- 保存AI回复消息 ----
-	aiMsg := model.Message{
-		ConversationID: conversation.ID,
-		CustomerID:     customer.ID,
-		SenderType:     "ai",
-		Content:        aiReply,
-		MessageType:    "text",
-		AnchorType:     strategyOutput.FinalAnchor,
-		TemplateID:     strategyOutput.TemplateID,
-		RouteResult:    strategyOutput.RouteResult,
-		IntentScore:    tVector[0],
-		CreatedAt:      time.Now(),
-	}
-	db.RQ(c).Create(&aiMsg)
-	publishConversationMsg(tenantID, customer.ID, strategyOutput.RouteResult, state.Emotion)
-	// P1-1 实时推送：主流程客户消息（conversation_id 已回填）+ AI回复，顾问端/客户端即时更新
-	var mergedCustMsg model.Message
-	db.RQ(c).First(&mergedCustMsg, testCustomerMsgID)
-	if mergedCustMsg.ID > 0 {
-		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", mergedCustMsg.ID, mergedCustMsg.Content, customer.Name, mergedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
-	}
-	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai", aiMsg.ID, aiReply, "AI顾问", aiMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 	// ---- 更新会话状态 ----
 	conversation.LastMessageAt = &aiMsg.CreatedAt

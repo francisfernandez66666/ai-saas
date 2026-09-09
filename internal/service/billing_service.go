@@ -227,6 +227,27 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 		order.Period = "once" // 增量包买断制
 	}
 
+	// 换包升级差额抵扣（2026-09-09）：仅 paid 包参与。
+	// 语义（产品决策）：已有生效付费订阅且换订【不同】付费包 → 旧包剩余价值按比例
+	// 折算抵扣新包金额（可为0），新包从今天起算生效（ReplaceSub=true → GrantPackageUpgrade）。
+	// 同包续订不抵扣（走原顺延语义）；无生效订阅为全新购买。
+	if pkg.PType == model.PackageTypePaid {
+		if oldOrder, oldPkg, left, ok := ActivePaidSubscription(tenantID); ok && oldOrder.PackageID != pkg.ID {
+			// 旧包剩余价值 = 旧实付 × 剩余天数 / 总天数（与 computeRefundForOrder paid 口径一致）
+			oldValue := int64(oldOrder.AmountCents) * int64(left) / int64(oldPkg.DurationDays)
+			net := int64(pkg.PriceCents) - oldValue
+			if net < 0 {
+				net = 0
+			}
+			order.AmountCents = int(net)
+			order.OriginalAmountCents = pkg.PriceCents // 原价保留用于展示优惠
+			order.ReplaceSub = true
+			order.UpgradeOffsetCents = int(oldValue)
+			order.UpgradeBaseOrderID = oldOrder.ID
+			order.Remark = fmt.Sprintf("换包升级抵扣：旧订单#%d 剩余%d天 抵扣%d分", oldOrder.ID, left, oldValue)
+		}
+	}
+
 	// pay_mode 三态分发：决定 channel 与支付凭证
 	payMode := GetPayMode()
 	var qrContent string
@@ -263,9 +284,51 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("[Billing] 订单已创建 order=%s tenant=%d pkg=%s amount=%d分 channel=%s",
-		order.OrderNo, tenantID, pkg.Code, order.AmountCents, order.Channel)
+	log.Printf("[Billing] 订单已创建 order=%s tenant=%d pkg=%s amount=%d分 channel=%s 升级抵扣=%d分",
+		order.OrderNo, tenantID, pkg.Code, order.AmountCents, order.Channel, order.UpgradeOffsetCents)
 	return order, nil
+}
+
+// remainingPaidDays 计算付费订阅剩余生效天数（向上取整到天，当天即退1天；不超包总时长）
+func remainingPaidDays(expiredAt *time.Time, durationDays int) int {
+	if expiredAt == nil || durationDays <= 0 {
+		return 0
+	}
+	if !expiredAt.After(time.Now()) {
+		return 0 // 已过期：无剩余价值
+	}
+	left := int(time.Until(*expiredAt).Hours()/24) + 1 // 向上取整到天
+	if left > durationDays {
+		left = durationDays
+	}
+	return left
+}
+
+// ActivePaidSubscription 查询租户当前生效的付费订阅（最近一笔已付 paid 包订单 + 租户未过期）
+// 返回 (旧订单, 旧包, 剩余天数, 是否存在生效订阅)；无生效订阅返回 ok=false。
+// 剩余天数以租户真实到期日（tenants.expired_at）为准——叠加续订场景 PaidAt+duration 不可靠。
+func ActivePaidSubscription(tenantID uint) (*model.BillingOrder, *model.Package, int, bool) {
+	var oldOrder model.BillingOrder
+	if err := db.DB.Where("tenant_id = ? AND status = 'paid' AND package_id > 0", tenantID).
+		Order("paid_at DESC").First(&oldOrder).Error; err != nil {
+		return nil, nil, 0, false
+	}
+	var oldPkg model.Package
+	if err := db.DB.First(&oldPkg, oldOrder.PackageID).Error; err != nil {
+		return nil, nil, 0, false
+	}
+	if oldPkg.PType != model.PackageTypePaid || oldPkg.DurationDays <= 0 {
+		return nil, nil, 0, false
+	}
+	var t model.Tenant
+	if err := db.DB.Select("expired_at").First(&t, tenantID).Error; err != nil {
+		return nil, nil, 0, false
+	}
+	left := remainingPaidDays(t.ExpiredAt, oldPkg.DurationDays)
+	if left <= 0 {
+		return nil, nil, 0, false // 已过期，无剩余价值可抵扣
+	}
+	return &oldOrder, &oldPkg, left, true
 }
 
 // MarkOrderPaid 幂等标记订单到账：pending→paid 条件更新
@@ -436,6 +499,14 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*refundClawback, int64, error) {
 	if o.TenantID == nil {
 		return nil, 0, nil // 无租户归属的 legacy 单：仅置状态，无权益可回收
+	}
+	// 2026-09-09 换包升级防双重：该订单已被另一单作为升级抵扣基数（UpgradeBaseOrderID 指向它），
+	// 其剩余价值已在升级时折算进新包金额——若再退款等于"退了旧的钱还白拿新包"，拒绝。
+	var usedAsBase int64
+	tx.Model(&model.BillingOrder{}).
+		Where("upgrade_base_order_id = ? AND status = 'paid'", o.ID).Count(&usedAsBase)
+	if usedAsBase > 0 {
+		return nil, 0, ErrRefundNoRemaining
 	}
 	if o.PackageID == 0 {
 		return nil, 0, nil // legacy 单（无商业包）：仅置状态
@@ -649,7 +720,13 @@ func GrantOrderEntitlement(tx *gorm.DB, order *model.BillingOrder) error {
 	if err := db.DB.First(&pkg, order.PackageID).Error; err != nil {
 		return fmt.Errorf("订单%d 关联包不存在: %w", order.ID, err)
 	}
-	if err := GrantPackage(tx, *order.TenantID, &pkg); err != nil {
+	// 2026-09-09 换包升级：差额抵扣订单（ReplaceSub=true）走"从今天起算"的发放，
+	// 替换旧订阅而非顺延；普通订单走默认顺延语义
+	if order.ReplaceSub {
+		if err := GrantPackageUpgrade(tx, *order.TenantID, &pkg); err != nil {
+			return err
+		}
+	} else if err := GrantPackage(tx, *order.TenantID, &pkg); err != nil {
 		return err
 	}
 	// M-R 邀请推广（2026-08-25）：受邀人首笔 paid 包月套餐到账 →

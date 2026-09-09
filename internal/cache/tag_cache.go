@@ -37,6 +37,7 @@ type TagCacheManager struct {
 	weightMappings []model.TagWeightMapping // 权重映射
 	version        int64                    // 版本号（每次reload自增）
 	remoteVersion  int64                    // 已同步的Redis版本戳（跨实例失效）
+	lastReloadAt   time.Time                // 最近一次成功重载时间（TTL 兜底刷新依据，2026-09-09）
 	mu             sync.RWMutex             // 读写锁
 }
 
@@ -81,20 +82,34 @@ func (m *TagCacheManager) reloadLocal() {
 	m.tagRules = rules
 	m.weightMappings = mappings
 	atomic.AddInt64(&m.version, 1) // 版本号原子自增
+	m.lastReloadAt = time.Now()    // TTL 兜底刷新计时（2026-09-09）
 	m.mu.Unlock()
 
 	log.Printf("[标签缓存] 热更新完成: 标签=%d个, 规则=%d条, 权重映射=%d条, 版本=%d",
 		len(tags), len(rules), len(mappings), m.GetVersion())
 }
 
-// startVersionPoller 跨实例版本轮询（每实例一个后台协程）
+// ttlStale TTL 兜底是否过期（2026-09-09）：距上次重载超过 ttl 判定为陈旧需强制刷新
+func (m *TagCacheManager) ttlStale(ttl time.Duration) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return time.Since(m.lastReloadAt) > ttl
+}
+
+// startVersionPoller 跨实例版本轮询 + TTL 兜底刷新（每实例一个后台协程）
 func (m *TagCacheManager) startVersionPoller() {
-	if !redisclient.IsEnabled() {
-		return
-	}
 	go func() {
 		for {
 			time.Sleep(5 * time.Second)
+			// TTL 兜底（2026-09-09）：纯版本戳驱动的缺陷——若某次本地 DB 更新既没走
+			// Reload（事件丢失）也没经 Redis 广播（Redis 未启用/事件丢失），缓存会永久陈旧。
+			// 这里兜底：距上次重载超过 60s 无论版本号是否变化都强制本地重载一次（自愈陈旧数据）。
+			if m.ttlStale(60 * time.Second) {
+				m.reloadLocal()
+			}
+			if !redisclient.IsEnabled() {
+				continue
+			}
 			v, ok := redisclient.Get(redisKeyTagVer)
 			if !ok {
 				continue

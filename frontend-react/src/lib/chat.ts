@@ -71,3 +71,36 @@ export function promoteTempMessage<T extends ChatMsg>(
   }
   return msgs.map((x) => (x.id === tempId ? { ...x, id: dbId } : x))
 }
+
+/**
+ * promoteTempAndRegister 替换临时消息为真实 DB ID，并把 dbId 一并登记进 knownIds。
+ * 修复背景（2026-09-09）：Client.tsx 里 promoteTempMessage 后若不同步登记 dbId，
+ * HTTP 响应先到时临时气泡换成真实ID，随后 poll/WS 拉历史看到 dbId 不在 knownIds
+ * → 同一条客户消息被二次追加渲染（双气泡）。把"替换+登记"固化成纯函数便于回归。
+ * @param msgs    当前已展示消息列表
+ * @param tempId  临时消息 ID（如 temp_<时间戳>）
+ * @param dbId    后端返回的真实消息主键
+ * @param knownIds 已展示消息 ID 集合（就地新增 dbId）
+ * @returns 替换后的新列表（不可变更新）
+ */
+export function promoteTempAndRegister<T extends ChatMsg>(
+  msgs: T[],
+  tempId: string,
+  dbId: number | string,
+  knownIds: Set<string>
+): T[] {
+  knownIds.add(String(dbId))
+  return promoteTempMessage(msgs, tempId, dbId)
+}
+
+/**
+ * dropSystemNotice 移除指定文案的瞬时系统占位（如"顾问可能正在忙碌中，请稍候"）。
+ * 修复背景（2026-09-09）：60s 计时器在长延迟时插入忙碌占位，回复到达后占位不清理，
+ * 视觉上与真实回复并存像是"两条消息"。有真实回复/有效响应时调用，保持消息流干净。
+ * @param msgs   当前消息列表
+ * @param notice 要移除的占位文案（精确匹配）
+ * @returns 过滤后的新列表
+ */
+export function dropSystemNotice<T extends ChatMsg>(msgs: T[], notice: string): T[] {
+  return msgs.filter((x) => x.sender_type !== 'system' || x.content !== notice)
+}

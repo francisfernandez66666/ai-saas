@@ -4,6 +4,8 @@ package service
 import (
 	"testing"
 	"time"
+
+	"ai-scrm/config"
 )
 
 // ============================================================
@@ -51,6 +53,69 @@ func TestActiveQueueCount(t *testing.T) {
 	svc := NewMessageQueueService()
 	if count := svc.ActiveQueueCount(); count != 0 {
 		t.Fatalf("初始计数应为 0，实际 %d", count)
+	}
+}
+
+// TestSweepIdleQueues 空闲队列回收：活跃/处理中/有积压的不删，空闲超阈值的删（2026-09-09 内存治理）
+func TestSweepIdleQueues(t *testing.T) {
+	svc := NewMessageQueueService()
+	kIdle := queueKey(1, 100)
+	kBusy := queueKey(1, 200)
+	kPending := queueKey(1, 300)
+
+	qIdle := svc.getQueue(kIdle)
+	qBusy := svc.getQueue(kBusy)
+	qPending := svc.getQueue(kPending)
+
+	// 造三种状态：
+	// 1) 空闲：lastActivity 改到很久以前
+	qIdle.mu.Lock()
+	qIdle.lastActivity = time.Now().Add(-time.Hour)
+	qIdle.mu.Unlock()
+	// 2) 处理中：processing=true 即便 idle 也不删
+	qBusy.mu.Lock()
+	qBusy.processing = true
+	qBusy.lastActivity = time.Now().Add(-time.Hour)
+	qBusy.mu.Unlock()
+	// 3) 有积压：pending 非空即便 idle 也不删
+	qPending.mu.Lock()
+	qPending.pending = []PendingMessage{{Content: "x"}}
+	qPending.lastActivity = time.Now().Add(-time.Hour)
+	qPending.mu.Unlock()
+
+	removed := svc.SweepIdleQueues(15 * time.Minute)
+	if removed != 1 {
+		t.Fatalf("应只回收 1 个空闲队列，实际 %d", removed)
+	}
+	// 处理中与有积压的队列必须仍在
+	svc.mu.Lock()
+	_, okBusy := svc.queues[kBusy]
+	_, okPending := svc.queues[kPending]
+	_, okIdle := svc.queues[kIdle]
+	svc.mu.Unlock()
+	if !okBusy || !okPending {
+		t.Fatalf("处理中/有积压队列不应被回收: busy=%v pending=%v", okBusy, okPending)
+	}
+	if okIdle {
+		t.Fatalf("空闲队列应已被回收")
+	}
+}
+
+// TestSweepIdleQueuesRecentlyActive 最近活跃的队列不回收（lastActivity 在阈值内）
+func TestSweepIdleQueuesRecentlyActive(t *testing.T) {
+	svc := NewMessageQueueService()
+	k := queueKey(1, 400)
+	svc.getQueue(k) // 刚 get，lastActivity=now
+
+	removed := svc.SweepIdleQueues(15 * time.Minute)
+	if removed != 0 {
+		t.Fatalf("最近活跃队列不应被回收，实际 %d", removed)
+	}
+	svc.mu.Lock()
+	_, ok := svc.queues[k]
+	svc.mu.Unlock()
+	if !ok {
+		t.Fatal("队列应仍在")
 	}
 }
 
@@ -115,5 +180,41 @@ func TestTidFromKeyFromQueueKey(t *testing.T) {
 		if got != tt.tid {
 			t.Errorf("tidFromKey(%q)=%d 期望 %d", k, got, tt.tid)
 		}
+	}
+}
+
+// TestCalcHumanlikeDelay 模拟延迟收短：非 mock 下固定落在 5~15s 区间（2026-09-09）。
+// 背景：旧公式"打字时长+线下偏移"最高可到 75s+，叠加合并窗口/AI调用后客户端要干等
+// 近 2 分钟才收到回复，还阻塞 AI 消息落库与 WS 推送（不实时、存储不稳定）。
+// 现改为固定小延迟模拟"输入节奏"，这里锁定 [5s, 15s] 区间防止回归到长延迟。
+func TestCalcHumanlikeDelay(t *testing.T) {
+	oldCfg := config.GlobalConfig
+	config.GlobalConfig = &config.Config{AI: config.AIConfig{MockMode: false}}
+	defer func() { config.GlobalConfig = oldCfg }()
+
+	// 各档输入都以同一套延迟计算，验证上下界
+	for i := 0; i < 50; i++ {
+		d := CalcHumanlikeDelay(1, "你们有几款车，空间大不大，能载几个人？", 0, 1, false)
+		if d < 5*time.Second || d > 15*time.Second {
+			t.Fatalf("延迟 %v 超出 5~15s 区间", d)
+		}
+	}
+	// 到店倾向客户同样在区间内
+	for i := 0; i < 50; i++ {
+		d := CalcHumanlikeDelay(1, "我想试驾", 0, 1, true)
+		if d < 5*time.Second || d > 15*time.Second {
+			t.Fatalf("到店倾向延迟 %v 超出 5~15s 区间", d)
+		}
+	}
+}
+
+// TestCalcHumanlikeDelayMock 模拟模式(AI_MOCK_MODE=true)必须 0 延迟，避免开发联调挂死
+func TestCalcHumanlikeDelayMock(t *testing.T) {
+	oldCfg := config.GlobalConfig
+	config.GlobalConfig = &config.Config{AI: config.AIConfig{MockMode: true}}
+	defer func() { config.GlobalConfig = oldCfg }()
+
+	if d := CalcHumanlikeDelay(1, "你好", 0, 1, false); d != 0 {
+		t.Fatalf("模拟模式延迟应为 0，实际 %v", d)
 	}
 }
