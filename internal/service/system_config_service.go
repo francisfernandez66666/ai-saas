@@ -32,6 +32,24 @@ type SystemConfigService struct {
 // DefaultSystemConfigService 默认系统配置服务实例（全局单例）
 var DefaultSystemConfigService *SystemConfigService
 
+// retiredConfigKeys 已停用配置键清单（2026-09-09 清理）。
+// 这些键曾被默认配置写下，但因实现演进不再被任何代码读取：
+//   - reply_min_delay / max_reply_delay / offline_offset_*（6键）：CalcHumanlikeDelay
+//     已改为固定 5~15s 随机、"打字+线下偏移"公式废弃；
+//   - l1/l2/l3_simple_delay / l1_complex_delay / off_work_multiplier / weekend_multiplier：
+//     三层分流之前的保留档位，现无读取方。
+//
+// ensureDefaults 启动时会删除系统层(tenant_id=0)的这些存量键，
+// 避免后台配置中心展示死配置误导运营；ForceResetDefaults 从 DefaultConfigs 重写，
+// 已不再包含它们，天然不会复现。
+var retiredConfigKeys = map[string]bool{
+	"reply_min_delay": true, "max_reply_delay": true,
+	"offline_offset_work_simple": true, "offline_offset_work_medium": true, "offline_offset_work_complex": true,
+	"offline_offset_offwork_simple": true, "offline_offset_offwork_medium": true, "offline_offset_offwork_complex": true,
+	"l1_simple_delay": true, "l2_simple_delay": true, "l3_simple_delay": true, "l1_complex_delay": true,
+	"off_work_multiplier": true, "weekend_multiplier": true,
+}
+
 // ============================================================
 // 默认配置定义
 // 当DB中无数据时，使用这些默认值初始化
@@ -42,27 +60,17 @@ var DefaultSystemConfigService *SystemConfigService
 // 注意：每项的 Value 和 DefaultValue 都是 JSON 字符串格式
 var DefaultConfigs = []model.SystemConfig{
 	// ---- 分类1：reply_speed（回复速度类）----
-	{Category: "reply_speed", Key: "reply_min_delay", Value: "15", ValueType: "number", Description: "AI回复最低延迟(秒)-红线", DefaultValue: "15", SortOrder: 1},
-	{Category: "reply_speed", Key: "l3_simple_delay", Value: "[3,8]", ValueType: "json", Description: "L3简单问题延迟区间", DefaultValue: "[3,8]", SortOrder: 2},
-	{Category: "reply_speed", Key: "l2_simple_delay", Value: "[5,15]", ValueType: "json", Description: "L2简单问题延迟区间", DefaultValue: "[5,15]", SortOrder: 3},
-	{Category: "reply_speed", Key: "l1_simple_delay", Value: "[5,15]", ValueType: "json", Description: "L1简单问题延迟区间", DefaultValue: "[5,15]", SortOrder: 4},
-	{Category: "reply_speed", Key: "l1_complex_delay", Value: "[60,120]", ValueType: "json", Description: "L1复杂问题延迟区间", DefaultValue: "[60,120]", SortOrder: 5},
-	{Category: "reply_speed", Key: "merge_window_seconds", Value: "25", ValueType: "number", Description: "消息合并窗口(秒)", DefaultValue: "25", SortOrder: 6},
-	{Category: "reply_speed", Key: "max_merge_messages", Value: "3", ValueType: "number", Description: "最大合并条数", DefaultValue: "3", SortOrder: 7},
-	{Category: "reply_speed", Key: "off_work_multiplier", Value: "1.0", ValueType: "number", Description: "下班后延迟系数", DefaultValue: "1.0", SortOrder: 8},
-	{Category: "reply_speed", Key: "weekend_multiplier", Value: "1.5", ValueType: "number", Description: "周末延迟系数", DefaultValue: "1.5", SortOrder: 9},
-	{Category: "reply_speed", Key: "max_reply_delay", Value: "75", ValueType: "number", Description: "AI回复最大延迟(秒)-硬顶(总回复不超2分钟)", DefaultValue: "75", SortOrder: 10},
+	// 修复(2026-09-09)：移除已停用的延迟配置键。
+	// CalcHumanlikeDelay 已改为固定 5~15s 随机（废除"打字+线下偏移"公式），
+	// 原 reply_min_delay/max_reply_delay 与 offline_offset_*（6键）不再被读取，
+	// 从默认配置中移除，避免后台展示死配置误导；保留 merge_window/simple_msg_delay/reply_delay_mode 等仍生效键。
+	{Category: "reply_speed", Key: "merge_window_seconds", Value: "25", ValueType: "number", Description: "消息合并窗口(秒)", DefaultValue: "25", SortOrder: 10},
+	{Category: "reply_speed", Key: "max_merge_messages", Value: "3", ValueType: "number", Description: "最大合并条数", DefaultValue: "3", SortOrder: 11},
 	// 修复：以下参数原硬编码在代码中，现改为后台可调，无需发版即可调节
-	{Category: "reply_speed", Key: "simple_msg_delay", Value: "8", ValueType: "number", Description: "简单消息延迟(秒)-固定值", DefaultValue: "8", SortOrder: 11},
-	{Category: "reply_speed", Key: "store_visit_first_delay", Value: "[10,15]", ValueType: "json", Description: "到店倾向第一段延迟区间(秒)[min,max]", DefaultValue: "[10,15]", SortOrder: 12},
-	{Category: "reply_speed", Key: "store_visit_second_delay", Value: "[25,45]", ValueType: "json", Description: "到店倾向第二段延迟区间(秒)[min,max]", DefaultValue: "[25,45]", SortOrder: 13},
-	{Category: "reply_speed", Key: "processing_lock_timeout", Value: "600", ValueType: "number", Description: "processing锁超时(秒)-防卡死(C5:原90s会误杀正常在途批次)", DefaultValue: "600", SortOrder: 14},
-	{Category: "reply_speed", Key: "offline_offset_work_simple", Value: "30", ValueType: "number", Description: "线下偏移-工作/简单(秒)", DefaultValue: "30", SortOrder: 15},
-	{Category: "reply_speed", Key: "offline_offset_work_medium", Value: "60", ValueType: "number", Description: "线下偏移-工作/中等(秒)", DefaultValue: "60", SortOrder: 16},
-	{Category: "reply_speed", Key: "offline_offset_work_complex", Value: "90", ValueType: "number", Description: "线下偏移-工作/复杂(秒)", DefaultValue: "90", SortOrder: 17},
-	{Category: "reply_speed", Key: "offline_offset_offwork_simple", Value: "60", ValueType: "number", Description: "线下偏移-非工作/简单(秒)", DefaultValue: "60", SortOrder: 18},
-	{Category: "reply_speed", Key: "offline_offset_offwork_medium", Value: "120", ValueType: "number", Description: "线下偏移-非工作/中等(秒)", DefaultValue: "120", SortOrder: 19},
-	{Category: "reply_speed", Key: "offline_offset_offwork_complex", Value: "180", ValueType: "number", Description: "线下偏移-非工作/复杂(秒)", DefaultValue: "180", SortOrder: 20},
+	{Category: "reply_speed", Key: "simple_msg_delay", Value: "8", ValueType: "number", Description: "简单消息延迟(秒)-固定值", DefaultValue: "8", SortOrder: 12},
+	{Category: "reply_speed", Key: "store_visit_first_delay", Value: "[10,15]", ValueType: "json", Description: "到店倾向第一段延迟区间(秒)[min,max]", DefaultValue: "[10,15]", SortOrder: 13},
+	{Category: "reply_speed", Key: "store_visit_second_delay", Value: "[25,45]", ValueType: "json", Description: "到店倾向第二段延迟区间(秒)[min,max]", DefaultValue: "[25,45]", SortOrder: 14},
+	{Category: "reply_speed", Key: "processing_lock_timeout", Value: "600", ValueType: "number", Description: "processing锁超时(秒)-防卡死(C5:原90s会误杀正常在途批次)", DefaultValue: "600", SortOrder: 15},
 
 	// ---- 分类2：strategy（策略引擎类）----
 	{Category: "strategy", Key: "tau", Value: "0.8", ValueType: "number", Description: "softmax温度参数(越小越锐利)", DefaultValue: "0.8", SortOrder: 1},
@@ -195,6 +203,19 @@ func InitSystemConfigService() {
 // 设计为幂等：已有数据不覆盖，缺失的补上
 // 修复：用事务+强制覆盖写入，确保配置一定存在（解决用户反复反馈"后台没有配置项"的问题）
 func (s *SystemConfigService) ensureDefaults() {
+	// 清理已停用键的存量数据（2026-09-09）：旧版本曾写入的死配置键不再展示
+	retiredDeleted := 0
+	if len(retiredConfigKeys) > 0 {
+		var keys []string
+		for k := range retiredConfigKeys {
+			keys = append(keys, k)
+		}
+		res := db.DB.Where("tenant_id = 0 AND \"key\" IN ?", keys).Delete(&model.SystemConfig{})
+		if res.Error == nil && res.RowsAffected > 0 {
+			retiredDeleted = int(res.RowsAffected)
+		}
+	}
+
 	inserted := 0
 	for _, cfg := range DefaultConfigs {
 		// 按 key 查是否已存在
@@ -215,6 +236,9 @@ func (s *SystemConfigService) ensureDefaults() {
 	// 修复：插入后校验总量，防止DB有脏状态导致0条数据
 	var totalCount int64
 	db.DB.Model(&model.SystemConfig{}).Count(&totalCount)
+	if retiredDeleted > 0 {
+		log.Printf("[系统配置] 已清理 %d 个停用配置键存量数据", retiredDeleted)
+	}
 	if totalCount == 0 && len(DefaultConfigs) > 0 {
 		log.Println("[系统配置] ⚠️ DB中0条配置数据，强制批量插入默认配置")
 		// 用事务确保原子性
