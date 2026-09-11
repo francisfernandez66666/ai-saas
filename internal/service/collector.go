@@ -30,11 +30,11 @@ type CollectorEvent struct {
 // batchCollector 进程内批量缓冲（休眠式：URL 空则不发任何外部请求）
 // 采用生产者-消费者模式，事件先缓冲在内存中，达到阈值或定时批量发送
 type batchCollector struct {
-	mu        sync.Mutex       // 互斥锁，保护缓冲区并发安全
-	buf       []CollectorEvent // 事件缓冲区
-	maxBuf    int              // 缓冲区最大容量，超出触发flush
-	flushMs   int64            // 自动刷新间隔（毫秒）
-	lastFailAt time.Time       // 上次失败时间（P2-48 退避窗口）
+	mu         sync.Mutex       // 互斥锁，保护缓冲区并发安全
+	buf        []CollectorEvent // 事件缓冲区
+	maxBuf     int              // 缓冲区最大容量，超出触发flush
+	flushMs    int64            // 自动刷新间隔（毫秒）
+	lastFailAt time.Time        // 上次失败时间（P2-48 退避窗口）
 }
 
 var defaultCollector = &batchCollector{maxBuf: 2000, flushMs: 300000} // 5分钟批次

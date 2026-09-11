@@ -147,7 +147,7 @@ func CleanupTenant(t *testing.T, id uint) {
 		"tenant_pack_bindings", "user_preferences",
 	}
 	for _, tb := range tenantChildTables {
-		if err := db.DB.Exec("DELETE FROM " + tb + " WHERE tenant_id = ?", id).Error; err != nil {
+		if err := db.DB.Exec("DELETE FROM "+tb+" WHERE tenant_id = ?", id).Error; err != nil {
 			// 个别表可能无该列/不存在（版本演进），忽略
 			log.Printf("[testutil] 级联清理跳过 %s: %v", tb, err)
 		}

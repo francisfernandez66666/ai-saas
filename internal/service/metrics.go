@@ -69,8 +69,8 @@ func IncStoreVisitSecondFail() { atomic.AddUint64(&storeVisitSecondFailTotal, 1)
 // ---- G-15 Kafka 消息队列指标（2026-09-11）----
 // 说明：Kafka 是生产环境的消息总线，负责异步事件发布/消费
 // 这三个指标用于监控 Kafka 的健康状态和吞吐量
-var kafkaPublishTotal uint64   // Kafka 发布消息总数（每次成功发布+1）
-var kafkaConsumeTotal uint64   // Kafka 消费消息总数（每次成功消费+1）
+var kafkaPublishTotal uint64     // Kafka 发布消息总数（每次成功发布+1）
+var kafkaConsumeTotal uint64     // Kafka 消费消息总数（每次成功消费+1）
 var kafkaConsumeFailTotal uint64 // Kafka 消费失败总数（消费异常时+1）
 
 // IncKafkaPublish Kafka 消息发布成功 +1（mq.KafkaCenter.Publish 成功后调用）

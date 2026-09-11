@@ -13,12 +13,12 @@ import (
 
 // mockTenantBilling 模拟租户三桶余额
 type mockTenantBilling struct {
-	freeBalance    int
-	freeExpiresAt  *time.Time
-	monthlyQuota   int
-	monthlyUsed    int
-	tokenBalance   int
-	mu             sync.Mutex
+	freeBalance   int
+	freeExpiresAt *time.Time
+	monthlyQuota  int
+	monthlyUsed   int
+	tokenBalance  int
+	mu            sync.Mutex
 }
 
 func (m *mockTenantBilling) deduct(tokens int) (fromFree, fromMonthly, fromBalance int) {
@@ -221,15 +221,15 @@ func TestProcessLocallyConcurrentMerge(t *testing.T) {
 	// 模拟 processLocally 的核心逻辑：第一个请求成为 processor，
 	// 后续请求在 merge window 内追加
 	type queue struct {
-		mu          sync.Mutex
-		cond        *sync.Cond
-		processing  bool
-		mergeCount  int
-		maxMerge    int
-		messages    []string
-		batchID     int
+		mu           sync.Mutex
+		cond         *sync.Cond
+		processing   bool
+		mergeCount   int
+		maxMerge     int
+		messages     []string
+		batchID      int
 		currentBatch int
-		reply       string
+		reply        string
 	}
 
 	q := &queue{maxMerge: 3}
@@ -309,12 +309,12 @@ func TestProcessLocallyConcurrentMerge(t *testing.T) {
 // ---- G-7-5: refund vs deduction 竞态 ----
 
 type mockRefundable struct {
-	mu           sync.Mutex
-	balance      int
-	deducted     int
-	refunded     int
-	deductCount  int
-	refundCount  int
+	mu          sync.Mutex
+	balance     int
+	deducted    int
+	refunded    int
+	deductCount int
+	refundCount int
 }
 
 func (m *mockRefundable) deduct(amount int) bool {

@@ -1,19 +1,21 @@
 // 实时计量批量落库（UsageSink）——移植「翻译助手」billing/sink.go 架构，三桶语义落地。
 //
 // 背景（2026-09-03 计费统一改造）：
-//   旧实现 DeductTokensActual 在 chat_reply.go:245 / gateway/server.go:164 均为 `go func` 异步调用，
-//   并发下扣减顺序不保证，且「先回复后扣减」存在失败丢费风险。
-//   本文件把实时计量改为「内存累积 + 周期批量落库」：
-//   - SinkRecordUsage() 仅追加到内存缓冲，并维护每租户的内存影子余额（seed 自 DB 三桶），
-//     余额不足立即记日志（对话场景不中断回复——回复已生成，前置闸 CheckTokenAvailability 已拦截）；
-//   - 后台 flusher 每 flushInterval（默认 2s）或缓冲达 maxBatch（默认 200）触发一次，
-//     按租户分组、每租户一次 DeductTokensActual（内部单事务+行锁），
-//     写事务从「每秒 N 个」降到「每周期每租户 1 个」。
+//
+//	旧实现 DeductTokensActual 在 chat_reply.go:245 / gateway/server.go:164 均为 `go func` 异步调用，
+//	并发下扣减顺序不保证，且「先回复后扣减」存在失败丢费风险。
+//	本文件把实时计量改为「内存累积 + 周期批量落库」：
+//	- SinkRecordUsage() 仅追加到内存缓冲，并维护每租户的内存影子余额（seed 自 DB 三桶），
+//	  余额不足立即记日志（对话场景不中断回复——回复已生成，前置闸 CheckTokenAvailability 已拦截）；
+//	- 后台 flusher 每 flushInterval（默认 2s）或缓冲达 maxBatch（默认 200）触发一次，
+//	  按租户分组、每租户一次 DeductTokensActual（内部单事务+行锁），
+//	  写事务从「每秒 N 个」降到「每周期每租户 1 个」。
 //
 // 计费开关（沿用 token_billing.go）：
-//   token_billing_enabled=false        —— 完全不启用（no-op，兼容现状）
-//   token_billing_enabled=true 且 billing_enforced=false —— 仅落账留痕不扣费（灰度）
-//   token_billing_enabled=true 且 billing_enforced=true  —— 真正扣减三桶
+//
+//	token_billing_enabled=false        —— 完全不启用（no-op，兼容现状）
+//	token_billing_enabled=true 且 billing_enforced=false —— 仅落账留痕不扣费（灰度）
+//	token_billing_enabled=true 且 billing_enforced=true  —— 真正扣减三桶
 package service
 
 import (

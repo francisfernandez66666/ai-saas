@@ -19,8 +19,8 @@ import (
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // ============================================================

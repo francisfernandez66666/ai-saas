@@ -2,9 +2,9 @@
 // 背景：CalcHumanlikeDelay 改为固定 5~15s 后，旧"打字+线下偏移"相关配置键不再被读取，
 // 若仍留在 DefaultConfigs / DB 存量中会在后台配置中心展示死配置误导运营。
 // 本测试锁定三类不变式：
-//   1. DefaultConfigs 不再包含任何已停用键（新装环境不会写入死配置）；
-//   2. retiredConfigKeys 清单与 DefaultConfigs 无交集（不误删仍在用的键）；
-//   3. 仍有意义的回复速度键（合并窗口/简单延迟/到店两段式/处理锁超时/延迟模式）必须保留。
+//  1. DefaultConfigs 不再包含任何已停用键（新装环境不会写入死配置）；
+//  2. retiredConfigKeys 清单与 DefaultConfigs 无交集（不误删仍在用的键）；
+//  3. 仍有意义的回复速度键（合并窗口/简单延迟/到店两段式/处理锁超时/延迟模式）必须保留。
 package service
 
 import (
@@ -43,13 +43,13 @@ func TestRetiredConfigKeysAllListed(t *testing.T) {
 // TestActiveReplySpeedKeysPreserved 回复速度分类中仍生效的键必须保留在 DefaultConfigs
 func TestActiveReplySpeedKeysPreserved(t *testing.T) {
 	mustKeep := []string{
-		"merge_window_seconds", // 合并窗口（二分消息合并）
-		"simple_msg_delay",     // 简单消息快速通道
-		"store_visit_first_delay",   // 到店第一段
-		"store_visit_second_delay",  // 到店第二段
-		"processing_lock_timeout",   // 队列自愈
-		"max_merge_messages",        // 合并条数上限
-		"reply_delay_mode",          // normal/instant
+		"merge_window_seconds",     // 合并窗口（二分消息合并）
+		"simple_msg_delay",         // 简单消息快速通道
+		"store_visit_first_delay",  // 到店第一段
+		"store_visit_second_delay", // 到店第二段
+		"processing_lock_timeout",  // 队列自愈
+		"max_merge_messages",       // 合并条数上限
+		"reply_delay_mode",         // normal/instant
 	}
 	found := map[string]bool{}
 	for _, cfg := range DefaultConfigs {

@@ -48,10 +48,10 @@ func seedTenants() {
 	var pack model.IndustryPack
 	if err := db.DB.Where("code = ? AND status = 'active'", "auto").Order("id DESC").First(&pack).Error; err == nil {
 		binding := &model.TenantPackBinding{
-			TenantID:       defaultTenant.ID,       // 绑定目标租户
-			PackID:         pack.ID,                // 行业包ID
-			PackCode:       pack.Code,              // 行业包代码（冗余字段，方便查询）
-			AppliedVersion: pack.Version,           // 应用时的版本号（快照，防后续升级影响已绑定租户）
+			TenantID:       defaultTenant.ID, // 绑定目标租户
+			PackID:         pack.ID,          // 行业包ID
+			PackCode:       pack.Code,        // 行业包代码（冗余字段，方便查询）
+			AppliedVersion: pack.Version,     // 应用时的版本号（快照，防后续升级影响已绑定租户）
 		}
 		if err := db.DB.Create(binding).Error; err != nil {
 			log.Printf("G-24: 默认租户绑定 auto 包失败: %v", err)

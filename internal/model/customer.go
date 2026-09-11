@@ -16,42 +16,42 @@ import (
 
 // Customer 客户表
 type Customer struct {
-	ID               uint      `gorm:"primaryKey" json:"id"`                              // 主键ID
-	Name             string    `gorm:"size:50" json:"name"`                               // 客户姓名
-	Phone            string    `gorm:"size:20;index" json:"phone"`                        // 手机号
-	WechatID         string    `gorm:"size:50;index" json:"wechat_id"`                    // 微信号
-	Gender           int       `gorm:"default:0" json:"gender"`                           // 性别: 0-未知 1-男 2-女
-	Age              int       `json:"age"`                                               // 年龄
-	Region           string    `gorm:"size:50" json:"region"`                             // 地域
-	City             string    `gorm:"size:50" json:"city"`                               // 城市
-	Career           string    `gorm:"size:50" json:"career"`                             // 职业
-	CustomerType     string    `gorm:"size:20;default:potential" json:"customer_type"`    // 客户身份: potential(潜客)/owner(车主)
+	ID           uint   `gorm:"primaryKey" json:"id"`                           // 主键ID
+	Name         string `gorm:"size:50" json:"name"`                            // 客户姓名
+	Phone        string `gorm:"size:20;index" json:"phone"`                     // 手机号
+	WechatID     string `gorm:"size:50;index" json:"wechat_id"`                 // 微信号
+	Gender       int    `gorm:"default:0" json:"gender"`                        // 性别: 0-未知 1-男 2-女
+	Age          int    `json:"age"`                                            // 年龄
+	Region       string `gorm:"size:50" json:"region"`                          // 地域
+	City         string `gorm:"size:50" json:"city"`                            // 城市
+	Career       string `gorm:"size:50" json:"career"`                          // 职业
+	CustomerType string `gorm:"size:20;default:potential" json:"customer_type"` // 客户身份: potential(潜客)/owner(车主)
 	// 泛行业化（P3）：字段名去汽车专属词（InterestModel→InterestProduct 等），gorm column 锁定原列名避免 DB 迁移，JSON tag 保留兼容前端
-	InterestProduct string  `gorm:"column:interest_model;size:50" json:"interest_model"` // 兴趣产品
-	CurrentProduct  string  `gorm:"column:current_car;size:50" json:"current_car"`       // 当前在用的产品
-	ProductAge      float64 `gorm:"column:car_age" json:"car_age"`                       // 现用产品年限
-	Source          string  `gorm:"size:30" json:"source"`                               // 流量来源
-	Budget          float64 `json:"budget"`                                              // 预算（万元）
-	DecisionCycle   int     `json:"decision_cycle"`                                      // 决策周期（天）
-	OfflineTouch    int     `gorm:"column:store_visited;default:0" json:"store_visited"` // 线下接触状态: 0-未接触 1-已接触 2-多次接触
-	TrustLevel       float64   `gorm:"default:0.3" json:"trust_level"`                    // 信任度 0-1
-	IntentScore      float64   `gorm:"default:0.2" json:"intent_score"`                   // 意向分 0-1
-	PriceSensitivity float64   `gorm:"default:0.5" json:"price_sensitivity"`              // 价格敏感度 0-1
-	BrandAwareness   float64   `gorm:"default:0.3" json:"brand_awareness"`                // 品牌认知度 0-1
-	ResistanceType   string    `gorm:"size:20;default:none" json:"resistance_type"`       // 抗性类型: none/price/spec/service/brand
-	JourneyStage     string    `gorm:"size:20;default:ai_connected" json:"journey_stage"` // 客户旅程阶段: ai_connected/human_connected/lead_captured/arrived/ordered/delivered/lost
-	JourneySubStage  string    `gorm:"size:20;default:''" json:"journey_sub_stage"`       // 到店子状态: 空/test_driven/quoted（只有quoted后才允许促单）
-	Tags             string    `gorm:"type:text" json:"tags"`                             // 标签列表(JSON数组)
-	TVectorJSON      string    `gorm:"column:t_vector;type:text" json:"t_vector_json"`    // T向量原始JSON(32维)
-	Remark           string    `gorm:"type:text" json:"remark"`                           // 备注
-	AssignedUserID   uint      `gorm:"index" json:"assigned_user_id"`                     // 归属销售ID（J13-2026-08-27 补索引，支撑数据范围分级查询）
-	TenantID         uint      `gorm:"default:0;index" json:"-"`                          // 租户ID，0=超级管理员全局可见，非0=某租户隔离
-	VisitorKey       string    `gorm:"size:64;index" json:"-"`                          // 访客密钥（C3）：匿名访问本人聊天记录/欢迎接口的横向越权防线。P0-7 修复：改为 json:"-" 防被 /customers 等接口整体序列化拖走（仅 /chat/guest 显式下发）
-	ExternalUserID   string    `gorm:"size:64;index" json:"external_user_id"`             // 外部渠道用户ID（OpenAPI对话端点：douyin/tiktok/taobao等渠道嵌入映射）
-	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`       // 分配原因: lead_captured/ai_handover
-	Status           int       `gorm:"default:1" json:"status"`                           // 状态: 1-正常 0-无效
-	CreatedAt        time.Time `json:"created_at"`                                        // 创建时间
-	UpdatedAt        time.Time `json:"updated_at"`                                        // 更新时间
+	InterestProduct  string    `gorm:"column:interest_model;size:50" json:"interest_model"` // 兴趣产品
+	CurrentProduct   string    `gorm:"column:current_car;size:50" json:"current_car"`       // 当前在用的产品
+	ProductAge       float64   `gorm:"column:car_age" json:"car_age"`                       // 现用产品年限
+	Source           string    `gorm:"size:30" json:"source"`                               // 流量来源
+	Budget           float64   `json:"budget"`                                              // 预算（万元）
+	DecisionCycle    int       `json:"decision_cycle"`                                      // 决策周期（天）
+	OfflineTouch     int       `gorm:"column:store_visited;default:0" json:"store_visited"` // 线下接触状态: 0-未接触 1-已接触 2-多次接触
+	TrustLevel       float64   `gorm:"default:0.3" json:"trust_level"`                      // 信任度 0-1
+	IntentScore      float64   `gorm:"default:0.2" json:"intent_score"`                     // 意向分 0-1
+	PriceSensitivity float64   `gorm:"default:0.5" json:"price_sensitivity"`                // 价格敏感度 0-1
+	BrandAwareness   float64   `gorm:"default:0.3" json:"brand_awareness"`                  // 品牌认知度 0-1
+	ResistanceType   string    `gorm:"size:20;default:none" json:"resistance_type"`         // 抗性类型: none/price/spec/service/brand
+	JourneyStage     string    `gorm:"size:20;default:ai_connected" json:"journey_stage"`   // 客户旅程阶段: ai_connected/human_connected/lead_captured/arrived/ordered/delivered/lost
+	JourneySubStage  string    `gorm:"size:20;default:''" json:"journey_sub_stage"`         // 到店子状态: 空/test_driven/quoted（只有quoted后才允许促单）
+	Tags             string    `gorm:"type:text" json:"tags"`                               // 标签列表(JSON数组)
+	TVectorJSON      string    `gorm:"column:t_vector;type:text" json:"t_vector_json"`      // T向量原始JSON(32维)
+	Remark           string    `gorm:"type:text" json:"remark"`                             // 备注
+	AssignedUserID   uint      `gorm:"index" json:"assigned_user_id"`                       // 归属销售ID（J13-2026-08-27 补索引，支撑数据范围分级查询）
+	TenantID         uint      `gorm:"default:0;index" json:"-"`                            // 租户ID，0=超级管理员全局可见，非0=某租户隔离
+	VisitorKey       string    `gorm:"size:64;index" json:"-"`                              // 访客密钥（C3）：匿名访问本人聊天记录/欢迎接口的横向越权防线。P0-7 修复：改为 json:"-" 防被 /customers 等接口整体序列化拖走（仅 /chat/guest 显式下发）
+	ExternalUserID   string    `gorm:"size:64;index" json:"external_user_id"`               // 外部渠道用户ID（OpenAPI对话端点：douyin/tiktok/taobao等渠道嵌入映射）
+	AssignmentReason string    `gorm:"size:20;default:''" json:"assignment_reason"`         // 分配原因: lead_captured/ai_handover
+	Status           int       `gorm:"default:1" json:"status"`                             // 状态: 1-正常 0-无效
+	CreatedAt        time.Time `json:"created_at"`                                          // 创建时间
+	UpdatedAt        time.Time `json:"updated_at"`                                          // 更新时间
 }
 
 // GenerateVisitorKey 生成 32 字节随机十六进制访客密钥（C3 横向越权防线）

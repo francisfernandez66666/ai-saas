@@ -320,7 +320,7 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	// ============================================================
 	stageCeilingAnchor, isStageDowngraded = Step2_5_StageCeiling(bestAnchor, input.State.CurrentStage)
 	output.StageDowngraded = isStageDowngraded
-	output.StageBeforeLock = bestAnchor                                   // 阶段锁降级前的锚
+	output.StageBeforeLock = bestAnchor                // 阶段锁降级前的锚
 	output.StageCeilingAgg = StageAnchorCeiling[stage] // 当前阶段允许的上限（P2-57：stage 已 clamp）
 
 	// 阶段锁降级后，用降级结果作为Step3的输入
@@ -389,9 +389,9 @@ afterAnchorSelection:
 
 			// 动态填充卖点（M1: 同规则过滤卖点库，防跨租户卖点串入）
 			customer := &model.Customer{
-				ID:               input.CustomerID,
+				ID:              input.CustomerID,
 				InterestProduct: modelFromTVector(tVector),
-				Name:             "客户", // 这里简化，实际应从DB获取
+				Name:            "客户", // 这里简化，实际应从DB获取
 			}
 			promptText, hookText, _ := FillTemplate(template, customer, featuresForTenant(e.features, input.TenantID, recallScope))
 			output.PromptText = promptText

@@ -130,10 +130,10 @@ P1-14 修复(2026-09-09)：原实现是 `RespErr(c, 200, 0, "ok")`，data 参数
 */
 func respOK(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, schema.Response{
-		Code:        int(CodeOK),
-		Error_code:  codeName[CodeOK],
-		Message:     "ok",
-		Data:        data,
+		Code:       int(CodeOK),
+		Error_code: codeName[CodeOK],
+		Message:    "ok",
+		Data:       data,
 	})
 }
 

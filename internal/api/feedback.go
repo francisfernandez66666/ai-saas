@@ -338,13 +338,13 @@ func CreateFeedbackRating(c *gin.Context) {
 		mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tid,
 			fmt.Sprintf("c:%d", req.CustomerID), "complaint",
 			mq.UserEvent{
-				EventType:  "behavior",       // 事件类型：行为类（behavior）
-				EventName:  "complaint",      // 事件名称：投诉（用于 CDP 标签匹配）
-				AnchorType: "rating",         // 锚点类型：关联评分事件
+				EventType:  "behavior",  // 事件类型：行为类（behavior）
+				EventName:  "complaint", // 事件名称：投诉（用于 CDP 标签匹配）
+				AnchorType: "rating",    // 锚点类型：关联评分事件
 				Attributes: map[string]any{
-					"customer_id": req.CustomerID,  // 客户ID
-					"rating":      req.Rating,       // 触发评分值
-					"content":     req.Comment,      // 投诉文字内容（PII脱敏后存储）
+					"customer_id": req.CustomerID,    // 客户ID
+					"rating":      req.Rating,        // 触发评分值
+					"content":     req.Comment,       // 投诉文字内容（PII脱敏后存储）
 					"source":      "feedback_rating", // 来源标识：满意度评分模块
 				},
 				OccurredAt: time.Now(),

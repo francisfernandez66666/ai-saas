@@ -37,3 +37,4 @@ keys/
 data/
 *.aipack
 build/
+test-results

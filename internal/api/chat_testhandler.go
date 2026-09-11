@@ -900,7 +900,7 @@ skipStoreVisitFastTest:
 		"urgency_level":      strategyOutput.UrgencyLevel,
 		"intent_delta":       strategyOutput.IntentDelta,
 		"is_ai_mode":         !config.GlobalConfig.AI.MockMode && !service.DefaultSystemConfigService.GetBool("mock_mode", false) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)), // P2-25 修复：真实AI=!全局Mock && !系统Mock && 有Key，与 chat_reply.go:84-86 判定对齐
-		"merged_customer_id": testLeadResult, // OneID合并：>0表示前端需切换customer_id
+		"merged_customer_id": testLeadResult,                                                                                                                                                                                                        // OneID合并：>0表示前端需切换customer_id
 	})
 }
 

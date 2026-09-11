@@ -23,14 +23,14 @@ func TestStageAnchorCeilingLockBehavior(t *testing.T) {
 		wantAnchor     int
 		wantDowngrade  bool
 	}{
-		{"stage0_agg1通过", 0, 1, 1, false},        // agg=1 <= ceiling=1
-		{"stage0_agg3降级", 0, 3, 1, true},         // agg=3 > ceiling=1, 降到 agg=1
-		{"stage1_agg2通过", 1, 2, 2, false},        // agg=2 <= ceiling=2
-		{"stage1_agg3降级", 1, 3, 2, true},         // agg=3 > ceiling=2, 降到 agg=2
-		{"stage2_agg3通过", 2, 3, 3, false},        // agg=3 <= ceiling=3
-		{"stage2_agg5降级", 2, 5, 3, true},         // agg=5 > ceiling=3, 降到 agg=3
-		{"stage4_无限制", 4, 6, 6, false},           // ceiling=6, 无限制
-		{"stage_越界不降级", 99, 6, 6, false},       // 越界 stage 不触发降级
+		{"stage0_agg1通过", 0, 1, 1, false}, // agg=1 <= ceiling=1
+		{"stage0_agg3降级", 0, 3, 1, true},  // agg=3 > ceiling=1, 降到 agg=1
+		{"stage1_agg2通过", 1, 2, 2, false}, // agg=2 <= ceiling=2
+		{"stage1_agg3降级", 1, 3, 2, true},  // agg=3 > ceiling=2, 降到 agg=2
+		{"stage2_agg3通过", 2, 3, 3, false}, // agg=3 <= ceiling=3
+		{"stage2_agg5降级", 2, 5, 3, true},  // agg=5 > ceiling=3, 降到 agg=3
+		{"stage4_无限制", 4, 6, 6, false},    // ceiling=6, 无限制
+		{"stage_越界不降级", 99, 6, 6, false},  // 越界 stage 不触发降级
 	}
 
 	for _, tc := range cases {
@@ -128,13 +128,13 @@ func TestCheckHookedBehavior(t *testing.T) {
 		text string
 		want bool
 	}{
-		{"好的我明白了", true},     // >= 3 runes
-		{"嗯嗯知道了", true},       // >= 3 runes
-		{"可以的没问题", true},     // >= 3 runes
-		{"我想看车", true},         // >= 3 runes
-		{"好", false},              // 纯语气词
-		{"嗯", false},              // 纯语气词
-		{"价格怎么样", true},       // >= 3 runes
+		{"好的我明白了", true}, // >= 3 runes
+		{"嗯嗯知道了", true},  // >= 3 runes
+		{"可以的没问题", true}, // >= 3 runes
+		{"我想看车", true},   // >= 3 runes
+		{"好", false},     // 纯语气词
+		{"嗯", false},     // 纯语气词
+		{"价格怎么样", true},  // >= 3 runes
 	}
 	for _, c := range cases {
 		got := strategytypes.CheckHooked(c.text)

@@ -56,37 +56,37 @@ var rlsTenantTables = []string{
 	"cdp_tag_assignments", // CDP 标签分配表（客户←→标签关联）
 
 	// ---- 事件/消息/流程表 ----
-	"event_logs",           // 事件日志表（业务事件审计）
-	"id_mappings",          // ID 映射表（OneID 身份归一）
-	"inbox_events",         // 收件箱事件表
-	"flow_state_machines",  // 流程状态机表
+	"event_logs",          // 事件日志表（业务事件审计）
+	"id_mappings",         // ID 映射表（OneID 身份归一）
+	"inbox_events",        // 收件箱事件表
+	"flow_state_machines", // 流程状态机表
 
 	// ---- 模板/功能/行业包表 ----
-	"templates",             // 模板表（话术/文案模板）
-	"features",              // 功能开关表
-	"tenant_pack_bindings",  // 租户行业包绑定表（G-24）
-	"billing_orders",        // 计费订单表
+	"templates",            // 模板表（话术/文案模板）
+	"features",             // 功能开关表
+	"tenant_pack_bindings", // 租户行业包绑定表（G-24）
+	"billing_orders",       // 计费订单表
 
 	// ---- 用量/审计表 ----
-	"usage_records",      // 用量记录表（旧版）
-	"usage_ledger",       // 用量台账表（M3 计费底座）
-	"tenant_audit_logs",  // 租户审计日志表
+	"usage_records",     // 用量记录表（旧版）
+	"usage_ledger",      // 用量台账表（M3 计费底座）
+	"tenant_audit_logs", // 租户审计日志表
 
 	// ---- G-14 补齐：组织/身份/API/流程/标签/行业包相关表 ----
-	"departments",             // 部门表（组织架构）
-	"customer_identities",     // 客户身份表（多身份归一）
-	"api_keys",                // API 密钥表（OpenAPI 鉴权）
-	"flow_instances",          // 流程实例表
-	"message_event_records",   // 消息事件记录表（MQ 审计）
-	"dept_pack_bindings",      // 部门行业包绑定表
-	"tags",                    // 标签定义表
-	"tag_rules",               // 打标规则表（关键词/抗性/意向匹配）
-	"tag_weight_mappings",     // 标签权重映射表（标签→T向量驱动）
-	"flow_definitions",        // 流程定义表
-	"brands",                  // 品牌表（汽车行业）
-	"car_models",              // 车型表（汽车行业）
-	"model_specs",             // 车型配置表（汽车行业）
-	"competitor_compares",     // 竞品对比表（汽车行业）
+	"departments",           // 部门表（组织架构）
+	"customer_identities",   // 客户身份表（多身份归一）
+	"api_keys",              // API 密钥表（OpenAPI 鉴权）
+	"flow_instances",        // 流程实例表
+	"message_event_records", // 消息事件记录表（MQ 审计）
+	"dept_pack_bindings",    // 部门行业包绑定表
+	"tags",                  // 标签定义表
+	"tag_rules",             // 打标规则表（关键词/抗性/意向匹配）
+	"tag_weight_mappings",   // 标签权重映射表（标签→T向量驱动）
+	"flow_definitions",      // 流程定义表
+	"brands",                // 品牌表（汽车行业）
+	"car_models",            // 车型表（汽车行业）
+	"model_specs",           // 车型配置表（汽车行业）
+	"competitor_compares",   // 竞品对比表（汽车行业）
 }
 
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）

@@ -120,7 +120,6 @@ func InitRouter() {
 	log.Println("========================================")
 }
 
-
 // GenerateTextForStage 带阶段语义的生成入口（M3）
 // stage_models 配置了该阶段专属模型时优先使用（失败自动回退全局降级链），
 // 并透传 token 用量供 usage_ledger 落账。

@@ -4,8 +4,8 @@ package config
 
 import (
 	"fmt"
-	"net/url"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"

@@ -278,6 +278,7 @@ func CreateGuest(c *gin.Context) {
 //  1. 客户租户归属校验（db.RQ 404 守卫）
 //  2. 身份防线（CheckVisitorKey：登录态放行 / 匿名必须携带与目标一致的 visitor_key）
 //  3. 路由侧另挂 IPRateLimit（main.go 注册处）
+//
 // ============================================================
 func ClearDelay(c *gin.Context) {
 	var req struct {

@@ -111,7 +111,7 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 		sb.WriteString("6. 客户连发多条消息时，如果是同一句话拆开的，当成一个问题理解；如果是不同问题，逐个自然回答\n")
 		sb.WriteString("7. 回复中自然嵌入客户说过的关键词，让客户感觉你在认真听他说话\n")
 
-// 价格管控：未到店客户禁止提及具体价格
+		// 价格管控：未到店客户禁止提及具体价格
 		if !hasArrived {
 			sb.WriteString("6. 【重要】不得提及任何具体价格数字、优惠金额、金融方案具体数字\n")
 			// P1-26 修复(2026-09-09)：原询价规则整段被注释吞掉（代码卷进 // 注释，`\n` 字面量可见），

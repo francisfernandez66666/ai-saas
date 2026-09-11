@@ -18,10 +18,10 @@ import (
 
 // Task 定义一个周期性后台任务
 type Task struct {
-	Name         string
-	Interval     time.Duration
-	LeaderElect  bool // 是否需要 Redis 选主（多实例场景）
-	Fn           func(ctx context.Context)
+	Name        string
+	Interval    time.Duration
+	LeaderElect bool // 是否需要 Redis 选主（多实例场景）
+	Fn          func(ctx context.Context)
 	// 运行时状态
 	lastRun   time.Time
 	lastError error
@@ -38,10 +38,10 @@ type RunInfo struct {
 
 // Runner 任务调度器
 type Runner struct {
-	tasks   []*Task
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
+	tasks  []*Task
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
 }
 
 // New 创建 Runner，传入 context 用于优雅停止

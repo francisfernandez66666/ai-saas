@@ -26,9 +26,9 @@ const (
 	IndustryStoreVisitSecond = "industry.store_visit_second" // 到店倾向第二段话术（JSON 数组）
 	IndustryPriceReplyLead   = "industry.price_reply_lead"   // 询价回复：已留资（体验后报价，不含"约试驾"）
 	IndustryPriceReplyNoLead = "industry.price_reply_nolead" // 询价回复：未留资（引导到店后报价）
-	IndustrySalesperson      = "industry.salesperson"      // 销售顾问人设（Prompt 人设兜底）
-	IndustryDomainConstraint = "industry.domain_constraint" // 领域约束句子（Prompt 内"只聊X"指令）
-	IndustryHumanReply       = "industry.human_reply"       // 人工接管/待接管话术（JSON 数组；P2-21）
+	IndustrySalesperson      = "industry.salesperson"        // 销售顾问人设（Prompt 人设兜底）
+	IndustryDomainConstraint = "industry.domain_constraint"  // 领域约束句子（Prompt 内"只聊X"指令）
+	IndustryHumanReply       = "industry.human_reply"        // 人工接管/待接管话术（JSON 数组；P2-21）
 )
 
 // industryKeywordList 解析行业关键词列表（JSON 数组）

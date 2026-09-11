@@ -25,16 +25,16 @@ import (
 
 // GLMClient 智谱GLM客户端
 type GLMClient struct {
-	APIKey      string       // API密钥
-	BaseURL     string       // API基础URL
-	ModelName   string       // 模型名称
-	MockMode    bool         // 模拟模式（不调用真实API）
-	MaxTokens   int          // 最大输出token数
-	Temperature float64      // 默认采样温度
-	MaxRetries  int          // 最大重试次数
-	httpClient  *http.Client // HTTP客户端（复用连接）
-	modelMu     sync.Mutex   // P2-59：保护 ModelName/modelOverride 并发访问
-	modelOverride string     // P2-59：per-call 临时模型覆盖
+	APIKey        string       // API密钥
+	BaseURL       string       // API基础URL
+	ModelName     string       // 模型名称
+	MockMode      bool         // 模拟模式（不调用真实API）
+	MaxTokens     int          // 最大输出token数
+	Temperature   float64      // 默认采样温度
+	MaxRetries    int          // 最大重试次数
+	httpClient    *http.Client // HTTP客户端（复用连接）
+	modelMu       sync.Mutex   // P2-59：保护 ModelName/modelOverride 并发访问
+	modelOverride string       // P2-59：per-call 临时模型覆盖
 }
 
 // ChatMessage 对话消息结构
@@ -162,6 +162,7 @@ func (c *GLMClient) GenerateTextWithModelOverride(messages []ChatMessage, temper
 //
 //  2. 自然摊平请求高峰，减少429限流
 //  3. 可以配合"正在输入中"状态做先接住再回复
+//
 // GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座；mock 路径用量为零值）
 func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var reply string

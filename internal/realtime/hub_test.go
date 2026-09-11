@@ -1,12 +1,14 @@
 // WebSocket Hub 路由单测（2026-09-08 本轮新增）
 //
 // 覆盖对象：internal/realtime/hub.go 的订阅路由语义——
-//   1. 顾问端连接（UserID>0）接收本租户全部客户事件；
-//   2. 客户端连接（CustomerID>0）只接收自身 customerID 的事件；
-//   3. 跨租户事件不串扰（TenantID 隔离）；
-//   4. PublishWithContent（消息内容推送）与 Publish（信号推送）行为一致。
+//  1. 顾问端连接（UserID>0）接收本租户全部客户事件；
+//  2. 客户端连接（CustomerID>0）只接收自身 customerID 的事件；
+//  3. 跨租户事件不串扰（TenantID 隔离）；
+//  4. PublishWithContent（消息内容推送）与 Publish（信号推送）行为一致。
+//
 // 背景：Chat/ChatTest 人工接管、客消息、AI 回复均通过 notifyWSWithContent 推送，
-//       本测试守卫"推送可达性"，防止轮询兜底被误设为唯一通道后实时性回退。
+//
+//	本测试守卫"推送可达性"，防止轮询兜底被误设为唯一通道后实时性回退。
 package realtime
 
 import (
