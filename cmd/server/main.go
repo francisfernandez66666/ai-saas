@@ -16,6 +16,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/redisclient"
+	"ai-scrm/internal/realtime"
 	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
 	"ai-scrm/seed"
@@ -25,9 +26,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -60,6 +62,15 @@ func main() {
 	cfg := config.LoadConfig()
 	log.Printf("配置加载完成，服务端口: %s", cfg.Server.Port)
 
+	// 2.1 网关配置安全校验（P0-5 修复：配了 URL 却漏配 TOKEN 会让所有租户匿名出网、
+	// 计费旁路；配了 LISTEN 却没配 TOKEN 会让内嵌网关成为无鉴权 LLM 代理——一律拒绝启动）
+	if cfg.AI.GatewayURL != "" && cfg.AI.GatewayToken == "" {
+		log.Fatalf("配置错误: LLM_GATEWAY_URL 已配置但 LLM_GATEWAY_TOKEN 为空——网关侧无法还原租户，计费将全部旁路。请配置共享密钥或移除网关 URL。")
+	}
+	if cfg.AI.GatewayListen != "" && cfg.AI.GatewayToken == "" {
+		log.Fatalf("配置错误: LLM_GATEWAY_LISTEN 已配置但 LLM_GATEWAY_TOKEN 为空——将暴露无鉴权 LLM 代理（P0-5）。请配置共享密钥。")
+	}
+
 	// 2.5 初始化 Redis（多实例协调层：分布式锁/消息转交/缓存失效）
 	// 未启用(REDIS_ENABLED=false)或连接失败时自动降级为单实例内存模式
 	redisclient.Init(cfg.Redis)
@@ -67,6 +78,7 @@ func main() {
 	// 2.6 初始化消息中心（SAAS_PLAN §2.5）：MQ_TYPE=log 降级 / kafka 真实总线
 	mq.Init(cfg.MQ)
 	defer mq.Close()
+	mq.SetOnPublishSuccess(service.IncKafkaPublish) // G-15：Kafka 发布计数
 
 	// 3. 设置Gin模式
 	gin.SetMode(cfg.Server.Mode)
@@ -155,6 +167,12 @@ func main() {
 	// P2 collector：启动数据飞轮批量上报（COLLECTOR_URL 空则空转，零外部请求）
 	service.StartCollector()
 
+	// P2-70：启动 WebSocket hub 僵尸连接清扫（30s 一轮，180s 无活动移除）
+	realtime.DefaultHub.StartSweeper()
+
+	// P2-1：启动租户解析缓存周期清扫（30s 一轮，清理过期正/负缓存条目）
+	middleware.StartTenantCacheSweeper()
+
 	// 8. 初始化策略中心引擎
 	strategy.InitEngine()
 
@@ -196,26 +214,37 @@ func main() {
 	// 9.35 商业包到期巡检（M2，2026-08-23）：到期摘除(active→expired) + 到期提醒(企微群)
 	// 9.4 订单超时关闭（M4，2026-08-25）：pending 超 order_timeout_minutes(默认15分钟) 自动 closed
 	go func() {
-		service.ResetAllTenantsMonthlyUsageIfDue() // 启动即补一次
-		service.ExpireCheck()
-		service.SweepExpiredOrders() // 启动即扫一次僵尸单
+		// P2-6 修复(2026-09-09)：启动即补一次同样加锁——原实现 9.3 三处启动即跑
+		// （ResetAllTenantsMonthlyUsageIfDue/ExpireCheck/SweepExpiredOrders）无锁，
+		// 多实例同时启动会各自重复执行一轮全表巡检。统一走与周期巡检相同的选主。
+		run := func() {
+			service.ResetAllTenantsMonthlyUsageIfDue()
+			service.ExpireCheck()
+			service.SweepExpiredOrders() // 启动即扫一次僵尸单
+		}
+		if redisclient.IsEnabled() {
+			if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
+				run()
+				h.Unlock()
+			}
+		} else {
+			run()
+		}
 		ticker := time.NewTicker(1 * time.Hour)
-		sweepCount := 0
 		for range ticker.C {
-			run := func() {
+			runWithLock := func() {
 				service.ResetAllTenantsMonthlyUsageIfDue()
 				service.ExpireCheck()
 			}
 			if redisclient.IsEnabled() {
 				if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
-					run()
+					runWithLock()
 					h.Unlock()
 				}
 			} else {
-				run()
+				runWithLock()
 			}
 		}
-		_ = sweepCount // 订单扫描走下方独立短周期 ticker（见 9.45）
 	}()
 
 	// 9.44 数据飞轮回流上报器（P3，2026-08-26）：每小时把上一窗口的配置调参/包操作
@@ -257,6 +286,27 @@ func main() {
 		ticker := time.NewTicker(60 * time.Second)
 		for range ticker.C {
 			service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
+		}
+	}()
+
+	// 9.47 消息中心审计/收件箱每日清理（P1-37，2026-09-09）
+	// message_event_records 审计 30 天、inbox_events 收件箱 90 天；payload 为全量原文，
+	// 无界留存违反隐私最小化。多实例用 Redis 选主兜底（条件 DELETE 幂等，未启用时各自直跑）。
+	// 保留天数可经 system_configs 覆盖：mq_audit_retention_days / mq_inbox_retention_days
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		for range ticker.C {
+			run := func() {
+				service.CleanupMQTables()
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
+					run()
+					h.Unlock()
+				}
+			} else {
+				run()
+			}
 		}
 	}()
 
@@ -324,12 +374,21 @@ func main() {
 	// 登录态路由在各分组再挂 JWTAuth → TenantConsistency 完成租户一致性裁决
 	r.Use(middleware.CORS())
 	r.Use(middleware.TraceID()) // P1-3：全链路 trace 注入（须在鉴权前，覆盖拒登/超管路径）
+	// P1-45(2026-09-09)：基础安全响应头（防嗅探/防点击劫持/凭证泄漏降权）——
+	// 叠加白标 custom_css 仅超管可改的后端限制，构成 XSS 纵深防御
+	r.Use(func(c *gin.Context) {
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Header("X-Frame-Options", "SAMEORIGIN")
+		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		c.Next()
+	})
 	r.Use(middleware.TenantResolver())
 
 	// 11. 注册路由
 	registerRoutes(r)
 
-	// 12. 启动服务
+	// 12. 启动服务（P1-4 修复(2026-09-09)：http.Server + signal.NotifyContext + Shutdown，
+	// 退出序列：停接流 → UsageSink.Stop() 最终 flush（计量三桶与 usage_ledger 不丢账）→ mq.Close → 关连接池）
 	log.Println("========================================")
 	log.Printf("  服务启动成功！监听端口: %s", cfg.Server.Port)
 	log.Println("  管理账号: admin / admin123")
@@ -337,10 +396,42 @@ func main() {
 	log.Printf("  后台管理: http://localhost:%s/admin", cfg.Server.Port)
 	log.Println("========================================")
 
-	err = r.Run(":" + cfg.Server.Port)
-	if err != nil {
+	srv := &http.Server{
+		Addr:              ":" + cfg.Server.Port,
+		Handler:           r,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	go func() {
+		<-ctx.Done()
+		log.Println("[优雅停机] 收到退出信号，停止接收新请求（10s 宽限）...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[优雅停机] HTTP 关闭异常: %v", err)
+		}
+		log.Println("[优雅停机] 执行计量最终 flush...")
+		service.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账
+		log.Println("[优雅停机] 关闭 MQ 消费者...")
+		mq.Close()
+		log.Println("[优雅停机] 关闭数据库连接池...")
+		if sqlDB, err := db.DB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+		log.Println("[优雅停机] 完成")
+	}()
+
+	err = srv.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
 		log.Fatalf("服务启动失败: %v", err)
 	}
+	log.Println("服务已退出")
 }
 
 // registerRoutes 注册所有路由
@@ -375,11 +466,8 @@ func registerRoutes(r *gin.Engine) {
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
 			"version":             "v2.3.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
-			"goroutines":          runtime.NumGoroutine(),
 			"db_ok":               snap.DBOK,
-			"merge_queue_active":  service.DefaultMessageQueueService.ActiveQueueCount(),
 			"critical_alerts_24h": crit24h,
-			"health":              snap.Checks,
 			"status":              status,
 			"ok":                  snap.DBOK,
 		}})
@@ -408,46 +496,52 @@ func registerRoutes(r *gin.Engine) {
 			c.File(filepath.Join(distDir, "index.html"))
 		})
 		log.Println("[FE] React SPA 已挂载: / + /app/")
-
-		// ---- Prometheus 指标端点（P2 监控闭环，零依赖；文本格式由 service.RenderPrometheus 生成）----
-		// 2026-09-09 鉴权加固：配置 METRICS_TOKEN 时须携带 Authorization: Bearer <token>；
-		// 未配置时仅允许 loopback 访问（127.0.0.1/::1）——公网/容器外部无法读取内部指标，杜绝信息泄露。
-		metricsToken := os.Getenv("METRICS_TOKEN")
-		r.GET("/metrics", func(c *gin.Context) {
-			if metricsToken != "" {
-				auth := c.GetHeader("Authorization")
-				if auth != "Bearer "+metricsToken {
-					c.Status(http.StatusForbidden)
-					return
-				}
-			} else {
-				host := c.ClientIP()
-				if host != "127.0.0.1" && host != "::1" && host != "::ffff:127.0.0.1" {
-					c.Status(http.StatusForbidden)
-					return
-				}
-			}
-			c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-			c.String(200, service.RenderPrometheus())
-		})
-		// 请求计数 + 延迟直方图（P1-2：P99 来源）中间件
-		r.Use(func(c *gin.Context) {
-			start := time.Now()
-			service.IncRequest()
-			c.Next()
-			service.RecordRequestLatency(time.Since(start))
-		})
 	} else {
 		log.Println("[FE] 未找到 frontend-react/dist，跳过 SPA 托管（请先 cd frontend-react && npm run build）")
 	}
+
+	// ---- Prometheus 指标端点（P2 监控闭环，零依赖；文本格式由 service.RenderPrometheus 生成）----
+	// P1-18 修复(2026-09-09)：原 /metrics 注册与指标中间件都在 dist 分支内——前端未构建时
+	// 监控整体消失。上移为全局无条件注册。
+	// 2026-09-09 鉴权加固：配置 METRICS_TOKEN 时须携带 Authorization: Bearer <token>；
+	// 未配置时仅允许 loopback 访问（127.0.0.1/::1）——公网/容器外部无法读取内部指标，杜绝信息泄露。
+	metricsToken := os.Getenv("METRICS_TOKEN")
+	r.GET("/metrics", func(c *gin.Context) {
+		if metricsToken != "" {
+			auth := c.GetHeader("Authorization")
+			if auth != "Bearer "+metricsToken {
+				c.Status(http.StatusForbidden)
+				return
+			}
+		} else {
+			host := c.ClientIP()
+			if host != "127.0.0.1" && host != "::1" && host != "::ffff:127.0.0.1" {
+				c.Status(http.StatusForbidden)
+				return
+			}
+		}
+		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+		c.String(200, service.RenderPrometheus())
+	})
+	// 请求计数 + 延迟直方图（P1-2/P1-18：P99 来源）中间件——全局挂载（覆盖 /health /status /metrics 之外全部入口）
+	r.Use(func(c *gin.Context) {
+		start := time.Now()
+		service.IncRequest()
+		c.Next()
+		service.RecordRequestLatency(time.Since(start))
+	})
 
 	// ---- API v1 路由组 ----
 	v1 := r.Group("/api/v1")
 
 	// ---- WebSocket 实时推送（P1-2，独立鉴权：advisor 用 query token，client 用 visitor_key）----
 	// 不挂 JWTAuth 组：WS 难以附带 Authorization header，改用 query 参数手动校验
-	v1.GET("/ws/advisor", api.WSAdvisor)
-	v1.GET("/ws/client", api.WSClient)
+	// P2-16 修复(2026-09-09)：WSAdvisor 握手无限流——匿名/故障客户端可无限并发建立
+	// 长连接（每连接占一个 goroutine + 内存），攻击者可耗尽服务器资源。
+	// 挂 IPRateLimit：每 IP 10 次/分钟（正常用户同时不超过 3 个 WS 标签页）。
+	v1.GET("/ws/advisor", middleware.IPRateLimit("ws_advisor", 10, time.Minute), api.WSAdvisor)
+	// P2-16 修复：WSClient 同理，每 IP 20 次/分钟（客户连接比顾问更多）。
+	v1.GET("/ws/client", middleware.IPRateLimit("ws_client", 20, time.Minute), api.WSClient)
 
 	// ---- 数据飞轮聚合接收端（P2 collector，自有 X-Collector-Key 鉴权，独立于 JWT）----
 	r.POST("/api/v1/collector", api.CollectorReceive)
@@ -456,7 +550,7 @@ func registerRoutes(r *gin.Engine) {
 	auth := v1.Group("/auth")
 	{
 		auth.POST("/login", api.Login)                                                                                                                  // 登录
-		auth.POST("/register", api.Register)                                                                                                            // 注册（邮箱验证开关开启时需验证码）
+		auth.POST("/register", middleware.TurnstileGuard(), middleware.IPRateLimit("register", 10, 10*time.Minute), api.Register)                       // 注册（P1-10：补 IPRateLimit 防脚本批量开号；邮箱验证开关开启时需验证码）
 		auth.GET("/register-config", api.RegisterConfig)                                                                                                // 注册页配置下发（邮箱验证显隐）
 		auth.POST("/email-code", middleware.TurnstileGuard(), middleware.IPRateLimit("reset_email_code", 5, 10*time.Minute), api.SendRegisterEmailCode) // 注册验证码发送（J6 防枚举/限频）
 		auth.POST("/reset-password", middleware.IPRateLimit("reset_pwd", 5, 10*time.Minute), api.SendResetCode)                                         // 发送重置验证码（J6 防枚举+限频）
@@ -480,6 +574,10 @@ func registerRoutes(r *gin.Engine) {
 	// 不走 JWTAuth/TenantConsistency/TenantResolver：租户来自 API Key 归属
 	openapi := r.Group("/openapi/v1")
 	openapi.Use(middleware.OpenAPIAuth())
+	// P2-11 修复(2026-09-09)：OpenAPI 路由组此前无限流——恶意/故障客户端可无限并发打穿 DB。
+	// sk_ 维度限流（与站内租户隔离限流共用 ipLimitMap，bucket=apikey），阈值 60/min/sk；
+	// 同时 touchAPIKey 改同步（鉴权函数内直接调用），去无界 goroutine。
+	openapi.Use(middleware.IPRateLimit("apikey", 60, time.Minute))
 	{
 		openapi.GET("/customers", middleware.RequirePerm(middleware.PermCustomerRead), api.OpenAPICustomers)
 		openapi.GET("/customers/:id/conversations", middleware.RequirePerm(middleware.PermCustomerRead), api.OpenAPICustomerConversations)
@@ -516,9 +614,11 @@ func registerRoutes(r *gin.Engine) {
 	// 挂 OptionalJWTAuth：有合法 Bearer 即注入身份（B端放行），匿名仍走 visitor_key 校验（C端不变）。
 	v1.GET("/chat/history", middleware.OptionalJWTAuth(), api.GetChatHistory)
 
-	// 延迟清零接口（免登录，顾问/管理员点击"立即回复"按钮时调用）
+	// 延迟清零接口（顾问/管理员点击"立即回复"按钮时调用）
 	// 修复问题3：顾问发完人工消息后，AI的模拟延迟还没结束，客户等太久
-	v1.POST("/chat/clear-delay", api.ClearDelay)
+	// P0-9 修复(2026-09-09)：挂 IPRateLimit（原完全裸奔，匿名可批量取消任意客户延迟），
+	// 且 handler 内已做客户租户归属 + visitor_key/登录态双重校验。
+	v1.POST("/chat/clear-delay", middleware.IPRateLimit("chat_clear_delay", 30, time.Minute), api.ClearDelay)
 
 	// 支付网关异步回调（免登录，服务端到服务端）：必须挂在此处（v1.Use(JWTAuth...) 之前），
 	// 支付网关回调不携带用户 JWT，安全性靠 HMAC 验签（VerifyGatewaySign），
@@ -563,6 +663,11 @@ func registerRoutes(r *gin.Engine) {
 		advisorGroup.GET("/test-drives", api.GetTestDrives)               // 试驾单列表
 		advisorGroup.GET("/test-drive/:id", api.GetTestDrive)             // 试驾单详情
 		advisorGroup.PUT("/test-drive/:id", api.UpdateTestDrive)          // 更新试驾单
+		// ---- 邀请推广只读（P1-42，2026-09-09）：从 /admin 组迁来——
+		// 邀请是个人推广资产，移动端 /app 的 sales 等非管理员角色也必须能看邀请/二维码 ----
+		advisorGroup.GET("/referral/info", api.GetReferralInfo)
+		advisorGroup.GET("/referral/records", api.GetReferralRecords)
+		advisorGroup.GET("/referral/qrcode", api.GetReferralQRCode)
 	}
 
 	// ---- 平台超管后台（仅 super_admin）----
@@ -647,11 +752,6 @@ func registerRoutes(r *gin.Engine) {
 
 		// ---- 用量看板（M3，本租户：趋势+阶段分布+成本口径）----
 		admin.GET("/usage/summary", api.AdminUsageSummary)
-
-		// ---- 邀请推广（M-R，2026-08-25）：邀请码/统计 + 后端二维码 PNG ----
-		admin.GET("/referral/info", api.GetReferralInfo)
-		admin.GET("/referral/records", api.GetReferralRecords) // 邀请记录：受邀id/邮箱/邀请与支付/奖励发放
-		admin.GET("/referral/qrcode", api.GetReferralQRCode)
 
 		// ---- 行业包租户侧（P1 三级架构，2026-08-26）：分层列表/两级绑定/部门绑定 ----
 		admin.GET("/packs", api.TenantPackList)

@@ -22,6 +22,30 @@ func seedCustomers() {
 		return
 	}
 
+	// G-24：按用户名查询销售用户ID（不依赖种子自增序列）
+	// 问题背景：种子用户创建顺序不确定时，sales1 的 ID 可能是 2/3/4/5...
+	// 解决方案：通过用户名查询实际 ID，避免硬编码 ID 值
+	// 业务说明：客户需要分配给销售顾问（AssignedUserID），必须关联真实用户
+	salesUserIDs := make(map[string]uint)
+	for _, username := range []string{"sales1", "sales2", "sales3"} {
+		var u model.User
+		if err := db.DB.Where("username = ?", username).First(&u).Error; err == nil {
+			salesUserIDs[username] = u.ID
+		}
+	}
+	// fallback：如果查不到用户（如种子用户未创建），使用默认 ID 值
+	// 注意：默认值仅作兜底，生产环境必须确保种子用户存在
+	s1, s2, s3 := salesUserIDs["sales1"], salesUserIDs["sales2"], salesUserIDs["sales3"]
+	if s1 == 0 {
+		s1 = 2 // 默认 sales1 ID=2
+	}
+	if s2 == 0 {
+		s2 = 3 // 默认 sales2 ID=3
+	}
+	if s3 == 0 {
+		s3 = 4 // 默认 sales3 ID=4
+	}
+
 	customers := []model.Customer{
 		{
 			Name: "陈先生", Phone: "13900000001", WechatID: "chen_001",
@@ -29,7 +53,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石01", CurrentProduct: "大众途观", ProductAge: 4,
 			Source: "抖音", Budget: 35, DecisionCycle: 30, OfflineTouch: 0,
 			TrustLevel: 0.3, IntentScore: 0.25, PriceSensitivity: 0.6, BrandAwareness: 0.3,
-			ResistanceType: "none", AssignedUserID: 2,
+			ResistanceType: "none", AssignedUserID: s1,
 		},
 		{
 			Name: "李女士", Phone: "13900000002", WechatID: "li_002",
@@ -37,7 +61,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石01", CurrentProduct: "", ProductAge: 0,
 			Source: "小红书", Budget: 25, DecisionCycle: 60, OfflineTouch: 0,
 			TrustLevel: 0.25, IntentScore: 0.15, PriceSensitivity: 0.7, BrandAwareness: 0.2,
-			ResistanceType: "price", AssignedUserID: 2,
+			ResistanceType: "price", AssignedUserID: s1,
 		},
 		{
 			Name: "王总", Phone: "13900000003", WechatID: "wang_003",
@@ -45,7 +69,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石ADAMAS", CurrentProduct: "丰田霸道", ProductAge: 6,
 			Source: "老客转介绍", Budget: 80, DecisionCycle: 15, OfflineTouch: 1,
 			TrustLevel: 0.5, IntentScore: 0.65, PriceSensitivity: 0.3, BrandAwareness: 0.6,
-			ResistanceType: "none", AssignedUserID: 3,
+			ResistanceType: "none", AssignedUserID: s2,
 		},
 		{
 			Name: "张女士", Phone: "13900000004", WechatID: "zhang_004",
@@ -53,7 +77,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石01", CurrentProduct: "本田CR-V", ProductAge: 5,
 			Source: "百度", Budget: 32, DecisionCycle: 45, OfflineTouch: 1,
 			TrustLevel: 0.45, IntentScore: 0.5, PriceSensitivity: 0.5, BrandAwareness: 0.4,
-			ResistanceType: "none", AssignedUserID: 4,
+			ResistanceType: "none", AssignedUserID: s3,
 		},
 		{
 			Name: "刘先生", Phone: "13900000005", WechatID: "liu_005",
@@ -61,7 +85,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石ADAMAS", CurrentProduct: "Jeep自由光", ProductAge: 3,
 			Source: "抖音", Budget: 50, DecisionCycle: 20, OfflineTouch: 0,
 			TrustLevel: 0.35, IntentScore: 0.55, PriceSensitivity: 0.4, BrandAwareness: 0.5,
-			ResistanceType: "spec", AssignedUserID: 3,
+			ResistanceType: "spec", AssignedUserID: s2,
 		},
 		{
 			Name: "赵先生", Phone: "13900000006", WechatID: "zhao_006",
@@ -69,7 +93,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石ADAMAS", CurrentProduct: "帕萨特", ProductAge: 7,
 			Source: "门店自然", Budget: 45, DecisionCycle: 90, OfflineTouch: 2,
 			TrustLevel: 0.6, IntentScore: 0.7, PriceSensitivity: 0.4, BrandAwareness: 0.7,
-			ResistanceType: "none", AssignedUserID: 4,
+			ResistanceType: "none", AssignedUserID: s3,
 		},
 		{
 			Name: "孙女士", Phone: "13900000007", WechatID: "sun_007",
@@ -77,7 +101,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石01", CurrentProduct: "奥迪Q3", ProductAge: 4,
 			Source: "微信", Budget: 38, DecisionCycle: 30, OfflineTouch: 0,
 			TrustLevel: 0.4, IntentScore: 0.45, PriceSensitivity: 0.5, BrandAwareness: 0.5,
-			ResistanceType: "service", AssignedUserID: 2,
+			ResistanceType: "service", AssignedUserID: s1,
 		},
 		{
 			Name: "周先生", Phone: "13900000008", WechatID: "zhou_008",
@@ -85,7 +109,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石01", CurrentProduct: "朗逸", ProductAge: 6,
 			Source: "小红书", Budget: 33, DecisionCycle: 40, OfflineTouch: 0,
 			TrustLevel: 0.3, IntentScore: 0.3, PriceSensitivity: 0.6, BrandAwareness: 0.3,
-			ResistanceType: "none", AssignedUserID: 3,
+			ResistanceType: "none", AssignedUserID: s2,
 		},
 		{
 			Name: "吴先生", Phone: "13900000009", WechatID: "wu_009",
@@ -93,7 +117,7 @@ func seedCustomers() {
 			CustomerType: "owner", InterestProduct: "极石ADAMAS", CurrentProduct: "极石01", ProductAge: 3,
 			Source: "老客转介绍", Budget: 60, DecisionCycle: 10, OfflineTouch: 3,
 			TrustLevel: 0.7, IntentScore: 0.8, PriceSensitivity: 0.3, BrandAwareness: 0.85,
-			ResistanceType: "none", AssignedUserID: 4,
+			ResistanceType: "none", AssignedUserID: s3,
 		},
 		{
 			Name: "郑先生", Phone: "13900000010", WechatID: "zheng_010",
@@ -101,7 +125,7 @@ func seedCustomers() {
 			CustomerType: "potential", InterestProduct: "极石ADAMAS", CurrentProduct: "哈弗H6", ProductAge: 5,
 			Source: "百度", Budget: 40, DecisionCycle: 50, OfflineTouch: 1,
 			TrustLevel: 0.4, IntentScore: 0.4, PriceSensitivity: 0.5, BrandAwareness: 0.4,
-			ResistanceType: "brand", AssignedUserID: 2,
+			ResistanceType: "brand", AssignedUserID: s1,
 		},
 	}
 

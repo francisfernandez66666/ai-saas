@@ -12,7 +12,23 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
+
+// assertConversationScope P1-6 修复(2026-09-09)：会话级归属校验（防会话级 IDOR）。
+// 调用方须是客户本人（会话 CustomerID 与请求绑定的客户一致）或对该会话客户
+// 有数据范围权限的顾问/管理员（customerInDataScope）。失败返回 404（不泄露会话存在性）。
+// 注：本系统 C 端会话操作以 customer_id 绑定请求（guest/welcome 链），B 端以 JWT 角色裁决。
+func assertConversationScope(c *gin.Context, conversation *model.Conversation) error {
+	var convCustomer model.Customer
+	if err := db.RQ(c).First(&convCustomer, conversation.CustomerID).Error; err != nil {
+		return err
+	}
+	if customerInDataScope(c, convCustomer.AssignedUserID) {
+		return nil
+	}
+	return gorm.ErrRecordNotFound
+}
 
 // ============================================================
 // 会话创建互斥锁（解决并发请求重复创建会话的竞态问题）
@@ -59,7 +75,7 @@ func HumanReply(c *gin.Context) {
 		Content        string `json:"content" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -67,7 +83,12 @@ func HumanReply(c *gin.Context) {
 	var conversation model.Conversation
 	result := db.RQ(c).First(&conversation, req.ConversationID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
+		return
+	}
+	// P1-6 修复：会话归属校验（无数据范围权限者不能代发人工消息）
+	if err := assertConversationScope(c, &conversation); err != nil {
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
@@ -82,21 +103,23 @@ func HumanReply(c *gin.Context) {
 	db.RQ(c).Save(&conversation)
 
 	// 保存人工消息
+	// P1-6 修复：写 SenderID（记录哪位顾问发的，对齐 AdvisorSendMessage 语义）
+	var senderID uint
+	if v, ok := c.Get("user_id"); ok {
+		senderID, _ = v.(uint)
+	}
 	humanMsg := model.Message{
 		ConversationID: conversation.ID,
 		CustomerID:     conversation.CustomerID,
 		SenderType:     "human",
+		SenderID:       senderID,
 		Content:        req.Content,
 		MessageType:    "text",
 		CreatedAt:      now,
 	}
 	db.RQ(c).Create(&humanMsg)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "发送成功",
-		Data:    humanMsg,
-	})
+	RespOK(c, "发送成功", humanMsg)
 }
 
 // GetMessages 获取会话消息列表
@@ -112,18 +135,14 @@ func GetMessages(c *gin.Context) {
 		Limit(200).
 		Find(&messages)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    messages,
-	})
+	RespOK(c, "success", messages)
 }
 
 // GetConversationList 获取会话列表
 func GetConversationList(c *gin.Context) {
 	var req schema.ConversationListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -148,15 +167,11 @@ func GetConversationList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&conversations)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.PageResponse{
-			Total:    total,
-			Page:     req.Page,
-			PageSize: req.PageSize,
-			List:     conversations,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total:    total,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+		List:     conversations,
 	})
 }
 
@@ -166,14 +181,19 @@ func TransferToHuman(c *gin.Context) {
 		ConversationID uint `json:"conversation_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	var conversation model.Conversation
 	result := db.RQ(c).First(&conversation, req.ConversationID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
+		return
+	}
+	// P1-6 修复：会话归属校验（任意登录用户不得翻转任意会话）
+	if err := assertConversationScope(c, &conversation); err != nil {
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
@@ -181,11 +201,7 @@ func TransferToHuman(c *gin.Context) {
 	conversation.IsHumanLocked = true
 	db.RQ(c).Save(&conversation)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已转人工",
-		Data:    conversation,
-	})
+	RespOK(c, "已转人工", conversation)
 }
 
 // TransferToAI 切回AI
@@ -194,41 +210,27 @@ func TransferToAI(c *gin.Context) {
 		ConversationID uint `json:"conversation_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	var conversation model.Conversation
 	result := db.RQ(c).First(&conversation, req.ConversationID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
+		return
+	}
+	// P1-6 修复：会话归属校验（任意登录用户不得翻转任意会话）
+	if err := assertConversationScope(c, &conversation); err != nil {
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
 	conversation.Mode = "ai"
 	conversation.IsHumanLocked = false
+	// P1-6 修复：切回 AI 同步复位 IsAiReplyEnabled=true（若此前被锁，恢复 AI 回复；对齐 ToggleAiReply 语义）
+	conversation.IsAiReplyEnabled = true
 	db.RQ(c).Save(&conversation)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已切回AI",
-		Data:    conversation,
-	})
+	RespOK(c, "已切回AI", conversation)
 }
-
-// ============================================================
-// AI测试接口（免登录，方便调试）
-// 与正式 Chat() 接口统一使用会话竞态保护 + 冷启动秒回 + 合并状态返回
-// ============================================================
-
-// ChatTest AI对话测试接口
-// 不需要登录token，直接模拟一轮对话
-// 用途：快速验证AI接入、冷启动秒回、消息合并等是否正常
-//
-// 修复内容：
-//  1. Bug 2 修复：加入会话竞态保护 + 冷启动秒回（与正式接口统一）
-//     原Bug：测试接口完全没有会话管理，冷启动秒回不会出现
-//     修复：用客户级互斥锁先查再建，新客户触发秒回，已有客户复用会话
-//  2. Bug 1 修复：合并请求只返回合并状态，不返回完整回复
-//     原Bug：三条并发请求都返回同一段 ai_reply，看起来像三条重复消息
-//     修复：merged 请求只返回 merged=true 标记，主请求返回完整结果

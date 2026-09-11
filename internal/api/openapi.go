@@ -90,8 +90,10 @@ func OpenAPICustomers(c *gin.Context) {
 	list := make([]item, 0, len(customers))
 	for _, cu := range customers {
 		p := cu.Phone
-		if mask && p != "" && len(p) == 11 {
-			p = p[:3] + "****" + p[7:]
+		// P2-23 修复：原仅 len==11 才脱敏——非 11 位手机号（座机/区号/境外）明文直出。
+		// 统一走 service.MaskPhone（正则口径，任何长度都掩中间段）。
+		if mask && p != "" {
+			p = service.MaskPhone(p)
 		}
 		list = append(list, item{
 			ID: cu.ID, Name: cu.Name, Phone: p,
@@ -100,24 +102,24 @@ func OpenAPICustomers(c *gin.Context) {
 			CreatedAt: cu.CreatedAt.Format("2006-01-02 15:04:05"),
 		})
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: gin.H{
+	RespOK(c, "success", gin.H{
 		"total": total, "page": page, "page_size": pageSize, "list": list,
 		"balance": openAPIBalance(c), // M4 计费可见性
-	}})
+	})
 }
 
 // OpenAPICustomerConversations GET /openapi/v1/customers/:id/conversations
 func OpenAPICustomerConversations(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Error_code: "bad_request", Message: "客户ID非法"})
+		RespErr(c, http.StatusBadRequest, 400, "客户ID非法")
 		return
 	}
 
 	// RQ 已限定本租户：跨租户 ID 查询天然 404
 	var customer model.Customer
 	if err := db.RQ(c).Select("id, name, journey_stage").First(&customer, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Error_code: "not_found", Message: "客户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -136,13 +138,13 @@ func OpenAPICustomerConversations(c *gin.Context) {
 			"messages":        messages,
 		})
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: gin.H{
+	RespOK(c, "success", gin.H{
 		"customer_id":   customer.ID,
 		"name":          customer.Name,
 		"journey_stage": customer.JourneyStage,
 		"conversations": result,
 		"balance":       openAPIBalance(c), // M4 计费可见性
-	}})
+	})
 }
 
 // OpenAPICDPProfile GET /openapi/v1/cdp/profiles/:one_id —— 复用 Phase A 内部函数
@@ -153,14 +155,14 @@ func OpenAPICDPProfile(c *gin.Context) {
 	view := cdp.GetProfile(tenantID, oneID)
 	if view == nil {
 		// 与 B 端同款二次校验：不区分不存在/他租户，统一404防枚举
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Error_code: "not_found", Message: "画像不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "画像不存在")
 		return
 	}
 	view.Name = maskSensitiveFields(view.Name)
 	for k, v := range view.Tags {
 		view.Tags[k] = maskSensitiveFields(v)
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: view})
+	RespOK(c, "success", view)
 }
 
 // OpenAPIUsage GET /openapi/v1/usage?days=30 —— 用量对账（usage_records 汇总）
@@ -182,10 +184,10 @@ func OpenAPIUsage(c *gin.Context) {
 		Where("tenant_id = ? AND date >= TO_CHAR(CURRENT_DATE - ?, 'YYYY-MM-DD')", tid, days).
 		Order("date DESC").Scan(&rows).Error
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: rows})
+	RespOK(c, "success", rows)
 }
 
 // ============================================================
@@ -248,12 +250,20 @@ func AdminCreateAPIKey(c *gin.Context) {
 }
 
 // AdminListAPIKeys GET /api/v1/admin/apikeys
+// P2-29 修复(2026-09-09)：加统一分页，防拖全表。call_count / last_used_at 为 Key 计量
+// （api_calls）的对外展示字段；鉴权+perm+计量统一在 middleware.OpenAPIAuth 裁决
 func AdminListAPIKeys(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
+	if page <= 0 {
+		page = 1
+	}
+	var total int64
+	db.RQ(c).Model(&model.ApiKey{}).Count(&total)
 	var keys []model.ApiKey
 	db.RQ(c).Select("id, name, key_prefix, permissions, last_used_at, call_count, is_active, created_at").
-		Order("id DESC").Find(&keys)
-	// call_count / last_used_at 为 Key 计量（api_calls）的对外展示字段；鉴权+perm+计量统一在 middleware.OpenAPIAuth 裁决
-	RespOK(c, "", keys)
+		Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&keys)
+	RespOK(c, "", gin.H{"list": keys, "total": total, "page": page, "page_size": pageSize})
 }
 
 // AdminToggleAPIKey POST /api/v1/admin/apikeys/:id/disable | enable
@@ -264,8 +274,14 @@ func AdminEnableAPIKey(c *gin.Context) { toggleAPIKey(c, true) }
 
 // toggleAPIKey 启停实现：db.RQ 租户过滤只能操作本租户Key；停用即时生效（鉴权每请求查库无缓存窗口）
 func toggleAPIKey(c *gin.Context, active bool) {
+	// P2-28 修复：非数字 id 直打 PG 22P02。统一 PathUintID
+	id, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "API Key ID非法")
+		return
+	}
 	// RQ 租户过滤：只能操作本租户的 Key
-	res := db.RQ(c).Model(&model.ApiKey{}).Where("id = ?", c.Param("id")).
+	res := db.RQ(c).Model(&model.ApiKey{}).Where("id = ?", id).
 		Update("is_active", active)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "API Key 不存在")
@@ -275,29 +291,39 @@ func toggleAPIKey(c *gin.Context, active bool) {
 	if !active {
 		action = "apikey_disable" // 停用即时生效（每请求查库无缓存窗口）
 	}
-	writeAuditSimple(c, tenantIDOf(c), action, "apikey:"+c.Param("id"))
+	writeAuditSimple(c, tenantIDOf(c), action, "apikey:"+strconv.FormatUint(uint64(id), 10))
 	RespOK(c, map[bool]string{true: "已启用", false: "已停用"}[active], nil)
 }
 
 // AdminDeleteAPIKey DELETE /api/v1/admin/apikeys/:id
 func AdminDeleteAPIKey(c *gin.Context) {
-	res := db.RQ(c).Where("id = ?", c.Param("id")).Delete(&model.ApiKey{})
+	// P2-28 修复：非数字 id 直打 PG 22P02。统一 PathUintID
+	id, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "API Key ID非法")
+		return
+	}
+	res := db.RQ(c).Where("id = ?", id).Delete(&model.ApiKey{})
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "API Key 不存在")
 		return
 	}
-	writeAuditSimple(c, tenantIDOf(c), "apikey_delete", "apikey:"+c.Param("id"))
+	writeAuditSimple(c, tenantIDOf(c), "apikey_delete", "apikey:"+strconv.FormatUint(uint64(id), 10))
 	RespOK(c, "已删除", nil)
 }
 
 // writeAuditSimple 轻量审计写入（异步，失败不影响主流程）
+// P1-2 修复(2026-09-09)：gin.Context 在 handler 返回后回收复用，goroutine 内读 c.* 有数据竞争；
+// IP/UserAgent 必须在 goroutine 外提取为局部变量再传入。
 func writeAuditSimple(c *gin.Context, tenantID uint, action, resource string) {
 	uidV, _ := c.Get("user_id")
+	clientIP := c.ClientIP()
+	userAgent := c.Request.UserAgent()
 	go func() {
 		defer func() { _ = recover() }()
 		db.DB.Create(&model.TenantAuditLog{
 			TenantID: tenantID, UserID: toUintSafe(uidV), Action: action, Resource: resource,
-			IP: c.ClientIP(), UserAgent: c.Request.UserAgent(),
+			IP: clientIP, UserAgent: userAgent,
 		})
 	}()
 }

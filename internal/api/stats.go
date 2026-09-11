@@ -5,7 +5,6 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
-	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
@@ -66,16 +65,16 @@ func GetOverview(c *gin.Context) {
 		conversionRate = float64(convertedCustomers) / float64(totalCustomers)
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.StatsOverview{
-			TotalCustomers:      totalCustomers,
-			NewCustomersToday:   0, // 简化，实际需按日期统计
-			ActiveConversations: activeConversations,
-			ConversionRate:      conversionRate,
-			AvgIntentScore:      avgIntent,
-			HumanTransferRate:   transferRate,
-		},
+	// NewCustomersToday 真实统计：今日新增客户数
+	var newToday int64
+	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Customer{}).Where("status = ? AND created_at >= CURRENT_DATE", 1).Count(&newToday)
+
+	RespOK(c, "success", schema.StatsOverview{
+		TotalCustomers:      totalCustomers,
+		NewCustomersToday:   newToday,
+		ActiveConversations: activeConversations,
+		ConversionRate:      conversionRate,
+		AvgIntentScore:      avgIntent,
+		HumanTransferRate:   transferRate,
 	})
 }

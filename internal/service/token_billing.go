@@ -31,6 +31,7 @@ import (
 	"ai-scrm/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // TokenBillingEnabled 引擎总闸（平台级热开关）
@@ -86,16 +87,17 @@ func (r DeductResult) String() string {
 }
 
 // DeductTokensActual 按实际用量三桶顺序扣减（事务 + 行锁，原子）
-// tokens = 本次请求真实消耗（usage.TotalTokens）；任何前置闸门未开时为 no-op。
+// P1-17 修复(2026-09-09)：增加 error 返回值，供 UsageSink 在扣减失败时回补影子余额并重投队列。
+// tokens = 本次请求真实消耗（usage.TotalTokens）；任何前置闸门未开时为 no-op（返回 nil）。
 // 2026-09-03 计费统一：本函数由 UsageSink 批量落库调用（每租户每 flush 周期一次），
 // 业务层不再直接 `go DeductTokensActual`，而是投递 SinkRecordUsage 统一计量。
-func DeductTokensActual(tenantID uint, tokens int64) {
+func DeductTokensActual(tenantID uint, tokens int64) error {
 	if tenantID == 0 || tokens <= 0 || !TokenBillingEnabled() {
-		return
+		return nil
 	}
 	if !billingEnforced() {
 		log.Printf("[TokenBilling] 灰度未强制，仅留痕 tenant=%d tokens=%d", tenantID, tokens)
-		return
+		return nil
 	}
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		// P2-2 RLS热路径接入：事务内激活租户行级隔离（RLS_ENABLED=true 时 DB 强制收敛）
@@ -103,7 +105,8 @@ func DeductTokensActual(tenantID uint, tokens int64) {
 			return r.Error
 		}
 		var t model.Tenant
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").
+		// GORM v2 行锁：clause.Locking{Strength:"UPDATE"}（v1 的 gorm:query_option 在 v2 已失效，2026-09-09 审计修复）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Select("id, free_token_balance, free_token_expires_at, monthly_token_quota, monthly_token_used, token_balance").
 			First(&t, tenantID).Error; err != nil {
 			return err
@@ -151,7 +154,9 @@ func DeductTokensActual(tenantID uint, tokens int64) {
 	})
 	if err != nil {
 		log.Printf("[TokenBilling] 扣减失败 tenant=%d tokens=%d: %v", tenantID, tokens, err)
+		return err
 	}
+	return nil
 }
 
 // GrantTrialBucket 注册赠送免费桶 —— 防薅v2 双唯一版（2026-08-26）
@@ -235,7 +240,9 @@ func ReportAuditIncrement(lastID uint) bool {
 		return false
 	}
 	payload, _ := json.Marshal(map[string]any{"type": "audit_increment", "items": rows})
-	resp, err := http.Post(url, "application/json", bytes.NewReader(payload))
+	// P2-48 修复：http.Post 默认无超时——云端失联会卡死调用链。加 8s 客户端超时。
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Post(url, "application/json", bytes.NewReader(payload))
 	if err != nil {
 		log.Printf("[Feedback] 回流上报失败: %v", err)
 		return false

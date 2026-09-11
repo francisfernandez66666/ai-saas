@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { Layout, Menu, Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { AUTH, apiJSON } from '../lib/api'
+import { AUTH, apiJSON, logoutAndRedirect } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
@@ -221,7 +221,7 @@ export default function SuperAdmin() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 13, color: '#6b7280' }}>{me}</span>
           <a href="/admin" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>租户后台</a>
-          <Button size="small" variant="outline" onClick={() => { localStorage.clear(); location.href = '/login' }}>退出</Button>
+          <Button size="small" variant="outline" onClick={logoutAndRedirect}>退出</Button>
         </div>
       </Header>
       <Layout>

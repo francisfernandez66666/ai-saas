@@ -26,11 +26,11 @@ import (
 //   - L3：意向分 ≥ θ_urgency_L2（高意向，需重点关注）
 func Step5_CalcUrgency(intentScore float64, highIntentRounds int) string {
 	// 修复：从SystemConfigService读取阈值，后台调参即时生效
-	L1 := service.DefaultSystemConfigService.GetFloat("theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
-	L2 := service.DefaultSystemConfigService.GetFloat("theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
+	L1 := service.SafeCfgFloat("theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
+	L2 := service.SafeCfgFloat("theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
 
 	// L3：高意向持续多轮
-	if intentScore >= L2 && highIntentRounds >= service.DefaultSystemConfigService.GetInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
+	if intentScore >= L2 && highIntentRounds >= service.SafeCfgInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
 		return UrgencyL3
 	}
 

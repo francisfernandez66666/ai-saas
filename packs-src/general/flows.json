@@ -1,0 +1,23 @@
+[
+  {
+    "id": "welcome",
+    "name": "欢迎语",
+    "trigger": "greeting",
+    "response": "您好！我是您的专属顾问，有什么可以帮您？",
+    "next": null
+  },
+  {
+    "id": "inquiry",
+    "name": "需求询问",
+    "trigger": "any",
+    "response": "请问您想了解什么呢？",
+    "next": "collect_info"
+  },
+  {
+    "id": "collect_info",
+    "name": "信息收集",
+    "trigger": "any",
+    "response": "方便留一下您的联系方式吗？",
+    "next": null
+  }
+]

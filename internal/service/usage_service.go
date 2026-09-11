@@ -62,11 +62,13 @@ func ConsumeAIQuota(tenantID uint) bool {
 	return true
 }
 
-// ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（H4 修复，2026-08-22 初版）
+// ResetAllTenantsMonthlyUsageIfDue 全租户月度用量重置（P0-2 修复，2026-09-09）
 //
 // 根因：used_ai_calls 此前永不重置（usage_reset_at 字段零引用），累计值比对月配额，
 // 租户用满后永久降级规则话术。H4 补充：订阅 token 桶(monthly_token_used) 当初同样
 // 只会在发放付费包时重置，月底从不自动清零，导致付费租户第二月 token 配额永久耗尽。
+// 2026-09-09 审计修复：原实现取"今天 0 点"而非"本月 1 日 0 点"，导致每月用量每天清零一次
+// （月度订阅桶变日额度，billing_enforced 一开即资损）。现改为真正月初判定。
 // 规则：
 //   - usage_reset_at 为空 或 早于本月（< 本月1日0点）→ ① used_ai_calls 清零
 //     ② monthly_token_used 清零（订阅桶月底清零）、usage_reset_at=执行日
@@ -74,8 +76,9 @@ func ConsumeAIQuota(tenantID uint) bool {
 //
 // 由 main.go 每小时 ticker 调用（Redis 选主，多实例仅主节点执行；未启用 Redis 各实例直跑亦幂等）
 func ResetAllTenantsMonthlyUsageIfDue() int {
-	// 注意 layout：Go 参考时间是 2006-01-02 15:04:05（01=月、02=日），别写成 2006-01-01
-	monthStart := time.Now().Format("2006-01-02") + " 00:00:00"
+	now := time.Now()
+	firstOfMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.Local)
+	monthStart := firstOfMonth.Format("2006-01-02 15:04:05")
 	res := db.DB.Exec(`UPDATE tenants SET
 		used_ai_calls = 0,
 		monthly_token_used = 0,
@@ -125,14 +128,20 @@ func RecordUsage(tenantID, customerID, userID uint, stage, provider, modelName s
 }
 
 // estimateCostMicro 成本估算（微元）= total_tokens ÷1000 × 单价(微元/千token) × 均摊系数
+// P2-56 修复(2026-09-09)：gateway 供应商不再按硅基流动价估算——网关转发走独立单价档
+// price_micro_per_ktok_gateway（默认与硅基流动一致，防止口径混淆）。访问改 SafeCfg 防单例未初始化 panic。
 func estimateCostMicro(provider string, totalTokens int) int64 {
+	lower := strings.ToLower(provider)
 	var unitPrice int64 = 8000 // 默认硅基流动档
-	if strings.Contains(strings.ToLower(provider), "zhipu") {
-		unitPrice = int64(DefaultSystemConfigService.GetInt("price_micro_per_ktok_zhipu", 15000))
-	} else {
-		unitPrice = int64(DefaultSystemConfigService.GetInt("price_micro_per_ktok_siliconflow", 8000))
+	switch {
+	case strings.Contains(lower, "zhipu"):
+		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_zhipu", 15000))
+	case strings.Contains(lower, "gateway"):
+		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_gateway", 8000))
+	default:
+		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_siliconflow", 8000))
 	}
-	markup := DefaultSystemConfigService.GetFloat("billing_markup_multiplier", 1.5)
+	markup := SafeCfgFloat("billing_markup_multiplier", 1.5)
 	return int64(float64(totalTokens) / 1000 * float64(unitPrice) * markup)
 }
 

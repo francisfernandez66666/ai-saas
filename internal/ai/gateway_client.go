@@ -30,10 +30,12 @@ type GatewayClient struct {
 }
 
 // gatewayChatRequest OpenAI 兼容请求体
+// Temperature omitempty（P1-40）：调用方传 0（省略默认）时不发出该字段，网关侧 nil→0.7；
+// 显式非零温度正常透传（含显式 0 通过网关 *float64 表达）。
 type gatewayChatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []ChatMessage `json:"messages"`
-	Temperature float64       `json:"temperature"`
+	Temperature float64       `json:"temperature,omitempty"`
 	Stream      bool          `json:"stream"`
 }
 
@@ -81,15 +83,24 @@ func (g *GatewayClient) SetModel(modelName string) {
 	}
 }
 
-// signTenant 用共享密钥对 tenantID 签名，生成 <tenantID>.<sig> 形式的网关鉴权令牌
+// signTenant 用共享密钥对 tenantID 签名，生成 <tenantID>.<ts>.<sig> 形式的网关鉴权令牌
 // 网关服务端据此还原租户并做 fail-closed 计量；tenantID=0 视为平台内部调用（不签名）
+// P1-31 修复(2026-09-09)：Secret=="" 且 tenantID>0 时若仍质押签名→网关无法还原租户，
+// 计费失效。此处仅放行 tenantID==0（平台内部），其余情况必须持有密钥（启动已由 P0-5 Fatal 拦截）。
+// P1-40 修复(2026-09-09)：token 追加 ts 字段（Unix 秒）——防重放：网关侧校验 ±5min 窗口，
+// 旧 token 无法反复使用，且可按 ts 吊销租户。
 func (g *GatewayClient) signTenant(tenantID uint) string {
-	if tenantID == 0 || g.Secret == "" {
+	if tenantID == 0 {
 		return ""
 	}
+	if g.Secret == "" {
+		log.Printf("[AI网关] 警告：tenantID=%d 但网关密钥为空——签名缺失，网关侧将 fail-closed 拒绝", tenantID)
+		return ""
+	}
+	ts := time.Now().Unix()
 	mac := hmac.New(sha256.New, []byte(g.Secret))
-	mac.Write([]byte(fmt.Sprintf("%d", tenantID)))
-	return fmt.Sprintf("%d.%s", tenantID, hex.EncodeToString(mac.Sum(nil)))
+	mac.Write([]byte(fmt.Sprintf("%d.%d", tenantID, ts)))
+	return fmt.Sprintf("%d.%d.%s", tenantID, ts, hex.EncodeToString(mac.Sum(nil)))
 }
 
 // GenerateTextWithUsage 经网关转发并透传 token 用量（与 SiliconFlow/GLM 客户端对齐签名）
@@ -102,7 +113,7 @@ func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperatur
 	reqBody := gatewayChatRequest{
 		Model:       model,
 		Messages:    messages,
-		Temperature: temperature,
+		Temperature: temperature, // 0 时 omitempty 省略字段→网关默认 0.7（P1-40）
 		Stream:      false,
 	}
 	raw, err := json.Marshal(reqBody)

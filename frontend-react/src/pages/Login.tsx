@@ -60,8 +60,13 @@ export default function Login() {
       return
     }
     // P1-2：登录后跳转到 redirect 参数指定的页面（路由守卫带回的原路径）
+    // P1-46 修复：仅允许站内相对路径——reject https://evil.com 与 //evil.com（协议相对）
     const urlParams = new URLSearchParams(location.search)
-    const redirectPath = urlParams.get('redirect')
+    const rawRedirect = urlParams.get('redirect')
+    const redirectPath =
+      rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//')
+        ? rawRedirect
+        : ''
     if (redirectPath) {
       location.href = redirectPath
       return

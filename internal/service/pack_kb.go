@@ -13,6 +13,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 	"unicode"
 
 	"ai-scrm/internal/db"
@@ -21,17 +23,37 @@ import (
 
 // boundPackCodes 取租户绑定包的行业+企业 code（去重）
 // 一个租户可绑定行业包和企业包，返回去重后的code列表
+// P2-51 修复：加短TTL进程缓存——检索/提 prompt 每次会话都查绑定表（每片段、每 prompt 各一次）
 func boundPackCodes(tenantID uint) []string {
+	if v, ok := packBindCache.Load(tenantID); ok {
+		e := v.(packBindCacheEntry)
+		if time.Now().Before(e.expireAt) {
+			return e.codes
+		}
+		packBindCache.Delete(tenantID)
+	}
 	var bind model.TenantPackBinding
 	if err := db.DB.Where("tenant_id = ?", tenantID).First(&bind).Error; err != nil {
+		packBindCache.Store(tenantID, packBindCacheEntry{codes: nil, expireAt: time.Now().Add(packBindCacheTTL)})
 		return nil
 	}
 	codes := []string{bind.PackCode}
 	if bind.EnterpriseCode != "" && bind.EnterpriseCode != bind.PackCode {
 		codes = append(codes, bind.EnterpriseCode)
 	}
+	packBindCache.Store(tenantID, packBindCacheEntry{codes: codes, expireAt: time.Now().Add(packBindCacheTTL)})
 	return codes
 }
+
+// packBindCache 租户绑定包 code 短TTL缓存（P2-51）
+const packBindCacheTTL = 30 * time.Second
+
+type packBindCacheEntry struct {
+	codes    []string
+	expireAt time.Time
+}
+
+var packBindCache sync.Map // tenantID(uint) → packBindCacheEntry
 
 // GetBoundPackPrompts 收集租户绑定包（行业+企业）的定制系统指令
 // 从 system_configs 表读取 pack_prompts_{code} 键值，解析 persona 和 system_instruction
@@ -302,15 +324,16 @@ func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.K
 			titleScore += tbh
 		}
 		total := float64(contentScore + titleScore*3)
+		// P2-47 修复：embedding JSON 解析一次存局部——原 307/313 各解析一次/行，
+		// 每片段 2-3 次解析（1536 维 ×350 片段×3），高频检索路径重复做功。
+		fEmb := embeddingFromJSON(f.EmbeddingJSON)
 		// 语义分量：余弦相似度(0~1)映射为加权分（与关键词分同量级混合）
-		if queryEmb != nil {
-			if fEmb := embeddingFromJSON(f.EmbeddingJSON); len(fEmb) > 0 {
-				sim := cosineSimilarity(queryEmb, fEmb)
-				total += float64(sim) * 6.0 // 语义命中权重（近似一次强关键词匹配）
-			}
+		if queryEmb != nil && len(fEmb) > 0 {
+			sim := cosineSimilarity(queryEmb, fEmb)
+			total += float64(sim) * 6.0 // 语义命中权重（近似一次强关键词匹配）
 		}
 		// 阈值：纯关键词阈值≥2；含向量分量时相似度>0.3 即视为命中
-		if total >= 2 || (queryEmb != nil && embeddingFromJSON(f.EmbeddingJSON) != nil && cosineSimilarity(queryEmb, embeddingFromJSON(f.EmbeddingJSON)) > 0.3) {
+		if total >= 2 || (queryEmb != nil && len(fEmb) > 0 && cosineSimilarity(queryEmb, fEmb) > 0.3) {
 			hits = append(hits, scored{f, total})
 		}
 	}

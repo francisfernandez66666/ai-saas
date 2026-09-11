@@ -3,7 +3,8 @@
 import { MessagePlugin } from 'tdesign-react'
 
 // 本地存储里放登录 token 的键名
-const TOKEN_KEY = 'scrm_auth_token'
+// P2-87 修复：导出供 realtime.ts 复用，避免字面量重复（曾硬编码 'scrm_auth_token'）
+export const TOKEN_KEY = 'scrm_auth_token'
 
 // 业务错误码 → 用户提示（P1-4：按后端 error_code 统一 toast，去 AI 味短句）
 const ERR_MSG: Record<string, string> = {
@@ -50,6 +51,22 @@ export function setToken(t: string) {
  */
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
+  invalidateSession() // P1-50：清会话缓存，防登出后残留旧 me 身份
+}
+
+// 访客身份键（C 端客户本地持久化，退出登录不得清除——P2-85）
+export const VISITOR_KEY = 'scrm_visitor_key'
+
+/**
+ * P2-85 修复：统一退出登录 helper。
+ * 原来 Admin/SuperAdmin/Advisor 直接 localStorage.clear() 连 C 端 visitor_key 一起清，
+ * 导致访客身份丢失。改为白名单清除：只删登录相关键，保留访客身份。
+ */
+export function logoutAndRedirect() {
+  clearToken()
+  // 按需清理其它登录态相关键（如有），绝不碰 visitor_key
+  localStorage.removeItem('remember_username')
+  location.href = '/login'
 }
 
 /**
@@ -82,14 +99,23 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
   if (res.status === 401) {
     handleUnauthorized()
   } else if (res.status === 403) {
-    // 后端 MustChangePasswordGuard 对未改密用户拦截所有受保护路由（返回403）。
-    // 已登录用户被拦时，跳登录页并带 mcp=1 直接展示改密表单（change-password 在白名单内，不受拦截）。
+    // P1-43 修复：403 来源不复原只有"必须改密"——AdminRequired/TenantConsistency/配额拦截
+    // 都是 403。旧逻辑一律跳 /login?mcp=1＝误甩且丢当前页。现按响应 error_code 分流：
+    //   仅 must_change_password → 跳改密页；其余 → toast 提示现在页停留。
+    // 注意：未登录(无 token)时后端一般返回 401，403 通常已登录；token 存在才处理跳转。
     if (getToken()) {
-      const p = location.pathname
-      const onAuthPage = p === '/login' || p === '/register' || p.startsWith('/app/login') || p.startsWith('/app/register')
-      if (!onAuthPage) {
-        location.href = '/login?mcp=1'
+      const json = await res.clone().json().catch(() => null)
+      const code = json && (json.error_code as string)
+      if (code === 'must_change_password') {
+        const p = location.pathname
+        const onAuthPage =
+          p === '/login' || p === '/register' || p.startsWith('/app/login') || p.startsWith('/app/register')
+        if (!onAuthPage) location.href = '/login?mcp=1'
+      } else {
+        toastError(json)
       }
+    } else {
+      toastError(null)
     }
   }
   return res
@@ -142,4 +168,78 @@ export async function AUTH<T = any>(
   })
   toastError(json) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
   return json
+}
+
+// ============================================================
+// P1-50 会话校验（2026-09-09）
+// localStorage role 可被篡改（App.tsx 旧守卫只查 token 存在），凭据角色必须以 /auth/me 为准。
+// 60s 缓存避免每路由切换都打后端；命中缓存直接使用 me 响应里的角色/用户名（并回写 localStorage 纠偏篡改值）。
+// ============================================================
+
+// MeInfo /auth/me data 结构
+export type MeInfo = {
+  id: number
+  username: string
+  role: string
+  tenant_id: number
+  email?: string
+  must_change_password?: boolean
+}
+
+// me 会话缓存：{ info, ts }，ts 秒级时间戳
+let meCache: { info: MeInfo; ts: number } | null = null
+const ME_CACHE_TTL = 60 // 秒
+
+/**
+ * 校验当前登录态并返回服务端权威身份（含角色）
+ * - token 缺失 → 直接返回 null（由调用方决定跳登录）
+ * - /auth/me 409/403/401 → 清 token 返回 null
+ * - must_change_password 为 true → 返回 null（调用方跳改密页）
+ * @returns 权威身份，未登录/失效/需改密返回 null
+ */
+export async function verifySession(): Promise<MeInfo | null> {
+  const tk = getToken()
+  if (!tk) return null
+  const now = Math.floor(Date.now() / 1000)
+  if (meCache && now - meCache.ts < ME_CACHE_TTL) {
+    // 命中缓存：顺便把篡改的 localStorage role/username 纠偏回权威值
+    localStorage.setItem('role', meCache.info.role)
+    localStorage.setItem('username', meCache.info.username)
+    return meCache.info
+  }
+  try {
+    const res = await fetch('/api/v1/auth/me', {
+      headers: { Authorization: 'Bearer ' + tk },
+    })
+    if (res.status === 401 || res.status === 403) {
+      clearToken()
+      meCache = null
+      return null
+    }
+    const json = await res.json().catch(() => null)
+    if (!json || json.code !== 0 || !json.data) {
+      clearToken()
+      meCache = null
+      return null
+    }
+    const info = json.data as MeInfo
+    if (info.must_change_password) {
+      meCache = null
+      return null // 调用方跳 /login?mcp=1
+    }
+    // 角色/用户名以服务端为准（纠偏 localStorage）
+    localStorage.setItem('role', info.role)
+    localStorage.setItem('username', info.username)
+    meCache = { info, ts: now }
+    return info
+  } catch {
+    // 网络异常：保守返回 null（用户可能离网），交由调用方跳登录
+    meCache = null
+    return null
+  }
+}
+
+/** 使 /auth/me 缓存失效（登录/登出/改密后应调用） */
+export function invalidateSession() {
+  meCache = null
 }

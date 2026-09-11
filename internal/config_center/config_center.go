@@ -67,13 +67,16 @@ func Seed(tenantID uint) (int, error) {
 }
 
 // Upgrade 批量升级租户覆盖值（upsert）
+// P1-38(2026-09-09)：存储形态校验修复——原 json.Valid 会拒绝 "on"/"web" 等合法裸字符串配置，
+// 一旦接通 Upgrade 所有 string 配置被静默跳过。现放行"合法 JSON 或纯字符串"两类。
 func Upgrade(tenantID uint, items map[string]string) (int, error) {
 	if tenantID == 0 || len(items) == 0 {
 		return 0, fmt.Errorf("Upgrade 参数为空")
 	}
 	n := 0
 	for k, v := range items {
-		if !json.Valid([]byte(v)) {
+		if !isConfigStorageValid(v) {
+			log.Printf("[ConfigCenter] Upgrade 跳过非法值 key=%s val=%q", k, v)
 			continue
 		}
 		var existing model.SystemConfig
@@ -87,7 +90,11 @@ func Upgrade(tenantID uint, items map[string]string) (int, error) {
 			return n, err
 		}
 		var def model.SystemConfig
-		db.DB.Where("tenant_id = 0 AND \"key\" = ?", k).First(&def)
+		// P1-38 修复：First 错误不再被吞——系统默认缺失时按 value_type=string 兜底，
+		// 避免空 Category/ValueType 污染定义库（此前静默写入空行）
+		if derr := db.DB.Where("tenant_id = 0 AND \"key\" = ?", k).First(&def).Error; derr != nil {
+			def = model.SystemConfig{Category: "custom", Key: k, ValueType: "string", DefaultValue: v}
+		}
 		row := model.SystemConfig{
 			TenantID: tenantID, Category: def.Category, Key: k, Value: v,
 			ValueType: def.ValueType, Description: def.Description,
@@ -96,15 +103,37 @@ func Upgrade(tenantID uint, items map[string]string) (int, error) {
 		if row.ValueType == "" {
 			row.ValueType = "string"
 		}
+		if row.Category == "" {
+			row.Category = "custom"
+		}
 		if err := db.DB.Create(&row).Error; err != nil {
 			return n, err
 		}
 		n++
 	}
-	service.DefaultSystemConfigService.Reload()
+	// P1-38：指针判空——测试环境/未初始化时跳过 Reload（生产 main 启动必然初始化）
+	if service.DefaultSystemConfigService != nil {
+		service.DefaultSystemConfigService.Reload()
+	}
 	publish(tenantID, "upgrade", "params", n)
 	log.Printf("[ConfigCenter] 租户%d Upgrade：%d 项覆盖已生效", tenantID, n)
 	return n, nil
+}
+
+// isConfigStorageValid 判定配置存储形态是否合法（P1-38）
+// 合法 = JSON（json.Valid）或纯标量字符串（"on"/"web"/"10,30" 等 system_configs 常见存储形态）。
+// 反例：`{"a":`（截断 JSON）、`{on}`（花括号包非 JSON）视为非法跳过。
+func isConfigStorageValid(v string) bool {
+	if v == "" {
+		return false
+	}
+	if json.Valid([]byte(v)) {
+		// JSON 合法即可（含 "..." 字符串、数字、布尔、对象、数组）
+		return true
+	}
+	// 纯字符串放行：不得以 JSON 结构符起手（避免截断 JSON 混入）
+	first := v[0]
+	return first != '{' && first != '[' && first != '"'
 }
 
 // Rollback 删除指定租户的覆盖层（keys 空=全部），回落系统默认
@@ -120,7 +149,9 @@ func Rollback(tenantID uint, keys []string) (int, error) {
 	if res.Error != nil {
 		return 0, res.Error
 	}
-	service.DefaultSystemConfigService.Reload()
+	if service.DefaultSystemConfigService != nil {
+		service.DefaultSystemConfigService.Reload()
+	}
 	publish(tenantID, "rollback", "params", int(res.RowsAffected))
 	log.Printf("[ConfigCenter] 租户%d Rollback：清除 %d 项覆盖", tenantID, res.RowsAffected)
 	return int(res.RowsAffected), nil

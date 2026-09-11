@@ -27,7 +27,7 @@ func (u Usage) IsZero() bool { return u.TotalTokens <= 0 }
 // stageModelOverride 阶段模型覆盖配置项
 type stageModelOverride struct {
 	Model    string `json:"model"`
-	Provider string `json:"provider"` // 空=按模型名推断（含glm→zhipu，否则siliconflow）
+	Provider string `json:"provider"` // 空=按模型名推断：优先 siliconflow（主力通道），含 glm 仅当显式指定 zhipu 才走智谱
 }
 
 // ResolveStageModel 解析阶段模型覆盖：stage_models JSON 配置了该阶段且非空则生效
@@ -46,11 +46,10 @@ func ResolveStageModel(stage string) (string, string, bool) {
 	}
 	provider := o.Provider
 	if provider == "" {
-		if containsFold(o.Model, "glm") {
-			provider = string(ProviderZhipu)
-		} else {
-			provider = string(ProviderSiliconFlow)
-		}
+		// P1-28 修复(2026-09-09)：主力模型恰是硅基流动的 GLM-4-9B，原"含 glm 推断 zhipu"
+		// 会把运营配的 {"reply":{"model":"GLM-4-9B"}} 路由到智谱客户端拿硅基模型名调用 → 401
+		// 静默回退，阶段覆盖对主力模型永不生效。默认一律 siliconflow；仅显式指定 provider=zhipu 走智谱。
+		provider = string(ProviderSiliconFlow)
 	}
 	return provider, o.Model, true
 }

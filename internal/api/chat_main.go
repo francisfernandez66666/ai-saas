@@ -1,4 +1,4 @@
-// 对话核心API（主链路）：消息接收、三层分流、合并队列与AI回复生成。
+// 对话核心API（主链路）：消息接收、四层分流、合并队列与AI回复生成。
 package api
 
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
@@ -19,7 +19,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -76,11 +75,7 @@ func Chat(c *gin.Context) {
 	var req schema.ChatRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("[对话][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
-		c.JSON(http.StatusBadRequest, schema.Response{
-			Code:    400,
-			Message: "参数错误: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -88,11 +83,7 @@ func Chat(c *gin.Context) {
 	var customer model.Customer
 	result := db.RQ(c).Scopes(db.T(c)).First(&customer, req.CustomerID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{
-			Code:    404,
-			Message: "客户不存在",
-			Data:    nil,
-		})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -115,12 +106,22 @@ func Chat(c *gin.Context) {
 		// 前端传了会话ID，直接查找已有会话（无需竞态保护）
 		result := db.RQ(c).First(&conversation, req.ConversationID)
 		if result.Error != nil {
-			c.JSON(http.StatusNotFound, schema.Response{
-				Code:    404,
-				Message: "会话不存在",
-				Data:    nil,
-			})
+			RespErr(c, http.StatusNotFound, 404, "会话不存在")
 			return
+		}
+		// P1-6 修复(2026-09-09)：会话归属校验（防会话级 IDOR）。
+		// 只允许两类访问者：①客户本人（customer.ID 匹配会话 CustomerID）；②有数据范围权限的
+		// 顾问/管理员（customerInDataScope）。否则 404（不泄露会话存在性）。
+		if conversation.CustomerID != customer.ID {
+			var convCustomer model.Customer
+			if err := db.RQ(c).First(&convCustomer, conversation.CustomerID).Error; err != nil {
+				RespErr(c, http.StatusNotFound, 404, "会话不存在")
+				return
+			}
+			if !customerInDataScope(c, convCustomer.AssignedUserID) {
+				RespErr(c, http.StatusNotFound, 404, "会话不存在")
+				return
+			}
 		}
 	} else {
 		// 前端没传会话ID → 需要查找或创建，加锁防止并发竞态
@@ -225,15 +226,11 @@ func Chat(c *gin.Context) {
 					}
 					db.RQ(c).Create(&suppressedMsg)
 
-					c.JSON(http.StatusOK, schema.Response{
-						Code:    0,
-						Message: "success",
-						Data: schema.ChatResponse{
-							ConversationID: conversation.ID,
-							Merged:         true,
-							MergedNote:     "相似消息已合并处理",
-							CustomerMsgID:  suppressedMsg.ID,
-						},
+					RespOK(c, "success", schema.ChatResponse{
+						ConversationID: conversation.ID,
+						Merged:         true,
+						MergedNote:     "相似消息已合并处理",
+						CustomerMsgID:  suppressedMsg.ID,
 					})
 					return
 				}
@@ -267,12 +264,12 @@ func Chat(c *gin.Context) {
 	// 现在挪到这里、放在human锁定判断之前，保证"只要客户说话就持续打标"，
 	// 覆盖冷启动、AI模式、待接管、已转人工、顾问接手后全部场景。
 	newTags := []string{}
-	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content); tagErr == nil && len(autoTags) > 0 {
+	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.TenantID, customer.ID, req.Content); tagErr == nil && len(autoTags) > 0 {
 		newTags = autoTags
 		log.Printf("[对话] 客户%d自动打标(持续): %v", customer.ID, autoTags)
 		var updatedCustomerForTag model.Customer
 		if err := db.RQ(c).First(&updatedCustomerForTag, customer.ID).Error; err == nil {
-			_ = service.DefaultTagService.ApplyTagWeightsToTVector(&updatedCustomerForTag, updatedCustomerForTag.BuildBaseTVector())
+			_ = service.DefaultTagService.ApplyTagWeightsToTVector(customer.TenantID, &updatedCustomerForTag, updatedCustomerForTag.BuildBaseTVector())
 			db.RQ(c).Model(&updatedCustomerForTag).Update("t_vector", updatedCustomerForTag.TVectorJSON)
 			customer = updatedCustomerForTag
 		}
@@ -280,18 +277,14 @@ func Chat(c *gin.Context) {
 
 	// 5. 如果是人工模式，直接返回（等人工回复）
 	if conversation.Mode == "human" && conversation.IsHumanLocked {
-		c.JSON(http.StatusOK, schema.Response{
-			Code:    0,
-			Message: "success",
-			Data: schema.ChatResponse{
-				ConversationID: conversation.ID,
-				Message: gin.H{
-					"sender_type": "system",
-					"content":     "已收到您的消息，销售顾问正在赶来的路上，请稍候~",
-				},
-				RouteResult: "human",
-				Mode:        "human",
+		RespOK(c, "success", schema.ChatResponse{
+			ConversationID: conversation.ID,
+			Message: gin.H{
+				"sender_type": "system",
+				"content":     "已收到您的消息，销售顾问正在赶来的路上，请稍候~",
 			},
+			RouteResult: "human",
+			Mode:        "human",
 		})
 		return
 	}
@@ -317,8 +310,8 @@ func Chat(c *gin.Context) {
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&offTopicMsg)
-		// 唤醒队列中可能等待的其他请求
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, reply)
+		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复，epoch=0 不做代际拦截）
+		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, 0, reply)
 		RespOK(c, "success", gin.H{
 			"conversation_id": conversation.ID,
 			"ai_reply":        reply,
@@ -351,8 +344,9 @@ func Chat(c *gin.Context) {
 		// ---- 留资前置检测：当前消息是否包含手机号 ----
 		// 修复根因：客户一轮回复"小张，13333333333，2个人，周六下午两点，体验越野"
 		// 既有到店关键词又有手机号，之前走两段式还问"留个手机号"，完全不合理
-		phoneRegex := regexp.MustCompile(`1[3-9]\d{9}`)
-		phoneMatch := phoneRegex.FindString(req.Content)
+		// P1-27 修复(2026-09-09)：改用 chatflow.PhoneRegex（含\b边界，防长数字串子串误命中），
+		// 替换此前缺边界的本地正则（I1 修复回潮），并消除每请求编译。
+		phoneMatch := chatflow.PhoneRegex.FindString(req.Content)
 
 		if phoneMatch != "" {
 			// ====== 分支B：已留资线索（硬编码） ======
@@ -402,8 +396,10 @@ func Chat(c *gin.Context) {
 					}
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
-					// 修复Bug1：兜底值必须显式 uint——int 字面量入 map 后被下方 v.(uint) 断言 panic
-					leadUpdates["assigned_user_id"] = uint(2) // 兜底：无销售用户时默认分配2号（张伟）
+					// P1-12 修复(2026-09-09)：无销售用户时不硬编码 uint(2)（跨租户脏分配），
+					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池，由 PendingHandoff 认领
+					leadUpdates["assigned_user_id"] = uint(0)
+					leadUpdates["pending_handoff"] = true
 				}
 			}
 			if len(leadUpdates) > 0 {
@@ -435,7 +431,7 @@ func Chat(c *gin.Context) {
 			if req.Device != "" {
 				leadAttrs["device"] = req.Device
 			}
-			if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
+			if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
 				mq.UserEvent{EventType: "behavior", EventName: "lead_captured", AnchorType: "phone",
 					Attributes: leadAttrs,
@@ -444,13 +440,15 @@ func Chat(c *gin.Context) {
 			}
 
 			// 2. 生成线索记录（FollowUp，顾问端可见）
+			// P2-27 修复：FollowUp 入库 content 统一脱敏——手机号掩中间段、原文消息内嵌号码也掩。
+			// 展示需要明文时由服务端按权限另行出具，库内不落明文（对齐日志掩码口径）。
 			followUp := model.FollowUp{
 				CustomerID:     customer.ID,
 				ConversationID: conversation.ID,
 				UserID:         customer.AssignedUserID, // 归属顾问
 				Type:           "ai_triggered",          // AI触发生成
 				Method:         "store",                 // 到店渠道
-				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", phoneMatch, req.Content),
+				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(req.Content)),
 				Result:         "lead_captured", // 已留资线索
 			}
 			db.RQ(c).Create(&followUp)
@@ -508,7 +506,7 @@ func Chat(c *gin.Context) {
 		// 顾问分配推迟到客户回复手机号时，由 DetectLeadCapture 根据手机号校验决定：
 		//   - 手机号已存在 → 合并到原客户+原顾问
 		//   - 新手机号 → 轮询分配
-		firstReply := service.GetStoreVisitFirstReply(req.Content)
+		firstReply := service.GetStoreVisitFirstReply(tenantID, req.Content)
 		firstDelay := service.GetStoreVisitFirstDelay() // 10-15秒
 
 		log.Printf("[到店倾向-未留资线索] 客户%d 关闭引导+两段式回复, 推迟分配顾问", customer.ID)
@@ -535,7 +533,7 @@ func Chat(c *gin.Context) {
 		// 修复Bug2（2026-08-22）：goroutine 内禁用 db.RQ(c)——handler 返回后 request ctx
 		// 被 net/http 取消，GORM 写入静默失败，第二段追问永远不落库。
 		// 改为：入 goroutine 前捕获租户ID，内部用脱离请求生命周期的 context 构建会话
-		secondReply := service.GetStoreVisitSecondReply(req.Content)
+		secondReply := service.GetStoreVisitSecondReply(tenantID, req.Content)
 		goroutineTenantID := tenantID
 		go func(cid, convID uint, content string, tid uint) {
 			sd := service.GetStoreVisitSecondDelay()
@@ -551,8 +549,14 @@ func Chat(c *gin.Context) {
 				CreatedAt:      time.Now(),
 			}
 			if err := db.DB.WithContext(db.WithTenant(context.Background(), tid)).Create(&secondMsg).Error; err != nil {
-				log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(已重试放弃): %v", cid, err)
-				return
+				// P2-66 修复(2026-09-09)：原失败仅日志放弃——客户收不到追问且无重试/告警。
+				// 落库失败先重试一次（幂等无副作用，MsgID 新行），仍失败才记录指标。
+				log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(首次)，重试一次: %v", cid, err)
+				if err2 := db.DB.WithContext(db.WithTenant(context.Background(), tid)).Create(&secondMsg).Error; err2 != nil {
+					log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(重试后放弃): %v", cid, err2)
+					service.IncStoreVisitSecondFail()
+					return
+				}
 			}
 			log.Printf("[到店倾向-未留资线索] 客户%d 第二段追问已发送", cid)
 		}(customer.ID, conversation.ID, secondReply, goroutineTenantID)
@@ -570,7 +574,7 @@ skipStoreVisitFast:
 	// 第一个拿到处理权的请求负责生成回复
 	// 后续请求挂起等待，回复生成后一起返回
 	// 修复：新增isSimple返回值，简单消息直接走快速回复通道
-	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
+	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
 
 	// 修复：简单消息（"在吗"/"那我撤了"等）直接走快速回复，20-45秒随机延迟
 	if isSimple {
@@ -629,14 +633,10 @@ skipStoreVisitFast:
 		// 修复：merged 请求不再返回 ai_reply 和策略详情，只返回合并标记。
 		// 前端收到 merged=true 时，不渲染新消息气泡，等主请求的回复即可。
 		// conversation_id 仍然返回，供前端后续请求使用。
-		c.JSON(http.StatusOK, schema.Response{
-			Code:    0,
-			Message: "success",
-			Data: schema.ChatResponse{
-				ConversationID: conversation.ID,
-				Merged:         true,
-				MergedNote:     "本条消息已与先前的消息合并处理，回复将在主请求中返回",
-			},
+		RespOK(c, "success", schema.ChatResponse{
+			ConversationID: conversation.ID,
+			Merged:         true,
+			MergedNote:     "本条消息已与先前的消息合并处理，回复将在主请求中返回",
 		})
 		return
 	}
@@ -885,25 +885,21 @@ skipStoreVisitFast:
 	}
 	log.Printf("[Chat] 客户%d 延迟结束，返回回复", customer.ID)
 
-	// 12. 唤醒消息队列中等待的其他请求
-	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, aiReply)
+	// 12. 唤醒消息队列中等待的其他请求（携带本请求持有的处理代际，旧处理者复活不践踏）
+	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, aiReply)
 
 	// 13. 返回结果
 	// 欢迎词由 /chat/welcome 接口独立返回，此处不再附带 earlier_messages
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.ChatResponse{
-			ConversationID:   conversation.ID,
-			Message:          aiMsg,
-			StrategyInfo:     strategyInfo,
-			RouteResult:      routeResult,
-			Mode:             conversation.Mode,
-			NewTags:          newTags,                     // 本轮新打上的标签
-			PendingHandoff:   conversation.PendingHandoff, // 软接管状态
-			MergedCustomerID: uint(leadCapturedResult),    // OneID合并：>0表示前端需切换customer_id
-			VisitorKey:       customer.VisitorKey,         // C3：返回访客密钥
-		},
+	RespOK(c, "success", schema.ChatResponse{
+		ConversationID:   conversation.ID,
+		Message:          aiMsg,
+		StrategyInfo:     strategyInfo,
+		RouteResult:      routeResult,
+		Mode:             conversation.Mode,
+		NewTags:          newTags,
+		PendingHandoff:   conversation.PendingHandoff,
+		MergedCustomerID: uint(leadCapturedResult),
+		VisitorKey:       customer.VisitorKey,
 	})
 }
 

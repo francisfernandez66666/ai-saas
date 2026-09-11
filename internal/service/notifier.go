@@ -45,13 +45,16 @@ type ResetCodeSender interface {
 }
 
 // LogSender 日志通道：邮件打到服务端日志（reset_code_channel=log 默认）
-// 注意：log 模式等于"知道用户名即可看到码"，故 reset 接口额外要求提供注册时的
-// 手机号/邮箱匹配才发码；注册验证码场景由 email_verify_enabled 开关独立控制
+// 注意：log 通道明文落日志 + 水位标记（P1-20 修复），内测/开发环境可用
 type LogSender struct{}
 
 // SendResetCode 实现：打日志
+// P1-20 修复(2026-09-09)：统一 log 通道语义为"明文落日志 + 水位标记"（内测可用）。
+// 原实现把码打码（与 EmailCodeService.log 通道同样自相矛盾——用户拿不到码），
+// 且同文件 SendRaw 又明文打印 body——一处过度脱敏致不可用、一处明文泄露。
+// 现统一：log 通道明码 + [DEBUG-WATERMARK 仅log通道] 标记；smtp 通道走真实邮件不受影响。
 func (LogSender) SendResetCode(to string, code string) error {
-	log.Printf("[重置码] 账号=%s 验证码=***(已脱敏,10分钟内有效,一次性)", MaskEmail(MaskPhoneInText(to)))
+	log.Printf("[重置码][DEBUG-WATERMARK 仅log通道] 账号=%s 验证码=%s (10分钟内有效,一次性,生产请配置SMTP)", MaskEmail(MaskPhoneInText(to)), code)
 	return nil
 }
 

@@ -1,1 +1,10 @@
-[]
+{
+  "stages": [
+    {"name": "认知期", "description": "了解客户基本信息和需求"},
+    {"name": "兴趣期", "description": "深入沟通需求，推荐合适车型"},
+    {"name": "考虑期", "description": "解答疑虑，对比方案"},
+    {"name": "评估期", "description": "提供详细报价和金融方案"},
+    {"name": "决策期", "description": "促成到店体验和成交"},
+    {"name": "成交期", "description": "交车和售后服务引导"}
+  ]
+}

@@ -16,7 +16,7 @@ type InboxEvent struct {
 	TenantID    uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 租户ID
 	OneID       string    `gorm:"size:64;index" json:"one_id"`               // OneID
 	Topic       string    `gorm:"size:100;index" json:"topic"`               // 主题
-	Status      string    `gorm:"size:20;default:pending" json:"status"`     // pending/done/failed
+	Status      string    `gorm:"size:20;index;default:pending" json:"status"` // pending/done/failed（P1-37 加状态索引：daily 清理按 pending 定位与故障排查）
 	ProcessedAt time.Time `json:"processed_at"`                              // 处理时间
 	CreatedAt   time.Time `json:"created_at"`                                // 创建时间
 }

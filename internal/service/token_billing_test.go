@@ -146,10 +146,12 @@ func TestFreeTokenExpiry(t *testing.T) {
 
 // TestDeductTokensActualNoEnforced 测试灰度模式下不扣减
 func TestDeductTokensActualNoEnforced(t *testing.T) {
-	// 未启用时应为 no-op
+	// 未启用时应为 no-op（P1-17：函数增加 error 返回值，此处断言为 nil）
 	old := DefaultSystemConfigService
 	DefaultSystemConfigService = nil
-	DeductTokensActual(1, 100) // 不应 panic
+	if err := DeductTokensActual(1, 100); err != nil {
+		t.Fatalf("no-op 路径不应返回错误: %v", err)
+	}
 	DefaultSystemConfigService = old
 }
 

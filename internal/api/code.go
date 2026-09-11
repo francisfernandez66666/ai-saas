@@ -123,23 +123,18 @@ func RespFail(c *gin.Context, httpStatus int, code RespCode, msg string) {
 /*
 respOK 成功响应（内部使用）
 
-用途：返回成功响应，HTTP 200 + code=0。
+用途：返回成功响应，HTTP 200 + code=0，携带 data。
 
-设计说明：复用 RespErr 函数，保持响应结构一致性。
+P1-14 修复(2026-09-09)：原实现是 `RespErr(c, 200, 0, "ok")`，data 参数从未使用——
+唯一调用方 /super/monitor/health 的健康快照被整体丢弃，探针拿到空壳响应。
 */
 func respOK(c *gin.Context, data any) {
-	RespErr(c, 200, int(CodeOK), "ok")
-}
-
-/*
-respFail 业务错误响应（HTTP 200）
-
-用途：返回业务错误响应，HTTP 200 + 业务 code。
-
-设计说明：保持与前端既有约定一致，前端通过 code 判断业务错误。
-*/
-func respFail(c *gin.Context, code RespCode, msg string) {
-	RespErr(c, 200, int(code), msg)
+	c.JSON(http.StatusOK, schema.Response{
+		Code:        int(CodeOK),
+		Error_code:  codeName[CodeOK],
+		Message:     "ok",
+		Data:        data,
+	})
 }
 
 /*

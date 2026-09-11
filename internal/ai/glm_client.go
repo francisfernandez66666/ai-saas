@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -32,6 +33,8 @@ type GLMClient struct {
 	Temperature float64      // 默认采样温度
 	MaxRetries  int          // 最大重试次数
 	httpClient  *http.Client // HTTP客户端（复用连接）
+	modelMu     sync.Mutex   // P2-59：保护 ModelName/modelOverride 并发访问
+	modelOverride string     // P2-59：per-call 临时模型覆盖
 }
 
 // ChatMessage 对话消息结构
@@ -125,6 +128,31 @@ func (c *GLMClient) GetModelName() string {
 	return c.ModelName
 }
 
+// effectiveModel 返回当前生效的模型名（P2-59：优先 modelOverride，否则用默认 ModelName）
+func (c *GLMClient) effectiveModel() string {
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+	if c.modelOverride != "" {
+		return c.modelOverride
+	}
+	return c.ModelName
+}
+
+// GenerateTextWithModelOverride P2-59 修复：callProvider 的临时模型覆盖
+func (c *GLMClient) GenerateTextWithModelOverride(messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
+	orig := c.ModelName
+	c.modelMu.Lock()
+	c.modelOverride = overrideModel
+	c.modelMu.Unlock()
+	defer func() {
+		c.modelMu.Lock()
+		c.ModelName = orig
+		c.modelOverride = ""
+		c.modelMu.Unlock()
+	}()
+	return c.GenerateTextWithUsage(messages, temperature)
+}
+
 // GenerateText 生成文本（核心接口）
 // 输入：对话历史消息列表
 // 输出：AI回复的文本内容
@@ -134,11 +162,6 @@ func (c *GLMClient) GetModelName() string {
 //
 //  2. 自然摊平请求高峰，减少429限流
 //  3. 可以配合"正在输入中"状态做先接住再回复
-func (c *GLMClient) GenerateText(messages []ChatMessage, temperature float64) (string, error) {
-	reply, _, err := c.GenerateTextWithUsage(messages, temperature)
-	return reply, err
-}
-
 // GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座；mock 路径用量为零值）
 func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var reply string
@@ -253,7 +276,7 @@ func calcTypingDelay(text string, speed float64, minDelay float64, maxDelay floa
 // 注意：使用复用的httpClient，避免每次创建连接
 func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := ChatRequest{
-		Model:       c.ModelName,
+		Model:       c.effectiveModel(),
 		Messages:    messages,
 		Temperature: temperature,
 		MaxTokens:   c.MaxTokens,
@@ -376,7 +399,8 @@ func isNetworkError(err error) bool {
 // 回复逻辑：根据最后一条用户消息，给出简单的规则化回复
 func (c *GLMClient) mockGenerate(messages []ChatMessage) string {
 	if len(messages) == 0 {
-		return "您好！很高兴为您服务。请问有什么可以帮您的？"
+		// P2-68 修复：原"您好！很高兴为您服务"客服腔——对齐口语化风格（去 AI 味铁律：说"你"不说"您"、短句）
+		return "你好，我在呢。想聊点啥，你说。"
 	}
 
 	// 获取最后一条用户消息
@@ -399,7 +423,7 @@ func (c *GLMClient) mockGenerate(messages []ChatMessage) string {
 	case containsKeyword(lastUserMsg, "对比", "比较"):
 		return "你想得挺周全。对比的话我帮你捋一捋差异点，重点是看哪个更适合你的实际需求。要不要我把核心区别给你列一下？"
 	case containsKeyword(lastUserMsg, "你好", "您好", "在吗", "hi", "hello"):
-		return "你好！很高兴为你服务。我是你的专属顾问，关于产品、价格、配置、体验等任何问题都可以问我，你想了解哪方面？"
+		return "你好，我在呢。我是你的顾问，产品、价格、配置、体验啥都能聊，你想先了解哪块？"
 	case containsKeyword(lastUserMsg, "谢谢", "感谢", "好的"):
 		return "不客气，有问题随时问我。对了，你目前是有比较明确的目标了，还是想让我先帮你推荐推荐？"
 	default:

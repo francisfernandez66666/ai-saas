@@ -1,1 +1,26 @@
-[]
+[
+  {
+    "anchor_type": 0,
+    "category": "greeting",
+    "id": "script_greeting",
+    "priority": 10,
+    "template": "您好！欢迎咨询。我是您的专属顾问，有任何关于购车的问题都可以问我，我会为您详细解答。",
+    "trigger_keywords": ["你好", "在吗", "嗨", "您好"]
+  },
+  {
+    "anchor_type": 1,
+    "category": "inquiry",
+    "id": "script_inquiry",
+    "priority": 8,
+    "template": "感谢您的关注！我们有多款车型供您选择，请问您有意向的车型吗？或者告诉我您的用车需求，我帮您推荐最合适的。",
+    "trigger_keywords": ["有什么车", "车型", "推荐", "选车"]
+  },
+  {
+    "anchor_type": 2,
+    "category": "price",
+    "id": "script_price",
+    "priority": 9,
+    "template": "价格方面我们有多种方案可以灵活搭配。请问您比较关注哪个配置？我可以帮您算一个详细的落地价方案。",
+    "trigger_keywords": ["多少钱", "价格", "报价", "落地价"]
+  }
+]

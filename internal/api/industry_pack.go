@@ -25,6 +25,7 @@ package api
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -58,7 +59,7 @@ const packStoreDir = "data/packs"
 
 // notifyPackChange 绑定/解绑后发布 tenant_cfg_event → 热加载钩子刷新引擎模板池
 func notifyPackChange(c *gin.Context, tenantID uint, action string) {
-	_ = mq.Publish(c.Request.Context(), mq.TopicTenantCfgEvt, tenantID,
+	_ = mq.Publish(middleware.CtxWithTrace(c), mq.TopicTenantCfgEvt, tenantID,
 		fmt.Sprintf("sys:t%d", tenantID), action,
 		map[string]any{"action": action, "scope": "industry_pack"})
 }
@@ -90,8 +91,10 @@ func SuperPackUpload(c *gin.Context) {
 		return
 	}
 	buf := make([]byte, fh.Size)
-	if _, err := src.Read(buf); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "文件读取失败")
+	// P1-39 修复(2026-09-09)：单次 Read 不保证填满（大包短读截断→损坏包入库），
+	// 必须 io.ReadFull；n!=len(buf) 也算错误。
+	if _, err := io.ReadFull(src, buf); err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "文件读取失败(短读): "+err.Error())
 		return
 	}
 	_ = src.Close()
@@ -121,6 +124,9 @@ func SuperPackUpload(c *gin.Context) {
 		return
 	}
 	storeName := fmt.Sprintf("%s_%s.aipack", pc.Manifest.Code, pc.Manifest.Version)
+	// P1-39 修复(2026-09-09)：落盘名净化——code 含 "../" 可路径穿越写出 data/packs 之外。
+	// filepath.Base 只去掉目录部分（净名仍含 "../" 也会被 Base 归一为安全名），再加白名单兜底。
+	storeName = filepath.Base(storeName)
 	storePath := filepath.Join(packStoreDir, storeName)
 	if err := os.WriteFile(storePath, buf, 0o644); err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "落盘失败")
@@ -304,7 +310,9 @@ func AutoApplyDefaultIndustryPack() {
 		indCode = "auto"
 	}
 	var tenants []model.Tenant
-	if err := db.DB.Find(&tenants).Error; err != nil {
+	// P2-73 修复：过滤注销(cancelled)/软删除租户——原 Find 全量包含已注销租户，
+	// 启动物化会为它们浪费物化资源并留脏绑定。
+	if err := db.DB.Where("status <> ?", "cancelled").Find(&tenants).Error; err != nil {
 		log.Printf("[IndustryPack] 自动应用：列举租户失败 %v", err)
 		return
 	}

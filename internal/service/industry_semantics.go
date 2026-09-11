@@ -24,8 +24,11 @@ const (
 	IndustryPriceKeywords    = "industry.price_keywords"     // 询价敏感词（触发到店引导）
 	IndustryStoreVisitFirst  = "industry.store_visit_first"  // 到店倾向第一段话术（JSON 数组）
 	IndustryStoreVisitSecond = "industry.store_visit_second" // 到店倾向第二段话术（JSON 数组）
+	IndustryPriceReplyLead   = "industry.price_reply_lead"   // 询价回复：已留资（体验后报价，不含"约试驾"）
+	IndustryPriceReplyNoLead = "industry.price_reply_nolead" // 询价回复：未留资（引导到店后报价）
 	IndustrySalesperson      = "industry.salesperson"      // 销售顾问人设（Prompt 人设兜底）
 	IndustryDomainConstraint = "industry.domain_constraint" // 领域约束句子（Prompt 内"只聊X"指令）
+	IndustryHumanReply       = "industry.human_reply"       // 人工接管/待接管话术（JSON 数组；P2-21）
 )
 
 // industryKeywordList 解析行业关键词列表（JSON 数组）
@@ -87,6 +90,34 @@ func IndustryVisitKeywordsForTenant(tenantID uint) []string {
 	return industryKeywordList(tenantID, IndustryVisitKeywords, nil)
 }
 
+// IndustryPriceRepliesForTenant 租户级询价回复话术
+// P1-29 修复(2026-09-09)：询价硬拦截话术迁入行业键（JSON 数组）。
+// lead=true 为已留资分支（体验后报价，严禁"约试驾"——P1-30），lead=false 为未留资引导分支。
+// 行业包未配置时回退内置汽车版文案（与改造前一致）。
+func IndustryPriceRepliesForTenant(tenantID uint, lead bool) []string {
+	key := IndustryPriceReplyNoLead
+	fallback := defaultPriceRepliesNoLead
+	if lead {
+		key = IndustryPriceReplyLead
+		fallback = defaultPriceRepliesLead
+	}
+	return industryKeywordList(tenantID, key, fallback)
+}
+
+// defaultPriceRepliesLead 已留资询价回复（体验后报价，不约试驾，与 prompt 硬规则一致）
+var defaultPriceRepliesLead = []string{
+	"价格得看具体配置和您的需求来定，您体验后就知道了",
+	"车价跟配置和选装方案有关，确认好后我按您的需求出个详细报价",
+	"具体价格看您选什么配置，您定好了我按需求给您报价",
+}
+
+// defaultPriceRepliesNoLead 未留资询价回复（引导到店试驾后报价）
+var defaultPriceRepliesNoLead = []string{
+	"要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀",
+	"价格得看配置来定，要不先帮您约个试驾，您试完车我按您的需求做个详细报价，行不",
+	"车价跟具体配置有关，要不我帮您安排个试驾，体验好了我按您的需求出个报价，您看咋样",
+}
+
 // IndustrySalespersonForTenant 租户级销售顾问人设（行业包可配置；空=空串由调用方回退内置）
 func IndustrySalespersonForTenant(tenantID uint) string {
 	if DefaultSystemConfigService == nil {
@@ -125,6 +156,20 @@ func GetOffTopicReplyForTenant(tenantID uint, content string) string {
 	replies := industryKeywordList(tenantID, IndustryOffTopicReplies, defaultOffTopicReplies)
 	idx := len([]rune(content)) % len(replies)
 	return replies[idx]
+}
+
+// GetHumanTakeoverReplyForTenant 人工接管/待接管话术（P2-21）
+// 行业键 industry.human_reply 可配置；缺省回退内置文案（与站内 chat_main 硬编码语义一致）。
+func GetHumanTakeoverReplyForTenant(tenantID uint, content string) string {
+	replies := industryKeywordList(tenantID, IndustryHumanReply, defaultHumanTakeoverReplies)
+	idx := len([]rune(content)) % len(replies)
+	return replies[idx]
+}
+
+// defaultHumanTakeoverReplies 人工接管兜底话术（P2-21；对齐站内"已收到，顾问在路上"语义）
+var defaultHumanTakeoverReplies = []string{
+	"已收到您的消息，销售顾问正在赶来的路上，请稍候~",
+	"消息我收到了，顾问马上回复您，稍等一下哈",
 }
 
 // IsStoreVisitIntentForTenant 租户级到店/体验意图判定

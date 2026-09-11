@@ -36,6 +36,7 @@ publishConversationMsg 发布对话消息事件
 */
 func publishConversationMsg(tenantID uint, customerID uint, route, emotion string) {
 	// 发布到消息队列，供下游消费者处理
+	// 无 gin 上下文可用的后台 helper：trace 缺失容忍（P2-4 主路径已在有 c 的调用点串联）
 	if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
 		fmt.Sprintf("c:%d", customerID), "conversation_msg",
 		mq.UserEvent{EventType: "behavior", EventName: "conversation_msg",

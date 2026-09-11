@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
 
@@ -103,11 +105,20 @@ func TenantSignup(c *gin.Context) {
 	if service.EmailVerifyEnabled() && req.AdminEmail != "" {
 		daily := svc.GetInt("register_email_daily_limit", 3)
 		var cnt int64
-		// 防薅按 email 全局计数（跨租户累计）：同邮箱换租户注册也须被闸门拦截（rls_scope_test 已验证）
-		db.DB.Model(&model.TenantAuditLog{}).
-			Where("action = ? AND created_at >= CURRENT_DATE AND detail LIKE ?",
-				"tenant_signup", fmt.Sprintf(`%%"email":"%s"%%`, req.AdminEmail)).
-			Count(&cnt)
+		// P2-32 修复：防薅计数迁移到 Redis 独立键（signup:email:{date}:{email}），
+		// 不再依赖审计日志 LIKE —— 邮箱含 %/_ 会干扰模糊匹配，且日志按批清理后计数即失效。
+		// Redis 关闭时退回审计 LIKE 兜底（escape 通配符）。
+		if redisclient.IsEnabled() {
+			key := fmt.Sprintf("scrm:signup_email:%s:%s", time.Now().Format("2006-01-02"), req.AdminEmail)
+			attempts := redisclient.GetInt(key)
+			cnt = attempts
+		} else {
+			escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(req.AdminEmail)
+			db.DB.Model(&model.TenantAuditLog{}).
+				Where("action = ? AND created_at >= CURRENT_DATE AND detail LIKE ? ESCAPE '\\'",
+					"tenant_signup", fmt.Sprintf(`%%"email":"%s"%%`, escaped)).
+				Count(&cnt)
+		}
 		if cnt >= int64(daily) {
 			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", service.MaskEmail(req.AdminEmail), daily)
 			RespErr(c, http.StatusTooManyRequests, 429, "该邮箱今日注册尝试已达上限，请明日再试或联系我们")
@@ -269,11 +280,19 @@ func TenantSignup(c *gin.Context) {
 		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 
+	// P2-32 修复：注册成功同时 INCR Redis 每日键（与上方防薅检查同源），
+	// 审计 LIKE 仅作 Redis 关闭时兜底；键带 TTL 次日自动回收。
+	if redisclient.IsEnabled() && req.AdminEmail != "" {
+		redisclient.IncrWithTTL(
+			fmt.Sprintf("scrm:signup_email:%s:%s", time.Now().Format("2006-01-02"), req.AdminEmail),
+			48*time.Hour)
+	}
+
 	// 注册即视为同意《用户协议》《隐私政策》，落签署记录（时间+状态供超管审计）
 	RecordAgreementSignatures(ten.ID, adminID)
 
 	// OneID 关联（防薅v2，2026-08-26）：注册成功即以邮箱为身份锚之一写 CDP
-	_ = mq.Publish(c.Request.Context(), mq.TopicUserEvent, ten.ID,
+	_ = mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, ten.ID,
 		fmt.Sprintf("sys:t%d", ten.ID), "guest_created",
 		model.MessageEvent{EventType: "identity", EventName: "guest_created",
 			AnchorType: "email",
@@ -290,27 +309,6 @@ func TenantSignup(c *gin.Context) {
 		"status":      ten.Status,
 		"login_url":   loginURL,
 	})
-}
-
-// grantTrialPackage 注册联动发放免费试用包（商业化 M2）
-// 额度取系统配置 trial_ai_calls（默认500次）；无 free 包时按配置直接加月配额兜底
-func grantTrialPackage(tenantID uint) {
-	var pkg model.Package
-	if err := db.DB.Where("p_type = ? AND enabled = ?", model.PackageTypeFree, true).
-		Order("sort_order ASC").First(&pkg).Error; err == nil {
-		if err := service.GrantPackage(nil, tenantID, &pkg); err != nil {
-			log.Printf("[Signup] 试用包发放失败 tenant=%d: %v", tenantID, err)
-		}
-		return
-	}
-	// 兜底：packages 表无 free 包（seed 未跑/被删），按配置值直加月配额
-	trialCalls := 500
-	if service.DefaultSystemConfigService != nil {
-		trialCalls = service.DefaultSystemConfigService.GetInt("trial_ai_calls", 500)
-	}
-	db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).
-		Update("max_ai_calls_monthly", gorm.Expr("COALESCE(max_ai_calls_monthly,0)+?", trialCalls))
-	log.Printf("[Signup] 已发放试用额度 %d 次 → 租户%d（配置兜底）", trialCalls, tenantID)
 }
 
 // CheckTenantCode GET /api/v1/tenant/check-code?code=xxx
@@ -331,6 +329,8 @@ func CheckTenantCode(c *gin.Context) {
 // ListPlans GET /api/v1/plans （定价页公开查询）
 // 商业化 M2 扩展：data 保持 legacy subscription_plans（老定价页兼容），
 // packages 返回新商业包体系（试用/包月/增量），两者并存过渡
+// P2-90 修复(2026-09-09)：packages 并入 data 信封（data.packages），
+// 恢复 ApiResp<T> 统一契约——原"顶层并行 packages 键"破坏类型契约。
 func ListPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	// 定价目录全局共享（无 tenant_id），所有会话可见是预期（rls_scope_test 已验证）
@@ -340,7 +340,7 @@ func ListPlans(c *gin.Context) {
 	}
 	var pkgs []model.Package
 	db.DB.Where("enabled = ?", true).Order("sort_order ASC, id ASC").Find(&pkgs)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": plans, "packages": pkgs})
+	RespOK(c, "", gin.H{"plans": plans, "packages": pkgs})
 }
 
 // resolveIndustry 行业解析与兜底（UAT定稿②，2026-08-26）

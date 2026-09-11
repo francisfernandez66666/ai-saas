@@ -2,14 +2,23 @@
 # ============================================================
 # SaaS 注册漏斗 + 组织管理 E2E 验证
 # 覆盖：套餐查询→入驻→企业码登录→组织管理→超管封禁/恢复
+# 用法: ./tools/smoke_saas.sh 9090
 # ============================================================
-B=http://localhost:9090
+B="http://localhost:${1:-9090}"
 PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 PASS=0; FAIL=0
 check(){ if [ "$2" = "$3" ]; then echo "  PASS  $1 ($3)"; PASS=$((PASS+1)); else echo "  FAIL  $1 期望=$2 实际=$3"; FAIL=$((FAIL+1)); fi }
 
 TAG="e2e$RANDOM"
 echo "==== 注册漏斗 E2E @ $B ===="
+
+# G-4 修复：trap EXIT 确保配置恢复——原手动恢复在脚本中断/失败时不执行，
+# 邮箱验证/注册限流等开关残留为脏状态影响运行中的服务。
+# 先读取原值，EXIT 时统一恢复。
+ORIG_EMAIL_VERIFY=$(curl -s "$B/api/v1/admin/config?category=notify" -H "Authorization: Bearer $AT0" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['value'] for x in d.get('data',[]) if x['key']=='email_verify_enabled'),'true'))" 2>/dev/null || echo "true")
+ORIG_IP_LIMIT=$(curl -s "$B/api/v1/admin/config?category=billing" -H "Authorization: Bearer $AT0" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['value'] for x in d.get('data',[]) if x['key']=='register_ip_daily_limit'),'3'))" 2>/dev/null || echo "3")
+ORIG_IP_INTERVAL=$(curl -s "$B/api/v1/admin/config?category=billing" -H "Authorization: Bearer $AT0" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['value'] for x in d.get('data',[]) if x['key']=='register_ip_min_interval_sec'),'60'))" 2>/dev/null || echo "60")
+trap 'curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $AT0" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$ORIG_EMAIL_VERIFY\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$ORIG_IP_LIMIT\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$ORIG_IP_INTERVAL\"}]" 2>/dev/null; echo "  [trap] 已恢复: 邮箱验证/注册IP限流"' EXIT
 
 # 0. 前置：超管登录，临时关邮箱验证+放开注册IP限流（对齐 uat.sh 口径，脚本无法收邮件）
 #    修改原因：tenant/signup 邮箱验证批次升级后强制 email_code，脚本契约过期导致入驻 400

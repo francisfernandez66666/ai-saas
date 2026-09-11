@@ -263,8 +263,10 @@ func (s *SystemConfigService) ensureDefaults() {
 func (s *SystemConfigService) ForceResetDefaults() error {
 	tx := db.DB.Begin()
 
-	// 1. 删除所有旧配置
-	if err := tx.Where("1 = 1").Delete(&model.SystemConfig{}).Error; err != nil {
+	// 1. P2-46 修复：只删系统层(tenant_id=0)——原 Where("1=1")
+	//    会把各租户的覆盖层一起删掉（对比 ResetAll 明确不动租户层的语义），
+	//    重置系统默认值不应波及租户个性化配置。
+	if err := tx.Where("tenant_id = 0").Delete(&model.SystemConfig{}).Error; err != nil {
 		tx.Rollback()
 		return err
 	}
@@ -456,7 +458,9 @@ func (s *SystemConfigService) BatchUpdateForTenant(tenantID uint, items []Config
 		return s.BatchUpdate(items)
 	}
 	for _, item := range items {
-		if !json.Valid([]byte(item.Value)) {
+		// P2-55 修复：先归一化裸字符串值（补引号），再走 json.Valid 裁决
+		normVal := normalizeConfigValue(item.Key, item.Value)
+		if !json.Valid([]byte(normVal)) {
 			log.Printf("[系统配置] 跳过非法JSON值: tenant=%d key=%s", tenantID, item.Key)
 			continue
 		}
@@ -470,7 +474,7 @@ func (s *SystemConfigService) BatchUpdateForTenant(tenantID uint, items []Config
 				TenantID:     tenantID,
 				Category:     def.Category,
 				Key:          item.Key,
-				Value:        item.Value,
+				Value:        normVal,
 				ValueType:    def.ValueType,
 				Description:  def.Description,
 				DefaultValue: def.DefaultValue,
@@ -484,7 +488,7 @@ func (s *SystemConfigService) BatchUpdateForTenant(tenantID uint, items []Config
 				return err
 			}
 		} else {
-			if err := db.DB.Model(&existing).Update("value", item.Value).Error; err != nil {
+			if err := db.DB.Model(&existing).Update("value", normVal).Error; err != nil {
 				return err
 			}
 		}
@@ -492,6 +496,53 @@ func (s *SystemConfigService) BatchUpdateForTenant(tenantID uint, items []Config
 	}
 	s.Reload()
 	return nil
+}
+
+// ============================================================
+// P2-52 修复：nil-安全读取 helper
+// 背景：SystemConfigService 单例在 main 启动时初始化，但部分包（engine/strategy、
+// llm/chat_reply 等）在不依赖启动顺序的单测/冷路径直接访问 DefaultSystemConfigService
+// 会 nil panic。统一出口为 Safecfg*.，未初始化/被替换时回退默认值，杜绝 panic。
+// ============================================================
+
+// SafeCfgBool 安全读 bool 配置（单例未初始化回退默认值，P2-52）
+func SafeCfgBool(key string, defaultValue bool) bool {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetBool(key, defaultValue)
+}
+
+// SafeCfgInt 安全读 int 配置（P2-52）
+func SafeCfgInt(key string, defaultValue int) int {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetInt(key, defaultValue)
+}
+
+// SafeCfgFloat 安全读 float 配置（P2-52）
+func SafeCfgFloat(key string, defaultValue float64) float64 {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetFloat(key, defaultValue)
+}
+
+// SafeCfgString 安全读 string 配置（P2-52）
+func SafeCfgString(key string, defaultValue string) string {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetString(key, defaultValue)
+}
+
+// SafeCfgIntSlice 安全读 int slice 配置（P2-52）
+func SafeCfgIntSlice(key string, defaultValue []int) []int {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetIntSlice(key, defaultValue)
 }
 
 // GetFloat 获取 float 配置值（key 不存在回退默认值）
@@ -657,17 +708,15 @@ func (s *SystemConfigService) BatchUpdate(items []ConfigUpdateItem) error {
 			continue
 		}
 
-		// 校验值是否为合法JSON（所有值都以JSON格式存储）
-		if !json.Valid([]byte(item.Value)) {
-			log.Printf("[系统配置] 跳过非法JSON值: key=%s, value=%s", item.Key, item.Value)
-			continue
-		}
+		// P2-55 修复：先归一化裸字符串值（补引号），再校验合法JSON——
+		// 原直接 json.Valid 会静默丢弃未引号的 string 提交（前端/脚本形态不一）
+		normVal := normalizeConfigValue(item.Key, item.Value)
 
 		// 修复（2026-08-23）：限定系统默认层(tenant_id=0)——本方法语义是"写系统层"，
 		// 不带租户过滤会误改所有租户覆盖行
 		result := db.DB.Model(&model.SystemConfig{}).
 			Where("tenant_id = 0 AND \"key\" = ?", item.Key).
-			Update("value", item.Value)
+			Update("value", normVal)
 		if result.Error != nil {
 			log.Printf("[系统配置] 更新失败: key=%s, error=%v", item.Key, result.Error)
 			return result.Error
@@ -708,6 +757,21 @@ func (s *SystemConfigService) ResetAll() error {
 type ConfigUpdateItem struct {
 	Key   string `json:"key" binding:"required"`   // 配置键名
 	Value string `json:"value" binding:"required"` // 新值（JSON字符串）
+}
+
+// normalizeConfigValue 归一化提交值：非JSON的裸字符串值自动补引号。
+// P2-55 修复(2026-09-09)：历史提交形态不统一——`pay_mode` 带引号 `"mock"`、
+// `reply_delay_mode` 不带引号——json.Valid 静默丢弃未引号提交。
+// 第一个返回值是归一化后的提交值（非JSON裸字符串补引号，合法JSON原样返回）。
+func normalizeConfigValue(key, value string) string {
+	if json.Valid([]byte(value)) {
+		return value
+	}
+	// 裸字符串 → 补引号（转义安全）
+	if b, err := json.Marshal(value); err == nil {
+		return string(b)
+	}
+	return value
 }
 
 // PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）

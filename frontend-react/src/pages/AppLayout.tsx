@@ -44,16 +44,24 @@ export default function AppLayout() {
     <Link to={to} style={{ fontSize: 14, color: '#4f46e5', textDecoration: 'none' }}>{label}</Link>
   )
 
+  // G-23：角色过滤——根据 localStorage 中存储的用户角色判断权限级别
+  // 管理员角色（super_admin/tenant_admin/admin/dept_admin）可看到全部导航菜单
+  // 普通成员角色（sales/user/readonly）仅看到"对话"和"设置"两项
+  const role = localStorage.getItem('role') || ''
+  const isAdmin = ['super_admin', 'tenant_admin', 'admin', 'dept_admin'].includes(role)
+
   return (
     <div style={{ minHeight: '100vh', background: '#f5f6fa' }}>
       {/* 顶栏：Logo + 导航链接 + 退出按钮 */}
       <div style={{ position: 'sticky', top: 0, zIndex: 9, background: 'rgba(255,255,255,.85)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', borderBottom: '1px solid #e8eaf0', flexWrap: 'wrap' }}>
         <b onClick={() => nav('/app')} style={{ cursor: 'pointer', color: '#4f46e5', fontSize: 16 }}>AI-SCRM</b>
         {link('/app/chat', '对话')}
-        {/* 登录后才显示的导航链接 */}
-        {token && link('/app/advisor', '顾问台')}
-        {token && link('/app/billing', '收银台')}
-        {token && link('/app/referral', '邀请')}
+        {/* G-23：基于角色的导航菜单过滤 */}
+        {/* 条件渲染：必须同时满足"已登录"且"管理员角色"才显示以下菜单项 */}
+        {/* 成员角色（sales/user/readonly）登录后只能看到"对话"和"设置"，不暴露管理功能入口 */}
+        {token && isAdmin && link('/app/advisor', '顾问台')}
+        {token && isAdmin && link('/app/billing', '收银台')}
+        {token && isAdmin && link('/app/referral', '邀请')}
         {token && link('/app/settings', '设置')}
         <span style={{ flex: 1 }} />
         {/* 未登录显示登录链接，已登录显示退出按钮 */}

@@ -159,6 +159,9 @@ func (s *UsageSink) run() {
 }
 
 // flush 取出当前缓冲并按租户分组批量扣减（每租户一次 DeductTokensActual，内部单事务+行锁）。
+// P1-17 修复(2026-09-09)：①锁内只换出 byTid，DB 查询与影子写回移到锁外（原实现持锁逐租户
+// SELECT tenants，DB 抖动时对话热路径 Record 全被串行阻塞）；②扣减失败时回补影子并重投队列
+// （≤3 次），避免"影子先扣后落库"在失败场景假阴性（不足告警误报）。
 func (s *UsageSink) flush() {
 	s.mu.Lock()
 	if len(s.buf) == 0 {
@@ -167,20 +170,45 @@ func (s *UsageSink) flush() {
 	}
 	batch := s.buf
 	s.buf = nil
-	// 影子账本自愈：按租户回读真实三桶余额并重算（外部充值/退款/重置后影子不永久负化）
 	byTid := map[uint]int64{}
 	for _, r := range batch {
 		byTid[r.Tid] += r.Tokens
 	}
-	for tid, pending := range byTid {
-		s.shadow[tid] = tenantTokenRemain(tid) - pending // 真实余额 - 本批待落库量
-		s.shadowOk[tid] = true
-	}
 	s.mu.Unlock()
 
+	// 影子账本自愈：锁外按租户回读真实三桶余额并重算（外部充值/退款/重置后影子不永久负化）
+	for tid, pending := range byTid {
+		s.mu.Lock()
+		s.shadow[tid] = tenantTokenRemain(tid) - pending // 真实余额 - 本批待落库量
+		s.shadowOk[tid] = true
+		s.mu.Unlock()
+	}
+
+	// 首次扣减；失败进重试集
+	failRetry := map[uint]int64{}
 	for tid, total := range byTid {
-		// DeductTokensActual 内部已处理：总闸未开 no-op / 灰度仅留痕 / 强制按 ③→①→② 扣减
-		DeductTokensActual(tid, total)
+		if err := DeductTokensActual(tid, total); err != nil {
+			failRetry[tid] += total
+		}
+	}
+	// 失败重投队列 ≤3 次；重试期间影子余额以扣减实际结果为准（失败租户影子在末尾失效重 seed）
+	for attempt := 1; attempt <= 3 && len(failRetry) > 0; attempt++ {
+		log.Printf("[UsageSink] %d 个租户扣减失败，重投（第%d/3次）", len(failRetry), attempt)
+		next := map[uint]int64{}
+		for tid, total := range failRetry {
+			if err := DeductTokensActual(tid, total); err != nil {
+				next[tid] += total
+			}
+		}
+		failRetry = next
+	}
+	if len(failRetry) > 0 {
+		log.Printf("[UsageSink] 重试仍失败的租户计账将靠下一周期 flush 自愈: %v", failRetry)
+		for tid := range failRetry {
+			s.mu.Lock()
+			delete(s.shadowOk, tid) // 失败即失效影子，下轮 Record 从 DB 重新 seed（避免假阴性持续）
+			s.mu.Unlock()
+		}
 	}
 }
 

@@ -159,11 +159,42 @@ func TestSimpleMessageDone(t *testing.T) {
 	svc.SimpleMessageDone(1, 100)
 }
 
-// TestSetReply 测试回复设置
+// TestSetReply 测试回复设置（P1-19：epoch 代际校验——无队列/epoch=0 不应 panic）
 func TestSetReply(t *testing.T) {
 	svc := NewMessageQueueService()
-	// 无队列时不应 panic
-	svc.SetReply(1, 100, "你好")
+	// epoch=0 不做代际拦截，无队列时不应 panic
+	svc.SetReply(1, 100, 0, "你好")
+}
+
+// TestSetReplyStaleEpoch P1-19 回归：过期代际的 SetReply 必须被丢弃且不误伤当前批次
+func TestSetReplyStaleEpoch(t *testing.T) {
+	svc := NewMessageQueueService()
+	k := queueKey(1, 200)
+	q := svc.getQueue(k)
+	q.mu.Lock()
+	q.processing = true
+	q.epoch = 5 // 当前代际 5
+	q.redisLock = nil
+	q.mu.Unlock()
+
+	// 旧处理者持代际 3 的 SetReply 应被丢弃（状态不被覆盖）
+	svc.SetReply(1, 200, 3, "过期回复")
+	q.mu.Lock()
+	if q.lastReply != "" {
+		t.Fatalf("过期 SetReply 不应写入 lastReply，得到 %q", q.lastReply)
+	}
+	if !q.processing {
+		t.Fatalf("过期 SetReply 不应释放 processing")
+	}
+	q.mu.Unlock()
+
+	// 当前代际 5 的 SetReply 正常生效
+	svc.SetReply(1, 200, 5, "正确回复")
+	q.mu.Lock()
+	if q.lastReply != "正确回复" {
+		t.Fatalf("当前代际 SetReply 应生效，得到 %q", q.lastReply)
+	}
+	q.mu.Unlock()
 }
 
 // TestTidFromKeyFromQueueKey 测试键解析与 queueKey 对称性

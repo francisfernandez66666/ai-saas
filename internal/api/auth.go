@@ -60,8 +60,10 @@ func Login(c *gin.Context) {
 
 	// 1. 从数据库查询用户（携带企业码时限定租户，防同名账号串站）
 	// M3：同时取 must_change_password，登录响应带首登强改密标记
+	// P1-9 修复(2026-09-09)：SELECT 加 status=1 条件——禁用账号不可登录（此前禁用用户
+	// 仍可换 JWT，且登录成功还会清空防爆破计数）。
 	var user model.User
-	userQuery := "SELECT id, username, password_hash, role, tenant_id, must_change_password FROM tenant_users WHERE username = ?"
+	userQuery := "SELECT id, username, password_hash, role, tenant_id, must_change_password FROM tenant_users WHERE username = ? AND status = 1"
 	args := []interface{}{req.Username}
 	if code := strings.TrimSpace(req.TenantCode); code != "" {
 		userQuery += " AND tenant_id IN (SELECT id FROM tenants WHERE code = ?)"
@@ -129,7 +131,7 @@ func Login(c *gin.Context) {
 func Register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(400, gin.H{"code": 400, "message": "参数错误", "errors": []string{err.Error()}})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -161,6 +163,12 @@ func Register(c *gin.Context) {
 	}
 
 	// 2. bcrypt 哈希密码 (Cost 12，耗时约 100ms，生产环境可根据服务器性能调整)
+	// P1-10 修复(2026-09-09)：注册漏调 validatePasswordStrength（改密/重置/tenant signup 三处
+	// 都校验、唯独注册裸奔），弱密码同样拒绝——与 UAT 基线对齐。
+	if err := validatePasswordStrength(req.Password); err != nil {
+		RespErr(c, 400, 400, err.Error())
+		return
+	}
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), 12)
 	if err != nil {
 		RespErr(c, 500, 500, "密码加密失败")

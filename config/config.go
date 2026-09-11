@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"log"
 	"os"
 	"strconv"
@@ -86,12 +87,23 @@ type DatabaseConfig struct {
 }
 
 // DSN 组装 PostgreSQL 连接串
+// P2-10 修复(2026-09-09)：原 fmt.Sprintf 手拼 key=value，密码含空格/`%`/`&` 等特殊字符
+// 会破坏连接串或参数解析。改用 url.URL 构造：user/password 自动百分号转义，
+// query 键值对经 Values.Encode 正确编码（空格→%20、`%`→%25）。
 func (d DatabaseConfig) DSN() string {
 	if d.SSLMode == "" {
 		d.SSLMode = "disable"
 	}
-	return fmt.Sprintf("host=%s port=%d user=%s password=%s dbname=%s sslmode=%s",
-		d.Host, d.Port, d.User, d.Password, d.Name, d.SSLMode)
+	u := &url.URL{
+		Scheme: "postgres",
+		User:   url.UserPassword(d.User, d.Password),
+		Host:   fmt.Sprintf("%s:%d", d.Host, d.Port),
+		Path:   "/" + d.Name,
+	}
+	q := u.Query()
+	q.Set("sslmode", d.SSLMode)
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // ZhipuConfig 智谱GLM配置
@@ -358,9 +370,19 @@ func LoadConfig() *Config {
 	}
 
 	// 安全底线（C1）：非 debug 环境下禁止保留默认/空 JWT 密钥，否则任何人可伪造 super_admin 令牌接管平台
+	// P0-8 修复(2026-09-09)：原守卫只拦截 `""` 与一个从未使用的旧默认串，而真实默认值
+	// `change_me_jwt_secret`（config.go:351）与 `.env.example` 占位值都能通过校验——漏网即
+	// 硬编码密钥可伪造 super_admin。现改为：非 debug 且（长度 <32 或命中占位词表）即 Fatal。
 	if GlobalConfig.Server.Mode != "debug" {
-		if GlobalConfig.JWT.Secret == "" || GlobalConfig.JWT.Secret == "ai-scrm-secret-key-change-in-production" {
-			log.Fatalf("[安全] 非 debug 环境下 JWT_SECRET 未配置或仍为默认值，拒绝启动；请在 .env / 部署环境变量中设置强随机密钥")
+		secret := GlobalConfig.JWT.Secret
+		weakSecret := secret == "" || len(secret) < 32 ||
+			strings.Contains(strings.ToLower(secret), "change_me") ||
+			strings.Contains(strings.ToLower(secret), "changeme") ||
+			strings.Contains(strings.ToLower(secret), "change-me") ||
+			strings.Contains(strings.ToLower(secret), "ai-scrm-secret") ||
+			strings.EqualFold(secret, "secret")
+		if weakSecret {
+			log.Fatalf("[安全] 非 debug 环境下 JWT_SECRET 未配置、过短(<32字符)或仍为默认/占位值，拒绝启动；请在 .env / 部署环境变量中设置强随机密钥")
 		}
 	}
 	// 安全警告（C2）：生产环境若仍走模拟模式将不会调用真实 AI
@@ -384,11 +406,14 @@ func getEnv(key, defaultValue string) string {
 }
 
 // getEnvInt 从环境变量读取 int，转换失败或缺失时返回默认值
+// P2-14 修复(2026-09-09)：解析失败时静默返回默认值——拼错 key/非数字值 无任何提示，
+// 运行时表现与预期不符但管理员毫无感知。补日志计数（warning 级别，不阻塞启动）。
 func getEnvInt(key string, defaultValue int) int {
 	if value, exists := os.LookupEnv(key); exists {
 		if intValue, err := strconv.Atoi(value); err == nil {
 			return intValue
 		}
+		log.Printf("[配置警告] 环境变量 %s 的值 %q 无法转为 int，使用默认值 %d", key, value, defaultValue)
 	}
 	return defaultValue
 }

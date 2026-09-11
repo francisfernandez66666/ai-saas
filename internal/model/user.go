@@ -10,9 +10,13 @@ import (
 // ============================================================
 // User 系统用户表
 // SaaS 化改造：指向 tenant_users 表，sys_users 已废弃。
+// P1-32(2026-09-09)：租户用户唯一模型源收敛——原 model/tenant_user.go 与本品双结构同映射
+// tenant_users 表，但 database.go 仅迁移 User（TenantUser 从未被迁移，其 idx_tu_tenant_username
+// 复合唯一索引从未建出）。现定论：用户名全局唯一（Username uniqueIndex 既成事实），
+// 删除 TenantUser 死结构，角色常量与别名下沉本文件。
 type User struct {
 	ID                 uint      `gorm:"primaryKey" json:"id"`                                                  // 主键ID
-	Username           string    `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名
+	Username           string    `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名（全局唯一）
 	PasswordHash       string    `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
 	RealName           string    `gorm:"size:50" json:"real_name"`                                              // 真实姓名
 	Role               string    `gorm:"size:20;not null;default:sales" json:"role"`                            // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
@@ -27,6 +31,18 @@ type User struct {
 	CreatedAt          time.Time `json:"created_at"`                                                            // 创建时间
 	UpdatedAt          time.Time `json:"updated_at"`                                                            // 更新时间
 }
+
+// Role constants for type-safe checks（P1-32 自 tenant_user.go 收敛于此）
+const (
+	RoleSuperAdmin  = "super_admin"
+	RoleTenantAdmin = "tenant_admin"
+	RoleDeptAdmin   = "dept_admin" // 部门管理员（四级体系，管辖本部门子树）
+	RoleUser        = "user"       // 普通用户（仅本人数据）
+	RoleReadOnly    = "readonly"
+
+	// 旧角色名兼容别名（存量数据迁移由 db.MigrateOrgData 处理）
+	RoleSales = RoleUser
+)
 
 // TableName 指定表名
 // SaaS 化改造：指向 tenant_users 表，sys_users 已废弃

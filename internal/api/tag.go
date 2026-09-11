@@ -26,7 +26,7 @@ import (
 func GetTagList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -60,11 +60,8 @@ func GetTagList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&tags)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: tags,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: tags,
 	})
 }
 
@@ -74,11 +71,11 @@ func GetTagDetail(c *gin.Context) {
 
 	var tag model.Tag
 	if err := db.PQ(c).Scopes(db.T(c)).First(&tag, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "标签不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "标签不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: tag})
+	RespOK(c, "success", tag)
 }
 
 // CreateTag 创建标签
@@ -92,7 +89,7 @@ func CreateTag(c *gin.Context) {
 		Status      int     `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -113,11 +110,11 @@ func CreateTag(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(tag).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: tag})
+	RespOK(c, "创建成功", tag)
 }
 
 // UpdateTag 更新标签
@@ -126,7 +123,7 @@ func UpdateTag(c *gin.Context) {
 
 	var tag model.Tag
 	if err := db.RQ(c).Scopes(db.T(c)).First(&tag, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "标签不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "标签不存在")
 		return
 	}
 
@@ -138,7 +135,7 @@ func UpdateTag(c *gin.Context) {
 		Status      int     `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -160,7 +157,7 @@ func UpdateTag(c *gin.Context) {
 
 	db.RQ(c).Save(&tag)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: tag})
+	RespOK(c, "更新成功", tag)
 }
 
 // DeleteTag 删除标签
@@ -170,7 +167,7 @@ func DeleteTag(c *gin.Context) {
 
 	var tag model.Tag
 	if err := db.RQ(c).Scopes(db.T(c)).First(&tag, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "标签不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "标签不存在")
 		return
 	}
 
@@ -181,7 +178,7 @@ func DeleteTag(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableTag 启用标签
@@ -191,7 +188,7 @@ func EnableTag(c *gin.Context) {
 
 	var tag model.Tag
 	if err := db.RQ(c).Scopes(db.T(c)).First(&tag, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "标签不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "标签不存在")
 		return
 	}
 
@@ -201,7 +198,7 @@ func EnableTag(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: tag})
+	RespOK(c, "启用成功", tag)
 }
 
 // DisableTag 下线标签
@@ -211,7 +208,7 @@ func DisableTag(c *gin.Context) {
 
 	var tag model.Tag
 	if err := db.RQ(c).Scopes(db.T(c)).First(&tag, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "标签不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "标签不存在")
 		return
 	}
 
@@ -221,7 +218,7 @@ func DisableTag(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: tag})
+	RespOK(c, "下线成功", tag)
 }
 
 // ReloadTagCache 热更新标签缓存
@@ -229,12 +226,8 @@ func DisableTag(c *gin.Context) {
 func ReloadTagCache(c *gin.Context) {
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "标签缓存热更新成功",
-		Data: gin.H{
-			"version": cache.DefaultTagCache.GetVersion(),
-		},
+	RespOK(c, "标签缓存热更新成功", gin.H{
+		"version": cache.DefaultTagCache.GetVersion(),
 	})
 }
 
@@ -246,7 +239,7 @@ func ReloadTagCache(c *gin.Context) {
 func GetTagRuleList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -280,11 +273,8 @@ func GetTagRuleList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&rules)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: rules,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: rules,
 	})
 }
 
@@ -299,7 +289,7 @@ func CreateTagRule(c *gin.Context) {
 		Status       int      `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -327,11 +317,11 @@ func CreateTagRule(c *gin.Context) {
 	rule.SetMatchPatterns(req.MatchPattern)
 
 	if err := db.RQ(c).Create(rule).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: rule})
+	RespOK(c, "创建成功", rule)
 }
 
 // UpdateTagRule 更新打标规则
@@ -340,7 +330,7 @@ func UpdateTagRule(c *gin.Context) {
 
 	var rule model.TagRule
 	if err := db.RQ(c).Scopes(db.T(c)).First(&rule, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "规则不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "规则不存在")
 		return
 	}
 
@@ -353,7 +343,7 @@ func UpdateTagRule(c *gin.Context) {
 		Status       int      `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -383,7 +373,7 @@ func UpdateTagRule(c *gin.Context) {
 
 	db.RQ(c).Save(&rule)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: rule})
+	RespOK(c, "更新成功", rule)
 }
 
 // DeleteTagRule 删除打标规则
@@ -393,7 +383,7 @@ func DeleteTagRule(c *gin.Context) {
 
 	var rule model.TagRule
 	if err := db.RQ(c).Scopes(db.T(c)).First(&rule, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "规则不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "规则不存在")
 		return
 	}
 
@@ -404,7 +394,7 @@ func DeleteTagRule(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableTagRule 启用打标规则
@@ -413,7 +403,7 @@ func EnableTagRule(c *gin.Context) {
 
 	var rule model.TagRule
 	if err := db.RQ(c).Scopes(db.T(c)).First(&rule, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "规则不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "规则不存在")
 		return
 	}
 
@@ -423,7 +413,7 @@ func EnableTagRule(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: rule})
+	RespOK(c, "启用成功", rule)
 }
 
 // DisableTagRule 下线打标规则
@@ -432,7 +422,7 @@ func DisableTagRule(c *gin.Context) {
 
 	var rule model.TagRule
 	if err := db.RQ(c).Scopes(db.T(c)).First(&rule, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "规则不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "规则不存在")
 		return
 	}
 
@@ -442,7 +432,7 @@ func DisableTagRule(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: rule})
+	RespOK(c, "下线成功", rule)
 }
 
 // ============================================================
@@ -453,7 +443,7 @@ func DisableTagRule(c *gin.Context) {
 func GetTagWeightList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -480,11 +470,8 @@ func GetTagWeightList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&mappings)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: mappings,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: mappings,
 	})
 }
 
@@ -498,7 +485,7 @@ func CreateTagWeight(c *gin.Context) {
 		Direction    string  `json:"direction"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -525,11 +512,11 @@ func CreateTagWeight(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(mapping).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: mapping})
+	RespOK(c, "创建成功", mapping)
 }
 
 // DeleteTagWeight 删除权重映射
@@ -539,7 +526,7 @@ func DeleteTagWeight(c *gin.Context) {
 
 	var mapping model.TagWeightMapping
 	if err := db.RQ(c).Scopes(db.T(c)).First(&mapping, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "映射不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "映射不存在")
 		return
 	}
 
@@ -550,7 +537,7 @@ func DeleteTagWeight(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // UpdateTagWeight 编辑权重映射
@@ -559,7 +546,7 @@ func UpdateTagWeight(c *gin.Context) {
 
 	var mapping model.TagWeightMapping
 	if err := db.RQ(c).Scopes(db.T(c)).First(&mapping, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "映射不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "映射不存在")
 		return
 	}
 
@@ -572,7 +559,7 @@ func UpdateTagWeight(c *gin.Context) {
 		Status       int     `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -607,67 +594,91 @@ func UpdateTagWeight(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultTagCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: mapping})
+	RespOK(c, "更新成功", mapping)
 }
 
 // ============================================================
 // 客户端API - 客户标签相关
 // ============================================================
 
-// GetCustomerTags 获取客户标签列表
+// GetCustomerTags 获取客户标签列表（P1-8 修复：先校验客户租户归属再查）
 func GetCustomerTags(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
+	tid := db.EffectiveTenantIDFromGin(c)
 
-	tags, err := service.DefaultTagService.GetCustomerTags(uint(customerID))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "查询失败", Data: nil})
+	// 校验客户存在且属于当前租户（防跨租户读）
+	var customer model.Customer
+	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: tags})
+	tags, err := service.DefaultTagService.GetCustomerTags(tid, uint(customerID))
+	if err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
+		return
+	}
+
+	RespOK(c, "success", tags)
 }
 
 // AddTagsToCustomer 手动给客户打标签
 // 接收tag_ids数组
 func AddTagsToCustomer(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
+	tid := db.EffectiveTenantIDFromGin(c)
 
 	var req struct {
 		TagIDs []uint `json:"tag_ids" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
-	// 根据tag_ids查标签名称
+	// 校验客户存在且属于当前租户（防跨租户打标）
+	var customer model.Customer
+	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+
+	// 根据tag_ids查标签名称（按租户可见范围）
 	var tagNames []string
 	for _, tagID := range req.TagIDs {
-		tag := cache.DefaultTagCache.GetTagByID(tagID)
+		tag := cache.DefaultTagCache.GetTagByID(tid, tagID)
 		if tag != nil {
 			tagNames = append(tagNames, tag.Name)
 		}
 	}
 
-	err := service.DefaultTagService.ApplyTagsToCustomer(uint(customerID), tagNames, "manual")
+	err := service.DefaultTagService.ApplyTagsToCustomer(tid, uint(customerID), tagNames, "manual")
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "打标失败", Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "打标失败")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "打标成功", Data: tagNames})
+	RespOK(c, "打标成功", tagNames)
 }
 
 // RemoveCustomerTag 移除客户标签
 func RemoveCustomerTag(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
 	tagID, _ := strconv.Atoi(c.Param("tag_id"))
+	tid := db.EffectiveTenantIDFromGin(c)
 
-	err := service.DefaultTagService.RemoveTagFromCustomer(uint(customerID), uint(tagID))
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "移除失败", Data: nil})
+	// 校验客户存在且属于当前租户（防跨租户删标）
+	var customer model.Customer
+	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "移除成功", Data: nil})
+	err := service.DefaultTagService.RemoveTagFromCustomer(tid, uint(customerID), uint(tagID))
+	if err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "移除失败")
+		return
+	}
+
+	RespOK(c, "移除成功", nil)
 }

@@ -8,6 +8,8 @@ package realtime
 import (
 	"encoding/json"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // RealtimeEvent 推送事件（前端收到即触发对应拉取）
@@ -25,6 +27,21 @@ type Client struct {
 	UserID     uint // 顾问端（>0）；客户端的 UserID=0
 	CustomerID uint // 客户端（>0）；顾问端的 CustomerID=0
 	send       chan []byte
+	lastSeen   atomic.Int64 // 最近活动时间（UnixNano，P2-70 心跳：清扫僵尸连接）
+}
+
+// Touch 标记连接活跃（读泵每收到一次消息调用；P2-70）
+func (cl *Client) Touch() {
+	cl.lastSeen.Store(time.Now().UnixNano())
+}
+
+// IdleFor 返回连接空闲时长（P2-70）
+func (cl *Client) IdleFor() time.Duration {
+	last := cl.lastSeen.Load()
+	if last == 0 {
+		return 0
+	}
+	return time.Since(time.Unix(0, last))
 }
 
 // Hub 连接注册表
@@ -68,6 +85,7 @@ func (cl *Client) SendQueue() <-chan []byte {
 
 // Register 注册连接
 func (h *Hub) Register(cl *Client) {
+	cl.Touch() // P2-70：登记即记为活跃
 	h.mu.Lock()
 	h.clients[cl] = true
 	h.mu.Unlock()
@@ -81,6 +99,34 @@ func (h *Hub) Unregister(cl *Client) {
 		delete(h.clients, cl)
 		close(cl.send)
 	}
+}
+
+// SweepStale 清理僵尸连接（空闲超过 idleFor 的订阅者，P2-70 心跳）
+// 僵尸连接通常来自客户端异常断线（网络抖动/进程被杀）未被读泵捕获，
+// 长期驻留占着 send 通道与 map 槽位。
+func (h *Hub) SweepStale(idleFor time.Duration) {
+	var stale []*Client
+	h.mu.RLock()
+	for cl := range h.clients {
+		if cl.IdleFor() > idleFor {
+			stale = append(stale, cl)
+		}
+	}
+	h.mu.RUnlock()
+	for _, cl := range stale {
+		h.Unregister(cl)
+	}
+}
+
+// StartSweeper 启动定期僵尸清扫（main 启动时调用；30s 一轮，180s 无活动视为僵尸）
+func (h *Hub) StartSweeper() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.SweepStale(180 * time.Second)
+		}
+	}()
 }
 
 // Publish 向租户内相关订阅者推送：所有顾问端 + 指定客户端连接
@@ -134,6 +180,9 @@ type RealtimeMessage struct {
 func (h *Hub) PublishWithContent(ev RealtimeMessage) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	// P2-70 修复：先筛选命中订阅者，命中后才序列化一次、全部复用同一份 data——
+	// 原实现每个命中订阅者都 jsonMarshal 一次（N 订阅者=N 次重复序列化）。
+	var data []byte
 	for cl := range h.clients {
 		if cl.TenantID != ev.TenantID {
 			continue
@@ -143,10 +192,12 @@ func (h *Hub) PublishWithContent(ev RealtimeMessage) {
 			hit = true // 该客户端连接
 		}
 		if hit {
-			// 序列化消息并推送
-			data, err := jsonMarshal(ev)
-			if err != nil {
-				continue
+			if data == nil {
+				d, err := jsonMarshal(ev)
+				if err != nil {
+					return
+				}
+				data = d
 			}
 			select {
 			case cl.send <- data:

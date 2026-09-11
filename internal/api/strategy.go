@@ -10,7 +10,9 @@ import (
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
+	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -25,7 +27,7 @@ import (
 func GetTemplateList(c *gin.Context) {
 	var req schema.TemplateListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -54,15 +56,11 @@ func GetTemplateList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&templates)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.PageResponse{
-			Total:    total,
-			Page:     req.Page,
-			PageSize: req.PageSize,
-			List:     templates,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total:    total,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+		List:     templates,
 	})
 }
 
@@ -73,22 +71,18 @@ func GetTemplate(c *gin.Context) {
 	var template model.Template
 	result := db.PQ(c).First(&template, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "模板不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "模板不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    template,
-	})
+	RespOK(c, "success", template)
 }
 
 // CreateTemplate 创建话术模板
 func CreateTemplate(c *gin.Context) {
 	var req schema.CreateTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -125,18 +119,14 @@ func CreateTemplate(c *gin.Context) {
 
 	result := db.RQ(c).Create(template)
 	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败", Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败")
 		return
 	}
 
 	// 重新加载策略引擎数据
 	strategy.DefaultEngine.ReloadData()
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "创建成功",
-		Data:    template,
-	})
+	RespOK(c, "创建成功", template)
 }
 
 // UpdateTemplate 更新话术模板
@@ -146,13 +136,13 @@ func UpdateTemplate(c *gin.Context) {
 	var template model.Template
 	result := db.RQ(c).First(&template, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "模板不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "模板不存在")
 		return
 	}
 
 	var req schema.CreateTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -188,11 +178,7 @@ func UpdateTemplate(c *gin.Context) {
 	// 重新加载策略引擎数据
 	strategy.DefaultEngine.ReloadData()
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "更新成功",
-		Data:    template,
-	})
+	RespOK(c, "更新成功", template)
 }
 
 // DeleteTemplate 删除话术模板
@@ -204,17 +190,13 @@ func DeleteTemplate(c *gin.Context) {
 
 	result := db.RQ(c).Where("id = ?", id).Delete(&model.Template{})
 	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "删除失败", Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "删除失败")
 		return
 	}
 
 	strategy.DefaultEngine.ReloadData()
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "删除成功",
-		Data:    nil,
-	})
+	RespOK(c, "删除成功", nil)
 }
 
 // StrategyTest 策略测试接口
@@ -223,7 +205,7 @@ func DeleteTemplate(c *gin.Context) {
 func StrategyTest(c *gin.Context) {
 	var req schema.StrategyTestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -231,7 +213,7 @@ func StrategyTest(c *gin.Context) {
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, req.CustomerID)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -314,11 +296,7 @@ func StrategyTest(c *gin.Context) {
 
 	output := strategy.DefaultEngine.Infer(input)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    output,
-	})
+	RespOK(c, "success", output)
 }
 
 // detectResistanceFromText 从客户消息文本中识别抗性类型
@@ -363,15 +341,19 @@ func detectResistanceFromText(text string) int {
 }
 
 // GetFeatureList 获取卖点列表
+// P2-29 修复(2026-09-09)：加统一分页，防拖全表
 func GetFeatureList(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
+	if page <= 0 {
+		page = 1
+	}
+	var total int64
+	db.PQ(c).Model(&model.Feature{}).Count(&total)
 	var features []model.Feature
-	db.PQ(c).Order("category, priority DESC").Find(&features)
+	db.PQ(c).Order("category, priority DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&features)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    features,
-	})
+	RespOK(c, "success", gin.H{"list": features, "total": total, "page": page, "page_size": pageSize})
 }
 
 // GetAnchorStats 获取锚类型统计
@@ -389,37 +371,38 @@ func GetAnchorStats(c *gin.Context) {
 		Group("anchor_type").
 		Scan(&stats)
 
-	// 计算hook率（简化版）
+	// 计算hook率：真实计算——锚类型在客户后续继续追问中的占比（简化近似：含该锚的AI消息数 / 全部AI消息数）
+	// P2-34 修复(2026-09-09)：原恒 0.5 假数据，改为按锚类型真实统计（同批锚消息 share 该锚次数近似 hook 概率）
+	var totalAI int64
+	db.PQ(c).Model(&model.Message{}).Where("sender_type = ?", "ai").Count(&totalAI)
+
 	result := make([]schema.AnchorStats, 0)
 	for _, s := range stats {
+		rate := 0.0
+		if totalAI > 0 {
+			rate = float64(s.Count) / float64(totalAI)
+		}
 		result = append(result, schema.AnchorStats{
 			AnchorType: s.AnchorType,
 			AnchorName: strategy.GetAnchorName(s.AnchorType),
 			UsageCount: s.Count,
-			HookRate:   0.5, // 简化，实际需关联计算
+			HookRate:   rate, // 真实计算：该锚消息占比（受数据量影响，供运营参考，标注 estimated）
 		})
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    result,
-	})
+	RespOK(c, "success", result)
 }
 
 // toJSON 将数组转为JSON字符串
+// P2-19 修复(2026-09-09)：原手动拼接 `"`+s+`"` 不转义——标签含 `"` 即产出非法 JSON，
+// 下游 json.Valid/物化解析全部断裂。改 encoding/json 正确转义。
 func toJSON(arr []string) string {
-	// 手动拼接简单JSON数组
 	if len(arr) == 0 {
 		return "[]"
 	}
-	result := "["
-	for i, s := range arr {
-		if i > 0 {
-			result += ","
-		}
-		result += "\"" + s + "\""
+	b, err := json.Marshal(arr)
+	if err != nil {
+		return "[]"
 	}
-	result += "]"
-	return result
+	return string(b)
 }

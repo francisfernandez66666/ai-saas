@@ -120,13 +120,6 @@ func InitRouter() {
 	log.Println("========================================")
 }
 
-// GenerateText 统一生成文本入口
-// 自动按优先级尝试各模型，失败则降级
-// 返回：回复内容, 使用的模型名, 错误
-func (r *AIRouter) GenerateText(messages []ChatMessage, temperature float64) (string, string, error) {
-	reply, _, model, _, err := r.GenerateTextForStage("", 0, messages, temperature)
-	return reply, model, err
-}
 
 // GenerateTextForStage 带阶段语义的生成入口（M3）
 // stage_models 配置了该阶段专属模型时优先使用（失败自动回退全局降级链），
@@ -148,14 +141,15 @@ func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []
 }
 
 // callProvider 定向调用指定 provider+model（阶段覆盖专用）
+// P2-59 修复(2026-09-09)：原 SetModel 改全局单例 ModelName，并发阶段覆盖请求
+// 互相串模型（A 读了 B 的 SetModel）。改用 per-call GenerateTextWithModelOverride，
+// 临时覆盖 + 恢复，加 mutex 防并发覆盖。
 func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
 	switch provider {
 	case ProviderZhipu:
-		DefaultClient.SetModel(modelName)
-		return DefaultClient.GenerateTextWithUsage(messages, temperature)
+		return DefaultClient.GenerateTextWithModelOverride(messages, temperature, modelName)
 	case ProviderSiliconFlow:
-		SiliconFlowDefaultClient.SetModel(modelName)
-		return SiliconFlowDefaultClient.GenerateTextWithUsage(messages, temperature)
+		return SiliconFlowDefaultClient.GenerateTextWithModelOverride(messages, temperature, modelName)
 	case ProviderGateway:
 		if DefaultGatewayClient == nil {
 			return "", Usage{}, fmt.Errorf("网关未初始化")
@@ -181,7 +175,18 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 	log.Printf("[AI路由] ===== 开始尝试模型，共%d个候选模型", len(models))
 
 	// 按优先级依次尝试每个模型
+	// P2-63 修复(2026-09-09)：总预算 deadline——原每次失败后继续降级，最坏叠加多个
+	// HTTP 超时(45s+60s+...)达 450s+，客户端早已超时。2min 内必须出结果，
+	// 超预算直接终止降级链走模板兜底。
+	budget := 110 * time.Second // 给 AI 留 ≤110s，剩余给模拟真人延迟(humanlikeDelay)和网络边际
+	deadline := now.Add(budget)
 	for idx, model := range models {
+		// 总预算检查：已用时间超限 → 不再尝试后续模型
+		if time.Since(now) >= budget || time.Now().After(deadline) {
+			log.Printf("[AI路由] ===== 总预算 %.0fs 已耗尽(已用%.1fs)，终止降级链走兜底",
+				budget.Seconds(), time.Since(now).Seconds())
+			break
+		}
 		// 如果模型不可用（冷却中或从未启用），跳过
 		r.mu.RLock()
 		available := model.Available
@@ -223,7 +228,12 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 
 		lastErr = err
 		log.Printf("[AI路由] ✗ 第%d个模型失败: [%s] %s, 错误: %v", idx+1, model.Provider, model.ModelName, err)
-		r.markFailure(model)
+		// P2-58 修复：认证类错误直接熔断，不走常规重试累加
+		if classifyAIError(err) == errClassAuth {
+			r.markAuthFailure(model)
+		} else {
+			r.markFailure(model)
+		}
 
 		// 还有下一个模型，打印降级提示
 		if idx < len(models)-1 {
@@ -257,6 +267,19 @@ func (r *AIRouter) markFailure(model *ModelState) {
 		log.Printf("[AI路由] 模型 [%s] %s 连续失败%d次，暂时标记不可用，%d秒后自动恢复",
 			model.Provider, model.ModelName, model.ConsecutiveFails, r.coolDownSec)
 	}
+}
+
+// markAuthFailure 标记认证类失败（401/403/invalid key 等账户级错误）
+// P2-58 修复(2026-09-09)：账户错误不会自愈——重试 5 次才熔断，每次请求都白跑超时。
+// 认证类直接熔断（Available=false，长冷却），由 RecoverCoolingModels 定时兜底；429 类仍走常规短冷却。
+func (r *AIRouter) markAuthFailure(model *ModelState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	model.ConsecutiveFails++
+	model.LastFailTime = time.Now()
+	model.Available = false
+	log.Printf("[AI路由] 模型 [%s] %s 认证/账户级失败（401/403/invalid key），直接熔断，%d秒后自动恢复",
+		model.Provider, model.ModelName, r.coolDownSec)
 }
 
 // GetModels 获取所有模型列表（用于日志排查）

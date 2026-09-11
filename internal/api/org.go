@@ -395,7 +395,6 @@ func UpdateDepartment(c *gin.Context) {
 				updates["parent_id"] = newPID
 				updates["depth"] = np.Depth + 1
 			}
-			_ = moving
 		}
 	}
 
@@ -534,6 +533,11 @@ func CreateUser(c *gin.Context) {
 		}
 	}
 
+	// P2-26 修复：建用户接入统一密码强度校验（对齐注册/改密基线，弱密码一律拒绝）
+	if err := validatePasswordStrength(req.Password); err != nil {
+		RespErr(c, http.StatusBadRequest, 400, err.Error())
+		return
+	}
 	hashed, err := utils.HashPassword(req.Password)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
@@ -601,9 +605,6 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	// 保护线：不能改自己角色（防误操作自锁）；不能动超管
-	if uint64(target.ID) == id && false {
-		// 占位：self 判断在下方用 UserID 比较
-	}
 	if target.ID == s.UserID {
 		RespErr(c, http.StatusForbidden, 403, "不能修改自己的组织信息")
 		return
@@ -656,6 +657,11 @@ func UpdateUser(c *gin.Context) {
 		updates["real_name"] = strings.TrimSpace(*req.RealName)
 	}
 	if req.Password != nil && *req.Password != "" {
+		// P2-26 修复：改密接入统一强度校验（防止管理员为用户设置弱密码，绕过强改密策略）
+		if err := validatePasswordStrength(*req.Password); err != nil {
+			RespErr(c, http.StatusBadRequest, 400, err.Error())
+			return
+		}
 		hashed, herr := utils.HashPassword(*req.Password)
 		if herr != nil {
 			RespErr(c, http.StatusInternalServerError, 500, "密码处理失败")
@@ -735,6 +741,3 @@ func GetManagedUsers(c *gin.Context) {
 	}
 	RespOK(c, "success", rows)
 }
-
-// 占位引用：保证 gorm 库被显式依赖（避免未来清理 import 时误删）
-var _ = gorm.ErrRecordNotFound

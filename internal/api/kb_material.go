@@ -63,7 +63,12 @@ func SuperMaterialList(c *gin.Context) {
 // 评审状态只能为 approved（通过）、rejected（拒绝）或 pending（待处理）。
 // 支持可选的人工评分(human_score)、行业包代码(pack_code)和成交标记(deal_closed)。
 func SuperMaterialReview(c *gin.Context) {
-	id := c.Param("id")
+	// P2-28 修复：非数字 id 直打 PG 触发 22P02→500。统一 PathUintID 收口（非法→400）
+	materialID, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "素材ID非法")
+		return
+	}
 	var req struct {
 		Status     string `json:"status" binding:"required"` // approved/rejected/pending
 		HumanScore *int   `json:"human_score"`
@@ -89,7 +94,7 @@ func SuperMaterialReview(c *gin.Context) {
 	if req.PackCode != "" {
 		updates["pack_code"] = req.PackCode
 	}
-	res := db.DB.Model(&model.KbFeedbackMaterial{}).Where("id = ?", id).Updates(updates)
+	res := db.DB.Model(&model.KbFeedbackMaterial{}).Where("id = ?", materialID).Updates(updates)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "素材不存在")
 		return
@@ -102,9 +107,14 @@ func SuperMaterialReview(c *gin.Context) {
 // 评分维度包括：口语自然度、需求针对性、推进有效性，输出0-5分及简短理由。
 // 同时执行离线评分作为零成本护栏，与LLM评估结果互补验证。
 func SuperMaterialEvals(c *gin.Context) {
-	id := c.Param("id")
+	// P2-28 修复：非数字 id 直打 PG 触发 22P02。统一 PathUintID
+	materialID, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "素材ID非法")
+		return
+	}
 	var m model.KbFeedbackMaterial
-	if err := db.DB.First(&m, id).Error; err != nil {
+	if err := db.DB.First(&m, materialID).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "素材不存在")
 		return
 	}

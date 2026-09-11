@@ -491,7 +491,7 @@ export interface UsageCostSummary {
 // 邀请推广
 // ============================================================
 
-// 邀请信息（admin/referral/info 的 referral 子对象）
+// 邀请信息（advisor/referral/info 的 referral 子对象）
 export interface ReferralInfo {
   invite_code?: string
   invited_count?: number
@@ -500,7 +500,7 @@ export interface ReferralInfo {
   token_balance?: number
 }
 
-// 单条邀请记录（admin/referral/records）
+// 单条邀请记录（advisor/referral/records）
 export interface ReferralRecord {
   tenant_id: number
   company_name: string

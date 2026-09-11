@@ -7,6 +7,7 @@ import (
 	"ai-scrm/pkg/utils"
 	"golang.org/x/crypto/bcrypt"
 	"log"
+	"strconv"
 )
 
 // ============================================================
@@ -39,6 +40,25 @@ func seedTenants() {
 		return
 	}
 	log.Println("已创建默认租户：name=rox-sales code=default")
+
+	// G-24：默认租户绑定 auto 行业包（开箱即可用汽车行业话术）
+	// 业务说明：新租户注册时默认没有行业包，AI 回复使用通用模板
+	// 绑定 auto 包后，策略中心自动加载汽车行业知识库、竞品数据、话术模板
+	// 绑定逻辑：幂等设计，仅首次创建时绑定，后台可修改/解绑
+	var pack model.IndustryPack
+	if err := db.DB.Where("code = ? AND status = 'active'", "auto").Order("id DESC").First(&pack).Error; err == nil {
+		binding := &model.TenantPackBinding{
+			TenantID:       defaultTenant.ID,       // 绑定目标租户
+			PackID:         pack.ID,                // 行业包ID
+			PackCode:       pack.Code,              // 行业包代码（冗余字段，方便查询）
+			AppliedVersion: pack.Version,           // 应用时的版本号（快照，防后续升级影响已绑定租户）
+		}
+		if err := db.DB.Create(binding).Error; err != nil {
+			log.Printf("G-24: 默认租户绑定 auto 包失败: %v", err)
+		} else {
+			log.Printf("G-24: 默认租户已绑定 auto 行业包 v%s", pack.Version)
+		}
+	}
 }
 
 // ============================================================
@@ -141,7 +161,9 @@ func seedUsers() {
 
 	for i := 0; i < 3; i++ {
 		sales := &model.User{
-			Username:           "sales" + string(rune('1'+i)),
+			// P2-7 修复(2026-09-09)：string(rune('1'+i)) 在 i>=9 时乱码（rune 转出多字节）。
+			// 用户名用 strconv.FormatInt 正确拼数字；tenant_id 日志同理。
+			Username:           "sales" + strconv.Itoa(i+1),
 			PasswordHash:       salesPwd,
 			RealName:           salesNames[i],
 			Role:               model.RoleUser,
@@ -152,7 +174,7 @@ func seedUsers() {
 			MustChangePassword: true, // M3：演示账号同样首登强改密
 		}
 		db.DB.Create(sales)
-		log.Println("已创建销售账号: sales" + string(rune('1'+i)) + " (tenant_id=" + string(rune('1'+defaultTenantID)) + ")")
+		log.Println("已创建销售账号: sales" + strconv.Itoa(i+1) + " (tenant_id=" + strconv.Itoa(int(defaultTenantID)) + ")")
 	}
 
 	log.Println("已创建 1个超级管理员 + 3个销售账号")

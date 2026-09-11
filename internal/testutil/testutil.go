@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -34,6 +35,12 @@ func SetupTestDB(t *testing.T) {
 	loadRootEnv()
 	config.LoadConfig()
 	if err := db.Init(); err != nil {
+		// P2-82 修复(2026-09-09)：CI 环境下 DB 不可用必须 Fatal——
+		// 原 t.Skipf 会让 DB 依赖测试"静默绿"（无脑跳过），CI 里无法暴露真缺陷。
+		// 本地开发保留 Skip 哲学（无 DB 也能跑纯逻辑测试）。GitHub Actions 会设 CI=true。
+		if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
+			t.Fatalf("DB 不可用（CI 环境）：%v", err)
+		}
 		t.Skipf("DB 不可用，跳过 DB 依赖测试: %v", err)
 	}
 }
@@ -119,7 +126,33 @@ func randInviteCode() string {
 }
 
 // CleanupTenant 删除单测租户（幂等，测试收尾清理）
+// P2-82 修复(2026-09-09)：原只 Delete tenants 主表——tenant_users/customer/conversation 等
+// 子表行成孤儿残留，污染后续测试的全局统计与标签。改为按租户子表清单级联清理后再删主表。
 func CleanupTenant(t *testing.T, id uint) {
 	t.Helper()
-	_ = db.DB.Where("id = ?", id).Delete(&model.Tenant{}).Error
+	if id == 0 {
+		return
+	}
+	// 租户直属子表清单（带 tenant_id 列的模型）；顺序随意，各表独立删除。
+	// 只清测试创建的行（testutil 租户），不波及业务数据。
+	tenantChildTables := []string{
+		"tenant_users", "departments", "customers", "customer_identities",
+		"conversations", "messages", "follow_ups",
+		"flow_definitions", "flow_instances", "flow_node_events",
+		"feedback", "test_drives", "template_items", "features",
+		"customer_tags", "tag_rules", "knowledge_fragments", "knowledge_docs",
+		"system_configs", "email_verifies", "inbox_events",
+		"kb_feedback_materials", "reward_claims", "usage_ledger",
+		"cdp_profiles", "cdp_tag_entities", "cdp_tag_assignments",
+		"tenant_pack_bindings", "user_preferences",
+	}
+	for _, tb := range tenantChildTables {
+		if err := db.DB.Exec("DELETE FROM " + tb + " WHERE tenant_id = ?", id).Error; err != nil {
+			// 个别表可能无该列/不存在（版本演进），忽略
+			log.Printf("[testutil] 级联清理跳过 %s: %v", tb, err)
+		}
+	}
+	// 用户表 tenant_id 为指针字段（&s.TenantID），独立处理
+	_ = db.DB.Exec("DELETE FROM users WHERE tenant_id = ?", id).Error
+	_ = db.DB.Exec("DELETE FROM tenants WHERE id = ?", id).Error
 }

@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react'
 import { Dialog, Button, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
+import { ConfirmDialog } from '../lib/ui'
 import { getToken } from '../lib/api'
 import type { TableRowData } from '../types'
 
@@ -31,6 +32,9 @@ const CH = { mock: '模拟', manual: '静态码人工', wechat: '微信', alipay
  */
 export default function Billing() {
   const brand = useBrand()
+  // P1-42(2026-09-09)：订单订阅/支付接口须管理员权限——成员角色(sales/user)看/
+  // /app/billing 不应 403 白屏：只展示额度与套餐信息（订阅/支付/订单区隐藏）
+  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(localStorage.getItem('role') || '')
   // 当前套餐用量
   const [quota, setQuota] = useState<Quota | null>(null)
   // 商业包列表
@@ -45,6 +49,11 @@ export default function Billing() {
   const [payMode, setPayMode] = useState('mock')
   // 支付弹窗提示信息
   const [msg, setMsg] = useState('')
+  // 确认弹窗状态
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const [confirmTitle, setConfirmTitle] = useState('')
+  const [confirmMsg, setConfirmMsg] = useState('')
+  const [confirmFn, setConfirmFn] = useState<() => void>(() => {})
 
   /** 加载当前套餐用量 */
   async function loadQuota() {
@@ -58,8 +67,9 @@ export default function Billing() {
     const j = await r.json()
     setPkgs((j.data || []).filter((p: Pkg) => p.p_type !== 'free'))
   }
-  /** 加载订单列表（最近 50 条） */
+  /** 加载订单列表（最近 50 条）；仅管理员可查（P1-42：成员角色不触发 403） */
   async function loadOrders() {
+    if (!isAdmin) return
     try {
       const r = await fetch('/api/v1/billing/orders?limit=50', AUTH())
       const j = await r.json()
@@ -141,12 +151,13 @@ export default function Billing() {
             <b>{p.name}</b>
             <div style={{ fontSize: 24, fontWeight: 800, margin: '8px 0' }}>{p.price_cents > 0 ? '¥' + (p.price_cents / 100).toFixed(0) : '免费'}<small style={{ fontSize: 12, color: '#718096', fontWeight: 400 }}>{p.p_type === 'paid' ? '/月' : ''}</small></div>
             <p style={{ fontSize: 13, color: '#718096', margin: '8px 0 14px', flex: 1 }}>{p.description || ''}<br />含 {p.ai_calls} 次AI调用{p.duration_days ? ` · ${p.duration_days}天有效期` : ' · 永不过期'}</p>
-            <button onClick={() => subscribe(p.id)} style={{ background: 'linear-gradient(135deg,var(--pri),#764ba2)', color: '#fff', width: '100%', padding: '9px 14px', border: 'none', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>立即订阅 ({p.p_type === 'free' ? '注册赠送' : p.p_type === 'paid' ? '包月' : '买断'})</button>
+            <button onClick={() => isAdmin ? subscribe(p.id) : undefined} disabled={!isAdmin} aria-label={'订阅' + p.name} style={{ background: 'linear-gradient(135deg,var(--pri),#764ba2)', color: '#fff', width: '100%', padding: '9px 14px', border: 'none', borderRadius: 8, cursor: isAdmin ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: isAdmin ? 1 : .6 }}>{isAdmin ? '立即订阅' : '订阅需管理员账号'}</button>
           </div>
         ))}
       </div>
 
-      {/* 订单列表 */}
+      {/* 订单列表（P1-42：仅管理员可见，成员角色只读额度与套餐信息） */}
+      {isAdmin && <>
       <h2 style={{ fontSize: 17 }}>我的订单</h2>
       <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>待支付订单可继续操作；已到账订单权益即时发放</p>
       <div className="overflow-x-auto">
@@ -161,21 +172,42 @@ export default function Billing() {
               <td style={td}>{CH[o.channel as keyof typeof CH] || o.channel || '-'}</td>
               <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status}</span></td>
               <td style={td}>{new Date(o.created_at).toLocaleString()}</td>
-              <td style={td}>{o.status === 'pending' ? <button style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : '已完成'}</td>
+              <td style={td}>{o.status === 'pending' ? <button aria-label={'继续支付订单' + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
+                <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>
+                {/* G-16：退款按钮——仅已完成订单可操作，弹出 ConfirmDialog 二次确认后调用 refund 接口 */}
+                {/* 退款规则：已消费不可退，increment 按未消耗 token 份额，paid 按剩余天数比例 */}
+                <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                  setConfirmTitle('申请退款')
+                  setConfirmMsg('确认申请退款？退款将按比例计算。')
+                  setConfirmFn(async () => {
+                    const r = await fetch(`/api/v1/billing/orders/${o.id}/refund`, { ...AUTH(), method: 'POST' })
+                    const j = await r.json()
+                    if (j.code === 0) { MessagePlugin.success('退款已提交'); loadOrders() } else MessagePlugin.error(j.message || '退款失败')
+                  })
+                  setConfirmOpen(true)
+                }}>退款</button>
+                {/* G-16：发票按钮——已完成订单可申请电子发票，title 固定为"AI-SCRM服务费" */}
+                <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={async () => {
+                  const r = await fetch(`/api/v1/billing/orders/${o.id}/invoice`, { ...AUTH(), method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'AI-SCRM服务费' }) })
+                  const j = await r.json()
+                  if (j.code === 0) { MessagePlugin.success('发票已申请') } else { MessagePlugin.error(j.message || '发票申请失败') }
+                }}>发票</button>
+              </span>}</td>
             </tr>
           ))}
         </tbody>
       </table>
       </div>
+      </>}
 
-      {/* 支付弹窗：展示订单信息与支付操作 */}
+      {/* 支付弹窗：展示订单信息与支付操作（仅管理员可用） */}
       <Dialog header="订单支付" visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>
         {cur && <>
           <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{(cur.amount_cents / 100).toFixed(2)}</p>
           <div style={{ background: '#f6f8ff', border: '1px dashed #b794f4', borderRadius: 10, padding: 18, textAlign: 'center', margin: '14px 0', fontSize: 13, wordBreak: 'break-all' }}>{/* qr_content rendered from order if available */}请于平台收款码完成支付后点击「我已付费」</div>
           <p style={{ fontSize: 13, minHeight: 16 }}>{msg}</p>
           <div style={{ display: 'flex', gap: 10 }}>
-            <Button theme="default" variant="outline" style={{ flex: 1 }} onClick={() => { setModal(false); loadOrders(); loadQuota() }}>取消</Button>
+            <Button theme="default" variant="outline" style={{ flex: 1 }} aria-label="取消支付" onClick={() => { setModal(false); loadOrders(); loadQuota() }}>取消</Button>
             <Button theme="warning" variant="outline" style={{ flex: 1 }} onClick={manualConfirm}>我已付费</Button>
             {payMode === 'mock' && <Button theme="success" style={{ flex: 1 }} onClick={mockPay}>模拟支付(测试)</Button>}
           </div>
@@ -184,8 +216,9 @@ export default function Billing() {
 
       {/* 页脚：法律链接与品牌名 */}
       <footer style={{ textAlign: 'center', padding: 16, color: '#94a3b8', fontSize: 12, borderTop: '1px solid #e5e7eb', marginTop: 28, lineHeight: 2 }}>
-        <a href="/user-agreement" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 平台
+        <a href="/user-agreement" aria-label="查看用户协议" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" aria-label="查看隐私政策" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 平台
       </footer>
+      <ConfirmDialog open={confirmOpen} title={confirmTitle} message={confirmMsg} onConfirm={() => { setConfirmOpen(false); confirmFn() }} onCancel={() => setConfirmOpen(false)} />
     </div>
   )
 }

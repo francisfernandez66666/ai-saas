@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"fmt"
@@ -25,7 +26,6 @@ import (
 // 顾问工作台API（销售端专用）
 // 路由前缀：/api/v1/advisor/
 // 功能：客户管理、工作台数据、跟进提醒、对话接管、策略话术推荐
-// 暂不鉴权，后续再加
 // ============================================================
 
 // ---- 请求结构体 ----
@@ -164,11 +164,7 @@ func GetAdvisorStats(c *gin.Context) {
 		Count(&overdueCount)
 	stats = append(stats, statItem{Label: "逾期未跟进", Value: overdueCount, Color: "red"})
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    stats,
-	})
+	RespOK(c, "success", stats)
 }
 
 // ============================================================
@@ -182,24 +178,24 @@ func ToggleAiReply(c *gin.Context) {
 		Enabled        *bool `json:"enabled"` // nil=切换, true=开, false=关
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
 	var conversation model.Conversation
 	if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在"})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, conversation.CustomerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	if !canOperateCustomer(c, customer.AssignedUserID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
+		RespErr(c, http.StatusForbidden, 403, "无权操作该客户")
 		return
 	}
 
@@ -230,14 +226,10 @@ func ToggleAiReply(c *gin.Context) {
 	log.Printf("[顾问切换AI回复] 会话%d %sAI回复, mode=%s, locked=%v",
 		conversation.ID, status, conversation.Mode, conversation.IsHumanLocked)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已" + status + "AI回复",
-		Data: gin.H{
-			"is_ai_reply_enabled": conversation.IsAiReplyEnabled,
-			"mode":                conversation.Mode,
-			"is_human_locked":     conversation.IsHumanLocked,
-		},
+	RespOK(c, "已"+status+"AI回复", gin.H{
+		"is_ai_reply_enabled": conversation.IsAiReplyEnabled,
+		"mode":                conversation.Mode,
+		"is_human_locked":     conversation.IsHumanLocked,
 	})
 }
 
@@ -260,24 +252,24 @@ type createTestDriveRequest struct {
 func CreateTestDrive(c *gin.Context) {
 	var req createTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, req.CustomerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	if !canOperateCustomer(c, customer.AssignedUserID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
+		RespErr(c, http.StatusForbidden, 403, "无权操作该客户")
 		return
 	}
 
 	scheduledAt, err := time.Parse(time.RFC3339, req.ScheduledAt)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "预约时间格式错误，请使用RFC3339格式"})
+		RespErr(c, http.StatusBadRequest, 400, "预约时间格式错误，请使用RFC3339格式")
 		return
 	}
 
@@ -306,7 +298,7 @@ func CreateTestDrive(c *gin.Context) {
 	db.RQ(c).Create(&td)
 	log.Printf("[试驾单] 创建试驾单 #%d 客户%d 顾问%d 时间%s", td.ID, td.CustomerID, td.AdvisorID, td.ScheduledAt.Format("2006-01-02 15:04"))
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "试驾单创建成功", Data: td})
+	RespOK(c, "试驾单创建成功", td)
 }
 
 // GetTestDrives GET /api/v1/advisor/test-drives 试驾单列表（按客户筛选）
@@ -334,7 +326,7 @@ func GetTestDrives(c *gin.Context) {
 	var list []model.TestDrive
 	query.Order("scheduled_at DESC").Find(&list)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: list})
+	RespOK(c, "success", list)
 }
 
 // GetTestDrive GET /api/v1/advisor/test-drive/:id 试驾单详情
@@ -342,16 +334,16 @@ func GetTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
 	if err := db.RQ(c).First(&td, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "试驾单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "试驾单不存在")
 		return
 	}
 
 	if !customerInDataScope(c, td.AdvisorID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看"})
+		RespErr(c, http.StatusForbidden, 403, "无权查看")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: td})
+	RespOK(c, "success", td)
 }
 
 // updateTestDriveRequest 更新试驾单请求体：全部字段指针化，nil 表示不修改
@@ -371,18 +363,18 @@ func UpdateTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
 	if err := db.RQ(c).First(&td, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "试驾单不存在"})
+		RespErr(c, http.StatusNotFound, 404, "试驾单不存在")
 		return
 	}
 
 	if !canOperateCustomer(c, td.AdvisorID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权修改"})
+		RespErr(c, http.StatusForbidden, 403, "无权修改")
 		return
 	}
 
 	var req updateTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -417,7 +409,7 @@ func UpdateTestDrive(c *gin.Context) {
 	db.RQ(c).Save(&td)
 	log.Printf("[试驾单] 更新试驾单 #%d 状态=%s", td.ID, td.Status)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: td})
+	RespOK(c, "更新成功", td)
 }
 
 // ============================================================
@@ -493,7 +485,7 @@ func canOperateCustomer(c *gin.Context, assignedUserID uint) bool {
 func GetAdvisorCustomers(c *gin.Context) {
 	var req advisorCustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -635,15 +627,11 @@ func GetAdvisorCustomers(c *gin.Context) {
 		result = append(result, extra)
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.PageResponse{
-			Total:    total,
-			Page:     req.Page,
-			PageSize: req.PageSize,
-			List:     result,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total:    total,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+		List:     result,
 	})
 }
 
@@ -657,19 +645,19 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
 	if !customerInDataScope(c, customer.AssignedUserID) {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	// 修复（越权）：之前任何顾问传别人的customer id都能看到完整详情+聊天记录。
 	// 现在非admin角色必须是这个客户的指派顾问才能看，否则403。
 	if !customerInDataScope(c, customer.AssignedUserID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权查看该客户", Data: nil})
+		RespErr(c, http.StatusForbidden, 403, "无权查看该客户")
 		return
 	}
 
@@ -711,17 +699,13 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: gin.H{
-			"customer":           customer,
-			"assigned_user_name": assignedUserName, // 修复问题3：分配顾问姓名
-			"tags":               customerTags,
-			"followups":          followups,
-			"conversations":      conversations,
-			"followup_stats":     followupStats,
-		},
+	RespOK(c, "success", gin.H{
+		"customer":           customer,
+		"assigned_user_name": assignedUserName, // 修复问题3：分配顾问姓名
+		"tags":               customerTags,
+		"followups":          followups,
+		"conversations":      conversations,
+		"followup_stats":     followupStats,
 	})
 }
 
@@ -735,24 +719,24 @@ func EditCustomerTags(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
 	if !customerInDataScope(c, customer.AssignedUserID) {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	var req editTagsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
 	// 使用打标服务更新标签
-	if err := service.DefaultTagService.ApplyTagsToCustomer(customer.ID, req.Tags, "manual"); err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "更新标签失败", Data: nil})
+	if err := service.DefaultTagService.ApplyTagsToCustomer(customer.TenantID, customer.ID, req.Tags, "manual"); err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "更新标签失败")
 		return
 	}
 
@@ -760,11 +744,7 @@ func EditCustomerTags(c *gin.Context) {
 	var updatedTags []model.CustomerTag
 	db.RQ(c).Where("customer_id = ?", customer.ID).Find(&updatedTags)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "标签更新成功",
-		Data:    updatedTags,
-	})
+	RespOK(c, "标签更新成功", updatedTags)
 }
 
 // ============================================================
@@ -777,18 +757,18 @@ func EditCustomerInfo(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
 	if !customerInDataScope(c, customer.AssignedUserID) {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	var req editCustomerInfoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -833,11 +813,7 @@ func EditCustomerInfo(c *gin.Context) {
 
 	db.RQ(c).Save(&customer)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "客户信息更新成功",
-		Data:    customer,
-	})
+	RespOK(c, "客户信息更新成功", customer)
 }
 
 // ============================================================
@@ -857,18 +833,18 @@ func UpdateCustomerStage(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
 	if !customerInDataScope(c, customer.AssignedUserID) {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	var req updateStageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -880,7 +856,7 @@ func UpdateCustomerStage(c *gin.Context) {
 		model.JourneyLost:      true,
 	}
 	if !validStages[req.JourneyStage] {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "不合法的阶段值，仅支持: arrived/ordered/delivered/lost", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "不合法的阶段值，仅支持: arrived/ordered/delivered/lost")
 		return
 	}
 
@@ -891,7 +867,7 @@ func UpdateCustomerStage(c *gin.Context) {
 		model.SubStageQuoted:    true,
 	}
 	if req.JourneyStage == model.JourneyArrived && !validSubStages[req.JourneySubStage] {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "不合法的子状态，仅支持: test_driven/quoted", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "不合法的子状态，仅支持: test_driven/quoted")
 		return
 	}
 
@@ -908,8 +884,28 @@ func UpdateCustomerStage(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Model(&customer).Updates(updates).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "更新状态失败", Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "更新状态失败")
 		return
+	}
+
+	// P1-36(2026-09-09)：顾问手动推进→CDP 事件生产者最小闭环——
+	// 到店 store_visit / 已试驾 test_drive 此前只有 AI 对话侧埋星，无人工推进闭环，标签空转。
+	// 事件发布失败不进主链路（日志即可），与 chat_main 到店分支同口径（oneID 用 "c:{customerID}"）。
+	if req.JourneyStage == model.JourneyArrived && customer.ID > 0 {
+		attrs := map[string]any{"customer_id": customer.ID, "path": "advisor_stage_update"}
+		eventName, eventType := "store_visit", "behavior"
+		if req.JourneySubStage == model.SubStageTestDrive {
+			eventName, eventType = "test_drive", "behavior"
+		}
+		if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
+			fmt.Sprintf("c:%d", customer.ID), eventName, mq.UserEvent{
+				EventType:  eventType,
+				EventName:  eventName,
+				Attributes: attrs,
+				OccurredAt: time.Now(),
+			}); err != nil {
+			log.Printf("[MQ] %s(顾问推进) 发布失败: %v", eventName, err)
+		}
 	}
 
 	// 重新加载返回
@@ -918,11 +914,7 @@ func UpdateCustomerStage(c *gin.Context) {
 	log.Printf("[顾问修改状态] 客户%d 状态更新: journey_stage=%s, sub_stage=%s",
 		customer.ID, req.JourneyStage, req.JourneySubStage)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "状态更新成功",
-		Data:    customer,
-	})
+	RespOK(c, "状态更新成功", customer)
 }
 
 // ============================================================
@@ -936,13 +928,18 @@ func CreateFollowup(c *gin.Context) {
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// P1-21 修复(2026-09-09)：创建跟进接入客户数据范围门禁（销售仅可对名下/部门子树客户建跟进）
+	if !canOperateCustomer(c, customer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	var req followupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -971,15 +968,11 @@ func CreateFollowup(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(&followup).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建跟进记录失败", Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建跟进记录失败")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "跟进提醒已创建",
-		Data:    followup,
-	})
+	RespOK(c, "跟进提醒已创建", followup)
 }
 
 // ============================================================
@@ -1003,11 +996,7 @@ func GetFollowups(c *gin.Context) {
 
 	if userID == 0 {
 		// admin未指定user_id时，返回空列表（不暴露所有顾问的数据）
-		c.JSON(http.StatusOK, schema.Response{
-			Code:    0,
-			Message: "success",
-			Data:    []model.FollowUp{},
-		})
+		RespOK(c, "success", []model.FollowUp{})
 		return
 	}
 
@@ -1051,11 +1040,7 @@ func GetFollowups(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    result,
-	})
+	RespOK(c, "success", result)
 }
 
 // ============================================================
@@ -1066,13 +1051,13 @@ func GetFollowups(c *gin.Context) {
 func AdvisorTakeover(c *gin.Context) {
 	var req takeoverRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	var conversation model.Conversation
 	if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
@@ -1081,12 +1066,12 @@ func AdvisorTakeover(c *gin.Context) {
 	_, _, role := middleware.CurrentUser(c)
 	var cust model.Customer
 	if err := db.RQ(c).First(&cust, conversation.CustomerID).Error; err != nil {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作此会话", Data: nil})
+		RespErr(c, http.StatusForbidden, 403, "无权操作此会话")
 		return
 	}
 	if !(role == model.RoleTenantAdmin || role == model.RoleSuperAdmin) &&
 		cust.AssignedUserID != 0 && !canOperateCustomer(c, cust.AssignedUserID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "该客户未分配给您，无法接管", Data: nil})
+		RespErr(c, http.StatusForbidden, 403, "该客户未分配给您，无法接管")
 		return
 	}
 
@@ -1099,13 +1084,9 @@ func AdvisorTakeover(c *gin.Context) {
 
 	log.Printf("[顾问接管] 会话%d已由AI切换到人工模式", conversation.ID)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已接管对话",
-		Data: gin.H{
-			"conversation_id": conversation.ID,
-			"mode":            conversation.Mode,
-		},
+	RespOK(c, "已接管对话", gin.H{
+		"conversation_id": conversation.ID,
+		"mode":            conversation.Mode,
 	})
 }
 
@@ -1116,22 +1097,24 @@ func AdvisorTakeover(c *gin.Context) {
 func AdvisorSendMessage(c *gin.Context) {
 	var req advisorSendMsgRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	var conversation model.Conversation
 	if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
-	// 修复（越权）：非admin顾问只能给自己分配到的客户发消息
+	// 修复（越权）：非管理员顾问只能给自己分配到的客户发消息
+	// P1-16 修复(2026-09-09)：角色硬编码 "admin" 与其余 handler 的 TenantAdmin/SuperAdmin
+	// 语义分裂——tenant_admin/super_admin 反被 403、legacy "admin" 直通。统一用角色常量。
 	jwtUserID, _, role := middleware.CurrentUser(c)
-	if role != "admin" {
+	if role != model.RoleTenantAdmin && role != model.RoleSuperAdmin && role != "admin" {
 		var cust model.Customer
 		if err := db.RQ(c).First(&cust, conversation.CustomerID).Error; err != nil {
-			c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作此会话", Data: nil})
+			RespErr(c, http.StatusForbidden, 403, "无权操作此会话")
 			return
 		}
 		if cust.AssignedUserID != jwtUserID {
@@ -1143,7 +1126,7 @@ func AdvisorSendMessage(c *gin.Context) {
 				})
 				log.Printf("[顾问发消息-自动分配] 客户%d 未分配，自动分配给顾问%d", cust.ID, jwtUserID)
 			} else {
-				c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "该客户已分配给其他顾问，无法发送消息", Data: nil})
+				RespErr(c, http.StatusForbidden, 403, "该客户已分配给其他顾问，无法发送消息")
 				return
 			}
 		}
@@ -1188,11 +1171,7 @@ func AdvisorSendMessage(c *gin.Context) {
 		})
 	}(humanMsg.ID, conversation.ID, conversation.CustomerID, jwtUserID, req.Content, conversation.TenantID)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "发送成功",
-		Data:    humanMsg,
-	})
+	RespOK(c, "发送成功", humanMsg)
 }
 
 // ============================================================
@@ -1206,24 +1185,24 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		Content        string `json:"content"` // 可选：指定AI根据什么内容回复，为空则取最近客户消息
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
 	var conversation model.Conversation
 	if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "会话不存在"})
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
 		return
 	}
 
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, conversation.CustomerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在"})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	if !canOperateCustomer(c, customer.AssignedUserID) {
-		c.JSON(http.StatusForbidden, schema.Response{Code: 403, Message: "无权操作该客户"})
+		RespErr(c, http.StatusForbidden, 403, "无权操作该客户")
 		return
 	}
 
@@ -1234,7 +1213,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		db.RQ(c).Where("conversation_id = ? AND sender_type = ?", conversation.ID, "customer").
 			Order("created_at DESC").Limit(1).Find(&lastCustomerMsg)
 		if lastCustomerMsg.ID == 0 {
-			c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "没有找到客户消息，无法生成AI回复"})
+			RespErr(c, http.StatusBadRequest, 400, "没有找到客户消息，无法生成AI回复")
 			return
 		}
 		userInput = lastCustomerMsg.Content
@@ -1285,11 +1264,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 
 	log.Printf("[顾问触发AI回复] 会话%d 客户%d AI回复已生成并保存", conversation.ID, customer.ID)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "AI回复已生成",
-		Data:    aiMsg,
-	})
+	RespOK(c, "AI回复已生成", aiMsg)
 }
 
 // ============================================================
@@ -1302,14 +1277,14 @@ func GetStrategyRecommend(c *gin.Context) {
 	conversationID, _ := strconv.Atoi(c.Query("conversation_id"))
 
 	if customerID == 0 {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "customer_id必填", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "customer_id必填")
 		return
 	}
 
 	// 获取客户
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -1398,16 +1373,12 @@ func GetStrategyRecommend(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: gin.H{
-			"customer_id":   customer.ID,
-			"intent_score":  customer.IntentScore,
-			"urgency_level": output.UrgencyLevel,
-			"route_result":  output.RouteResult,
-			"recommends":    recommends,
-		},
+	RespOK(c, "success", gin.H{
+		"customer_id":   customer.ID,
+		"intent_score":  customer.IntentScore,
+		"urgency_level": output.UrgencyLevel,
+		"route_result":  output.RouteResult,
+		"recommends":    recommends,
 	})
 }
 
@@ -1442,12 +1413,19 @@ func GetChatHistory(c *gin.Context) {
 		var cust model.Customer
 		if db.RQ(c).First(&cust, targetCustomerID).Error == nil {
 			if !middleware.CheckVisitorKey(c, cust.VisitorKey) {
-				c.JSON(http.StatusForbidden, schema.Response{
-					Code:    403,
-					Message: "无权访问该客户聊天记录",
-					Data:    nil,
-				})
+				RespErr(c, http.StatusForbidden, 403, "无权访问该客户聊天记录")
 				return
+			}
+			// P1-15 修复(2026-09-09)：登录态（顾问/管理员）分支此前只过 CheckVisitorKey——
+			// 其登录分支恒放行，导致任意 sales 可拉租户内任意客户全量聊天记录（与
+			// "顾问只见名下客户"红线冲突）。现补四级数据范围门禁。
+			if uidV, ok := c.Get("user_id"); ok {
+				if uid, _ := uidV.(uint); uid > 0 {
+					if !customerInDataScope(c, cust.AssignedUserID) {
+						RespErr(c, http.StatusForbidden, 403, "无权访问该客户聊天记录")
+						return
+					}
+				}
 			}
 		}
 	}
@@ -1464,27 +1442,19 @@ func GetChatHistory(c *gin.Context) {
 			Order("updated_at DESC").Limit(1).Find(&conv)
 		if conv.ID == 0 {
 			// 没有活跃会话，返回空
-			c.JSON(http.StatusOK, schema.Response{
-				Code:    0,
-				Message: "success",
-				Data:    []model.Message{},
-			})
+			RespOK(c, "success", []model.Message{})
 			return
 		}
 		query = query.Where("conversation_id = ?", conv.ID)
 	} else {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "需要传customer_id或conversation_id", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "需要传customer_id或conversation_id")
 		return
 	}
 
 	var messages []model.Message
 	query.Order("created_at ASC").Limit(limit).Find(&messages)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    messages,
-	})
+	RespOK(c, "success", messages)
 }
 
 // ============================================================
@@ -1520,9 +1490,5 @@ func GetAdvisorList(c *gin.Context) {
 		})
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    result,
-	})
+	RespOK(c, "success", result)
 }

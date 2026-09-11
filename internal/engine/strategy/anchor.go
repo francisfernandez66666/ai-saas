@@ -43,35 +43,37 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 	// 读取失败时fallback到DefaultAnchorWeights（保持原有行为）
 	var anchorWeights [AnchorCount]AnchorWeight
 	var weightsFromConfig []AnchorWeight
-	if service.DefaultSystemConfigService.GetJSON("anchor_weights", &weightsFromConfig) && len(weightsFromConfig) == AnchorCount {
-		for i := 0; i < AnchorCount; i++ {
-			anchorWeights[i] = weightsFromConfig[i]
+	// P2-52 修复：单例未初始化（冷路径/单测）时回退默认权重，防 nil panic
+	if service.DefaultSystemConfigService != nil {
+		service.DefaultSystemConfigService.GetJSON("anchor_weights", &weightsFromConfig)
+	}
+	if len(weightsFromConfig) != AnchorCount {
+		weightsFromConfig = DefaultAnchorWeights[:]
+	}
+	for i := 0; i < AnchorCount; i++ {
+		anchorWeights[i] = weightsFromConfig[i]
+	}
+	// 防御（2026-08-26）：全零权重=反序列化失败的产物，回落默认而非退化打分
+	allZero := true
+	for _, w := range anchorWeights {
+		if w.IntentScoreWeight != 0 || w.TrustWeight != 0 || w.HookRateWeight != 0 ||
+			w.StageWeight != 0 || w.PriceSensWeight != 0 || w.BaseBias != 0 {
+			allZero = false
+			break
 		}
-		// 防御（2026-08-26）：全零权重=反序列化失败的产物，回落默认而非退化打分
-		allZero := true
-		for _, w := range anchorWeights {
-			if w.IntentScoreWeight != 0 || w.TrustWeight != 0 || w.HookRateWeight != 0 ||
-				w.StageWeight != 0 || w.PriceSensWeight != 0 || w.BaseBias != 0 {
-				allZero = false
-				break
-			}
-		}
-		if allZero {
-			anchorWeights = DefaultAnchorWeights
-			log.Printf("[策略引擎] Step1: 后台锚权重为全零(反序列化异常)，回落默认值")
-		} else {
-			log.Printf("[策略引擎] Step1: 使用后台配置的锚权重")
-		}
-	} else {
+	}
+	if allZero {
 		anchorWeights = DefaultAnchorWeights
-		log.Printf("[策略引擎] Step1: 后台锚权重配置缺失或格式错误，使用硬编码默认值")
+		log.Printf("[策略引擎] Step1: 后台锚权重为全零(反序列化异常)，回落默认值")
+	} else {
+		log.Printf("[策略引擎] Step1: 使用后台配置的锚权重")
 	}
 
 	// 修复：首轮规则从硬编码→后台可调
 	// first_round_nothrow_bonus：首轮不抛锚加分（默认5.0）
 	// first_round_compare_penalty：首轮对比锚及以上减分（默认-3.0）
-	firstRoundNoThrowBonus := service.DefaultSystemConfigService.GetFloat("first_round_nothrow_bonus", 5.0)
-	firstRoundComparePenalty := service.DefaultSystemConfigService.GetFloat("first_round_compare_penalty", -3.0)
+	firstRoundNoThrowBonus := service.SafeCfgFloat("first_round_nothrow_bonus", 5.0)
+	firstRoundComparePenalty := service.SafeCfgFloat("first_round_compare_penalty", -3.0)
 
 	// 对每个锚类型计算加权分数
 	for a := 0; a < AnchorCount; a++ {
@@ -224,7 +226,7 @@ func Step2_SoftmaxAnchor(scores [AnchorCount]float64) (probs [AnchorCount]float6
 
 	// 调用softmax函数
 	// 修复：从SystemConfigService读取tau，后台调参即时生效
-	tau := service.DefaultSystemConfigService.GetFloat("tau", config.GlobalConfig.Strategy.Tau)
+	tau := service.SafeCfgFloat("tau", config.GlobalConfig.Strategy.Tau)
 	probSlice := utils.Softmax(scoreSlice, tau)
 
 	// 转回数组
@@ -260,13 +262,13 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 
 	// 判据1：接钩率低（低于阈值θ_hookrate_low）
 	// 修复：从SystemConfigService读取，后台调参即时生效
-	hookRateLow := state.Attempts >= 2 && state.HookRate < service.DefaultSystemConfigService.GetFloat("theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
+	hookRateLow := state.Attempts >= 2 && state.HookRate < service.SafeCfgFloat("theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
 	if hookRateLow {
 		needDowngrade = true
 	}
 
 	// 判据2：沉默时长超过阈值
-	silentLong := state.SilentDuration > service.DefaultSystemConfigService.GetInt("theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
+	silentLong := state.SilentDuration > service.SafeCfgInt("theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
 	if silentLong {
 		needDowngrade = true
 	}
@@ -289,13 +291,6 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 				break
 			}
 		}
-	}
-
-	// 边界处理：不抛锚不能再降了
-	// 疑点：finalAnchor 由上方 for 循环取 AnchorAggressiveness==newAgg 的锚类型赋值，
-	// 其取值范围恒 ≥ 0，finalAnchor<0 分支实际不可达（死代码），可删。
-	if finalAnchor < 0 {
-		finalAnchor = AnchorNoThrow
 	}
 
 	return finalAnchor, isDowngraded
@@ -338,7 +333,7 @@ func Step2_5_StageCeiling(selectedAnchor int, currentStage int) (finalAnchor int
 
 	// 获取当前阶段允许的aggressiveness上限
 	// 修复：从SystemConfigService读取阶段锁天花板，后台调参即时生效
-	stageCeilingSlice := service.DefaultSystemConfigService.GetIntSlice("stage_anchor_ceiling", StageAnchorCeiling[:])
+	stageCeilingSlice := service.SafeCfgIntSlice("stage_anchor_ceiling", StageAnchorCeiling[:])
 	// 边界保护：stage超出范围时，用最宽松的上限（不限制）
 	if currentStage < 0 || currentStage >= len(stageCeilingSlice) {
 		return finalAnchor, false // 不降级

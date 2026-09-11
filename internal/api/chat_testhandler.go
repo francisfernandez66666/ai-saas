@@ -2,7 +2,7 @@
 package api
 
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
-// 含会话竞态保护、三层分流(硬边界/到店快速通道/简单消息)、合并队列、延迟清零、留资检测与OneID合并。
+// 含会话竞态保护、四层分流(硬边界/到店快速通道/简单消息/合并队列)、延迟清零、留资检测与OneID合并。
 
 import (
 	"ai-scrm/config"
@@ -21,7 +21,6 @@ import (
 	"log"
 	"math/rand"
 	"net/http"
-	"regexp"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -97,6 +96,15 @@ func ChatTest(c *gin.Context) {
 		return
 	}
 
+	// P0-7 修复(2026-09-09)：C 端正式对话写入口的身份防线。
+	// 真实访客客户均有 visitor_key（/chat/guest 创建时下发）；凡是携带 visitor_key 的客户，
+	// 匿名请求必须带一致 key（CheckVisitorKey 亦放行登录态），杜绝"枚举 customer_id 冒充他人
+	// 会话注入消息/伪造留资"的越权路径。无 visitor_key 的客户（seed 演示数据）保持免鉴权兼容测试。
+	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+		RespErr(c, http.StatusForbidden, 403, "访客身份校验失败，请重新进入对话")
+		return
+	}
+
 	// ---- 修复：入队列前三层分流（与Chat正式接口同步） ----
 	// 优先级：硬边界拦截(0延迟) > 到店倾向快速通道(10-15秒) > 简单消息(8秒) > 正常合并队列
 	// 根因：用户发"高数题"等了9分钟才收到回复；"试驾"意向被合并吞掉
@@ -143,12 +151,12 @@ func ChatTest(c *gin.Context) {
 		notifyWSWithContent(tenantID, customer.ID, conv.ID, "customer", customerMsg.ID, req.Content, customer.Name, customerMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 		notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", offTopicMsg.ID, reply, "AI顾问", offTopicMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 		// 修复问题7：硬边界拦截路径也调用AutoTagFromText，确保无关话题场景也打标签
-		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content)
+		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.TenantID, customer.ID, req.Content)
 		if tagErr == nil && len(autoTags) > 0 {
 			log.Printf("[测试接口-硬边界] 客户%d自动打标: %v", customer.ID, autoTags)
 		}
-		// 唤醒队列中可能等待的其他请求
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, reply)
+		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复，epoch=0 不做代际拦截）
+		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, 0, reply)
 		RespOK(c, "success", gin.H{
 			"conversation_id":    conv.ID,
 			"ai_reply":           reply,
@@ -176,8 +184,7 @@ func ChatTest(c *gin.Context) {
 		}
 
 		// ---- 留资前置检测：当前消息是否包含手机号 ----
-		phoneRegexTest := regexp.MustCompile(`1[3-9]\d{9}`)
-		phoneMatchTest := phoneRegexTest.FindString(req.Content)
+		phoneMatchTest := chatflow.PhoneRegex.FindString(req.Content)
 
 		// 查找或创建活跃会话（各分支共用）
 		var conv model.Conversation
@@ -207,11 +214,11 @@ func ChatTest(c *gin.Context) {
 		// 修复：到店倾向快速通道之前完全没打标，导致客户刚留资试驾这一段
 		// 高信号内容白白漏掉。现在和其它分支一样，每条客户消息落库后立刻打标，
 		// 不管走哪个路由分支、不管有没有分配顾问，做到"持续打标"。
-		if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content); tagErr == nil && len(autoTags) > 0 {
+		if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.TenantID, customer.ID, req.Content); tagErr == nil && len(autoTags) > 0 {
 			log.Printf("[到店倾向-测试接口] 客户%d自动打标: %v", customer.ID, autoTags)
 			var updatedCustomerForTag model.Customer
 			if err := db.RQ(c).First(&updatedCustomerForTag, customer.ID).Error; err == nil {
-				_ = service.DefaultTagService.ApplyTagWeightsToTVector(&updatedCustomerForTag, updatedCustomerForTag.BuildBaseTVector())
+				_ = service.DefaultTagService.ApplyTagWeightsToTVector(customer.TenantID, &updatedCustomerForTag, updatedCustomerForTag.BuildBaseTVector())
 				db.RQ(c).Model(&updatedCustomerForTag).Update("t_vector", updatedCustomerForTag.TVectorJSON)
 			}
 		}
@@ -257,8 +264,10 @@ func ChatTest(c *gin.Context) {
 					}
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
-					// 修复Bug1：兜底值必须显式 uint，防 v.(uint) 断言 panic
-					leadUpdates["assigned_user_id"] = uint(2) // 兜底：张伟(ID=2)
+					// P1-12 修复(2026-09-09)：无销售用户时不再硬编码 uint(2)（跨租户脏分配），
+					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领
+					leadUpdates["assigned_user_id"] = uint(0)
+					leadUpdates["pending_handoff"] = true
 				}
 			}
 			if len(leadUpdates) > 0 {
@@ -281,7 +290,7 @@ func ChatTest(c *gin.Context) {
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
 				customer.ID, service.MaskPhone(phoneMatchTest), customer.AssignedUserID)
 			// P3：到店分支留资事件上行（ChatTest 路径）
-			if err := mq.Publish(context.Background(), mq.TopicUserEvent, tenantID,
+			if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
 				mq.UserEvent{EventType: "behavior", EventName: "lead_captured", AnchorType: "phone",
 					Attributes: map[string]any{"customer_id": customer.ID, "path": "store_visit_branch_test"},
@@ -290,13 +299,14 @@ func ChatTest(c *gin.Context) {
 			}
 
 			// 2. 生成线索记录（给顾问看）
+			// P2-27 修复：FollowUp content 脱敏（与 chat_main 到店分支同口径）
 			followUp := model.FollowUp{
 				CustomerID:     customer.ID,
 				ConversationID: conv.ID,
 				UserID:         customer.AssignedUserID,
 				Type:           "ai_triggered",
 				Method:         "store",
-				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", phoneMatchTest, req.Content),
+				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", service.MaskPhone(phoneMatchTest), service.MaskPhoneInText(req.Content)),
 				Result:         "lead_captured",
 			}
 			db.RQ(c).Create(&followUp)
@@ -358,7 +368,7 @@ func ChatTest(c *gin.Context) {
 		// ====== 分支C：未留资线索（关闭引导+两段式AI快速回复，推迟分配顾问） ======
 		// 客户表达到店意向但没给手机号 → 关闭引导+两段式AI快速回复，不分配顾问
 		// 顾问分配推迟到客户回复手机号时，由 DetectLeadCapture 根据手机号校验决定
-		firstReply := service.GetStoreVisitFirstReply(req.Content)
+		firstReply := service.GetStoreVisitFirstReply(tenantID, req.Content)
 		firstDelay := service.GetStoreVisitFirstDelay()
 
 		log.Printf("[到店倾向-未留资线索-测试接口] 客户%d 关闭引导+两段式回复, 推迟分配顾问", customer.ID)
@@ -386,7 +396,7 @@ func ChatTest(c *gin.Context) {
 
 		// 第二段追问（异步，25-45秒后发出，收集预约信息）
 		// 修复Bug2（2026-08-22）：同主路径——脱离请求生命周期写库，显式租户盖章+错误检查
-		secondReply := service.GetStoreVisitSecondReply(req.Content)
+		secondReply := service.GetStoreVisitSecondReply(tenantID, req.Content)
 		go func(cid, convID uint, content string, tid uint) {
 			sd := service.GetStoreVisitSecondDelay()
 			chatflow.CancellableSleep(cid, sd)
@@ -441,7 +451,7 @@ skipStoreVisitFastTest:
 	// ---- 消息入队 + 合并窗口等待（和正式接口一致） ----
 	// 第一个拿到处理权的请求负责生成回复，后续请求挂起等待
 	// cachedReply 不再使用（Bug 1 修复后 merged 请求只返回状态标记）
-	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
+	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
 	if isSimple {
 		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
 		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
@@ -489,7 +499,7 @@ skipStoreVisitFastTest:
 		notifyWSWithContent(tenantID, customer.ID, conv.ID, "ai", simpleMsg.ID, simpleReply, "AI顾问", simpleMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 
 		// 修复问题7：简单消息路径也调用AutoTagFromText，确保简单消息场景也打标签
-		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, req.Content)
+		autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.TenantID, customer.ID, req.Content)
 		if tagErr == nil && len(autoTags) > 0 {
 			log.Printf("[测试接口-简单消息] 客户%d自动打标: %v", customer.ID, autoTags)
 		}
@@ -811,8 +821,8 @@ skipStoreVisitFastTest:
 	}
 	log.Printf("[ChatTest] 客户%d 延迟结束，返回回复", customer.ID)
 
-	// 回复写入队列缓存，唤醒所有等待的请求
-	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, aiReply)
+	// 回复写入队列缓存，唤醒所有等待的请求（携带本请求持有的处理代际，旧处理者复活不践踏）
+	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, aiReply)
 
 	// ---- 更新会话状态 ----
 	conversation.LastMessageAt = &aiMsg.CreatedAt
@@ -841,7 +851,7 @@ skipStoreVisitFastTest:
 	// ---- 自动打标（测试接口也集成，方便验证打标效果） ----
 	// 修复问题7：不再仅限RouteAI路径，所有路由结果都打标
 	newTags := []string{}
-	autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, mergedContent)
+	autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.TenantID, customer.ID, mergedContent)
 	if tagErr == nil && len(autoTags) > 0 {
 		newTags = autoTags
 		log.Printf("[测试接口] 客户%d自动打标: %v", customer.ID, autoTags)
@@ -849,7 +859,7 @@ skipStoreVisitFastTest:
 		// 打标后应用标签权重到T向量，并保存
 		var updatedCustomer model.Customer
 		if err := db.RQ(c).First(&updatedCustomer, customer.ID).Error; err == nil {
-			_ = service.DefaultTagService.ApplyTagWeightsToTVector(&updatedCustomer, updatedCustomer.BuildBaseTVector())
+			_ = service.DefaultTagService.ApplyTagWeightsToTVector(customer.TenantID, &updatedCustomer, updatedCustomer.BuildBaseTVector())
 			db.RQ(c).Model(&updatedCustomer).Update("t_vector", updatedCustomer.TVectorJSON)
 		}
 	}
@@ -889,7 +899,7 @@ skipStoreVisitFastTest:
 		},
 		"urgency_level":      strategyOutput.UrgencyLevel,
 		"intent_delta":       strategyOutput.IntentDelta,
-		"is_ai_mode":         (config.GlobalConfig.AI.MockMode == false && service.DefaultSystemConfigService.GetBool("mock_mode", false)) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)),
+		"is_ai_mode":         !config.GlobalConfig.AI.MockMode && !service.DefaultSystemConfigService.GetBool("mock_mode", false) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)), // P2-25 修复：真实AI=!全局Mock && !系统Mock && 有Key，与 chat_reply.go:84-86 判定对齐
 		"merged_customer_id": testLeadResult, // OneID合并：>0表示前端需切换customer_id
 	})
 }

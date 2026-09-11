@@ -259,21 +259,39 @@ func CreateFeedbackRating(c *gin.Context) {
 		return
 	}
 
+	// P1-21 修复(2026-09-09)：评分前校验客户归属（登录用户须有数据范围权限，防对任意 customer_id 刷评分）
+	var cust model.Customer
+	if err := db.RQ(c).First(&cust, req.CustomerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	if !canOperateCustomer(c, cust.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+
 	tid := tenantIDOf(c)
 
 	// 限流：同客户每日 5 次评分
+	// P1-21 修复：原按 customer_id 计，换 ID 即绕过；改按 user_id（登录）+customer_id 双维
+	uidV, _ := c.Get("user_id")
+	userID, _ := uidV.(uint)
 	var today int64
-	db.RQ(c).Model(&model.Feedback{}).
-		Where("customer_id = ? AND target_type = 'rating' AND created_at >= CURRENT_DATE", req.CustomerID).
-		Count(&today)
+	q := db.RQ(c).Model(&model.Feedback{}).
+		Where("customer_id = ? AND target_type = 'rating' AND created_at >= CURRENT_DATE", req.CustomerID)
+	if userID > 0 {
+		q = q.Where("user_id = ?", userID)
+	}
+	q.Count(&today)
 	if today >= 5 {
 		RespErr(c, http.StatusTooManyRequests, 429, "今日评分已达上限（5次），请明日再试")
 		return
 	}
 
-	// 保存评分记录
+	// 保存评分记录（P1-21：写 user_id 支撑双维限流）
 	fb := model.Feedback{
 		TenantID:   tid,
+		UserID:     userID,
 		CustomerID: req.CustomerID,
 		TargetType: "rating",
 		Content:    fmt.Sprintf("评分:%d", req.Rating),
@@ -296,7 +314,7 @@ func CreateFeedbackRating(c *gin.Context) {
 		satisfaction = "satisfied"
 	}
 
-	mq.Publish(c.Request.Context(), mq.TopicUserEvent, tid,
+	mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tid,
 		fmt.Sprintf("c:%d", req.CustomerID), "feedback_rating",
 		mq.UserEvent{
 			EventType:  "attitude",
@@ -310,6 +328,28 @@ func CreateFeedbackRating(c *gin.Context) {
 			},
 			OccurredAt: time.Now(),
 		})
+
+	// G-19：投诉事件采集（低评分+有文字内容视为投诉行为）
+	// 触发条件：评分≤2 且评论非空，满足即发布投诉事件到 CDP
+	// 数据流：MQ(user_event) → CDP.IngestConsumer → beh_complained 标签 → 策略中心驱动作战
+	// 业务价值：投诉行为是高价值信号，策略中心可据此调整话术/触发人工介入/标记客户风险
+	if req.Rating <= 2 && req.Comment != "" {
+		service.IncComplaint() // G-15：投诉计数+1（Prometheus 指标 ai_scrm_complaint_total）
+		mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tid,
+			fmt.Sprintf("c:%d", req.CustomerID), "complaint",
+			mq.UserEvent{
+				EventType:  "behavior",       // 事件类型：行为类（behavior）
+				EventName:  "complaint",      // 事件名称：投诉（用于 CDP 标签匹配）
+				AnchorType: "rating",         // 锚点类型：关联评分事件
+				Attributes: map[string]any{
+					"customer_id": req.CustomerID,  // 客户ID
+					"rating":      req.Rating,       // 触发评分值
+					"content":     req.Comment,      // 投诉文字内容（PII脱敏后存储）
+					"source":      "feedback_rating", // 来源标识：满意度评分模块
+				},
+				OccurredAt: time.Now(),
+			})
+	}
 
 	RespOK(c, "评分已提交", nil)
 }

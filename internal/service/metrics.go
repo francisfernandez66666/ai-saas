@@ -59,6 +59,39 @@ func IncPaymentPaid() { atomic.AddUint64(&paymentPaidTotal, 1) }
 // IncPaymentFailed 支付失败/关闭 +1（订单超时关闭/退款时调用）
 func IncPaymentFailed() { atomic.AddUint64(&paymentFailedTotal, 1) }
 
+// ---- 到店第二段追问失败计数（P2-66）----
+// storeVisitSecondFailTotal 第二段追问落库重试仍失败的次数
+var storeVisitSecondFailTotal uint64
+
+// IncStoreVisitSecondFail 第二段追问落库失败（重试后放弃）+1
+func IncStoreVisitSecondFail() { atomic.AddUint64(&storeVisitSecondFailTotal, 1) }
+
+// ---- G-15 Kafka 消息队列指标（2026-09-11）----
+// 说明：Kafka 是生产环境的消息总线，负责异步事件发布/消费
+// 这三个指标用于监控 Kafka 的健康状态和吞吐量
+var kafkaPublishTotal uint64   // Kafka 发布消息总数（每次成功发布+1）
+var kafkaConsumeTotal uint64   // Kafka 消费消息总数（每次成功消费+1）
+var kafkaConsumeFailTotal uint64 // Kafka 消费失败总数（消费异常时+1）
+
+// IncKafkaPublish Kafka 消息发布成功 +1（mq.KafkaCenter.Publish 成功后调用）
+func IncKafkaPublish() { atomic.AddUint64(&kafkaPublishTotal, 1) }
+
+// IncKafkaConsume Kafka 消息消费成功 +1（消费者回调成功返回后调用）
+func IncKafkaConsume() { atomic.AddUint64(&kafkaConsumeTotal, 1) }
+
+// IncKafkaConsumeFail Kafka 消费失败 +1（消费者回调返回错误时调用）
+// 注意：失败后消息会进入重试队列，超过最大重试次数后进入死信队列
+func IncKafkaConsumeFail() { atomic.AddUint64(&kafkaConsumeFailTotal, 1) }
+
+// ---- G-15 投诉事件计数（2026-09-11）----
+// 说明：投诉事件来源于满意度评分模块（feedback.go），低评分+有内容视为投诉
+// 该指标用于 Prometheus 监控，可配置告警规则（如投诉量突增告警）
+var complaintTotal uint64
+
+// IncComplaint 投诉事件 +1（api/feedback.go 低评分投诉触发）
+// 调用时机：评分≤2 且评论非空时，发布 complaint 事件到 CDP 后调用
+func IncComplaint() { atomic.AddUint64(&complaintTotal, 1) }
+
 // ---- HTTP 请求延迟直方图（P99 来源）----
 // 桶（秒）：指数分布覆盖 5ms~10s，用于Prometheus histogram计算
 var latencyBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -72,19 +105,23 @@ func init() {
 }
 
 // RecordRequestLatency 记录一次请求延迟（中间件在 c.Next() 后调用）
-// 按延迟值分配到对应的桶，同时累加总纳秒和样本数
+// P1-18 修复(2026-09-09)：原实现只对命中桶 +1，非累计——histogram_quantile() 求出的 P99
+// 数学上错误。现改为从命中桶到最大上界桶全部 +1（Prometheus 桶语义：le 为"上界"，须单调），
+// +Inf 桶由 latencyCount 兜底。
 func RecordRequestLatency(d time.Duration) {
 	sec := d.Seconds()
 	atomic.AddUint64(&latencySumNs, uint64(d.Nanoseconds()))
 	atomic.AddUint64(&latencyCount, 1)
-	idx := len(latencyBuckets) - 1 // +Inf 桶
+	idx := len(latencyBuckets) - 1 // 默认最大桶
 	for i, b := range latencyBuckets {
 		if sec <= b {
 			idx = i
 			break
 		}
 	}
-	atomic.AddUint64(&latencyBucketCounts[idx], 1)
+	for i := idx; i < len(latencyBuckets); i++ {
+		atomic.AddUint64(&latencyBucketCounts[i], 1) // 累计：le 桶单调不减
+	}
 }
 
 // RenderPrometheus 生成 Prometheus exposition 格式文本
@@ -139,7 +176,8 @@ func RenderPrometheus() string {
 		b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_bucket{le=\"%s\"} %d\n", le, atomic.LoadUint64(&latencyBucketCounts[i]))...)
 	}
 	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_bucket{le=\"+Inf\"} %d\n", atomic.LoadUint64(&latencyCount))...)
-	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_sum %d\n", atomic.LoadUint64(&latencySumNs)/1e9)...)
+	// P1-18 修复：_sum 用 float 秒（原整数除法丢亚秒精度，histogram_quantile 无法用）
+	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_sum %.6f\n", float64(atomic.LoadUint64(&latencySumNs))/1e9)...)
 	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_count %d\n", atomic.LoadUint64(&latencyCount))...)
 
 	// ---- P1-2 指标2：AI 成功率 ----
@@ -175,6 +213,12 @@ func RenderPrometheus() string {
 		}
 	}
 
+	// ---- P2-66 指标：到店第二段追问失败 ----
+	svsFail := atomic.LoadUint64(&storeVisitSecondFailTotal)
+	b = append(b, "# HELP ai_scrm_store_visit_second_fail_total second follow-up persist fail count (after retry)\n"...)
+	b = append(b, "# TYPE ai_scrm_store_visit_second_fail_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_store_visit_second_fail_total %d\n", svsFail)...)
+
 	// ---- P1-2 指标4：支付成功率 ----
 	pp := atomic.LoadUint64(&paymentPaidTotal)
 	pf := atomic.LoadUint64(&paymentFailedTotal)
@@ -206,6 +250,22 @@ func RenderPrometheus() string {
 		b = append(b, "# TYPE ai_scrm_disk_used_ratio gauge\n"...)
 		b = append(b, fmt.Sprintf("ai_scrm_disk_used_ratio %.4f\n", diskRatio)...)
 	}
+
+	// ---- G-15 指标：Kafka 发布/消费 ----
+	b = append(b, "# HELP ai_scrm_kafka_publish_total kafka messages published\n"...)
+	b = append(b, "# TYPE ai_scrm_kafka_publish_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_kafka_publish_total %d\n", atomic.LoadUint64(&kafkaPublishTotal))...)
+	b = append(b, "# HELP ai_scrm_kafka_consume_total kafka messages consumed\n"...)
+	b = append(b, "# TYPE ai_scrm_kafka_consume_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_kafka_consume_total %d\n", atomic.LoadUint64(&kafkaConsumeTotal))...)
+	b = append(b, "# HELP ai_scrm_kafka_consume_fail_total kafka consumption failures\n"...)
+	b = append(b, "# TYPE ai_scrm_kafka_consume_fail_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_kafka_consume_fail_total %d\n", atomic.LoadUint64(&kafkaConsumeFailTotal))...)
+
+	// ---- G-15 指标：投诉事件 ----
+	b = append(b, "# HELP ai_scrm_complaint_total complaint events published\n"...)
+	b = append(b, "# TYPE ai_scrm_complaint_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_complaint_total %d\n", atomic.LoadUint64(&complaintTotal))...)
 
 	return string(b)
 }

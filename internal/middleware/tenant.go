@@ -35,7 +35,6 @@ type TenantInfo struct {
 	ID       uint
 	Code     string
 	Tier     string
-	Status   string
 	IsActive bool
 }
 
@@ -87,16 +86,35 @@ func InvalidateTenantCache() {
 	})
 }
 
+// StartTenantCacheSweeper P2-1 修复：租户负缓存只增不扫——高频扫随机子域名会写入
+// 海量"永不再读"的负缓存条目（每条约 10s TTL 但无人触碰永不删除）。
+// 周期清扫过期条目，防缓存无界增长。main 启动时调用一次。
+func StartTenantCacheSweeper() {
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			resolveCache.Range(func(k, v any) bool {
+				if e, ok := v.(*tenantCacheEntry); ok && now.After(e.expireAt) {
+					resolveCache.Delete(k)
+				}
+				return true
+			})
+		}
+	}()
+}
+
 // ============================================================
 // 租户查库加载（带缓存）
 // ============================================================
 
 // loadTenantByID 按 ID 加载租户
-// 疑点：getCachedTenant 命中过期条目时会先 Delete 再返回 nil，
-// 因此走到 cacheHit(key) 时缓存已空，|| cacheHit(key) 恒为 false，属冗余判断。
+// P3-5 修复：原 `|| cacheHit(key)` 恒为 false（getCachedTenant 命中过期条目时先 Delete 再返回 nil），
+// 已删除冗余判断。
 func loadTenantByID(id uint) *model.Tenant {
 	key := "id:" + strconv.FormatUint(uint64(id), 10)
-	if t := getCachedTenant(key); t != nil || cacheHit(key) {
+	if t := getCachedTenant(key); t != nil {
 		return t
 	}
 	var t model.Tenant
@@ -107,14 +125,6 @@ func loadTenantByID(id uint) *model.Tenant {
 	}
 	setCachedTenant(key, &t)
 	return &t
-}
-
-// cacheHit 判断缓存是否存在有效条目（含负缓存）
-func cacheHit(key string) bool {
-	if _, ok := resolveCache.Load(key); ok {
-		return true
-	}
-	return false
 }
 
 // loadTenantByCode 按子域名标识加载租户
@@ -278,6 +288,7 @@ func ResolveTenantFromHost(c *gin.Context) *model.Tenant {
 var skipTenantPaths = map[string]bool{
 	"/health":      true,
 	"/status":      true, // M4 状态页：免鉴权无敏感信息
+	"/metrics":     true, // P1-1 修复：Prometheus 指标端点自身已有 METRICS_TOKEN/loopback 鉴权（release 下不再被 Host 解析 403）
 	"/":            true,
 	"/pricing":     true,
 	"/register":    true,
@@ -294,19 +305,19 @@ var skipTenantPaths = map[string]bool{
 	"/api/v1/tenant/signup":     true,
 	"/api/v1/tenant/check-code": true,
 	"/api/v1/plans":             true,
+	// P1-13 修复：商业包列表是公开定价数据源（/pricing 页第二数据源），主域请求不应被 Host 解析 403
+	"/api/v1/packages": true,
 	// 公开品牌配置下发（按 Host 解析租户白标；平台域无租户时返回平台默认品牌）
 	"/api/v1/public/branding": true,
 	// 支付网关异步回调：服务端到服务端，靠签名校验而非租户上下文，跳过 Host 解析
-	"/api/v1/billing/webhook/mock":    true,
-	"/api/v1/billing/webhook/gateway": true,
-	"/api/v1/billing/webhook/wechat":  true,
-	"/api/v1/billing/webhook/alipay":  true,
+	// P2-13 修复(2026-09-09)：原精确硬编码 4 个渠道路径——加新渠道必须改中间件。
+	// 改为前缀匹配：skipTenantPrefixes 匹配 billing/webhook/ 下所有子路径。
 }
 
 // skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）
 // SPA 自身仅含登录/注册等免登页与静态资源；业务数据由页面内的 API 调用
 // 走各自的 JWT/TenantResolver 逻辑，不受此放行影响
-var skipTenantPrefixes = []string{"/app/"}
+var skipTenantPrefixes = []string{"/app/", "/api/v1/billing/webhook/"}
 
 // TenantResolver 全局租户解析中间件（fail-closed）
 func TenantResolver() gin.HandlerFunc {
@@ -479,17 +490,15 @@ func TenantConsistency() gin.HandlerFunc {
 				effective = t.ID
 				viaHeader = true
 			} else {
-				// 未显式指定：落到默认租户（而非全库透传），并记审计
-				dt := loadDefaultTenant()
-				if dt == nil {
-					c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-						"code":    403,
-						"message": "无可用租户",
-						"data":    nil,
-					})
-					return
-				}
-				effective = dt.ID
+				// P2-15 修复(2026-09-09)：super_admin 未带 X-Tenant-ID 时静默落到"最小 ID 租户"
+				// （loadDefaultTenant 可能返回已停用租户，停用后落点漂移）。改为 400 强制要求显式指定，
+				// 消除歧义且审计日志中可追溯操作目标。
+				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+					"code":    400,
+					"message": "super_admin 请求必须带 X-Tenant-ID 头（指定目标租户 ID）",
+					"data":    nil,
+				})
+				return
 			}
 			auditSuperAdminAccess(c, effective, viaHeader)
 			c.Set("tenant_id", effective)
@@ -546,16 +555,22 @@ func auditSuperAdminAccess(c *gin.Context, targetTenantID uint, viaHeader bool) 
 		"host":            c.Request.Host,
 		"x_tenant_header": c.GetHeader("X-Tenant-ID"),
 	})
+	// P1-2 修复(2026-09-09)：gin 在 handler 返回后回收复用 Context，goroutine 内再读
+	// c.Request.URL.Path/ClientIP/UserAgent 会踩到被复用后的请求（数据竞争 + 审计字段串号）。
+	// 三值在 goroutine 外提取为局部变量再传入。
+	path := c.Request.URL.Path
+	clientIP := c.ClientIP()
+	userAgent := c.Request.UserAgent()
 	go func() {
 		defer func() { _ = recover() }()
 		err := db.DB.Create(&model.TenantAuditLog{
 			TenantID:  targetTenantID,
 			UserID:    uid,
 			Action:    "super_admin_access",
-			Resource:  c.Request.URL.Path,
+			Resource:  path,
 			Detail:    string(detail),
-			IP:        c.ClientIP(),
-			UserAgent: c.Request.UserAgent(),
+			IP:        clientIP,
+			UserAgent: userAgent,
 		}).Error
 		if err != nil {
 			log.Printf("[Audit] 超管访问审计写入失败: %v", err)
@@ -568,6 +583,8 @@ func auditSuperAdminAccess(c *gin.Context, targetTenantID uint, viaHeader bool) 
 // ============================================================
 
 // GetTenantInfo 从 Context 获取租户信息
+// P3-5 修复：Status 原硬编码 "active"——静默掩盖停用/试用态租户。
+// 调用方无一处使用 Status 字段，直接删除（避免误导）。
 func GetTenantInfo(c *gin.Context) *TenantInfo {
 	id, _ := c.Get("tenant_id")
 	code, _ := c.Get("tenant_code")
@@ -579,7 +596,6 @@ func GetTenantInfo(c *gin.Context) *TenantInfo {
 		ID:       idu,
 		Code:     codeStr,
 		Tier:     tierStr,
-		Status:   "active",
 		IsActive: idu != 0,
 	}
 }

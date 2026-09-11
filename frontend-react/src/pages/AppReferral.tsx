@@ -1,16 +1,16 @@
 /**
  * AppReferral.tsx：移动端邀请推广页
  * 展示邀请码/链接/二维码与邀请记录
- * 依赖接口：/api/v1/admin/referral/info、/records、/qrcode
+ * 依赖接口：/api/v1/advisor/referral/info、/records、/qrcode
  */
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
 import { useBrand } from '../lib/branding'
 import type { ApiResp, ReferralInfo, ReferralRecord } from '../types'
 
-// 邀请信息响应 data 类型（admin/referral/info）
+// 邀请信息响应 data 类型（advisor/referral/info）
 type RefInfoResp = { referral: ReferralInfo; invite_url?: string }
-// 邀请记录列表响应 data 类型（admin/referral/records）
+// 邀请记录列表响应 data 类型（advisor/referral/records）
 type RecListResp = { list: ReferralRecord[] }
 
 /**
@@ -32,16 +32,29 @@ export default function AppReferral() {
   const [recs, setRecs] = useState<ReferralRecord[]>([])
 
   useEffect(() => {
-    // 加载邀请信息（邀请码、邀请人数等）
-    AUTH<ApiResp<RefInfoResp>>('/api/v1/admin/referral/info').then((j) => {
+    let alive = true
+    // 加载邀请信息（邀请码、邀请人数等）——P1-42 后路由在 /advisor 组
+    AUTH<ApiResp<RefInfoResp>>('/api/v1/advisor/referral/info').then((j) => {
       if (j.code === 0) { setInfo(j.data.referral || {}); setInviteUrl(j.data.invite_url || '') }
     }).catch(() => {})
-    // 二维码图片地址（直接使用接口 URL，浏览器会自动带上 cookie）
-    setQr('/api/v1/admin/referral/qrcode?size=240')
+    // P1-44(2026-09-09)：二维码必须 fetch 带 Authorization 头再转 blob——
+    // `<img src={url}>` 带不上 localStorage 里的 token，JWTAuth 只认头→必然 401 破图。
+    ;(async () => {
+      try {
+        const res = await fetch('/api/v1/advisor/referral/qrcode?size=240', {
+          headers: getToken() ? { Authorization: 'Bearer ' + getToken() } : {},
+        })
+        if (!res.ok) return
+        const blob = await res.blob()
+        if (!alive) return
+        setQr(URL.createObjectURL(blob))
+      } catch { /* 二维码加载失败静默，不影响页面主体 */ }
+    })()
     // 加载邀请记录列表
-    AUTH<ApiResp<RecListResp>>('/api/v1/admin/referral/records').then((j) => {
+    AUTH<ApiResp<RecListResp>>('/api/v1/advisor/referral/records').then((j) => {
       if (j.code === 0) setRecs(j.data?.list || [])
     }).catch(() => {})
+    return () => { alive = false }
   }, [])
 
   /**

@@ -4,6 +4,7 @@ package cdp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -102,7 +103,11 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(env.Payload, &payload); err != nil {
-		return err // 脏消息：标记 failed 由审计表回放排查
+		// P2-81 修复(2026-09-09)：脏消息(JSON 解析永久失败)立即 ack 跳过+死信日志。
+		// 原 return err → Kafka 重试 5 次全废才放弃——格式错不会自愈，徒耗 broker 与审计回放。
+		log.Printf("[CDP][DEAD-LETTER] 事件 %s 信封 JSON 无法解析 (topic=%s, keyscope=%s)，跳过: %v",
+			env.Header.EventID, env.Topic, env.Key, err)
+		return nil
 	}
 	// 兼容两层事件名（顶层 eventType 与 UserEvent.event_name）
 	eventName := payload.Data.EventName
@@ -141,7 +146,9 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 		// 2) 确保画像主体存在
 		profile = EnsureProfileTx(tx, tid, oneID, attrCustomerID)
 		if profile == nil {
-			return nil
+			// P1-33 修复(2026-09-09)：画像创建失败返回错误而不是静默 nil——
+			// 否则事件被标记 done 永久丢失标签计算；LOG 模式由上层重试
+			return fmt.Errorf("画像主体创建失败 one=%s", oneID)
 		}
 
 		// 3) Raw Zone：不可变事件日志
@@ -271,9 +278,6 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	if err != nil {
 		log.Printf("[CDP] 摄入事务失败: %v", err)
 		return err
-	}
-	if profile == nil {
-		return nil
 	}
 
 	// P2 collector：CDP 事件进数据飞轮（脱敏在 Collect 内完成；URL 空则丢弃）

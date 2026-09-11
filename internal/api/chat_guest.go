@@ -11,10 +11,8 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
-	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
-	"context"
 	"fmt"
 	"log"
 	"math/rand"
@@ -35,6 +33,9 @@ import (
 //  3. Chat() 和 ChatTest() 统一使用此机制，行为一致
 //
 // ============================================================
+
+// welcomePrefix 欢迎消息内容前缀（P2-22 会话内去重判定锚点）
+const welcomePrefix = "你好，请稍等，顾问正在接通中"
 
 // ============================================================
 // 延迟清零（立即回复）机制
@@ -146,6 +147,22 @@ func Welcome(c *gin.Context) {
 	if !utils.IsWorkTime() {
 		welcomeText += "由于现在是非工作时间，回复可能较慢，请见谅。"
 	}
+	// P2-22 去重判定锚点（前缀常量）
+	var exist int64
+	db.RQ(c).Model(&model.Message{}).
+		Where("conversation_id = ? AND sender_type = 'system' AND content LIKE ?", conversation.ID, welcomePrefix+"%").Count(&exist)
+	if exist > 0 {
+		// 已插过欢迎：返回既有会话但不重复落库（复用最近一条欢迎消息回显）
+		var lastWelcome model.Message
+		if db.RQ(c).Where("conversation_id = ? AND sender_type = 'system' AND content LIKE ?", conversation.ID, welcomePrefix+"%").Order("id DESC").First(&lastWelcome).Error == nil {
+			RespOK(c, "success", gin.H{
+				"conversation_id":     conversation.ID,
+				"welcome_message":     lastWelcome,
+				"is_new_conversation": false,
+			})
+			return
+		}
+	}
 	welcomeMsg := model.Message{
 		ConversationID: conversation.ID,
 		CustomerID:     customer.ID,
@@ -225,7 +242,7 @@ func CreateGuest(c *gin.Context) {
 	if req.Device != "" {
 		guestAttrs["device"] = req.Device
 	}
-	if err := mq.Publish(context.Background(), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
+	if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
 		fmt.Sprintf("c:%d", customer.ID), "guest_created",
 		mq.UserEvent{EventType: "identity", EventName: "guest_created", AnchorType: "device",
 			Attributes: guestAttrs,
@@ -233,12 +250,10 @@ func CreateGuest(c *gin.Context) {
 		log.Printf("[MQ] guest_created 事件发布失败: %v", err)
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"code":        0,
+	RespOK(c, "访客创建成功", gin.H{
 		"customer_id": customer.ID,
 		"name":        customer.Name,
-		"visitor_key": customer.VisitorKey, // C3: 返回密钥供客户端持久化并在 history/welcome 携带
-		"message":     "访客创建成功",
+		"visitor_key": customer.VisitorKey,
 	})
 }
 
@@ -258,22 +273,35 @@ func CreateGuest(c *gin.Context) {
 // 设计：通过channel机制通知正在sleep的goroutine立即结束延迟
 // 不同于DB-based的message_queue方案，本系统延迟在goroutine内实现
 // 所以用channel取消机制替代DB scheduled_at更新
+// P0-9 修复(2026-09-09)：原实现完全裸奔（无鉴权/限流/租户校验），任意匿名可凭自增
+// customer_id 批量取消任意租户客户的 AI 模拟延迟，破坏延迟铁律。现增加：
+//  1. 客户租户归属校验（db.RQ 404 守卫）
+//  2. 身份防线（CheckVisitorKey：登录态放行 / 匿名必须携带与目标一致的 visitor_key）
+//  3. 路由侧另挂 IPRateLimit（main.go 注册处）
 // ============================================================
 func ClearDelay(c *gin.Context) {
 	var req struct {
 		CustomerID uint `json:"customer_id" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+
+	// 1. 客户租户归属校验（防跨租户遍历 customer_id 打靶）
+	var customer model.Customer
+	if err := db.RQ(c).First(&customer, req.CustomerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// 2. 身份防线：真实访客客户必须带一致 visitor_key（或登录态）
+	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+		RespErr(c, http.StatusForbidden, int(CodeForbidden), "访客身份校验失败")
 		return
 	}
 
 	// 取消该客户的当前延迟（如果有）
 	chatflow.CancelDelay(req.CustomerID)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已清除延迟，消息将立即发出",
-		Data:    nil,
-	})
+	RespOK(c, "已清除延迟，消息将立即发出", nil)
 }

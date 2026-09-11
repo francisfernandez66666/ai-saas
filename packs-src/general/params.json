@@ -1,0 +1,10 @@
+{
+  "welcome_delay_ms": 2000,
+  "second_delay_ms": 8000,
+  "ai_delay_range_ms": [5000, 15000],
+  "human_takeover_timeout_s": 120,
+  "merge_window_s": 25,
+  "离题自动兜底轮数": 2,
+  "到店追问轮数": 2,
+  "留资必问字段": ["姓名", "手机号"]
+}

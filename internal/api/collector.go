@@ -2,6 +2,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 	"sync"
 
@@ -65,6 +66,7 @@ func CollectorReceive(c *gin.Context) {
 	}
 	accepted := 0
 	seenMu.Lock()
+	var fresh []service.CollectorEvent
 	for _, ev := range req.Events {
 		// 事件 ID 为空时自动生成随机 ID
 		if ev.ID == "" {
@@ -80,7 +82,14 @@ func CollectorReceive(c *gin.Context) {
 			seenCollectorIDs = make(map[string]struct{})
 		}
 		accepted++
+		fresh = append(fresh, ev)
 	}
 	seenMu.Unlock()
-	RespOK(c, "ok", gin.H{"accepted": accepted, "total": len(req.Events)})
+	// P1-11 修复(2026-09-09)：接收端不再只做内存去重计数——把去重后的事件持久化到
+	// kb_feedback_materials 素材池（走既有 evals 审核流），对外"数据飞轮聚合接收端"真正闭环。
+	ingested, ingestErr := service.IngestCollectorEvents(fresh)
+	if ingestErr != nil {
+		log.Printf("[Collector] 素材落库失败: %v", ingestErr)
+	}
+	RespOK(c, "ok", gin.H{"accepted": accepted, "total": len(req.Events), "ingested": ingested})
 }

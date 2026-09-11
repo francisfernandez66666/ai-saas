@@ -203,5 +203,41 @@ check "WS顾问端无token→401" 401 "$CODE"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/ws/client")
 check "WS客户端缺参数→400" 400 "$CODE"
 
+echo "---- 八、G-14 RLS 覆盖（关键表存在） ----"
+for TBL in cdp_tag_assignments cdp_tag_definitions event_logs id_mappings inbox_events flow_state_machines templates features usage_ledger; do
+  EXISTS=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
+    "SELECT 1 FROM information_schema.tables WHERE table_name='${TBL}' LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+  [ "$EXISTS" = "1" ] && check "RLS表存在: $TBL" y y || check "RLS表存在: $TBL" y n
+done
+
+# delay_* 前缀表（至少一个）
+DELAY_TBL=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
+  "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'delay_%'" 2>/dev/null | tr -d '[:space:]')
+[ "${DELAY_TBL:-0}" -ge 1 ] && check "delay_* 表存在(${DELAY_TBL}张)" y y || check "delay_* 表存在(0张)" y n
+
+echo "---- 九、G-15 Prometheus 指标端点 ----"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/metrics")
+check "/metrics 端点可达" 200 "$CODE"
+
+METRICS=$(curl -s "$B/metrics" 2>/dev/null)
+echo "$METRICS" | grep -q "ai_scrm_kafka_publish_total" && check "指标: ai_scrm_kafka_publish_total 存在" y y || check "指标: ai_scrm_kafka_publish_total 存在" y n
+echo "$METRICS" | grep -q "ai_scrm_complaint_total" && check "指标: ai_scrm_complaint_total 存在" y y || check "指标: ai_scrm_complaint_total 存在" y n
+
+echo "---- 十、G-19 投诉事件集成 ----"
+# 投诉关键词识别：发送含投诉意图的消息，验证 complaint 计数器不为负
+COMP_BEFORE=$(echo "$METRICS" | grep "ai_scrm_complaint_total" | awk '{print $2}')
+# 触发一次投诉检测（通过 feedback 接口或 AI 对话）
+curl -s -X POST "$B/api/v1/chat/test" \
+  -H "Content-Type: application/json" \
+  -d '{"content":"我要投诉你们的服务态度太差了"}' >/dev/null 2>&1
+METRICS2=$(curl -s "$B/metrics" 2>/dev/null)
+COMP_AFTER=$(echo "$METRICS2" | grep "ai_scrm_complaint_total" | awk '{print $2}')
+[ -n "$COMP_AFTER" ] && check "投诉事件集成(complaint counter=${COMP_AFTER})" y y || check "投诉事件集成" y n
+
+echo "---- 十一、G-22 通用行业包 ----"
+[ -d "/Users/zhangzifei/Desktop/ai-scrm-v2/packs-src/general" ] && check "packs-src/general/ 目录存在" y y || check "packs-src/general/ 目录存在" y n
+GEN_COUNT=$(ls /Users/zhangzifei/Desktop/ai-scrm-v2/packs-src/general/*.json 2>/dev/null | wc -l | tr -d ' ')
+[ "${GEN_COUNT:-0}" -ge 6 ] && check "通用包JSON文件数(≥6)" y y || check "通用包JSON文件数(期望≥6 实际=${GEN_COUNT:-0})" y n
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

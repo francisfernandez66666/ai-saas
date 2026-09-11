@@ -83,25 +83,6 @@ func FindRunningInstance(tenantID uint, customerID uint) *model.FlowInstance {
 	return &inst
 }
 
-// PublishFlowResult 业务结果回流发布（业务层调用；编排层消费者据此推进主干）
-// result 语义：lead_captured / human_takeover / user_reply / store_visit ...
-func PublishFlowResult(tenantID uint, customerID uint, nodeResult string, detail map[string]any) {
-	inst := FindRunningInstance(tenantID, customerID)
-	if inst == nil {
-		return // 无在途实例：结果无需驱动流程
-	}
-	oneID := cdp.ResolveOneID(tenantID, customerID)
-	if err := mq.Publish(context.Background(), mq.TopicFlowResult, tenantID, oneID,
-		nodeResult, mq.FlowResultEvent{
-			InstanceID: inst.ID,
-			NodeID:     inst.CurrentNodeID,
-			Result:     nodeResult,
-			Detail:     detail,
-		}); err != nil {
-		log.Printf("[编排] flow_result 发布失败: %v", err)
-	}
-}
-
 // StartOrchestrationConsumers 注册编排层事件消费者（main 启动调用一次）
 func StartOrchestrationConsumers() {
 	// ---- consumer A：user_event 并行消费（与 CDP 各消费各的流）----
@@ -145,6 +126,13 @@ func StartOrchestrationConsumers() {
 			log.Printf("[编排] flow_result 实例不存在: %d", evt.InstanceID)
 			return nil
 		}
+		// P2-65 修复(2026-09-09)：校验事件租户与实例租户一致——伪造/错投的
+		// flow_result 事件可驱动他租户流程实例（越权推进）。不一致直接丢弃并告警。
+		if env.Header.TenantID != 0 && env.Header.TenantID != inst.TenantID {
+			log.Printf("[编排] flow_result 租户不匹配，丢弃: event tenant=%d vs instance tenant=%d (instance=%d)",
+				env.Header.TenantID, inst.TenantID, inst.ID)
+			return nil
+		}
 		flowCtx := &FlowContext{
 			TenantID:       inst.TenantID,
 			CustomerID:     inst.CustomerID,
@@ -171,17 +159,26 @@ func StartOrchestrationConsumers() {
 //  2. 上报数据飞轮 payment_welcome 事件（供自动化触达系统消费）
 func StartPaymentConsumer() {
 	mq.Subscribe(mq.TopicUserEvent, func(ctx context.Context, env mq.Envelope) error {
+		// P1-25 修复(2026-09-09)：mq.Publish 统一信封是 {"event_type":..., "data":...}，
+		// 原解析读 event_name 恒空 → payment 事件永不到达 → welcome_paid 欢迎流程永不触发。
+		// 改读 event_type，兼容旧 event_name（一个版本）。
 		var payload struct {
+			EventType string `json:"event_type"`
 			EventName string `json:"event_name"`
 			Data      struct {
 				OrderNo string `json:"order_no"`
+				Status  string `json:"status"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal(env.Payload, &payload); err != nil {
 			return nil
 		}
-		if payload.EventName != "payment" {
-			// 仅处理 payment 子事件
+		evtName := payload.EventType
+		if evtName == "" {
+			evtName = payload.EventName
+		}
+		if evtName != "payment" || payload.Data.Status != "paid" {
+			// 仅处理 payment 且状态为 paid 的子事件
 			return nil
 		}
 		tid := env.Header.TenantID

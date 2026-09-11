@@ -122,24 +122,29 @@ func (m *KnowledgeCacheManager) GetVersion() int64 {
 }
 
 // ============================================================
-// 品牌相关查询
+// 品牌相关查询（P0-4 修复：全部方法增加 tenantID 过滤，只返回
+// 系统预置(tenant_id=0) + 请求租户私有(tenant_id=tid)，杜绝跨租户泄露）
 // ============================================================
 
 // GetAllBrands 获取所有启用的品牌
-func (m *KnowledgeCacheManager) GetAllBrands() []model.Brand {
+func (m *KnowledgeCacheManager) GetAllBrands(tenantID uint) []model.Brand {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]model.Brand, len(m.brands))
-	copy(result, m.brands)
+	var result []model.Brand
+	for _, b := range m.brands {
+		if b.TenantID == 0 || b.TenantID == tenantID {
+			result = append(result, b)
+		}
+	}
 	return result
 }
 
 // GetBrandByID 根据ID获取品牌
-func (m *KnowledgeCacheManager) GetBrandByID(id uint) *model.Brand {
+func (m *KnowledgeCacheManager) GetBrandByID(tenantID uint, id uint) *model.Brand {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.brands {
-		if m.brands[i].ID == id {
+		if m.brands[i].ID == id && (m.brands[i].TenantID == 0 || m.brands[i].TenantID == tenantID) {
 			brand := m.brands[i]
 			return &brand
 		}
@@ -148,11 +153,11 @@ func (m *KnowledgeCacheManager) GetBrandByID(id uint) *model.Brand {
 }
 
 // GetBrandByCode 根据编码获取品牌
-func (m *KnowledgeCacheManager) GetBrandByCode(code string) *model.Brand {
+func (m *KnowledgeCacheManager) GetBrandByCode(tenantID uint, code string) *model.Brand {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.brands {
-		if m.brands[i].Code == code {
+		if m.brands[i].Code == code && (m.brands[i].TenantID == 0 || m.brands[i].TenantID == tenantID) {
 			brand := m.brands[i]
 			return &brand
 		}
@@ -161,7 +166,7 @@ func (m *KnowledgeCacheManager) GetBrandByCode(code string) *model.Brand {
 }
 
 // GetBrandByName 根据名称获取品牌（模糊匹配，包含即可）
-func (m *KnowledgeCacheManager) GetBrandByName(name string) *model.Brand {
+func (m *KnowledgeCacheManager) GetBrandByName(tenantID uint, name string) *model.Brand {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	name = strings.TrimSpace(name)
@@ -169,6 +174,9 @@ func (m *KnowledgeCacheManager) GetBrandByName(name string) *model.Brand {
 		return nil
 	}
 	for i := range m.brands {
+		if m.brands[i].TenantID != 0 && m.brands[i].TenantID != tenantID {
+			continue
+		}
 		if strings.Contains(m.brands[i].Name, name) || strings.Contains(name, m.brands[i].Name) {
 			brand := m.brands[i]
 			return &brand
@@ -179,24 +187,31 @@ func (m *KnowledgeCacheManager) GetBrandByName(name string) *model.Brand {
 
 // GetDefaultModel 获取默认推荐车型（第一个品牌的第一款车型）
 // 用于客户没有明确兴趣车型时，默认注入该车型的知识库
-func (m *KnowledgeCacheManager) GetDefaultModel() *model.CarModel {
+func (m *KnowledgeCacheManager) GetDefaultModel(tenantID uint) *model.CarModel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if len(m.brands) == 0 || len(m.models) == 0 {
+	brands := m.brands
+	if len(brands) == 0 || len(m.models) == 0 {
 		return nil
 	}
-	// 取第一个品牌的第一款车型作为默认
-	firstBrand := m.brands[0]
+	// 取第一个可见品牌的第一款车型作为默认
+	for _, b := range brands {
+		if b.TenantID != 0 && b.TenantID != tenantID {
+			continue
+		}
+		for i := range m.models {
+			if m.models[i].BrandID == b.ID && (m.models[i].TenantID == 0 || m.models[i].TenantID == tenantID) {
+				carModel := m.models[i]
+				return &carModel
+			}
+		}
+	}
+	// 没找到就返回全部可见车型里的第一个
 	for i := range m.models {
-		if m.models[i].BrandID == firstBrand.ID {
+		if m.models[i].TenantID == 0 || m.models[i].TenantID == tenantID {
 			carModel := m.models[i]
 			return &carModel
 		}
-	}
-	// 没找到就返回全部车型里的第一个
-	if len(m.models) > 0 {
-		carModel := m.models[0]
-		return &carModel
 	}
 	return nil
 }
@@ -206,13 +221,13 @@ func (m *KnowledgeCacheManager) GetDefaultModel() *model.CarModel {
 // ============================================================
 
 // GetModelsByBrandID 根据品牌ID获取车型列表
-func (m *KnowledgeCacheManager) GetModelsByBrandID(brandID uint) []model.CarModel {
+func (m *KnowledgeCacheManager) GetModelsByBrandID(tenantID uint, brandID uint) []model.CarModel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.CarModel
 	for _, carModel := range m.models {
-		if carModel.BrandID == brandID {
+		if carModel.BrandID == brandID && (carModel.TenantID == 0 || carModel.TenantID == tenantID) {
 			result = append(result, carModel)
 		}
 	}
@@ -220,11 +235,11 @@ func (m *KnowledgeCacheManager) GetModelsByBrandID(brandID uint) []model.CarMode
 }
 
 // GetModelByID 根据ID获取车型
-func (m *KnowledgeCacheManager) GetModelByID(id uint) *model.CarModel {
+func (m *KnowledgeCacheManager) GetModelByID(tenantID uint, id uint) *model.CarModel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.models {
-		if m.models[i].ID == id {
+		if m.models[i].ID == id && (m.models[i].TenantID == 0 || m.models[i].TenantID == tenantID) {
 			carModel := m.models[i]
 			return &carModel
 		}
@@ -233,11 +248,11 @@ func (m *KnowledgeCacheManager) GetModelByID(id uint) *model.CarModel {
 }
 
 // GetModelByName 根据名称获取车型
-func (m *KnowledgeCacheManager) GetModelByName(name string) *model.CarModel {
+func (m *KnowledgeCacheManager) GetModelByName(tenantID uint, name string) *model.CarModel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.models {
-		if m.models[i].Name == name {
+		if m.models[i].Name == name && (m.models[i].TenantID == 0 || m.models[i].TenantID == tenantID) {
 			carModel := m.models[i]
 			return &carModel
 		}
@@ -246,11 +261,15 @@ func (m *KnowledgeCacheManager) GetModelByName(name string) *model.CarModel {
 }
 
 // GetAllModels 获取所有启用的车型
-func (m *KnowledgeCacheManager) GetAllModels() []model.CarModel {
+func (m *KnowledgeCacheManager) GetAllModels(tenantID uint) []model.CarModel {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]model.CarModel, len(m.models))
-	copy(result, m.models)
+	var result []model.CarModel
+	for _, carModel := range m.models {
+		if carModel.TenantID == 0 || carModel.TenantID == tenantID {
+			result = append(result, carModel)
+		}
+	}
 	return result
 }
 
@@ -259,13 +278,13 @@ func (m *KnowledgeCacheManager) GetAllModels() []model.CarModel {
 // ============================================================
 
 // GetSpecsByModelID 根据车型ID获取规格参数
-func (m *KnowledgeCacheManager) GetSpecsByModelID(modelID uint) []model.ModelSpec {
+func (m *KnowledgeCacheManager) GetSpecsByModelID(tenantID uint, modelID uint) []model.ModelSpec {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.ModelSpec
 	for _, spec := range m.specs {
-		if spec.ModelID == modelID {
+		if spec.ModelID == modelID && (spec.TenantID == 0 || spec.TenantID == tenantID) {
 			result = append(result, spec)
 		}
 	}
@@ -274,8 +293,8 @@ func (m *KnowledgeCacheManager) GetSpecsByModelID(modelID uint) []model.ModelSpe
 
 // GetTopSpecsByModelID 获取车型的Top N个核心规格参数
 // 用于Prompt注入时控制长度
-func (m *KnowledgeCacheManager) GetTopSpecsByModelID(modelID uint, topN int) []model.ModelSpec {
-	specs := m.GetSpecsByModelID(modelID)
+func (m *KnowledgeCacheManager) GetTopSpecsByModelID(tenantID uint, modelID uint, topN int) []model.ModelSpec {
+	specs := m.GetSpecsByModelID(tenantID, modelID)
 	if len(specs) <= topN {
 		return specs
 	}
@@ -287,13 +306,13 @@ func (m *KnowledgeCacheManager) GetTopSpecsByModelID(modelID uint, topN int) []m
 // ============================================================
 
 // GetComparesByModelID 根据我方车型ID获取竞品对比列表
-func (m *KnowledgeCacheManager) GetComparesByModelID(ourModelID uint) []model.CompetitorCompare {
+func (m *KnowledgeCacheManager) GetComparesByModelID(tenantID uint, ourModelID uint) []model.CompetitorCompare {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.CompetitorCompare
 	for _, compare := range m.compares {
-		if compare.OurModelID == ourModelID {
+		if compare.OurModelID == ourModelID && (compare.TenantID == 0 || compare.TenantID == tenantID) {
 			result = append(result, compare)
 		}
 	}
@@ -302,13 +321,14 @@ func (m *KnowledgeCacheManager) GetComparesByModelID(ourModelID uint) []model.Co
 
 // GetComparesByModelAndBrand 根据车型和竞品品牌获取对比
 // 用于对比锚话术时精准定位素材
-func (m *KnowledgeCacheManager) GetComparesByModelAndBrand(ourModelID uint, competitorBrand string) []model.CompetitorCompare {
+func (m *KnowledgeCacheManager) GetComparesByModelAndBrand(tenantID uint, ourModelID uint, competitorBrand string) []model.CompetitorCompare {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.CompetitorCompare
 	for _, compare := range m.compares {
 		if compare.OurModelID == ourModelID &&
+			(compare.TenantID == 0 || compare.TenantID == tenantID) &&
 			strings.Contains(compare.CompetitorBrand, competitorBrand) {
 			result = append(result, compare)
 		}
@@ -320,10 +340,10 @@ func (m *KnowledgeCacheManager) GetComparesByModelAndBrand(ourModelID uint, comp
 // 知识片段相关查询
 // ============================================================
 
-// SearchFragments 搜索知识片段
+// SearchFragments 搜索知识片段（租户隔离：仅系统预置 + 请求租户私有）
 // 支持关键词、分类、标签三种过滤条件，都是OR关系
 // 简单的内存搜索，数据量不大时足够高效
-func (m *KnowledgeCacheManager) SearchFragments(keyword string, category string, tags []string) []model.KnowledgeFragment {
+func (m *KnowledgeCacheManager) SearchFragments(tenantID uint, keyword string, category string, tags []string) []model.KnowledgeFragment {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -331,6 +351,10 @@ func (m *KnowledgeCacheManager) SearchFragments(keyword string, category string,
 	keywordLower := strings.ToLower(keyword)
 
 	for _, frag := range m.fragments {
+		// 租户隔离（P0-4）：只返回系统预置与本租户私有片段
+		if frag.TenantID != 0 && frag.TenantID != tenantID {
+			continue
+		}
 		// 分类过滤
 		if category != "" && frag.Category != category {
 			continue
@@ -382,14 +406,14 @@ func (m *KnowledgeCacheManager) SearchFragments(keyword string, category string,
 	return result
 }
 
-// GetFragmentsByCategory 按分类获取知识片段
-func (m *KnowledgeCacheManager) GetFragmentsByCategory(category string) []model.KnowledgeFragment {
+// GetFragmentsByCategory 按分类获取知识片段（租户隔离）
+func (m *KnowledgeCacheManager) GetFragmentsByCategory(tenantID uint, category string) []model.KnowledgeFragment {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.KnowledgeFragment
 	for _, frag := range m.fragments {
-		if frag.Category == category {
+		if frag.Category == category && (frag.TenantID == 0 || frag.TenantID == tenantID) {
 			result = append(result, frag)
 		}
 	}

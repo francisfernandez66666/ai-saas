@@ -57,23 +57,36 @@ func (s *Server) Run(addr string) error {
 	return s.engine.Run(addr)
 }
 
-// verifyToken 校验 <tenantID>.<sig> 签名，返回租户ID（0=平台内部）
+// verifyToken 校验 <tenantID>.<ts>.<sig> 签名，返回租户ID
+// P0-5 修复(2026-09-09)：空 token 与 tenantID==0 一律拒绝——此前"空=平台内部透传放行"
+// 导致任何能访问网关端口的人以 tenant_id=0 无限量白嫖平台厂商 Key（tenant 0 计费全 no-op）。
+// 网关只接受真实租户签名令牌；平台内部调用不经 HTTP（内嵌网关在进程内直用 ai.Router），无需透传身份。
+// P1-40 修复(2026-09-09)：token 三段式 <tenantID>.<ts>.<sig>；ts 为 Unix 秒，
+// 与网关时间差 >5min 视为重放/过期拒绝。sig=HMAC(secret, "tenantID.ts")，防篡改防重放。
 func (s *Server) verifyToken(token string) (uint, bool) {
 	if token == "" {
-		return 0, true // 平台内部调用（无租户），透传放行
+		return 0, false // 空 token 拒绝（fail-closed）
 	}
-	parts := strings.SplitN(token, ".", 2)
-	if len(parts) != 2 {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
 		return 0, false
 	}
 	tenantID := uint(0)
 	if _, err := fmt.Sscan(parts[0], &tenantID); err != nil || tenantID == 0 {
+		return 0, false // 拒绝平台伪身份（tenant 0 计费恒放行）
+	}
+	var ts int64
+	if _, err := fmt.Sscan(parts[1], &ts); err != nil || ts <= 0 {
+		return 0, false
+	}
+	if diff := time.Now().Unix() - ts; diff > 300 || diff < -300 {
+		log.Printf("[AI网关] 鉴权失败 tenant=%d ts=%d 超出 ±5min 窗口（防重放）", tenantID, ts)
 		return 0, false
 	}
 	mac := hmac.New(sha256.New, []byte(s.secret))
-	mac.Write([]byte(parts[0]))
+	mac.Write([]byte(parts[0] + "." + parts[1]))
 	expect := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(expect), []byte(parts[1])) {
+	if !hmac.Equal([]byte(expect), []byte(parts[2])) {
 		return 0, false
 	}
 	return tenantID, true
@@ -102,11 +115,20 @@ func (s *Server) auth() gin.HandlerFunc {
 }
 
 // chatRequest OpenAI 兼容请求体
+// P1-40 修复：Temperature 改 *float64——区分"客户端省略"（nil→默认 0.7）与"显式传 0"（透传 0，
+// 贪婪采样可表达）。原本 float64 省略与显式 0 无法区分，零温度被静默改写成 0.7。
 type chatRequest struct {
 	Model       string           `json:"model"`
 	Messages    []ai.ChatMessage `json:"messages"`
-	Temperature float64          `json:"temperature"`
+	Temperature *float64         `json:"temperature"`
 	Stream      bool             `json:"stream"`
+}
+
+// stage 白名单（P1-40：X-Stage 请求头直通 RecordUsage/GenerateTextForStage——
+// 客户端可写审计字段与选模型。限定合法阶段枚举，非法值 400。）
+var allowedStages = map[string]bool{
+	"reply": true, "simple": true, "test": true, "eval": true, "summary": true,
+	"industry_analysis": true, "chatflow_extract": true, "embedding": true,
 }
 
 // handleChatCompletions 转发对话请求，网关侧做 fail-closed 计量
@@ -115,6 +137,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	stage := c.GetHeader("X-Stage")
 	if stage == "" {
 		stage = "reply"
+	} else if !allowedStages[stage] { // P1-40：非法 stage 拒绝而非透传
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "X-Stage 非法值: " + stage}, "code": "invalid_stage"})
+		return
 	}
 
 	var req chatRequest
@@ -126,9 +151,16 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "messages 不能为空"}})
 		return
 	}
-	temp := req.Temperature
-	if temp == 0 {
-		temp = 0.7
+	// P1-40：Stream 字段原本被静默忽略——SSE 客户端拿 JSON 必挂；显式拒绝更诚实
+	if req.Stream {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "网关暂不支持流式输出（stream=true）"}, "code": "stream_unsupported"})
+		return
+	}
+	var temp float64
+	if req.Temperature == nil {
+		temp = 0.7 // 省略默认
+	} else {
+		temp = *req.Temperature // 显式传值（含 0）透传
 	}
 
 	// 1. 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计计数），
@@ -221,24 +253,36 @@ func (s *Server) handleEmbeddings(c *gin.Context) {
 		return
 	}
 
-	// 计费闸（向量化也计入配额）：ConsumeAIQuota 统计旁路（恒 true），扣减走 SinkRecordUsage
+	// P1-35 修复(2026-09-09)：向量化也消耗配额，必须过三桶前置闸——
+	// 否则零余额租户对话被拦但 embedding 照调厂商，绕过计费。
+	// 与 handleChatCompletions 同口径：不足返回 HTTP 429 + token_insufficient。
 	service.ConsumeAIQuota(tenantID)
+	if !service.CheckTokenAvailability(tenantID) {
+		c.JSON(http.StatusTooManyRequests, gin.H{
+			"error": gin.H{"message": "AI 额度余额不足，请充值或升级套餐"},
+			"code":  "token_insufficient",
+		})
+		return
+	}
 
 	data := make([]gin.H, 0, len(texts))
 	totalTok := 0
 	for i, t := range texts {
 		vec := service.DefaultEmbeddingClient.Embed(t)
-		totalTok += len([]rune(t)) / 2 // 粗略估算 token
+		totalTok += len([]rune(t)) / 2 // 粗略估算 token（P2-18 可换 tiktoken 精确口径）
 		data = append(data, gin.H{"object": "embedding", "index": i, "embedding": vec})
 	}
 	service.RecordUsage(tenantID, 0, 0, "embedding", "embedding", req.Model, totalTok, 0, 0)
 	// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库
 	service.SinkRecordUsage(tenantID, int64(totalTok))
 
+	// 响应头回显估算口径（P1-35：token 估算透明化，避免客户端误以为精确计费）
+	c.Header("X-Token-Estimate", fmt.Sprintf("rough:%s_proxy:%d", "len/2", totalTok))
+
 	c.JSON(http.StatusOK, embeddingResponse{
 		Data:  data,
 		Model: req.Model,
-		Usage: gin.H{"prompt_tokens": totalTok, "total_tokens": totalTok},
+		Usage: gin.H{"prompt_tokens": totalTok, "total_tokens": totalTok, "estimation": "rough"},
 	})
 }
 

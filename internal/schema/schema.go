@@ -29,6 +29,8 @@ type Pagination struct {
 }
 
 // GetOffset 获取偏移量
+// P2-9 修复(2026-09-09)：page_size 上限 100 clamp——原实现 page_size=1000000 可拖全表。
+// 上限收敛到 100（列表页够用），避免滥用拖库与超大响应内存。
 func (p *Pagination) GetOffset() int {
 	if p.Page <= 0 {
 		p.Page = 1
@@ -36,7 +38,21 @@ func (p *Pagination) GetOffset() int {
 	if p.PageSize <= 0 {
 		p.PageSize = 10
 	}
+	if p.PageSize > 100 {
+		p.PageSize = 100
+	}
 	return (p.Page - 1) * p.PageSize
+}
+
+// NormalizePageSize 独立规范化 page_size（无分页结构仅用尺寸的调用方）
+func NormalizePageSize(n int) int {
+	if n <= 0 {
+		return 10
+	}
+	if n > 100 {
+		return 100
+	}
+	return n
 }
 
 // ============================================================

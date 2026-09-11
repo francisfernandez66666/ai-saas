@@ -69,6 +69,21 @@ func ValidLevel(l string) bool {
 	return l == LevelIndustry || l == LevelEnterprise || l == LevelDepartment
 }
 
+// ValidCode 校验包 code 白名单（P1-39）：^[a-z0-9_]{2,32}$。
+// code 用于物化 IDPrefix（pk_{code}_*）与 LIKE 解绑（apply.go），含 %/_/斜杠会劫持查询或路径穿越。
+func ValidCode(code string) bool {
+	if len(code) < 2 || len(code) > 32 {
+		return false
+	}
+	for _, r := range code {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // PackContent 开包后的完整内容（内存态）
 type PackContent struct {
 	Manifest Manifest          // 包元数据

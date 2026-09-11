@@ -29,12 +29,17 @@ import (
 // 检测到手机号 → 自动标记为"已留资" + 分配默认顾问
 // 业务规则：留资成功后顾问才能在顾问端看到客户信息和聊天记录
 // ============================================================
+
+// PhoneRegex 手机号匹配正则（P1-27 修复：抽包级变量，三处留资路径共用）
+// I1修复(2026-08-26)：加单词边界\b，避免长数字串子串误命中（如订单号/身份证片段误触发真分配顾问+企微推送）
+var PhoneRegex = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
+
+// RoundsHintLeadCaptured 留资成功后引导式反问轮数（两入口统一语义）
+// DetectLeadCapture 内部写库后，调用方应刷新内存 customer 以同步 journey_stage（P1-23）
 // DetectLeadCapture 留资检测 + OneID合并
 // 返回值：0=未留资, -1=已留资但无需合并, >0=合并后的老客户ID（前端需切换）
 func DetectLeadCapture(customerInput string, customer *model.Customer) int {
-	// I1修复(2026-08-26)：加单词边界\b，避免长数字串子串误命中（如订单号/身份证片段触发真分配顾问+企微推送）
-	phoneRegex := regexp.MustCompile(`\b1[3-9]\d{9}\b`)
-	phoneMatch := phoneRegex.FindString(customerInput)
+	phoneMatch := PhoneRegex.FindString(customerInput)
 
 	if phoneMatch == "" {
 		return 0 // 没检测到手机号，不算留资
@@ -129,6 +134,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	// 修复：留资成功后生成线索记录（已留资线索，分配给顾问）
 	// 业务规则：已留资线索 → 人工接管 → 顾问端可见
 	// 修复问题3：按客户ID合并线索——先查是否已有lead_captured类型的线索，有则更新不新建
+	// P2-27 修复：FollowUp content 统一脱敏（手机号+原文内嵌号码），库内不落明文
 	var existingFollowUp model.FollowUp
 	result := db.DB.Where("customer_id = ? AND result = ?", customer.ID, "lead_captured").First(&existingFollowUp)
 	if result.Error != nil {
@@ -138,7 +144,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			UserID:     customer.AssignedUserID, // 归属顾问
 			Type:       "ai_triggered",          // AI触发生成
 			Method:     "store",                 // 到店渠道
-			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", phoneMatch, customerInput),
+			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(customerInput)),
 			Result:     "lead_captured", // 已留资线索
 		}
 		db.DB.Create(&leadFollowUp)
@@ -147,7 +153,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	} else {
 		// 已有线索，更新内容（按客户ID合并，不新建）
 		db.DB.Model(&existingFollowUp).Updates(map[string]interface{}{
-			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", phoneMatch, customerInput),
+			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(customerInput)),
 			"user_id": customer.AssignedUserID, // 更新归属顾问
 		})
 		log.Printf("[留资检测-线索合并] 客户%d 已有线索(FollowUp ID=%d)，更新内容，不新建",
@@ -660,16 +666,7 @@ func ExtractKeywords(text string) []string {
 			words = append(words, word)
 		}
 	}
-	// 单字也考虑（如果不是停用词且长度>1字）
-	if len(runes) > 2 {
-		for _, r := range runes {
-			s := string(r)
-			if !stopWords[s] && len([]rune(s)) == 1 {
-				// 单字非停用词，只在2-gram不足时加入
-			}
-		}
-	}
-
+	// P3-12 修复：单字分支原为空体 if（注释"2-gram 不足时加入"但无实现），删除死代码。
 	return words
 }
 
@@ -694,14 +691,13 @@ func CountOffTopicRepeats(customerID uint) int {
 }
 
 // CountTotalOffTopic 统计客户全部非车话题消息总数
+// P2-61 修复(2026-09-09)：原全历史载入进内存跑关键词（O(N) 内存+计算）；
+// 业务只在"胡搅蛮缠"判定用（阈值>10 且连续在话题<3），收敛到最近 500 条足够，
+// 超长历史客户不再每轮回复拖全表进内存。
 func CountTotalOffTopic(customerID uint) int {
-	var count int64
-	db.DB.Model(&model.Message{}).
-		Where("customer_id = ? AND sender_type = ?", customerID, "customer").
-		Count(&count)
 	var allMsgs []model.Message
 	db.DB.Where("customer_id = ? AND sender_type = ?", customerID, "customer").
-		Order("id ASC").Find(&allMsgs)
+		Order("id DESC").Limit(500).Find(&allMsgs)
 	offtopicCount := 0
 	for _, msg := range allMsgs {
 		if service.IsOffTopicForTenant(msg.TenantID, msg.Content) {

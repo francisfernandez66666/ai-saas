@@ -155,7 +155,9 @@ export default function Client() {
     const t1 = setTimeout(() => setTyping(true), typingDelay())
     const t2 = setTimeout(() => { setTyping(false); setMsgs((m) => [...m, { sender_type: 'system', content: '顾问可能正在忙碌中，请稍候' }]) }, 60000)
     try {
-      const r = await fetch(`${API}/chat/test`, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tsHeaders()), body: JSON.stringify({ customer_id: custId.current, content }) })
+      const vk = localStorage.getItem(LS_KEY) || ''
+      // visitor_key 走 query（CheckVisitorKey 仅读 query），与 history/welcome 一致
+      const r = await fetch(`${API}/chat/test?visitor_key=${encodeURIComponent(vk)}`, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tsHeaders()), body: JSON.stringify({ customer_id: custId.current, content }) })
       const j = await r.json()
       if (j.code === 0 && j.data) {
         if (j.data.conversation_id) { setConvId(j.data.conversation_id); convIdRef.current = j.data.conversation_id }
@@ -221,7 +223,9 @@ export default function Client() {
     setOnline(isWork())
     ;(async () => {
       const params = new URLSearchParams(window.location.search)
-      const override = params.get('customer_id')
+      // P0-7 修复(2026-09-09)：customer_id URL 覆盖是匿名冒充任意客户的第一跳板，仅 dev 模式生效，
+      // 且此时服务端对携带 visitor_key 的客户强制校验，生产环境（非 dev）一律忽略覆盖走访客身份。
+      const override = import.meta.env.DEV ? params.get('customer_id') : null
       const stored = localStorage.getItem(LS_ID)
       let cid = override ? parseInt(override) : (stored ? parseInt(stored) : 0)
       if (cid > 0) {
@@ -264,11 +268,13 @@ export default function Client() {
           {brand.logoUrl && <img src={brand.logoUrl} alt="" style={{ height: 24, borderRadius: 4 }} />}
           <span style={{ fontWeight: 600 }}>{brand.brandName}</span>
         </div>
-        <span style={{ fontSize: 12 }}>{online ? '🟢 在线' : '🌙 离线'}</span>
+        {/* G-20：aria-label 无障碍标注——屏幕阅读器可识别在线/离线状态 */}
+        <span style={{ fontSize: 12 }} aria-label={online ? '当前在线' : '当前离线'}>{online ? '🟢 在线' : '🌙 离线'}</span>
       </header>
 
       {/* 消息列表区域：根据 sender_type 区分客户消息（右侧主色）与 AI/系统消息（左侧白色） */}
-      <div ref={listRef} style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {/* G-20：role="log" + aria-label 标注消息列表区域，辅助技术可感知消息流变化 */}
+      <div ref={listRef} role="log" aria-label="对话消息列表" style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {msgs.map((m, i) => {
           if (m.sender_type === 'system') return <div key={i} style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted, #9ca3af)' }}>{m.content}</div>
           const mine = m.sender_type === 'customer'
@@ -289,9 +295,12 @@ export default function Client() {
       {tsEnabled && !tsOk && <div id="ts-box" style={{ display: 'flex', justifyContent: 'center', padding: '8px 0' }} />}
 
       {/* 输入区域：文本输入框 + 发送按钮 */}
-      <div style={{ background: '#fff', borderTop: '1px solid var(--border, #e5e7eb)', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }}>
-        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
-        <button onClick={send} disabled={(tsEnabled && !tsOk)} style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
+      {/* G-20：输入区域无障碍标注——role="form" 标识表单区域，aria-label 说明用途 */}
+      <div style={{ background: '#fff', borderTop: '1px solid var(--border, #e5e7eb)', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }} role="form" aria-label="消息输入区域">
+        {/* G-20：输入框 aria-label 供屏幕阅读器识别此为消息输入用途 */}
+        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" aria-label="消息输入框" style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
+        {/* G-20：发送按钮 aria-label 标注操作意图；人机验证未通过时 disabled 并降低透明度 */}
+        <button onClick={send} disabled={(tsEnabled && !tsOk)} aria-label="发送消息" style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
       </div>
     </div>
   )

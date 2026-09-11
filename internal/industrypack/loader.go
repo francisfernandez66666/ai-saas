@@ -148,6 +148,12 @@ func Open(data []byte, keys *Keys) (*PackContent, error) {
 	if m.FormatVersion != FormatVersion {
 		return nil, fmt.Errorf("包格式版本不支持: %d", m.FormatVersion)
 	}
+	// P1-39 修复(2026-09-09)：manifest.code 白名单校验——code 进物化 IDPrefix
+	// "pk_{code}_..." 与解绑 LIKE 'prefix%'（apply.go:67,290,334），code 含 %/_ 可劫持
+	// LIKE 误删其他包物化；含 "../" 则落盘名路径穿越。白名单 ^[a-z0-9_]{2,32}$。
+	if !ValidCode(m.Code) {
+		return nil, fmt.Errorf("manifest.code 非法: %q（须 2-32 位小写字母/数字/下划线）", m.Code)
+	}
 
 	// 2. 解密封装内容
 	targz, err := OpenSeal(keys.Private, data[off:])

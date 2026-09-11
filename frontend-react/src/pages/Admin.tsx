@@ -1,10 +1,10 @@
 // 后台管理页：租户管理员登录后按分类 Tab 维护系统配置（热加载）、查看客户线索/流程/标签/品牌/审计/开放平台/用量/邀请
 // 顶部文件级说明；各子 Tab 函数见下方对应位置（CustomersTab / FlowEngineTab / TagSystemTab / BrandingTab / AuditTab / OpenApiTab / UsageTab / ReferralTab）
-// 依赖接口见各 Tab 注释与 Admin 组件顶部注释（/admin/config、/admin/tags、/admin/audit-logs、/admin/apikeys、/admin/usage/summary、/admin/referral/*、/admin/tenant/branding）
+// 依赖接口见各 Tab 注释与 Admin 组件顶部注释（/admin/config、/admin/tags、/admin/audit-logs、/admin/apikeys、/admin/usage/summary、/advisor/referral/*、/admin/tenant/branding）
 import { useState, useEffect, useRef } from 'react'
 import { Layout, Menu, Input, InputNumber, Switch, Button, MessagePlugin, Tag, Dialog, Drawer, Table, Textarea } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, setToken, apiJSON } from '../lib/api'
+import { getToken, setToken, apiJSON, logoutAndRedirect } from '../lib/api'
 import { resolveJsonMode } from '../lib/jsonMode'
 import type { TableRowData, CellProps } from '../types'
 
@@ -209,7 +209,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
 
 // 租户后台管理：登录后按分类 Tab 编辑系统配置（热加载）、查看客户线索/流程/标签/品牌/审计/开放平台/用量/邀请
 // 标签体系 Tab 已接入后端 /admin/tags CRUD（按 category 分组增删），自动打标规则为只读展示
-// 依赖 /api/v1/admin/config（读写重置）、/api/v1/auth/login、/api/v1/admin/audit-logs、/api/v1/admin/apikeys、/api/v1/admin/usage/summary、/api/v1/admin/referral/*
+// 依赖 /api/v1/admin/config（读写重置）、/api/v1/auth/login、/api/v1/admin/audit-logs、/api/v1/admin/apikeys、/api/v1/admin/usage/summary、/api/v1/advisor/referral/*
 export default function Admin() {
   const brand = useBrand()
   const [tab, setTab] = useState('dashboard')
@@ -236,6 +236,14 @@ export default function Admin() {
     if (j.code !== 0) { setLoginErr(j.message || '登录失败'); return }
     setToken(j.data.token)
     localStorage.setItem('role', j.data.user.role)
+    localStorage.setItem('username', j.data.user.username)
+    // P1-49(2026-09-09)：后台内嵌登录此前不判 must_change_password——
+    // 弱密码账号直接进后台，绕过首登强改密策略（MustChangePasswordGuard 会拦接口导致白屏）。
+    // 需改密时跳统一改密页（白名单接口 change-password 可用）。
+    if (j.data.user.must_change_password) {
+      location.href = '/login?mcp=1'
+      return
+    }
     setLogged(true)
     loadAll()
   }
@@ -277,12 +285,17 @@ export default function Admin() {
     await fetch('/api/v1/admin/config/reset', { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } })
     MessagePlugin.success('已恢复默认'); loadAll()
   }
-  // 延迟归零调试：把所有数值型延迟参数清零并切秒回模式，便于实时性验证
+  // 延迟归零调试：限定 reply_speed 分类白名单键清零并切秒回模式，便于实时性验证
+  // P1-48 修复：旧逻辑把"所有 value_type=number 配置"清零——含防薅/计费等关键闸
+  // （register_ip_daily_limit、email 限流等），一键把生产防线清零。现仅动延迟类白名单键。
+  const ZERO_DELAY_KEYS = [
+    'merge_window_seconds', 'simple_msg_delay', 'store_visit_first_delay', 'store_visit_second_delay',
+  ]
   async function zeroDelayAll() {
-    if (!confirm('将所有延迟参数清零并切换为秒回模式？')) return
+    const targets = ZERO_DELAY_KEYS.filter((k) => all.some((c) => c.key === k))
+    if (!confirm(`仅将延迟类参数归零并切秒回模式？影响键：${targets.join('、') || '(无)'}`)) return
     const e = { ...edits }
-    // 将所有数值型延迟参数清零并切换为秒回（instant）模式，便于调试实时性
-    all.forEach((c) => { if (c.value_type === 'number') e[c.key] = '0' })
+    targets.forEach((k) => (e[k] = '0'))
     e['reply_delay_mode'] = 'instant'
     setEditsState(e)
     const updates = all.map((c) => ({ key: c.key, value: String(e[c.key] ?? c.value) }))
@@ -333,7 +346,7 @@ export default function Admin() {
           <a href="/pricing" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>定价</a>
           <a href="/app" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>移动端</a>
           <span style={{ fontSize: 13, color: '#6b7280' }}>{userName}</span>
-          <Button size="small" variant="outline" onClick={() => { localStorage.clear(); location.href = '/login' }}>退出</Button>
+          <Button size="small" variant="outline" onClick={logoutAndRedirect}>退出</Button>
         </div>
       </Header>
       <Layout>
@@ -973,13 +986,25 @@ function UsageTab() {
 }
 
 // ------------------------- 邀请推广 -------------------------
-// 邀请推广 Tab：展示邀请码/链接/二维码与返利余额（/api/v1/admin/referral/info、/qrcode）
+// 邀请推广 Tab：展示邀请码/链接/二维码与返利余额（/api/v1/advisor/referral/info、/qrcode）
 function ReferralTab() {
   const [info, setInfo] = useState<TableRowData | null>(null)
   const [qr, setQr] = useState('')
   useEffect(() => {
-    fetch('/api/v1/admin/referral/info', { headers: { Authorization: 'Bearer ' + getToken() } }).then((r) => r.json()).then((j) => { if (j.code === 0) setInfo(j.data) }).catch(() => {})
-    setQr('/api/v1/admin/referral/qrcode?size=280')
+    // P1-42 后 referral 只读接口迁至 /advisor 组
+    fetch('/api/v1/advisor/referral/info', { headers: { Authorization: 'Bearer ' + getToken() } }).then((r) => r.json()).then((j) => { if (j.code === 0) setInfo(j.data) }).catch(() => {})
+    // P1-44(2026-09-09)：《img src={url}>带不上 Authorization 头（token 在 localStorage），
+    // JWTAuth 只认头→401 破图。改 fetch blob→objectURL。
+    ;(async () => {
+      try {
+        const res = await fetch('/api/v1/advisor/referral/qrcode?size=280', {
+          headers: getToken() ? { Authorization: 'Bearer ' + getToken() } : {},
+        })
+        if (!res.ok) return
+        const blob = await res.blob()
+        setQr(URL.createObjectURL(blob))
+      } catch { /* 二维码加载失败静默 */ }
+    })()
   }, [])
   if (!info) return <p style={{ color: '#9ca3af', padding: 40, textAlign: 'center' }}>加载中...</p>
   const r = info.referral || {}

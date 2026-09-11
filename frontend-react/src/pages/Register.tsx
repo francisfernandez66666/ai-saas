@@ -40,8 +40,11 @@ export default function Register() {
   const [msg, setMsg] = useState('')
   // 预留倒计时（当前未启用，保留兼容）
   const [cd, setCd] = useState(0)
-  // 防抖/倒计时定时器引用
-  const timer = useRef<number | null>(null)
+  // P2-88 修复：防抖定时器与倒计时定时器拆成两个 ref——
+  // 原共用一个 timer：输入防抖时 sendCode 的 60s 倒计时 interval 会被 clearTimeout 清掉（或反之），
+  // 两个场景互相串线导致倒计时中断/按钮状态错乱。
+  const debounceTimer = useRef<number | null>(null)
+  const countdownTimer = useRef<number | null>(null)
 
   useEffect(() => {
     // 加载注册配置：获取邮箱验证是否开启 + 可选行业列表（P1-2：注册选行业落包）
@@ -56,7 +59,8 @@ export default function Register() {
       if (el) el.style.display = 'block'
     }
     return () => {
-      if (timer.current) window.clearInterval(timer.current)
+      if (countdownTimer.current) window.clearInterval(countdownTimer.current)
+      if (debounceTimer.current) window.clearTimeout(debounceTimer.current)
     }
   }, [])
 
@@ -70,9 +74,9 @@ export default function Register() {
       setCodeTip({ text: '', ok: false })
       return
     }
-    if (timer.current) window.clearTimeout(timer.current)
+    if (debounceTimer.current) window.clearTimeout(debounceTimer.current)
     // 防抖 400ms：避免每次输入都打校验接口
-    timer.current = window.setTimeout(async () => {
+    debounceTimer.current = window.setTimeout(async () => {
       const { json } = await apiJSON('/api/v1/tenant/check-code?code=' + encodeURIComponent(v))
       const d = json?.data || {}
       setCodeTip({ text: d.reason || '', ok: !!d.available })
@@ -99,11 +103,12 @@ export default function Register() {
       // 60s 倒计时防重复发送
       let left = 60
       if (btn) btn.textContent = left + 's'
-      timer.current = window.setInterval(() => {
+      if (countdownTimer.current) window.clearInterval(countdownTimer.current)
+      countdownTimer.current = window.setInterval(() => {
         left -= 1
         if (btn) btn.textContent = left + 's'
-        if (left <= 0 && timer.current) {
-          window.clearInterval(timer.current)
+        if (left <= 0 && countdownTimer.current) {
+          window.clearInterval(countdownTimer.current)
           if (btn) {
             btn.disabled = false
             btn.textContent = '重新获取'

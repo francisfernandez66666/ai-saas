@@ -111,10 +111,18 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 		sb.WriteString("6. 客户连发多条消息时，如果是同一句话拆开的，当成一个问题理解；如果是不同问题，逐个自然回答\n")
 		sb.WriteString("7. 回复中自然嵌入客户说过的关键词，让客户感觉你在认真听他说话\n")
 
-		// 价格管控：未到店客户禁止提及具体价格
+// 价格管控：未到店客户禁止提及具体价格
 		if !hasArrived {
 			sb.WriteString("6. 【重要】不得提及任何具体价格数字、优惠金额、金融方案具体数字\n")
-			// 询价话术：已留资客户→体验后报价（不再约试驾，已经约上了）\n\t\t\t// 未留资客户→引导到店试驾后报价（话术可AI自由发挥）\n\t\t\tif leadCaptured {\n\t\t\t\tsb.WriteString(\"7. 客户问价格时，说价格得看配置和需求来定。话术参考：「等您试驾体验过后，我再根据您的配置需求做个报价」。不要反问「您什么时候试驾」「您对配置有什么要求」——客户已经留过资了，试驾已经在安排中，不需要再约\\n\")\n\t\t\t} else {\n\t\t\t\tsb.WriteString(\"7. 客户问价格时，引导到店试驾后出报价，话术参考：「要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀」。禁止直接报价、禁止说具体数字\\n\")\n\t\t\t}
+			// P1-26 修复(2026-09-09)：原询价规则整段被注释吞掉（代码卷进 // 注释，`\n` 字面量可见），
+			// 系统 prompt 从未注入"客户问价格时怎么答"规则。现恢复为可执行代码。
+			if leadCaptured {
+				// 已留资：体验后报价（不再约试驾，已经约上了）
+				sb.WriteString("7. 客户问价格时，说价格得看配置和需求来定。话术参考：「等您试驾体验过后，我再根据您的配置需求做个报价」。不要反问「您什么时候试驾」「您对配置有什么要求」——客户已经留过资了，试驾已经在安排中，不需要再约\n")
+			} else {
+				// 未留资：引导到店试驾后报价
+				sb.WriteString("7. 客户问价格时，引导到店试驾后出报价，话术参考：「要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀」。禁止直接报价、禁止说具体数字\n")
+			}
 		}
 	}
 
@@ -179,19 +187,19 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 	// 修复：把车型全览移到抛锚判断之前，车型核心参数和卖点仍在抛锚后注入
 	// ============================================================
 	if modelID > 0 {
-		carModel := cache.DefaultKnowledgeCache.GetModelByID(modelID)
+		carModel := cache.DefaultKnowledgeCache.GetModelByID(tenantID, modelID)
 		if carModel != nil {
-			brand := cache.DefaultKnowledgeCache.GetBrandByID(carModel.BrandID)
+			brand := cache.DefaultKnowledgeCache.GetBrandByID(tenantID, carModel.BrandID)
 			brandName := ""
 			if brand != nil {
 				brandName = brand.Name
 			}
 			if carModel.BrandID > 0 {
-				brandModels := cache.DefaultKnowledgeCache.GetModelsByBrandID(carModel.BrandID)
+				brandModels := cache.DefaultKnowledgeCache.GetModelsByBrandID(tenantID, carModel.BrandID)
 				if len(brandModels) > 1 {
 					sb.WriteString(fmt.Sprintf("\n[%s 车型全览]\n", brandName))
 					for _, bm := range brandModels {
-						bmSpecs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(bm.ID, 8)
+						bmSpecs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(tenantID, bm.ID, 8)
 						priceRange := ""
 						seats := ""
 						evRange := ""
@@ -259,14 +267,14 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 		// 车型知识库注入（核心参数，给AI提供真实数据支撑）
 		// 所有抛锚场景都注入，不只是对比锚——确保AI说的参数都是真实的
 		if modelID > 0 {
-			carModel := cache.DefaultKnowledgeCache.GetModelByID(modelID)
+			carModel := cache.DefaultKnowledgeCache.GetModelByID(tenantID, modelID)
 			if carModel != nil {
-				brand := cache.DefaultKnowledgeCache.GetBrandByID(carModel.BrandID)
+				brand := cache.DefaultKnowledgeCache.GetBrandByID(tenantID, carModel.BrandID)
 				brandName := ""
 				if brand != nil {
 					brandName = brand.Name
 				}
-				specs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(modelID, 8)
+				specs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(tenantID, modelID, 8)
 				if len(specs) > 0 {
 					sb.WriteString(fmt.Sprintf("\n[%s %s - 核心参数]\n", brandName, carModel.Name))
 					for _, spec := range specs {
@@ -425,7 +433,7 @@ func exchangeTypeText(exchangeType string) string {
 // 控制长度，只注入最相关的Top N条
 // 用在对比锚场景下，给AI提供具体的对比素材
 // hasArrived: 客户是否已到店，未到店则过滤价格类信息
-func BuildKnowledgePrompt(modelID uint, competitorBrand string, hasArrived bool) string {
+func BuildKnowledgePrompt(tenantID uint, modelID uint, competitorBrand string, hasArrived bool) string {
 	var sb strings.Builder
 
 	hasContent := false
@@ -433,10 +441,10 @@ func BuildKnowledgePrompt(modelID uint, competitorBrand string, hasArrived bool)
 	// 如果传了modelID，注入该车型的核心规格参数（Top10）
 	// 价格管控：未到店客户过滤掉价格类参数（is_price=true的）
 	if modelID > 0 {
-		specs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(modelID, 10)
+		specs := cache.DefaultKnowledgeCache.GetTopSpecsByModelID(tenantID, modelID, 10)
 		if len(specs) > 0 {
 			// 获取车型名称
-			carModel := cache.DefaultKnowledgeCache.GetModelByID(modelID)
+			carModel := cache.DefaultKnowledgeCache.GetModelByID(tenantID, modelID)
 			modelName := ""
 			if carModel != nil {
 				modelName = carModel.Name
@@ -466,7 +474,7 @@ func BuildKnowledgePrompt(modelID uint, competitorBrand string, hasArrived bool)
 	// 如果传了competitorBrand，注入竞品对比知识
 	// 价格管控：未到店客户过滤含价格的对比
 	if competitorBrand != "" && modelID > 0 {
-		compares := cache.DefaultKnowledgeCache.GetComparesByModelAndBrand(modelID, competitorBrand)
+		compares := cache.DefaultKnowledgeCache.GetComparesByModelAndBrand(tenantID, modelID, competitorBrand)
 		if len(compares) > 0 {
 			hasCompareContent := false
 			sb.WriteString("【竞品对比素材】\n")

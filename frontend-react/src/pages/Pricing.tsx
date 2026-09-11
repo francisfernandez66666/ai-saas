@@ -26,10 +26,11 @@ export default function Pricing() {
   const [pkgs, setPkgs] = useState<Pkg[]>([])
 
   useEffect(() => {
-    // 加载套餐与商业包数据
+    // 加载套餐与商业包数据（P2-90：data 统一信封 {plans, packages}）
     fetch('/api/v1/plans').then((r) => r.json()).then((j) => {
-      setPlans(j.data || [])
-      setPkgs(j.packages || [])
+      const d = j.data || {}
+      setPlans(Array.isArray(d) ? d : d.plans || [])
+      setPkgs(d.packages || [])
     }).catch(() => {})
   }, [])
 

@@ -2,6 +2,7 @@
 package middleware
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strconv"
 	"sync"
@@ -34,6 +35,9 @@ var (
 	ipLimitMu   sync.Mutex
 	ipLimitMap  = map[string]*ipWindow{} // key -> window
 	lastSweepAt time.Time
+	// ipLimitDirty P2-2 修复：新增 key 的增量队列——清扫只遍历增量队列，
+	// 不再对全表 10min 一次扫描持锁（高流量下清一遍海量 key 期间限流全阻塞）。
+	ipLimitDirty []string
 )
 
 // IPRateLimit 限流中间件工厂：window 窗口内每 IP（按租户隔离计数）最多 limit 次
@@ -46,6 +50,9 @@ func IPRateLimit(bucket string, limit int, window time.Duration) gin.HandlerFunc
 		w, ok := ipLimitMap[key]
 		if !ok || now.After(w.resetAt) {
 			ipLimitMap[key] = &ipWindow{count: 1, resetAt: now.Add(window)}
+			if !ok {
+				ipLimitDirty = append(ipLimitDirty, key) // 新 key 记入增量队列
+			}
 			ipLimitMu.Unlock()
 		} else {
 			w.count++
@@ -60,14 +67,15 @@ func IPRateLimit(bucket string, limit int, window time.Duration) gin.HandlerFunc
 			}
 		}
 
-		// 惰性清理：每 10 分钟清一遍过期窗口，防止 map 无限增长
+		// 惰性清理：每 10 分钟扫增量队列清过期窗口（P2-2：不再全表扫描，防止 map 无限增长且不阻塞限流）
 		ipLimitMu.Lock()
 		if lastSweepAt.IsZero() || now.Sub(lastSweepAt) > 10*time.Minute {
-			for k, win := range ipLimitMap {
-				if now.After(win.resetAt) {
+			for _, k := range ipLimitDirty {
+				if win, ok := ipLimitMap[k]; ok && now.After(win.resetAt) {
 					delete(ipLimitMap, k)
 				}
 			}
+			ipLimitDirty = ipLimitDirty[:0]
 			lastSweepAt = now
 		}
 		ipLimitMu.Unlock()
@@ -80,6 +88,7 @@ func IPRateLimit(bucket string, limit int, window time.Duration) gin.HandlerFunc
 // 规则：已登录用户（user_id>0，B端顾问/管理员）直接放行；
 // 匿名请求必须携带 ?visitor_key= 且与目标客户的 VisitorKey 完全一致。
 // expectedKey 传目标客户已加载的 VisitorKey（空串=该客户无密钥，一律拒绝匿名访问）。
+// P2-16 修复：visitor_key 用 subtle.ConstantTimeCompare（常量时间比较，防 timing attack 逐字节爆破）。
 func CheckVisitorKey(c *gin.Context, expectedKey string) bool {
 	if uidV, ok := c.Get("user_id"); ok {
 		if uid, _ := uidV.(uint); uid > 0 {
@@ -87,5 +96,8 @@ func CheckVisitorKey(c *gin.Context, expectedKey string) bool {
 		}
 	}
 	vk := c.Query("visitor_key")
-	return vk != "" && expectedKey != "" && vk == expectedKey
+	if vk == "" || expectedKey == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(vk), []byte(expectedKey)) == 1
 }

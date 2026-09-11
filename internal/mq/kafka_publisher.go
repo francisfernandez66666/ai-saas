@@ -45,21 +45,33 @@ func newKafkaCenter(cfg config.MQConfig) (*KafkaCenter, error) {
 }
 
 // Publish 生产事件（Header 注入 + 审计落库 + kafka 写入）
+// P1-37(2026-09-09)：审计状态真实性修复——原实现先 recordAudit("sent") 后写 broker，
+// broker 写失败时审计仍为 sent（不可信）。改为写结果出来后再记：
+// 成功记 sent，失败记 failed（异步 best-effort 不阻断业务；"发布成功后回调改状态"方案）。
 func (c *KafkaCenter) Publish(ctx context.Context, topic string, tenantID uint, oneID string, eventType string, payload interface{}) error {
 	env := buildEnvelope(ctx, topic, tenantID, oneID, eventType, payload)
-	recordAudit(env, "sent")
 
 	fullTopic := c.cfg.TopicPrefix + topic
-	err := c.w.WriteMessages(ctx, kafka.Message{
+	// P2-78 修复：Kafka Writer 写入无超时——broker 卡顿时同步链路无限阻塞。
+	// 写操作补 8s 上限（即使调用方 ctx 无 Deadline 也兜底）。
+	wctx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		wctx, cancel = context.WithTimeout(ctx, 8*time.Second)
+		defer cancel()
+	}
+	err := c.w.WriteMessages(wctx, kafka.Message{
 		Topic:   fullTopic,
 		Key:     []byte(env.Key),
 		Value:   env.Payload,
 		Headers: kafkaHeaders(env),
 	})
 	if err != nil {
+		recordAudit(env, "failed")
 		log.Printf("[MQ-Kafka] 发布失败 topic=%s event=%s trace=%s: %v", fullTopic, env.Header.EventID, env.Header.TraceID, err)
 		return err
 	}
+	recordAudit(env, "sent")
 	log.Printf("[MQ-Kafka] 已发布 topic=%s event=%s tenant=%d one=%s type=%s trace=%s",
 		fullTopic, env.Header.EventID, tenantID, env.Header.OneID, eventType, env.Header.TraceID)
 	return nil

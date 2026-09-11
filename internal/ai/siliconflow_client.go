@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 )
@@ -33,6 +34,8 @@ type SiliconFlowClient struct {
 	MaxRetries  int          // 最大重试次数
 	Enabled     bool         // 是否启用（有API Key才启用）
 	httpClient  *http.Client // HTTP客户端（复用连接）
+	modelMu     sync.Mutex   // P2-59：保护 ModelName/modelOverride 并发访问
+	modelOverride string     // P2-59：per-call 临时模型覆盖
 }
 
 // SiliconFlowChatRequest 请求结构（OpenAI兼容）
@@ -101,10 +104,21 @@ func (c *SiliconFlowClient) GetModelName() string {
 	return c.ModelName
 }
 
-// GenerateText 生成文本
-func (c *SiliconFlowClient) GenerateText(messages []ChatMessage, temperature float64) (string, error) {
-	reply, _, err := c.GenerateTextWithUsage(messages, temperature)
-	return reply, err
+// P2-59 修复：callProvider 的临时模型覆盖——原 SetModel 改全局单例 ModelName，
+// 并发阶段覆盖请求互相串模型（A 读了 B 的 SetModel）。改用 per-call override 字段，
+// GenerateTextWithUsage 优先读 override、清空后复原，加 mutex 防并发覆盖。
+func (c *SiliconFlowClient) GenerateTextWithModelOverride(messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
+	orig := c.ModelName
+	c.modelMu.Lock()
+	c.modelOverride = overrideModel
+	c.modelMu.Unlock()
+	defer func() {
+		c.modelMu.Lock()
+		c.ModelName = orig
+		c.modelOverride = ""
+		c.modelMu.Unlock()
+	}()
+	return c.GenerateTextWithUsage(messages, temperature)
 }
 
 // GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座）
@@ -169,10 +183,20 @@ func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperatur
 	return "", Usage{}, fmt.Errorf("硅基流动调用失败，已重试%d次: %v", c.MaxRetries+1, lastErr)
 }
 
+// effectiveModel 返回当前生效的模型名（P2-59：优先 modelOverride，否则用默认 ModelName）
+func (c *SiliconFlowClient) effectiveModel() string {
+	c.modelMu.Lock()
+	defer c.modelMu.Unlock()
+	if c.modelOverride != "" {
+		return c.modelOverride
+	}
+	return c.ModelName
+}
+
 // callAPI 调用硅基流动API
 func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := SiliconFlowChatRequest{
-		Model:       c.ModelName,
+		Model:       c.effectiveModel(),
 		Messages:    messages,
 		Temperature: temperature,
 		MaxTokens:   c.MaxTokens,

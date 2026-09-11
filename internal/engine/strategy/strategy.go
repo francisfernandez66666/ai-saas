@@ -178,7 +178,7 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 		ID: input.CustomerID,
 	}
 
-	err := service.DefaultTagService.ApplyTagWeightsToTVector(customer, input.TVector)
+	err := service.DefaultTagService.ApplyTagWeightsToTVector(input.TenantID, customer, input.TVector)
 	if err == nil {
 		// 读取应用权重后的T向量
 		// 重大修复（2026-08-26）：ApplyTagWeightsToTVector 在客户无标签时直接 return nil、
@@ -223,6 +223,18 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	// 画像决定"聊什么"，对话阶段决定"能不能推"
 	// "你好"→不抛锚（礼貌回应），"你好，请问极石多少钱"→正常走锚
 	// ============================================================
+	// P2-57 修复：CurrentStage 越界防御——当前心智阶段 0-5 共六段，StageAnchorCeiling 为
+	// [6]int 数组，非法值（<0 或 ≥6）直接 panic。提前 clamp，后续所有引用 stage 统一用 clamped 值。
+	// 声明位置须在所有 goto 标签之前，避免 Go "jumps over declaration" 编译错误。
+	// ============================================================
+	stage := input.State.CurrentStage
+	if stage < 0 {
+		stage = 0
+	} else if stage >= len(StageAnchorCeiling) {
+		stage = len(StageAnchorCeiling) - 1
+	}
+
+	// ============================================================
 	if IsGreeting(input.CustomerInput) {
 		log.Printf("[策略引擎] Step0.1: 检测到纯寒暄\"%s\"，强制不抛锚", input.CustomerInput)
 		output.FinalAnchor = AnchorNoThrow
@@ -258,13 +270,10 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 		log.Printf("[策略引擎] Step1.5: 促单锁生效，CanPromote=false，稀缺/代价自担锚被压制")
 	}
 
-	output.AnchorScores = anchorScores
-
 	// ============================================================
 	// Step1.6：线索阶段天花板（业务漏斗硬锁）
-	// 与心智阶段锁不同——心智阶段是"对话热度"，线索阶段是"业务漏斗位置"
-	// 不管对话多热烈，客户没到店就是不能促单
-	// 这是比Step2.5心智阶段锁更严格的硬约束
+	// P2-57 修复(2026-09-09)：output.AnchorScores 在此步之后再赋值（原 261 行赋值
+	// 在压制前，展示层看到的分数与决策层不一致）。
 	// ============================================================
 	if input.JourneyStage != "" {
 		if ceiling, ok := JourneyStageAggressivenessCeiling[input.JourneyStage]; ok {
@@ -282,6 +291,9 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 			}
 		}
 	}
+
+	// P2-57 修复：压制后才赋值展示层——与决策层一致
+	output.AnchorScores = anchorScores
 
 	// ============================================================
 	// Step2：softmax归一化 + 选最优锚
@@ -309,7 +321,7 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	stageCeilingAnchor, isStageDowngraded = Step2_5_StageCeiling(bestAnchor, input.State.CurrentStage)
 	output.StageDowngraded = isStageDowngraded
 	output.StageBeforeLock = bestAnchor                                   // 阶段锁降级前的锚
-	output.StageCeilingAgg = StageAnchorCeiling[input.State.CurrentStage] // 当前阶段允许的上限
+	output.StageCeilingAgg = StageAnchorCeiling[stage] // 当前阶段允许的上限（P2-57：stage 已 clamp）
 
 	// 阶段锁降级后，用降级结果作为Step3的输入
 	anchorAfterStageLock = stageCeilingAnchor
@@ -532,7 +544,7 @@ func DetectResistance(text string) int {
 		"贵", "太贵", "价格高", "便宜点", "优惠", "降价", "贵了",
 		"不值", "性价比", "贵了点", "超出预算", "预算不够",
 		"多少钱", "价格", "能便宜", "再少", "再降",
-		"比", "贵不少", "贵很多", "偏贵", "划算",
+		"贵不少", "贵很多", "偏贵", "划算", "便宜",
 		"price", "expensive", "too much", "too expensive", "costly",
 	}
 	for _, kw := range priceKeywords {

@@ -132,25 +132,35 @@ func (m *TagCacheManager) GetVersion() int64 {
 }
 
 // ============================================================
-// 标签相关查询方法
+// 标签相关查询方法（P0-4 修复：全部方法增加 tenantID 过滤，
+// 只返回系统预置(tenant_id=0) + 请求租户私有(tenant_id=tid)，杜绝跨租户标签串扰）
 // ============================================================
 
-// GetAllTags 获取所有启用的标签
-func (m *TagCacheManager) GetAllTags() []model.Tag {
+// visibleTag 标签可见性判定（系统预置全租户可见 + 本租户私有）
+func visibleTag(t model.Tag, tenantID uint) bool {
+	return t.TenantID == 0 || t.TenantID == tenantID
+}
+
+// GetAllTags 获取所有启用的标签（按租户可见范围）
+func (m *TagCacheManager) GetAllTags(tenantID uint) []model.Tag {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	// 返回副本，防止外部修改影响缓存
-	result := make([]model.Tag, len(m.tags))
-	copy(result, m.tags)
+	var result []model.Tag
+	for _, t := range m.tags {
+		if visibleTag(t, tenantID) {
+			result = append(result, t)
+		}
+	}
 	return result
 }
 
-// GetTagByID 根据ID获取标签
-func (m *TagCacheManager) GetTagByID(id uint) *model.Tag {
+// GetTagByID 根据ID获取标签（按租户可见范围）
+func (m *TagCacheManager) GetTagByID(tenantID uint, id uint) *model.Tag {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.tags {
-		if m.tags[i].ID == id {
+		if m.tags[i].ID == id && visibleTag(m.tags[i], tenantID) {
 			tag := m.tags[i]
 			return &tag
 		}
@@ -158,12 +168,12 @@ func (m *TagCacheManager) GetTagByID(id uint) *model.Tag {
 	return nil
 }
 
-// GetTagByCode 根据编码获取标签
-func (m *TagCacheManager) GetTagByCode(code string) *model.Tag {
+// GetTagByCode 根据编码获取标签（按租户可见范围）
+func (m *TagCacheManager) GetTagByCode(tenantID uint, code string) *model.Tag {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	for i := range m.tags {
-		if m.tags[i].Code == code {
+		if m.tags[i].Code == code && visibleTag(m.tags[i], tenantID) {
 			tag := m.tags[i]
 			return &tag
 		}
@@ -175,26 +185,35 @@ func (m *TagCacheManager) GetTagByCode(code string) *model.Tag {
 // 打标规则相关查询方法
 // ============================================================
 
-// GetRulesByType 按规则类型获取规则列表
-func (m *TagCacheManager) GetRulesByType(ruleType string) []model.TagRule {
+// visibleRule 规则可见性判定
+func visibleRule(r model.TagRule, tenantID uint) bool {
+	return r.TenantID == 0 || r.TenantID == tenantID
+}
+
+// GetRulesByType 按规则类型获取规则列表（按租户可见范围）
+func (m *TagCacheManager) GetRulesByType(tenantID uint, ruleType string) []model.TagRule {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.TagRule
 	for _, rule := range m.tagRules {
-		if rule.RuleType == ruleType {
+		if rule.RuleType == ruleType && visibleRule(rule, tenantID) {
 			result = append(result, rule)
 		}
 	}
 	return result
 }
 
-// GetAllRules 获取所有启用的规则
-func (m *TagCacheManager) GetAllRules() []model.TagRule {
+// GetAllRules 获取所有启用的规则（按租户可见范围）
+func (m *TagCacheManager) GetAllRules(tenantID uint) []model.TagRule {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]model.TagRule, len(m.tagRules))
-	copy(result, m.tagRules)
+	var result []model.TagRule
+	for _, r := range m.tagRules {
+		if visibleRule(r, tenantID) {
+			result = append(result, r)
+		}
+	}
 	return result
 }
 
@@ -202,26 +221,30 @@ func (m *TagCacheManager) GetAllRules() []model.TagRule {
 // 权重映射相关查询方法
 // ============================================================
 
-// GetWeightMappingsByTagID 根据标签ID获取权重映射
+// GetWeightMappingsByTagID 根据标签ID获取权重映射（按租户可见范围）
 // 一个标签可能对应T向量的多个维度
-func (m *TagCacheManager) GetWeightMappingsByTagID(tagID uint) []model.TagWeightMapping {
+func (m *TagCacheManager) GetWeightMappingsByTagID(tenantID uint, tagID uint) []model.TagWeightMapping {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var result []model.TagWeightMapping
 	for _, mapping := range m.weightMappings {
-		if mapping.TagID == tagID {
+		if mapping.TagID == tagID && (mapping.TenantID == 0 || mapping.TenantID == tenantID) {
 			result = append(result, mapping)
 		}
 	}
 	return result
 }
 
-// GetAllWeightMappings 获取所有权重映射
-func (m *TagCacheManager) GetAllWeightMappings() []model.TagWeightMapping {
+// GetAllWeightMappings 获取所有权重映射（按租户可见范围）
+func (m *TagCacheManager) GetAllWeightMappings(tenantID uint) []model.TagWeightMapping {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	result := make([]model.TagWeightMapping, len(m.weightMappings))
-	copy(result, m.weightMappings)
+	var result []model.TagWeightMapping
+	for _, mapping := range m.weightMappings {
+		if mapping.TenantID == 0 || mapping.TenantID == tenantID {
+			result = append(result, mapping)
+		}
+	}
 	return result
 }

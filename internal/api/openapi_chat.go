@@ -20,7 +20,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"regexp"
 	"time"
 
 	"ai-scrm/internal/chatflow"
@@ -49,8 +48,11 @@ type openAPIChatReq struct {
 	Stream         bool    `json:"stream"` // 是否流式返回（SSE，OpenAI 兼容逐帧；默认 false 全量返回）
 }
 
-// phoneRegex 手机号提取（留资线索捕获）
-var phoneRegex = regexp.MustCompile(`1[3-9]\d{9}`)
+// P1-27 修复(2026-09-09)：手机号提取统一走 chatflow.PhoneRegex（含\b边界，防订单号/长数字串
+// 子串误命中误触发留资+顾问分配+企微推送），替换此前缺边界的本地正则。
+func detectPhone(input string) string {
+	return chatflow.PhoneRegex.FindString(input)
+}
 
 // OpenAPIChatCompletions POST /openapi/v1/chat/completions
 func OpenAPIChatCompletions(c *gin.Context) {
@@ -60,11 +62,11 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	var req openAPIChatReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("[OpenAPI][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "error_code": "bad_request", "message": "参数错误: " + err.Error()})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 	if req.ExternalUserID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "error_code": "bad_request", "message": "external_user_id 必填"})
+		RespErr(c, http.StatusBadRequest, 400, "external_user_id 必填")
 		return
 	}
 	// 取最后一条用户消息作为本轮输入
@@ -76,7 +78,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		}
 	}
 	if userInput == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "error_code": "bad_request", "message": "messages 中无用户内容"})
+		RespErr(c, http.StatusBadRequest, 400, "messages 中无用户内容")
 		return
 	}
 	channel := req.Channel
@@ -117,10 +119,10 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		customerMsg.ID, userInput, customer.Name, time.Now().Format("2006-01-02T15:04:05Z"))
 
 	// 4. 持续打标（与站内一致）
-	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(customer.ID, userInput); tagErr == nil && len(autoTags) > 0 {
+	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(tenantID, customer.ID, userInput); tagErr == nil && len(autoTags) > 0 {
 		var uc model.Customer
 		if db.RQ(c).First(&uc, customer.ID).Error == nil {
-			service.DefaultTagService.ApplyTagWeightsToTVector(&uc, uc.BuildBaseTVector())
+			service.DefaultTagService.ApplyTagWeightsToTVector(tenantID, &uc, uc.BuildBaseTVector())
 			db.RQ(c).Model(&uc).Update("t_vector", uc.TVectorJSON)
 		}
 	}
@@ -135,7 +137,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 
 	// 6. 到店倾向/留资（外部渠道同样捕获线索 → 合并+留资+分配顾问）
 	if service.IsStoreVisitIntentForTenant(tenantID, userInput) && !isCapturedStage(customer.JourneyStage) {
-		if phone := phoneRegex.FindString(userInput); phone != "" {
+		if phone := detectPhone(userInput); phone != "" {
 			if mergedID := chatflow.MergeCustomerByPhone(customer, phone); mergedID > 0 {
 				var reloaded model.Customer
 				if db.RQ(c).First(&reloaded, mergedID).Error == nil {
@@ -168,6 +170,15 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		DeptIDs:        nil, // 外部渠道无顾问部门链，纯租户语境（仅见行业+企业两层包）
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
+	// P2-21 修复(2026-09-09)：路由结果为 human/pending_human 时不再发 AI 话术——
+	// 原实现忽略 RouteResult 直接 OrchestrateReply，已留资线索被 AI 接管（与站内两分支语义矛盾）。
+	// 对齐站内：人工接管语义返回固定提示，不生成/不计数。
+	if strategyOutput.RouteResult == "human" || strategyOutput.RouteResult == "pending_human" {
+		reply := service.GetHumanTakeoverReplyForTenant(tenantID, userInput)
+		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "human_takeover")
+		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
+		return
+	}
 	aiReply := flow.DefaultEngine.OrchestrateReply(customer, conversation.ID, userInput, &strategyOutput, nil)
 
 	// 8. 持久化 AI 消息
@@ -335,7 +346,10 @@ func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone str
 			}
 			leadUpdates["assigned_user_id"] = best
 		} else {
-			leadUpdates["assigned_user_id"] = uint(2) // 兜底：张伟(ID=2)
+			// P1-12 修复(2026-09-09)：无销售用户时不再硬编码 uint(2)（跨租户脏分配），
+			// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领
+			leadUpdates["assigned_user_id"] = uint(0)
+			leadUpdates["pending_handoff"] = true
 		}
 	}
 	if err := db.RQ(c).Model(customer).Updates(leadUpdates).Error; err != nil {

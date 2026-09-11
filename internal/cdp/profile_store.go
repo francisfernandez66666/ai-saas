@@ -33,13 +33,17 @@ func UpsertAnchorTx(tx *gorm.DB, tenantID uint, anchorType, anchorValue, oneID s
 	if cnt > 0 {
 		return
 	}
-	tx.Create(&model.IdMapping{
+	// P1-34 修复(2026-09-09)：锚点 Create 错误不再被吞——失败要可观测（日志），
+	// 否则锚点静默丢失导致 OneID 解析断链。
+	if err := tx.Create(&model.IdMapping{
 		TenantID:     tenantID,
 		InternalType: "anchor:" + anchorType + ":" + anchorValue,
 		CdpEntityId:  oneID,
 		MappingType:  "one2one",
 		Source:       "ingest",
-	})
+	}).Error; err != nil {
+		log.Printf("[CDP] 锚点写入失败 tenant=%d anchor=%s:%s one=%s: %v", tenantID, anchorType, anchorValue, oneID, err)
+	}
 }
 
 // EnsureProfile 确保画像主体存在（按 OneID 幂等），返回 nil 表示失败
@@ -48,6 +52,9 @@ func EnsureProfile(tenantID uint, oneID string, customerID uint) *model.CdpProfi
 }
 
 // EnsureProfileTx 确保画像主体存在（tx 透传版，RLS 事务内使用，P2-2）
+// P1-33 修复(2026-09-09)：原 First-then-Create 无 upsert——log 模式每事件独立 goroutine，
+// 并发同 OneID 两个 Create 撞 (tenant_id,cdp_id) 唯一索引，后赢家失败被吞。现 First 未命中
+// 仍先 Create，但 Create 收到唯一冲突错误时回退读回已存在行（并发赢家的），第二次命中即可。
 func EnsureProfileTx(tx *gorm.DB, tenantID uint, oneID string, customerID uint) *model.CdpProfile {
 	var p model.CdpProfile
 	err := tx.Where("tenant_id = ? AND cdp_id = ?", tenantID, oneID).First(&p).Error
@@ -59,6 +66,10 @@ func EnsureProfileTx(tx *gorm.DB, tenantID uint, oneID string, customerID uint) 
 		ProfileName: oneID, Status: 1, ProfileData: "{}",
 	}
 	if err := tx.Create(&fresh).Error; err != nil {
+		// 唯一冲突（并发赢家已建）：回读已存在行，绝不把事件当失败丢弃
+		if retryErr := tx.Where("tenant_id = ? AND cdp_id = ?", tenantID, oneID).First(&p).Error; retryErr == nil {
+			return &p
+		}
 		log.Printf("[CDP] 画像创建失败 one=%s: %v", oneID, err)
 		return nil
 	}

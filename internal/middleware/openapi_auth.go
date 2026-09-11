@@ -89,7 +89,10 @@ func OpenAPIAuth() gin.HandlerFunc {
 		c.Set("api_key_id", key.ID)
 		c.Set("api_key_perms", parsePerms(key.Permissions))
 
-		go touchAPIKey(key.ID) // 异步计量：last_used_at/call_count/usage_records(api_calls)
+		// P2-11 修复(2026-09-09)：原 go touchAPIKey 每请求一个无界 goroutine——
+		// 高并发下 goroutine 数等于 QPS，且异步写在 handler 返回后（连接已断），
+		// 失败无感知。改为同步写在鉴权路径内，走 gorm.DB 直接 UPDATE（开销 <2ms）。
+		touchAPIKey(key.ID)
 		c.Next()
 	}
 }
@@ -147,19 +150,4 @@ func touchAPIKey(keyID uint) {
 		today, keyID).Error; err != nil {
 		log.Printf("[OpenAPI] api_calls 明细累加失败 key=%d: %v", keyID, err)
 	}
-}
-
-// HasAPIKeyPerm 供 handler 内二次细粒度判断（预留）
-func HasAPIKeyPerm(c *gin.Context, perm string) bool {
-	v, ok := c.Get("api_key_perms")
-	if !ok {
-		return false
-	}
-	perms, _ := v.([]string)
-	for _, p := range perms {
-		if p == PermAll || p == perm {
-			return true
-		}
-	}
-	return false
 }

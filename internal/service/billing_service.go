@@ -24,6 +24,7 @@ import (
 	"ai-scrm/internal/redisclient"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ErrRefundNoRemaining 退款拒绝哨兵：订单权益已全部消耗/过期，无剩余可退
@@ -412,16 +413,17 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		// 1) 锁订单行：同一订单并发重复退款在此串行化
 		var o model.BillingOrder
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&o, orderID).Error; err != nil {
+		// GORM v2 行锁：clause.Locking{Strength:"UPDATE"}（v1 的 gorm:query_option 在 v2 已失效，2026-09-09 审计修复）
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&o, orderID).Error; err != nil {
 			return err
 		}
 		if o.Status != "paid" {
 			return nil // 已处理过/非可退状态，非本次流转
 		}
-		// 2) 锁租户行：与 UsageSink/DeductTokensActual 的 FOR UPDATE 扣减互斥
+		// 2) 锁租户行：与 UsageSink/DeductTokensActual 的行锁扣减互斥
 		var t model.Tenant
 		if o.TenantID != nil {
-			if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&t, *o.TenantID).Error; err != nil {
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&t, *o.TenantID).Error; err != nil {
 				return err
 			}
 		}

@@ -15,6 +15,8 @@ func TestDetectResistance(t *testing.T) {
 		{"这个价格很划算", true},
 		{"你好我想了解越野车", false},
 		{"今天天气不错", false},
+		{"比想象的好开，动力很足", false}, // P2-62 误伤回归：单字"比"已移除，"比如/比想象"不再误判价格抗性
+		{"比如说这两个型号有什么区别", false},
 	}
 	for _, c := range cases {
 		got := DetectResistance(c.text) != 0

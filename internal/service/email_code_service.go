@@ -13,6 +13,8 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -89,8 +91,11 @@ func SendEmailCode(email, purpose, ip string) error {
 	sender := DefaultResetSender() // 复用通道选择（smtp/log，配置驱动）
 	subject, body := buildEmailCodeContent(purpose, code)
 	if _, isLog := sender.(LogSender); isLog {
-		// log 通道：码直接落服务端日志（开发调试用）；验证码属敏感凭据，脱敏不落明文
-		log.Printf("[邮箱验证码] 用途=%s 邮箱=%s 验证码=***(已脱敏,10分钟有效)", purpose, maskEmail(email))
+		// P1-20 修复(2026-09-09)：log 通道是内测/开发语义（默认 reset_code_channel="log"，
+		// 开箱即用状态下邮箱注册验证/密码重置必须能走通）。原实现把验证码明文打码——
+		// 用户永远拿不到码，验证流程死路。现统一为"明文落服务端日志 + 水位标记"，
+		// 仅 log 通道明文；smtp 通道走真实邮件不受影响。
+		log.Printf("[邮箱验证码][DEBUG-WATERMARK 仅log通道] 用途=%s 邮箱=%s 验证码=%s (10分钟有效，生产请配置SMTP)", purpose, email, code)
 		return nil
 	}
 	if err := sender.SendRaw([]string{email}, subject, body); err != nil {
@@ -113,11 +118,14 @@ func VerifyEmailCode(email, purpose, code string) error {
 		return fmt.Errorf("验证码错误或已过期")
 	}
 	if rec.Attempts >= emailMaxAttempts {
+		// P2-45 修复：读涌过上限的验证码直接作废（防后续误用）
+		db.DB.Model(&model.EmailVerify{}).Where("id = ?", rec.ID).Update("used", true)
 		return fmt.Errorf("错误次数过多，请重新获取验证码")
 	}
 	if rec.CodeHash != hashCodeEmail(strings.TrimSpace(code)) {
+		// P2-45 修复：attempts 用 gorm.Expr 原子自增（原 rec.Attempts+1 读改写，并发爆破击穿 5 次限制）
 		db.DB.Model(&model.EmailVerify{}).Where("id = ?", rec.ID).
-			UpdateColumn("attempts", rec.Attempts+1) // 错误计数（≥5次本码作废）
+			UpdateColumn("attempts", gorm.Expr("COALESCE(attempts,0) + 1"))
 		return fmt.Errorf("验证码错误或已过期")
 	}
 	// 一次性抢占：并发重放只有一个赢家

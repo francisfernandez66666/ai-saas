@@ -3,6 +3,8 @@ package mq
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -112,9 +114,13 @@ type PaymentStatusEvent struct {
 	PaidAt      time.Time `json:"paid_at"`
 }
 
-// newEventID 生成事件唯一ID（时间戳+随机，进程内唯一即可）
+// newEventID 生成事件唯一ID
+// P2-79 修复(2026-09-09)：原 UnixNano+seq%10000——多实例下seq各自从0起，理论可撞；
+// 撞了 Inbox 幂等键会误判"已处理"直接吞事件。改带随机分量的十六进制串（冲突概率趋零）。
 func newEventID() string {
-	return fmt.Sprintf("%d-%04d", time.Now().UnixNano(), eventSeq.Add(1)%10000)
+	var rb [4]byte
+	_, _ = rand.Read(rb[:])
+	return fmt.Sprintf("%d-%s", time.Now().UnixNano(), hex.EncodeToString(rb[:]))
 }
 
 // marshalPayload payload 序列化兜底

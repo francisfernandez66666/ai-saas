@@ -70,7 +70,7 @@ type EventLog struct {
 type IdMapping struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement"`           // 主键ID
 	TenantID     uint      `gorm:"default:0;index"`                    // 租户ID
-	InternalType string    `gorm:"size:32;index" json:"internal_type"` // 如: customer, conversation, message（J13-2026-08-27 补索引）
+	InternalType string    `gorm:"size:128;index" json:"internal_type"` // 如: customer, conversation, message（P1-34(2026-09-09)：size:32→128，"anchor:email:" 前缀 13 字符 + 长邮箱必溢出导致锚点静默丢失；对齐 customer_identity.go 同语义字段 100）
 	InternalID   uint      // 内部系统ID
 	CdpEntityId  string    `gorm:"size:64"` // CDP系统实体ID
 	MappingType  string    // 映射类型：one2one, one2many

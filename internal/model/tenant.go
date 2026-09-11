@@ -4,6 +4,8 @@ package model
 import (
 	"encoding/json"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -66,7 +68,7 @@ type Tenant struct {
 	WhiteLabelConfig     json.RawMessage `json:"white_label_config"`                          // 白标配置 JSON（站点名、CSS、脚本等）
 	CreatedAt            time.Time       `json:"created_at"`                                  // 创建时间
 	UpdatedAt            time.Time       `json:"updated_at"`                                  // 更新时间
-	DeletedAt            *time.Time      `json:"deleted_at"`                                  // 软删除
+	DeletedAt            gorm.DeletedAt  `json:"deleted_at"`                                 // 软删除（P2-73 修复：原 *time.Time 非 gorm.DeletedAt，软删除查询过滤失效）
 }
 
 // TableName 指定表名

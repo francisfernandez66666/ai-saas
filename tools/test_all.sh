@@ -57,6 +57,35 @@ verdict() { # verdict <名称> <退出码>
   if [ "$2" -eq 0 ]; then echo "  PASS  $1"; PASS=$((PASS+1)); else echo "  FAIL  $1"; FAIL=$((FAIL+1)); [ "$FAILFAST" = "1" ] && exit 1; fi
 }
 
+# ---------- 阶段零：静态断言（G-12） ----------
+step "静态断言：裸 db.DB 用法回归检查"
+# 排除：_test.go、tx = db.DB 兜底、db.TenantFilter、注释行、cdp/gdb() 包级封装
+BARE_DB=$(grep -rn --include="*.go" 'db\.DB\.' internal/ | grep -v '_test.go' | grep -v 'tx = db\.DB' | grep -v 'db\.TenantFilter' | grep -v 'db\.RQ\|db\.PQ' | grep -v '//' | grep -v 'cdp/' | grep -v 'gdb()' | grep -v 'db\.DB == nil' | grep -v 'db\.DB = ' | grep -v 'db\.DB;' | grep -v 'func gdb' | wc -l | tr -d ' ')
+if [ "$BARE_DB" -gt 0 ]; then
+  echo "  WARN  G-12: 发现 $BARE_DB 处裸 db.DB 用法（可能绕过租户隔离）："
+  grep -rn --include="*.go" 'db\.DB\.' internal/ | grep -v '_test.go' | grep -v 'tx = db\.DB' | grep -v 'db\.TenantFilter' | grep -v 'db\.RQ\|db\.PQ' | grep -v '//' | grep -v 'cdp/' | grep -v 'gdb()' | grep -v 'db\.DB == nil' | grep -v 'db\.DB = ' | grep -v 'db\.DB;' | grep -v 'func gdb' | head -10
+  verdict "G-12 裸 db.DB 检查（警告）" 0
+else
+  verdict "G-12 裸 db.DB 检查" 0
+fi
+
+# ---------- 阶段零：静态断言（G-6 防回潮） ----------
+step "静态断言：G-6 防回潮回归检查"
+G6_FAIL=0
+# 1. 注释吞码：sb.WriteString 在注释中（P2-36 修复防回潮）
+if grep -rn --include="*.go" '^\s*//.*sb\.WriteString' internal/ | grep -v '_test.go' | grep -q .; then
+  echo "  FAIL  G-6: 注释中 sb.WriteString 残留"; grep -rn --include="*.go" '^\s*//.*sb\.WriteString' internal/ | grep -v '_test.go' | head -5; G6_FAIL=1
+fi
+# 2. 脏常量：uint(2) 用于分配语义（P2-24 修复防回潮）
+if grep -rn --include="*.go" 'uint(2)' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
+  echo "  FAIL  G-6: uint(2) 脏常量残留"; grep -rn --include="*.go" 'uint(2)' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
+fi
+# 3. gorm:query_option 废弃 API（P1-23 修复防回潮）
+if grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -q .; then
+  echo "  FAIL  G-6: gorm:query_option 废弃 API 残留"; grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | head -5; G6_FAIL=1
+fi
+verdict "G-6 防回潮断言" $G6_FAIL
+
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... && verdict "go vet ./..." $?

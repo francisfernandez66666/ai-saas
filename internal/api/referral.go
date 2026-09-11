@@ -19,6 +19,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -116,36 +117,71 @@ type InviteeRecord struct {
 // GetReferralRecords 获取邀请好友记录列表
 // GET /api/v1/admin/referral/records
 // 返回当前租户邀请的所有好友及其奖励发放状态
+// P2-29 修复(2026-09-09)：原每行 2 次 Count（N+1）+ 全表返回；改分页 + IN 批量聚合
 func GetReferralRecords(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
 		RespErr(c, http.StatusForbidden, 403, "无租户语境")
 		return
 	}
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
+	if page <= 0 {
+		page = 1
+	}
 	// 查询被邀请的租户列表（invited_by_tenant_id 指向我）
+	var total int64
+	db.DB.Model(&model.Tenant{}).Where("invited_by_tenant_id = ?", ti.ID).Count(&total)
 	var rows []model.Tenant
-	db.DB.Where("invited_by_tenant_id = ?", ti.ID).Order("id DESC").Find(&rows)
+	db.DB.Where("invited_by_tenant_id = ?", ti.ID).Order("id DESC").
+		Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
+
+	// 收集受邀租户ID，两次 IN 批量聚合奖励/付费状态（消除每行 2 次 Count 的 N+1）
+	if len(rows) == 0 {
+		RespOK(c, "", gin.H{"list": []InviteeRecord{}, "total": total, "page": page, "page_size": pageSize})
+		return
+	}
+	ids := make([]uint, 0, len(rows))
+	for _, t := range rows {
+		ids = append(ids, t.ID)
+	}
+	signupGranted := map[uint]bool{}
+	var signupPairs []struct {
+		RefID uint
+		Cnt   int64
+	}
+	db.DB.Model(&model.RewardClaim{}).
+		Select("ref_id, count(*) as cnt").
+		Where("grant_type='referral_signup' AND tenant_id=? AND ref_id IN ?", ti.ID, ids).
+		Group("ref_id").Scan(&signupPairs)
+	for _, p := range signupPairs {
+		signupGranted[p.RefID] = p.Cnt > 0
+	}
+	paidOK := map[uint]bool{}
+	var paidPairs []struct {
+		TenantID uint
+		Cnt      int64
+	}
+	db.DB.Model(&model.BillingOrder{}).
+		Select("tenant_id, count(*) as cnt").
+		Where("status='paid' AND tenant_id IN ?", ids).
+		Group("tenant_id").Scan(&paidPairs)
+	for _, p := range paidPairs {
+		paidOK[p.TenantID] = p.Cnt > 0
+	}
 
 	out := make([]InviteeRecord, 0, len(rows))
 	for _, t := range rows {
-		rec := InviteeRecord{
+		out = append(out, InviteeRecord{
 			TenantID:     t.ID,
 			CompanyName:  t.Name,
 			Email:        t.ContactEmail,
 			InvitedOK:    true,
 			PaidRewarded: t.ReferralPaidRewarded,
 			RegisteredAt: t.CreatedAt.Format("2006-01-02 15:04"),
-		}
-		// 检查注册奖励是否发放：查询 referral_signup 台账（邀请人=我，受邀=该租户）
-		var signupCnt, paidCnt int64
-		db.DB.Model(&model.RewardClaim{}).
-			Where("grant_type='referral_signup' AND tenant_id=? AND ref_id=?", ti.ID, t.ID).Count(&signupCnt)
-		rec.SignupReward = signupCnt > 0
-		// 检查好友是否已支付：查询是否存在 paid 状态的订单
-		db.DB.Model(&model.BillingOrder{}).
-			Where("tenant_id=? AND status='paid'", t.ID).Count(&paidCnt)
-		rec.PaidOK = paidCnt > 0
-		out = append(out, rec)
+			SignupReward: signupGranted[t.ID],
+			PaidOK:       paidOK[t.ID],
+		})
 	}
-	RespOK(c, "", gin.H{"list": out})
+	RespOK(c, "", gin.H{"list": out, "total": total, "page": page, "page_size": pageSize})
 }

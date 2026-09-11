@@ -145,7 +145,8 @@ func TestChatHistoryAuthFix(t *testing.T) {
 	suffix := fmt.Sprintf("h%d", tid)
 	cust := &model.Customer{
 		TenantID: tid, Name: "历史测试客户-" + suffix, Phone: "139" + suffix,
-		VisitorKey: "vk-hist-" + suffix,
+		VisitorKey:     "vk-hist-" + suffix,
+		AssignedUserID: 42, // P1-15 修复：接入四级数据范围后销售仅可视名下客户，测试顾客须归属 token 对应用户
 	}
 	if err := db.DB.Create(cust).Error; err != nil {
 		t.Fatalf("创建客户失败: %v", err)
@@ -171,7 +172,8 @@ func TestChatHistoryAuthFix(t *testing.T) {
 	url := fmt.Sprintf("/api/v1/chat/history?customer_id=%d", cust.ID)
 
 	// 场景1：顾问登录态（带 Bearer）→ 必须 200（本次修复的核心回归）
-	salesTok, err := middleware.GenerateToken(42, "sales1", "sales", tid)
+	// P1-15：角色用 model.RoleUser（"user"），旧字面量 "sales" 与数据范围 switch 不匹配
+	salesTok, err := middleware.GenerateToken(42, "sales1", model.RoleUser, tid)
 	if err != nil {
 		t.Fatalf("生成销售 token 失败: %v", err)
 	}

@@ -25,6 +25,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/realtime"
+	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/net/websocket"
@@ -89,7 +90,12 @@ var wsOrigins map[string]bool
 func initWSOrigins() {
 	wsOriginsOnce.Do(func() {
 		wsOrigins = map[string]bool{}
-		for _, o := range strings.Split(os.Getenv("CORS_ALLOWED_ORIGINS"), ",") {
+		// P1-3 修复(2026-09-09)：键名统一为 CORS_ALLOWED_ORIGINS，兼容旧键 CORS_ALLOW_ORIGINS
+		origins := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if origins == "" {
+			origins = os.Getenv("CORS_ALLOW_ORIGINS")
+		}
+		for _, o := range strings.Split(origins, ",") {
 			o = strings.TrimSpace(o)
 			if o != "" {
 				wsOrigins[o] = true
@@ -158,17 +164,33 @@ func WSAdvisor(c *gin.Context) {
 		respFailStatus(c, http.StatusUnauthorized, CodeUnauthorized, "token 无效")
 		return
 	}
+	// P1-9 修复(2026-09-09)：WSAdvisor 此前只 ParseToken 不查用户状态——禁用账号的有效 token
+	// 在过期前持续收本租户全部客户实时消息。现补 DB 实时状态与角色/部门解析（复用 service.LoadOrgContext，
+	// 与 OrgResolve 中间件同源），并在 HandshakeTimeout 的 wsServer 内校验。
+	if claims.UserID > 0 {
+		oc := service.LoadOrgContext(claims.UserID)
+		if oc == nil || oc.Status != 1 {
+			respFailStatus(c, http.StatusForbidden, CodeForbidden, "账号不存在或已禁用")
+			return
+		}
+		// 用 DB 实时角色/部门覆盖 JWT 声明（数据范围随组织变化即时生效，对齐 OrgResolve）
+		claims.Role = oc.Role
+		claims.TenantID = oc.TenantID
+		c.Set("role", oc.Role)
+		c.Set("dept_id", oc.DeptID)
+		c.Set("dept_path", oc.DeptPath)
+	}
 	// 升级 HTTP 连接为 WebSocket，注册客户端到 Hub
 	wsServer(func(ws *websocket.Conn) {
 		cl := realtime.NewClient(claims.TenantID, claims.UserID, 0)
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
 		// 写泵：从客户端发送队列读取消息并推送到 WebSocket
-		done := make(chan struct{})
+		// P1-9 修复：删除死变量 done channel（只 close 从不消费），Send 失败直接断开即可
 		go func() {
 			for msg := range cl.SendQueue() {
 				if err := websocket.Message.Send(ws, msg); err != nil {
-					close(done)
+					realtime.DefaultHub.Unregister(cl)
 					return
 				}
 			}
@@ -179,6 +201,7 @@ func WSAdvisor(c *gin.Context) {
 			if err := websocket.Message.Receive(ws, &buf); err != nil {
 				return
 			}
+			cl.Touch() // P2-70 心跳：记录活跃时间，供 hub 僵尸清扫判定
 		}
 	}).ServeHTTP(c.Writer, c.Request)
 }
@@ -219,6 +242,7 @@ func WSClient(c *gin.Context) {
 			if err := websocket.Message.Receive(ws, &buf); err != nil {
 				return
 			}
+			cl.Touch() // P2-70 心跳：记录活跃时间，供 hub 僵尸清扫判定
 		}
 	}).ServeHTTP(c.Writer, c.Request)
 }

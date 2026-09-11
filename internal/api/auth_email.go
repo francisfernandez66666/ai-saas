@@ -3,6 +3,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
@@ -70,12 +71,14 @@ func SendRegisterEmailCode(c *gin.Context) {
 		return
 	}
 	if err := service.SendEmailCode(req.Email, model.EmailPurposeRegister, c.ClientIP()); err != nil {
+		// P1-22 修复(2026-09-09)：原 `msg[:6]`/`msg[:12]` 对短错误串直接 slice 越界 panic
+		// （recovery 兜 500）；改用 strings.HasPrefix 分类，短错误串安全归为 500。
 		status := http.StatusInternalServerError
 		msg := err.Error()
-		// 按 service 层错误消息前缀判定限流/格式错误类型（约定式，非结构化错误码）
-		if msg[:6] == "发送太频" || msg[:12] == "今日验证码发送" || msg[:6] == "邮箱格式" {
+		switch {
+		case strings.HasPrefix(msg, "发送太频"), strings.HasPrefix(msg, "今日验证码发送"), strings.HasPrefix(msg, "邮箱格式"):
 			status = http.StatusTooManyRequests
-			if msg[:6] == "邮箱格式" {
+			if strings.HasPrefix(msg, "邮箱格式") {
 				status = http.StatusBadRequest
 			}
 		}
@@ -114,7 +117,13 @@ func SendBindEmailCode(c *gin.Context) {
 		return
 	}
 	if err := service.SendEmailCode(newEmail, model.EmailPurposeBind, c.ClientIP()); err != nil {
-		RespErr(c, http.StatusTooManyRequests, 429, err.Error())
+		// P1-22 修复：换绑发码不再把一切错误归 429 误导用户——仅限流/冷却类提示，其余按 500
+		msg := err.Error()
+		if strings.HasPrefix(msg, "发送太频") || strings.HasPrefix(msg, "今日验证码发送") {
+			RespErr(c, http.StatusTooManyRequests, 429, msg)
+		} else {
+			RespErr(c, http.StatusInternalServerError, 500, "验证码发送失败，请稍后重试")
+		}
 		return
 	}
 	RespOK(c, "验证码已发送至新邮箱，10分钟内有效", nil)

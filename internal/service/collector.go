@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"ai-scrm/config"
+	"ai-scrm/internal/db"
+	"ai-scrm/internal/model"
 )
 
 // CollectorEvent 数据飞轮上报事件（脱敏后）
@@ -28,10 +30,11 @@ type CollectorEvent struct {
 // batchCollector 进程内批量缓冲（休眠式：URL 空则不发任何外部请求）
 // 采用生产者-消费者模式，事件先缓冲在内存中，达到阈值或定时批量发送
 type batchCollector struct {
-	mu      sync.Mutex       // 互斥锁，保护缓冲区并发安全
-	buf     []CollectorEvent // 事件缓冲区
-	maxBuf  int              // 缓冲区最大容量，超出触发flush
-	flushMs int64            // 自动刷新间隔（毫秒）
+	mu        sync.Mutex       // 互斥锁，保护缓冲区并发安全
+	buf       []CollectorEvent // 事件缓冲区
+	maxBuf    int              // 缓冲区最大容量，超出触发flush
+	flushMs   int64            // 自动刷新间隔（毫秒）
+	lastFailAt time.Time       // 上次失败时间（P2-48 退避窗口）
 }
 
 var defaultCollector = &batchCollector{maxBuf: 2000, flushMs: 300000} // 5分钟批次
@@ -40,6 +43,44 @@ var defaultCollector = &batchCollector{maxBuf: 2000, flushMs: 300000} // 5分钟
 func RandEventID() string {
 	n, _ := rand.Int(rand.Reader, big.NewInt(1<<62))
 	return fmt.Sprintf("%d-%x", time.Now().UnixNano(), n.Int64())
+}
+
+// IngestCollectorEvents P1-11 修复(2026-09-09)：接收端把事件真正持久化到 kb_feedback_materials
+// 素材池（走既有 evals 审核流），而非仅内存计数丢弃——"数据飞轮聚合接收端"此前是黑洞。
+// 每条事件生成一条素材：content 取 payload["content"]（无则取整个 payload 的 JSON 摘要），
+// source=human、status=pending，等待 BatchEvaluate 审核。
+// 返回成功落库条数。
+func IngestCollectorEvents(events []CollectorEvent) (int, error) {
+	materials := make([]model.KbFeedbackMaterial, 0, len(events))
+	for _, ev := range events {
+		var content string
+		if ev.Payload != nil {
+			if s, ok := ev.Payload["content"].(string); ok && s != "" {
+				content = AnonymizeText(s) // 落库沿用脱敏规则
+			} else {
+				b, err := json.Marshal(ev.Payload)
+				if err == nil {
+					content = AnonymizeText(string(b))
+				}
+			}
+		}
+		if content == "" {
+			continue
+		}
+		materials = append(materials, model.KbFeedbackMaterial{
+			TenantID: ev.TenantID,
+			Source:   "human",
+			Content:  content,
+			Status:   "pending",
+		})
+	}
+	if len(materials) == 0 {
+		return 0, nil
+	}
+	if err := db.DB.Create(&materials).Error; err != nil {
+		return 0, err
+	}
+	return len(materials), nil
 }
 
 // Collect 上报一条脱敏事件（Kind + 租户 + 载荷）；载荷内PII自动脱敏
@@ -124,15 +165,36 @@ func (bc *batchCollector) flush() {
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[Collector] 上报失败(将丢弃批次): %v", err)
+		// P2-48 修复(2026-09-09)：原失败整批丢弃+无退避。改为回挂一次到队尾（保序不丢），
+		// 下次 flush 重试；若已重试过仍失败则放弃，避免无限堆积。加退避抑制风暴。
+		log.Printf("[Collector] 上报失败(将回挂重试): %v", err)
+		bc.requeue(batch)
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		log.Printf("[Collector] 上报返回非成功码 %d", resp.StatusCode)
+		log.Printf("[Collector] 上报返回非成功码 %d，回挂重试", resp.StatusCode)
+		bc.requeue(batch)
 		return
 	}
 	log.Printf("[Collector] 已上报 %d 条事件 → %s", len(batch), config.GlobalConfig.Collector.URL)
+}
+
+// requeue 失败批次回挂到缓冲（P2-48），带退避窗口：连续失败间隔拉长，抑制重试风暴
+func (bc *batchCollector) requeue(batch []CollectorEvent) {
+	now := time.Now()
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+	// 退避：距上次失败 < 10s 时本轮不再重试（留到下一周期）
+	if !bc.lastFailAt.IsZero() && now.Sub(bc.lastFailAt) < 10*time.Second {
+		return
+	}
+	bc.lastFailAt = now
+	bc.buf = append(batch, bc.buf...) // 回挂到队首，保持原始顺序（原 buf 已清空）
+	if len(bc.buf) > 500 {
+		// 防御：积压超 500 条丢弃最旧，防止内存膨胀
+		bc.buf = bc.buf[len(bc.buf)-500:]
+	}
 }
 
 // StartCollector 启动周期 flush（main.go 调用；URL 空时为空转）

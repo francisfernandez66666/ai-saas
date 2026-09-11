@@ -23,6 +23,14 @@ ADMIN_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: applicati
   -d '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
 AH="Authorization: Bearer $ADMIN_TOKEN"
 [ -n "$ADMIN_TOKEN" ] && check "超管登录" y y || check "超管登录" y n
+
+# G-4 修复：trap EXIT 确保配置恢复——原手动恢复在脚本中断/失败时不执行，
+# 邮箱验证/pay_mode/token双开关/注册限流等开关残留为脏状态影响运行中的服务。
+# 先读取原值，EXIT 时统一恢复。
+orign(){ curl -s "$B/api/v1/admin/config?category=$1" -H "$AH" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['value'] for x in d.get('data',[]) if x['key']=='$2'),'$3'))" 2>/dev/null || echo "$3"; }
+OE=$(orign notify email_verify_enabled true); OPL=$(orign notify pay_mode '"mock"'); OTB=$(orign billing token_billing_enabled false); OBE=$(orign billing billing_enforced false); OIL=$(orign billing register_ip_daily_limit 3); OII=$(orign billing register_ip_min_interval_sec 60)
+trap 'curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$OE\"},{\"category\":\"notify\",\"key\":\"pay_mode\",\"value\":$OPL},{\"category\":\"billing\",\"key\":\"token_billing_enabled\",\"value\":\"$OTB\"},{\"category\":\"billing\",\"key\":\"billing_enforced\",\"value\":\"$OBE\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$OIL\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$OII\"}]" >/dev/null; echo "  [trap] 已恢复全部开关"' EXIT
+
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
   -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"1000"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]' >/dev/null
 

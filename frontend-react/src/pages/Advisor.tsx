@@ -4,8 +4,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { Button, Dialog, Input, Textarea, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { AUTH, getToken } from '../lib/api'
+import { AUTH, getToken, logoutAndRedirect } from '../lib/api'
 import { useAdvisorWS } from '../lib/realtime'
+import { collectFreshMessages } from '../lib/chat'
 import { Msg, Cust, Detail } from '../types'
 
 // 顾问工作台接口前缀
@@ -49,6 +50,8 @@ export default function Advisor() {
   const [fbOpen, setFbOpen] = useState(false)
   const [fbText, setFbText] = useState('')
   const chatRef = useRef<HTMLDivElement>(null)
+  // P2-84 修复：已展示消息 ID 集合——轮询从"全量替换"改"只追加新消息"（对齐 Client 已修语义）
+  const localIds = useRef<Set<string>>(new Set())
 
   // 加载工作台统计：今日线索/意向客户等汇总数字
   const loadStats = async () => { const j = await AUTH(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
@@ -73,7 +76,15 @@ export default function Advisor() {
     loadChat(id); loadTestDrives(id)
   }
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
-  async function loadChat(id: number) { const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50'); if (j.code === 0) setMsgs(j.data || []) }
+  // P2-84 修复：打开详情时重置 ID 集合并全量替换；WS/轮询增量时只追加新消息
+  async function loadChat(id: number) {
+    const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50')
+    if (j.code === 0) {
+      const arr = j.data || []
+      localIds.current = new Set(arr.map((m: Msg) => String(m.id)))
+      setMsgs(arr)
+    }
+  }
   // 拉取客户试驾单列表
   async function loadTestDrives(id: number) { const j = await AUTH(API + '/test-drives?customer_id=' + id); setTestDrives(j.data || []) }
   // 人工发送消息：调用顾问端 chat/send 接口，成功后追加到本地消息列表
@@ -107,9 +118,16 @@ export default function Advisor() {
     if (j.code === 0) { MessagePlugin.success('已提交'); setFbOpen(false); setFbText('') } else MessagePlugin.error(j.message || '提交失败')
   }
   // 详情轮询新消息：打开某客户后每 5s 拉一次聊天记录，保持与 AI/客户消息同步
+  // P2-84 修复：只追加新消息（collectFreshMessages 按 ID 去重），不再 setMsgs 全量替换
   useEffect(() => {
     if (detailId == null) return
-    const t = setInterval(async () => { const j = await AUTH('/api/v1/chat/history?customer_id=' + detailId + '&limit=50'); if (j.code === 0) setMsgs(j.data || []) }, 5000)
+    const t = setInterval(async () => {
+      const j = await AUTH('/api/v1/chat/history?customer_id=' + detailId + '&limit=50')
+      if (j.code === 0) {
+        const fresh = collectFreshMessages((j.data || []) as Msg[], localIds.current)
+        if (fresh.length > 0) setMsgs((m) => [...m, ...fresh])
+      }
+    }, 5000)
     return () => clearInterval(t)
   }, [detailId])
 
@@ -126,7 +144,8 @@ export default function Advisor() {
     <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f5f7fa', color: '#2d3748' }}>
       <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', fontSize: 16, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span>{brand.brandName} · 顾问工作台</span>
-        <button onClick={() => { localStorage.clear(); location.href = '/login' }} style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>退出</button>
+        {/* G-20：aria-label 标注退出按钮，辅助技术可识别操作意图 */}
+        <button onClick={logoutAndRedirect} aria-label="退出登录" style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>退出</button>
       </header>
 
       {view === 'home' && (
@@ -182,9 +201,11 @@ export default function Advisor() {
       {detailId != null && view === 'home' && (
         <div style={{ position: 'fixed', inset: 0, background: '#f5f7fa', zIndex: 20, maxWidth: 480, margin: '0 auto' }}>
           <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <button onClick={() => setDetailId(null)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: 16 }}>←</button>
+            {/* G-20：aria-label 标注返回按钮，辅助技术可识别导航操作 */}
+            <button onClick={() => setDetailId(null)} aria-label="返回客户列表" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 16 }}>←</button>
             <span style={{ fontWeight: 600 }}>{H(c?.name)}</span>
-            <button onClick={() => setEditOpen(true)} style={{ background: 'none', border: 'none', color: '#fff', fontSize: 13 }}>编辑</button>
+            {/* G-20：aria-label 标注编辑按钮，辅助技术可识别操作意图 */}
+            <button onClick={() => setEditOpen(true)} aria-label="编辑客户资料" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 13 }}>编辑</button>
           </header>
           <div style={{ padding: 12, overflowY: 'auto', height: 'calc(100vh - 110px)' }}>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
@@ -204,7 +225,8 @@ export default function Advisor() {
             <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <b style={{ fontSize: 13 }}>聊天记录</b>
-                <span onClick={toggleAI} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>🤖 AI{aiOn ? '开' : '关'}</span>
+                {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
+                <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭AI自动回复' : '开启AI自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>🤖 AI{aiOn ? '开' : '关'}</span>
               </div>
               <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {msgs.map((m, i) => <div key={i} style={{ alignSelf: m.sender_type === 'human' ? 'flex-end' : 'flex-start', background: m.sender_type === 'human' ? 'var(--pri)' : m.sender_type === 'ai' ? '#ecfdf5' : '#f1f5f9', color: m.sender_type === 'human' ? '#fff' : '#1f2937', padding: '8px 12px', borderRadius: 10, maxWidth: '80%', fontSize: 13 }}>{m.content}</div>)}
@@ -212,14 +234,17 @@ export default function Advisor() {
             </div>
           </div>
           <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', padding: 10, display: 'flex', gap: 8 }}>
-            <Input value={input} onChange={(v) => setInput(v)} placeholder="输入消息…" onEnter={send} style={{ flex: 1 }} />
-            <Button theme="primary" onClick={send}>发送</Button>
+            {/* G-20：顾问消息输入框 aria-label 供屏幕阅读器识别 */}
+            <Input value={input} onChange={(v) => setInput(v)} placeholder="输入消息…" aria-label="顾问消息输入框" onEnter={send} style={{ flex: 1 }} />
+            {/* G-20：发送按钮 aria-label 标注操作意图 */}
+            <Button theme="primary" onClick={send} aria-label="发送消息">发送</Button>
           </div>
         </div>
       )}
 
-      <nav style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
-        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); setDetailId(null) }} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
+      {/* G-20：底部导航栏 aria-label 标注导航用途，aria-current 标记当前激活页签 */}
+      <nav aria-label="顾问工作台导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
+        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
       </nav>
 
       <Dialog header="编辑客户资料" visible={editOpen} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} confirmBtn="保存">

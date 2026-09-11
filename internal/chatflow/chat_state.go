@@ -53,25 +53,6 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 	return since > timeout
 }
 
-// getPendingHandoverMessage 获取软接管承接话术
-// 用户侧无感知，永远不说"转接销售"，而是用一些自然的承接话术
-// 随机选一句，让对话更自然
-func getPendingHandoverMessage() string {
-	承接话术语录 := []string{
-		"好的，我帮您详细看看~",
-		"您稍等，我确认一下最新政策",
-		"好的，我帮您查一下具体信息哈",
-		"明白，我帮您核实一下",
-		"好的好的，我来帮您看看",
-		"您说的这个我帮您确认下哈",
-		"收到，我帮您理一理",
-		"好的，我仔细给您分析一下",
-	}
-	// 简单随机（基于时间戳）
-	idx := int(time.Now().UnixNano()) % len(承接话术语录)
-	return 承接话术语录[idx]
-}
-
 // UpdateConversationState 更新会话状态
 // 根据本轮对话结果，更新会话状态S
 func UpdateConversationState(

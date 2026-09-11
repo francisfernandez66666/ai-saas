@@ -1,1 +1,7 @@
-[]
+[
+  {"id": "tag_new_customer", "name": "新客户", "category": "客户阶段", "color": "#1890ff"},
+  {"id": "tag_test_drive", "name": "已试驾", "category": "客户阶段", "color": "#52c41a"},
+  {"id": "tag_price_sensitive", "name": "价格敏感", "category": "客户特征", "color": "#faad14"},
+  {"id": "tag_first_buyer", "name": "首次购车", "category": "客户特征", "color": "#722ed1"},
+  {"id": "tag_replace_buyer", "name": "换车升级", "category": "客户特征", "color": "#13c2c2"}
+]

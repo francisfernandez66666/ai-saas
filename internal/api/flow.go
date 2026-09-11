@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,15 +22,19 @@ import (
 
 // GetFlowList 获取当前租户的流程定义列表
 // 按ID降序返回，包含所有状态的流程定义（草稿/已发布/已归档）
+// P2-29 修复(2026-09-09)：加统一分页，防拖全表
 func GetFlowList(c *gin.Context) {
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
+	if page <= 0 {
+		page = 1
+	}
+	var total int64
+	db.PQ(c).Model(&model.FlowDefinition{}).Count(&total)
 	var flows []model.FlowDefinition
-	db.PQ(c).Order("id DESC").Find(&flows)
+	db.PQ(c).Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&flows)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    flows,
-	})
+	RespOK(c, "success", gin.H{"list": flows, "total": total, "page": page, "page_size": pageSize})
 }
 
 // GetFlow 获取单个流程定义详情
@@ -43,15 +48,11 @@ func GetFlow(c *gin.Context) {
 	var flowDef model.FlowDefinition
 	result := db.PQ(c).First(&flowDef, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "流程不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "流程不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    flowDef,
-	})
+	RespOK(c, "success", flowDef)
 }
 
 // StartFlow 启动一个新流程实例
@@ -60,8 +61,21 @@ func GetFlow(c *gin.Context) {
 func StartFlow(c *gin.Context) {
 	var req schema.FlowStartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
+	}
+
+	// P2-31 修复：校验 CustomerID 存在且在本租户数据范围内（防越权驱动他租户/他人客户流程）
+	if req.CustomerID > 0 {
+		var cust model.Customer
+		if err := db.RQ(c).First(&cust, req.CustomerID).Error; err != nil {
+			RespErr(c, http.StatusNotFound, 404, "客户不存在或不在您数据范围内")
+			return
+		}
+		if !canOperateCustomer(c, cust.AssignedUserID) {
+			RespErr(c, http.StatusNotFound, 404, "客户不存在或不在您数据范围内")
+			return
+		}
 	}
 
 	// 构建流程上下文，携带租户/客户/会话等运行时信息
@@ -74,19 +88,11 @@ func StartFlow(c *gin.Context) {
 
 	instance, err := flow.DefaultEngine.StartFlow(req.FlowCode, flowCtx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{
-			Code:    500,
-			Message: "启动流程失败: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "启动流程失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "流程已启动",
-		Data:    instance,
-	})
+	RespOK(c, "流程已启动", instance)
 }
 
 // AdvanceFlow 推进流程到下一个节点
@@ -95,30 +101,30 @@ func StartFlow(c *gin.Context) {
 func AdvanceFlow(c *gin.Context) {
 	var req schema.FlowAdvanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+
+	// P2-31 修复：校验流程实例属于本租户（防跨租户推动他租户实例）
+	tid := db.EffectiveTenantIDFromGin(c)
+	var inst model.FlowInstance
+	if err := db.PQ(c).First(&inst, req.InstanceID).Error; err != nil || inst.TenantID != tid {
+		RespErr(c, http.StatusNotFound, 404, "流程实例不存在")
 		return
 	}
 
 	flowCtx := &flow.FlowContext{
-		TenantID:    db.EffectiveTenantIDFromGin(c),
+		TenantID:    tid,
 		RouteResult: req.Route,
 	}
 
 	instance, err := flow.DefaultEngine.AdvanceFlow(req.InstanceID, req.Route, flowCtx)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{
-			Code:    500,
-			Message: "推进流程失败: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "推进流程失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "流程已推进",
-		Data:    instance,
-	})
+	RespOK(c, "流程已推进", instance)
 }
 
 // GetFlowInstance 获取单个流程实例详情
@@ -132,15 +138,11 @@ func GetFlowInstance(c *gin.Context) {
 	var instance model.FlowInstance
 	result := db.PQ(c).First(&instance, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "流程实例不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "流程实例不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    instance,
-	})
+	RespOK(c, "success", instance)
 }
 
 // GetFlowInstanceList 获取当前租户的流程实例列表
@@ -149,9 +151,5 @@ func GetFlowInstanceList(c *gin.Context) {
 	var instances []model.FlowInstance
 	db.PQ(c).Order("id DESC").Limit(100).Find(&instances)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    instances,
-	})
+	RespOK(c, "success", instances)
 }

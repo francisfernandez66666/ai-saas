@@ -12,6 +12,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 
+	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -55,6 +56,14 @@ func SuperTenantList(c *gin.Context) {
 		MaxCustomers  int     `json:"max_customers"`  // 客户数上限
 		CreatedAt     string  `json:"created_at"`     // 创建时间
 	}
+	// P2-29 修复(2026-09-09)：原 Limit(500) 拖全表分页缺失；改分页+总数
+	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
+	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
+	if page <= 0 {
+		page = 1
+	}
+	var total int64
+	db.DB.Table("tenants t").Count(&total)
 	rows := []row{}
 	err := db.DB.Table("tenants t").
 		Select(`t.id, t.name, t.code, t.tier, t.status,
@@ -62,12 +71,12 @@ func SuperTenantList(c *gin.Context) {
 			t.used_customers, t.max_customers,
 			TO_CHAR(t.created_at,'YYYY-MM-DD') as created_at`).
 		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id").
-		Order("t.id ASC").Limit(500).Scan(&rows).Error
+		Order("t.id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
 	}
-	RespOK(c, "", rows)
+	RespOK(c, "", gin.H{"list": rows, "total": total, "page": page, "page_size": pageSize})
 }
 
 // SuperTenantStatus 超管修改租户状态

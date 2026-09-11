@@ -21,11 +21,14 @@ import (
 func GetCustomerList(c *gin.Context) {
 	var req schema.CustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
 	query := db.RQ(c).Model(&model.Customer{})
+	// P1-7 修复(2026-09-09)：接入四级数据范围（销售只见名下/部门子树客户），
+	// 对齐 advisor 组 customerInDataScope 语义，杜绝普通销售翻全租户客户（含未分配访客手机号）
+	query = query.Scopes(db.DataScope(c))
 
 	// 关键词搜索
 	if req.Keyword != "" {
@@ -59,41 +62,43 @@ func GetCustomerList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&customers)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.PageResponse{
-			Total:    total,
-			Page:     req.Page,
-			PageSize: req.PageSize,
-			List:     customers,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total:    total,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+		List:     customers,
 	})
 }
 
 // GetCustomer 获取客户详情
 func GetCustomer(c *gin.Context) {
-	id := c.Param("id")
+	// P2-28 修复：非数字 id 直打 PG 触发 22P02→500。统一 PathUintID 收口（非法→400）
+	id, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "客户ID非法")
+		return
+	}
 
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// P1-7 修复：详情接入四级数据范围（销售仅可见本人名下客户）
+	if !customerInDataScope(c, customer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    customer,
-	})
+	RespOK(c, "success", customer)
 }
 
 // CreateCustomer 创建客户
 func CreateCustomer(c *gin.Context) {
 	var req schema.CreateCustomerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -144,11 +149,7 @@ func CreateCustomer(c *gin.Context) {
 			var cnt int64
 			db.RQ(c).Model(&model.Customer{}).Count(&cnt)
 			if cnt >= int64(tenant.MaxCustomers) {
-				c.JSON(http.StatusForbidden, schema.Response{
-					Code:    403,
-					Message: "客户数已达套餐上限，请升级套餐",
-					Data:    nil,
-				})
+				RespErr(c, http.StatusForbidden, 403, "客户数已达套餐上限，请升级套餐")
 				return
 			}
 		}
@@ -160,31 +161,37 @@ func CreateCustomer(c *gin.Context) {
 
 	result := db.RQ(c).Create(customer)
 	if result.Error != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + result.Error.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+result.Error.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "创建成功",
-		Data:    customer,
-	})
+	RespOK(c, "创建成功", customer)
 }
 
 // UpdateCustomer 更新客户信息
 func UpdateCustomer(c *gin.Context) {
-	id := c.Param("id")
+	// P2-28 修复：非数字 id 直打 PG 22P02→500。统一 PathUintID
+	id, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "客户ID非法")
+		return
+	}
 
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// P1-7 修复(2026-09-09)：写操作接入四级数据范围（销售仅可改本人名下客户）
+	if !canOperateCustomer(c, customer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
 	var req schema.UpdateCustomerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -244,21 +251,27 @@ func UpdateCustomer(c *gin.Context) {
 
 	db.RQ(c).Save(&customer)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "更新成功",
-		Data:    customer,
-	})
+	RespOK(c, "更新成功", customer)
 }
 
 // DeleteCustomer 删除客户
 func DeleteCustomer(c *gin.Context) {
-	id := c.Param("id")
+	// P2-28 修复：非数字 id 直打 PG 22P02→500。统一 PathUintID
+	id, ok := PathUintID(c)
+	if !ok {
+		RespErr(c, http.StatusBadRequest, 400, "客户ID非法")
+		return
+	}
 
 	var customer model.Customer
 	result := db.RQ(c).First(&customer, id)
 	if result.Error != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "客户不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// P1-7 修复：删除接入四级数据范围（销售仅可删本人名下客户）
+	if !canOperateCustomer(c, customer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
 
@@ -266,11 +279,7 @@ func DeleteCustomer(c *gin.Context) {
 	customer.Status = 0
 	db.RQ(c).Save(&customer)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "删除成功",
-		Data:    nil,
-	})
+	RespOK(c, "删除成功", nil)
 }
 
 // GetCustomerConversations 获取客户的会话列表
@@ -283,9 +292,5 @@ func GetCustomerConversations(c *gin.Context) {
 		Limit(50).
 		Find(&conversations)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    conversations,
-	})
+	RespOK(c, "success", conversations)
 }

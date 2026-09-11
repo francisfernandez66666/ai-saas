@@ -19,6 +19,10 @@ type KbListResp = { list: KbMaterial[]; total: number; page: number; page_size: 
  * 4. 账号注销：输入密码确认 → 次日零点停用（数据保留）
  */
 export default function AppSettings() {
+  // P1-42(2026-09-09)：企业知识库管理/账号注销接口须管理员权限——
+  // 成员角色(sales/user)进入 /app/settings 不应 403 白屏：改密/换绑邮箱全员可用，
+  // KB 管理区块仅管理员展示
+  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(localStorage.getItem('role') || '')
   // 是否为首次登录强制改密模式
   const [must, setMust] = useState(false)
   // 改密相关状态
@@ -44,8 +48,8 @@ export default function AppSettings() {
       const p = new URLSearchParams(window.location.search)
       if (p.get('must') === '1') setMust(true)
     }
-    // 加载企业知识库列表
-    loadKb()
+    // 加载企业知识库列表（P1-42：仅管理员角色可查，sale 不触发 403）
+    if (isAdmin) loadKb()
   }, [])
 
   /**
@@ -150,8 +154,8 @@ export default function AppSettings() {
         {emMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{emMsg}</p>}
       </div>
 
-      {/* 企业知识库模块 */}
-      <div style={card}>
+      {/* 企业知识库模块（P1-42：仅管理员展示，成员角色不触发 403） */}
+      {isAdmin && <div style={card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>我的企业知识库</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>上传产品/企业资料，AI 对话自动融合检索（租户层优先）</p>
         <label style={labelStyle}>标题</label><input placeholder="如：售后政策" value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
@@ -163,16 +167,16 @@ export default function AppSettings() {
             <li key={f.id} style={{ margin: '6px 0' }}>{f.title} <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>删除</a></li>
           ))}
         </ul>
-      </div>
+      </div>}
 
-      {/* 账号注销模块 */}
-      <div style={{ ...card, border: '1px solid #fecaca' }}>
+      {/* 账号注销模块（P1-42：仅管理员展示；成员角色无此权限） */}
+      {isAdmin && <div style={{ ...card, border: '1px solid #fecaca' }}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16, color: '#ef4444' }}>⚠️ 账号注销</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>今日内仍可登录，明日零点起停用；数据保留不删除；名下 API Key 同步禁用。</p>
         <label style={labelStyle}>输入登录密码确认</label><input type="password" value={cancelPwd} onChange={(e) => setCancelPwd(e.target.value)} style={inputStyle} />
         <button onClick={cancelAccount} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer' }}>申请注销</button>
         {cMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{cMsg}</p>}
-      </div>
+      </div>}
     </div>
   )
 }

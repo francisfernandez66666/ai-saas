@@ -1,8 +1,10 @@
-// 消息合并队列：25s 滑动窗口/batchID 防跨批/processing 锁 90s 自愈，多实例 Redis 协调。
+// 消息合并队列：25s 滑动窗口/batchID 防跨批/processing 锁 600s 自愈，多实例 Redis 协调。
 package service
 
 import (
 	"ai-scrm/config"
+	"ai-scrm/internal/db"
+	"ai-scrm/internal/model"
 	"ai-scrm/internal/redisclient"
 	"fmt"
 	"log"
@@ -52,6 +54,7 @@ type CustomerQueue struct {
 	simpleProcessing    bool                    // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
 	deadlineExpired     bool                    // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
 	currentBatch        uint64                  // 当前批次ID，每次新批次递增，防止跨批次消息混合
+	epoch               uint64                  // P1-19：处理代际号，每次处理者接管递增；SetReply 校验代际防旧处理者践踏新批次
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
 	redisLock           *redisclient.LockHandle // 跨实例分布式锁句柄（Redis模式处理者持有）
 	lastActivity        time.Time               // 最近活跃时间（空闲队列回收依据，2026-09-09）
@@ -148,7 +151,7 @@ func (s *MessageQueueService) getQueue(key string) *CustomerQueue {
 // SweepIdleQueues 巡检删除长时间空闲的客户队列（2026-09-09 内存治理）。
 // 背景：queues map 只增不删，长跑后内存随客户数单调增长。
 // 规则：最近 idleTimeout 内无任何活跃 且 不在 processing/simpleProcessing 中 且 无积压待合并消息
-// 的队列直接移除；正在处理的队列即便超时也保留（processing 锁 90s/600s 自愈逻辑负责，不能误删）。
+// 的队列直接移除；正在处理的队列即便超时也保留（processing 锁 600s 自愈逻辑负责，不能误删）。
 // 返回本次清理的队列数。由后台定时任务周期调用（如每 60s）。
 func (s *MessageQueueService) SweepIdleQueues(idleTimeout time.Duration) int {
 	s.mu.Lock()
@@ -175,13 +178,14 @@ func (s *MessageQueueService) SweepIdleQueues(idleTimeout time.Duration) int {
 // 返回值：mergedContent 合并后的消息内容, shouldProcess 是否由本请求负责生成回复,
 //
 //	reply 如果是后续请求直接取回复则有值, mergeWaitDuration 合并窗口实际等待时长（供AI延迟偏移使用）
+//	epoch P1-19：本请求持有的处理代际号（shouldProcess=true 时有效，SetReply 须携带作 fencing 校验）
 //
 // 四种情况：
 //  1. 简单消息（"在吗"/"那我撤了"等）→ 跳过合并，shouldProcess=true, isSimple=true，调用方走快速回复
-//  2. 第一个拿到处理权 → shouldProcess=true, 调用方生成回复后调用 SetReply()，mergeWaitDuration有值
+//  2. 第一个拿到处理权 → shouldProcess=true, 调用方生成回复后调用 SetReply(epoch)，mergeWaitDuration有值
 //  3. 合并窗口内的后续消息 → shouldProcess=false, 立刻返回合并状态（Bug1修复后不再等AI回复）
 //  4. 超过合并上限的积压消息 → 等前面处理完，自己成为下一批的第一个
-func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, content string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int) {
+func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, content string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int, epoch uint64) {
 	k := queueKey(tenantID, customerID)
 
 	// 简单消息快速通道（不合并、不等窗口；跨实例也不需要协调——它本来就不进批次）
@@ -189,13 +193,27 @@ func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, con
 		// H7修复(2026-08-26)：实例内同客户简单消息串行，防止并发乱序/重复回复
 		q := s.getQueue(k)
 		q.mu.Lock()
+		// P0-3 修复：简单消息等待段若 panic 不释放锁会导致该客户队列永久死锁，recover 兜底
+		locked := true
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[合并队列] 客户%s 简单消息路径 panic 已恢复: %v", k, r)
+				q.simpleProcessing = false
+				q.cond.Broadcast()
+				if locked {
+					q.mu.Unlock()
+				}
+				panic(r)
+			}
+		}()
 		for q.simpleProcessing {
 			q.cond.Wait()
 		}
 		q.simpleProcessing = true
+		locked = false
 		q.mu.Unlock()
 		log.Printf("[合并队列] 客户%s 简单消息快速通道: %q", k, content)
-		return content, true, "", 0, true, 1
+		return content, true, "", 0, true, 1, 0
 	}
 
 	// 多实例模式：Redis 分布式锁裁决谁做处理者
@@ -223,16 +241,32 @@ func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, con
 
 // processLocally 本地处理路径（原有单机逻辑，含超时自愈/批次/积压）
 // appendOwn=false 用于"接管"场景：本消息已在 Redis 待合并列表里，由 absorb 收回，避免重复
-func (s *MessageQueueService) processLocally(k string, content string, appendOwn bool) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int) {
+// P1-19：返回值末尾增加 epoch（处理代际号），调用方生成回复后须携带该代际调 SetReply
+func (s *MessageQueueService) processLocally(k string, content string, appendOwn bool) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int, epoch uint64) {
 	q := s.getQueue(k)
 
 	q.mu.Lock()
+	locked := true
+	// P0-3 修复(2026-09-09)：持锁段 panic 不永久死锁——解锁+清状态+广播后重抛（gin recovery 返回 500，请求不挂死）
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[合并队列] 客户%s processLocally panic 已恢复并释放队列锁: %v", k, r)
+			q.processing = false
+			q.simpleProcessing = false
+			q.deadlineExpired = false
+			q.cond.Broadcast()
+			if locked {
+				q.mu.Unlock()
+			}
+			panic(r)
+		}
+	}()
 
 	// 修复：processing锁超时自愈
 	// 根因：用户11:13发消息，11:22才收到回复（9分钟），远超2分钟硬顶
 	// 如果前一个请求的goroutine卡死（Cloudflare连接断开但sleep未结束），
 	// processing锁会一直被持有，新请求无限等待
-	// 超过90秒强制释放+清除残留消息，新请求接管
+	// 超过 processing_lock_timeout（默认600s）强制释放+清除残留消息，新请求接管
 	if q.processing && !q.processingStartedAt.IsZero() && time.Since(q.processingStartedAt) > getProcessingLockTimeout(tidFromKey(k)) {
 		log.Printf("[合并队列] 客户%s processing锁超时(%.1fs)，强制释放，清除残留消息",
 			k, time.Since(q.processingStartedAt).Seconds())
@@ -244,9 +278,17 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 			q.redisLock = nil
 		}
 		// 清除超时批次的残留消息（它们的batchID与下批不同，不会被取走）
+		// P0-3 修复：仅清理属于当前超时批次的残留，保留 BatchID==0 的积压消息（下一批候选），
+		// 否则积压等待者苏醒后用陈旧 msgIdx 索引 q.pending 会 panic（index out of range）且锁永不释放
 		if len(q.pending) > 0 {
-			log.Printf("[合并队列] 客户%s 清除%d条超时批次残留消息", k, len(q.pending))
-			q.pending = q.pending[:0]
+			kept := q.pending[:0]
+			for _, m := range q.pending {
+				if m.BatchID != q.currentBatch {
+					kept = append(kept, m)
+				}
+			}
+			q.pending = kept
+			log.Printf("[合并队列] 客户%s 清除超时批次残留消息，保留积压 %d 条", k, len(q.pending))
 		}
 		q.cond.Broadcast()
 	}
@@ -266,6 +308,7 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	if !q.processing {
 		q.processing = true
 		q.currentBatch++                   // 新批次，递增batchID
+		q.epoch++                          // P1-19：代际递增，本批次持代返回给调用方做 SetReply 校验
 		q.processingStartedAt = time.Now() // 记录处理开始时间，用于超时检测
 		q.mergeCount = 1
 		q.lastReply = ""
@@ -273,14 +316,22 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 		if msgIdx >= 0 {
 			q.pending[msgIdx].BatchID = q.currentBatch // 标记消息所属批次
 		}
+		locked = false
+		myEpoch := q.epoch
+		completedBatch := q.currentBatch
 		q.mu.Unlock()
 
-		log.Printf("[合并队列] 客户%s 拿到处理权(批次%d)，开始合并窗口等待: %q", k, q.currentBatch, content)
+		log.Printf("[合并队列] 客户%s 拿到处理权(批次%d,代%d)，开始合并窗口等待: %q", k, completedBatch, myEpoch, content)
 
 		// 事件驱动合并等待（滑动窗口），返回合并内容+实际等待时长
 		merged, waitDuration := s.waitForMerge(q, k)
-		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q", k, q.currentBatch, q.mergeCount, waitDuration.Seconds(), merged)
-		return merged, true, "", waitDuration, false, q.mergeCount
+		// P2-36 修复(2026-09-09)：waitForMerge 解耦后 q.currentBatch/q.mergeCount 可能已被并发写入，
+		// 读取需重新加锁快照——否则 -race 报数据竞争（解锁后读受锁保护字段）。
+		q.mu.Lock()
+		finalBatch, finalCount := q.currentBatch, q.mergeCount
+		q.mu.Unlock()
+		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q", k, finalBatch, finalCount, waitDuration.Seconds(), merged)
+		return merged, true, "", waitDuration, false, finalCount, myEpoch
 	}
 
 	// 已经在处理中了，检查是否还能合并进当前批次
@@ -299,8 +350,9 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 			q.cond.Wait()
 		}
 		reply = q.lastReply
+		locked = false
 		q.mu.Unlock()
-		return "", false, reply, 0, false, q.mergeCount
+		return "", false, reply, 0, false, q.mergeCount, 0
 	}
 
 	// 超过合并上限，积压队列——这是下一批的第一个
@@ -312,18 +364,37 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	// 当前批次完成了，本消息成为下一批的第一个
 	q.processing = true
 	q.currentBatch++ // 新批次
+	q.epoch++        // P1-19：积压接管同样递增代际
 	q.processingStartedAt = time.Now()
-	q.mergeCount = 1
+	q.mergeCount = 0
 	q.lastReply = ""
 	q.deadlineExpired = false
-	if msgIdx >= 0 {
-		q.pending[msgIdx].BatchID = q.currentBatch
+	// P0-3 修复：不再依赖入队时的 msgIdx（自愈清残留后索引位置可能漂移导致 panic），
+	// 改为把本消息与所有仍积压(BatchID==0)的消息统一纳入新批次，语义等价且索引安全
+	inBatch := false
+	for i := range q.pending {
+		if q.pending[i].BatchID == 0 {
+			q.pending[i].BatchID = q.currentBatch
+			q.mergeCount++
+			inBatch = true
+		}
 	}
+	if !inBatch {
+		// 防御：本消息理论上已在 pending 中，若因极端自愈时序丢失则补入
+		q.pending = append(q.pending, PendingMessage{
+			Content:    content,
+			ReceivedAt: time.Now(),
+			BatchID:    q.currentBatch,
+		})
+		q.mergeCount = 1
+	}
+	locked = false
+	myEpoch := q.epoch
 	q.mu.Unlock()
 
-	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d): %q", k, q.currentBatch, content)
+	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q", k, q.currentBatch, myEpoch, q.mergeCount, content)
 	merged, waitDuration := s.waitForMerge(q, k)
-	return merged, true, "", waitDuration, false, q.mergeCount
+	return merged, true, "", waitDuration, false, q.mergeCount, myEpoch
 }
 
 // waitRemotely 远程等待路径（本实例未抢到锁，消息转交处理者实例）
@@ -334,7 +405,7 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 //
 // 已知边界：若消息到达时批次已满被"退回"，会随下一批处理，但本请求可能拿到
 // 上一批的回复体（前端聊天记录为准，影响极小）；单实例模式无此问题
-func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, content string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int) {
+func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, content string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int, epoch uint64) {
 	k := queueKey(tenantID, customerID)
 	lockKey := "mq:lock:" + k
 
@@ -347,7 +418,8 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 	}
 
 	// 消息转交处理者实例
-	redisclient.LPush("mq:pending:"+k, content)
+	// P1-41 缺口③：RPush 保 FIFO——LPush 时 DrainList 取出是 LIFO，合并顺序颠倒
+	redisclient.RPush("mq:pending:"+k, content)
 	log.Printf("[合并队列] 客户%s 消息转交其他实例处理: %q", k, content)
 
 	deadline := time.Now().Add(getProcessingLockTimeout(tidFromKey(k)))
@@ -359,7 +431,7 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > curSeq {
 				if r, ok := redisclient.Get(fmt.Sprintf("mq:reply:%s:%d", k, n)); ok && r != "" {
 					log.Printf("[合并队列] 客户%s 远程回复已取到(序号%d)", k, n)
-					return "", false, r, 0, false, 1
+					return "", false, r, 0, false, 1, 0
 				}
 			}
 		}
@@ -381,9 +453,34 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 		return s.processLocally(k, content, false)
 	}
 
-	// 极端场景：锁被别的实例抢先拿走但仍无回复——本地兜底处理（对齐旧版强制自愈语义）
-	log.Printf("[合并队列] 客户%s 远程等待超时且拿锁失败，本地兜底处理", k)
-	return s.processLocally(k, content, true)
+	// P2-38 修复(2026-09-09)：极端场景——锁被别的实例抢先拿走但仍无回复。
+	// 原逻辑"本地兜底处理"会再生成一遍 AI 回复 → 跨实例双回复+双计费。
+	// 改为落一条降级提示，不让客户端空等，也绝不再触发第二次 AI 调用。
+	log.Printf("[合并队列] 客户%s 远程等待超时且拿锁失败，落降级提示（不重复生成AI回复）", k)
+	s.WriteDegradedNotice(tenantID, customerID, "系统繁忙，请稍等片刻再试一次")
+	return content, false, "", 0, false, 1, 0
+}
+
+// WriteDegradedNotice 向客户最新会话落一条降级提示消息（P2-38）
+// 仅在极端超时兜底路径调用；带租户过滤查最新活跃会话，避免空等也避免二次计费。
+func (s *MessageQueueService) WriteDegradedNotice(tenantID, customerID uint, notice string) {
+	var conv model.Conversation
+	if err := db.DB.Where("tenant_id = ? AND customer_id = ? AND status = 'active'", tenantID, customerID).
+		Order("updated_at DESC").First(&conv).Error; err != nil {
+		log.Printf("[合并队列] 降级提示未找到活跃会话(tenant=%d customer=%d): %v", tenantID, customerID, err)
+		return
+	}
+	msg := model.Message{
+		ConversationID: conv.ID,
+		CustomerID:     customerID,
+		SenderType:     "system",
+		Content:        notice,
+		MessageType:    "text",
+		CreatedAt:      time.Now(),
+	}
+	if err := db.DB.Create(&msg).Error; err != nil {
+		log.Printf("[合并队列] 降级提示落库失败(conversation=%d): %v", conv.ID, err)
+	}
 }
 
 // absorbRemotePending 吸收其他实例经 Redis 转交来的消息（原子取出，防丢）
@@ -419,7 +516,8 @@ func (s *MessageQueueService) absorbRemotePending(k string, q *CustomerQueue) {
 
 	// 放回超额部分
 	for _, c := range leftover {
-		redisclient.LPush("mq:pending:"+k, c)
+		// P1-41 缺口③：放回同样 RPush 保原顺序（下一批经 DrainList 仍 FIFO）
+		redisclient.RPush("mq:pending:"+k, c)
 	}
 	if absorbed > 0 {
 		log.Printf("[合并队列] 客户%s 吸收其他实例转交消息 %d 条(批次%d)", k, absorbed, batch)
@@ -428,10 +526,12 @@ func (s *MessageQueueService) absorbRemotePending(k string, q *CustomerQueue) {
 
 // waitForMerge 事件驱动的合并等待（滑动窗口 + 条件变量信号）
 //
+// P3-18 修复：陈旧注释"45秒窗口"→ 实际实现 25 秒（配置键 merge_wait_seconds）。
+//
 // 对齐用户需求：
-//  1. 第一条消息到达 → 开启45秒合并窗口
-//  2. 45秒内没有其他消息 → 生成回复，延迟偏移里减去实际等待时间
-//  3. 45秒内有其他消息 → 重置45秒窗口（滑动窗口），继续等待
+//  1. 第一条消息到达 → 开启25秒合并窗口
+//  2. 25秒内没有其他消息 → 生成回复，延迟偏移里减去实际等待时间
+//  3. 25秒内有其他消息 → 重置25秒窗口（滑动窗口），继续等待
 //     - 新窗口内有消息 → 合并并生成回复，延迟偏移减去实际等待时间
 //     - 新窗口内没消息 → 生成回复，延迟偏移减去实际等待时间
 //  4. 达到3条上限 → 立刻退出窗口，直接生成回复，延迟偏移减去实际等待时间
@@ -440,7 +540,7 @@ func (s *MessageQueueService) absorbRemotePending(k string, q *CustomerQueue) {
 // 实现方式：用 sync.Cond + AfterFunc 定时器替代定时轮询
 //   - 新消息入队时 cond.Signal() 立刻唤醒主请求（事件驱动，不再9秒轮询）
 //   - 定时器到期时设置 deadlineExpired 标记 + cond.Broadcast() 唤醒
-//   - 每次被新消息唤醒后 Reset 定时器（滑动窗口：新消息重置45秒deadline）
+//   - 每次被新消息唤醒后 Reset 定时器（滑动窗口：新消息重置25秒deadline）
 //   - 返回实际等待时长 mergeWaitDuration，供AI延迟偏移使用
 //     （AI延迟 = 基础延迟 - 合并等待时间，最小为0，不会叠加）
 func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedContent string, mergeWaitDuration time.Duration) {
@@ -452,15 +552,34 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 	// 记录合并等待起始时间，用于计算延迟偏移
 	startTime := time.Now()
 
-	// 定时器：合并窗口到期时设置标记并广播唤醒主请求
-	// 每次收到新消息后 Reset 定时器（滑动窗口：新消息重置45秒deadline）
-	deadlineTimer := time.AfterFunc(mergeWindow, func() {
-		q.mu.Lock()
-		q.deadlineExpired = true
-		q.mu.Unlock()
-		q.cond.Broadcast()
-	})
-	defer deadlineTimer.Stop()
+	// P2-37 修复(2026-09-09)：滑动窗口定时器改"每轮重建 + stop 通道取消失效回调"。
+	// 原 time.AfterFunc + Reset 竞态：旧计时器回调若在 Reset 前后触发，会把
+	// deadlineExpired 置 true 而新窗口刚开启 → 合并窗口提前关闭。
+	// 新实现：每轮新消息关闭上一轮 stopCh 作废其回调，再新建一句式 AfterFunc；
+	// 回调持锁后先查 stopCh——已关闭则直接返回（旧窗口到期不误伤新窗口）。
+	armDeadline := func() (stop *chan struct{}) {
+		c := make(chan struct{})
+		time.AfterFunc(mergeWindow, func() {
+			q.mu.Lock()
+			defer q.mu.Unlock()
+			select {
+			case <-c:
+				return // 已被新窗口取代，作废本次到期
+			default:
+			}
+			q.deadlineExpired = true
+			q.cond.Broadcast()
+		})
+		return &c
+	}
+
+	// 首次开启合并窗口
+	deadlineStop := armDeadline()
+	defer func() {
+		if deadlineStop != nil {
+			close(*deadlineStop) // 退出时作废可能仍在飞的到期回调
+		}
+	}()
 
 	q.mu.Lock()
 	lastCheckedCount := q.mergeCount // 跟踪上次检查时的合并数，用于判断是否有新消息
@@ -482,7 +601,10 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 		// 新消息到达（mergeCount > lastCheckedCount）→ 清除到期标记 + 重置定时器（滑动窗口）
 		q.deadlineExpired = false
 		lastCheckedCount = q.mergeCount
-		deadlineTimer.Reset(mergeWindow) // 新消息重置45秒deadline
+		if deadlineStop != nil {
+			close(*deadlineStop) // 作废旧窗口的到期回调
+		}
+		deadlineStop = armDeadline() // 新窗口定时器重置
 
 		// 等待事件：新消息（cond.Signal）或窗口到期（cond.Broadcast）
 		q.cond.Wait() // 释放锁，挂起；唤醒后自动重新持有锁
@@ -528,18 +650,26 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 }
 
 // SetReply 设置回复结果，并唤醒所有等待的请求
-// 多实例：同时以 seq 协议发布到 Redis（其他实例的等待者轮询获取），最后释放分布式锁
-func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, reply string) {
+// P1-19 修复(2026-09-09)：新增 epoch 参数做代际 fencing——自愈清锁后原处理者若只是慢（600s+ 后返回），
+// 不可能持有当前代际号，其 SetReply 会被丢弃，杜绝旧处理者覆盖新批次状态/释放新处理者的 Redis 锁。
+// signature: SetReply(tenantID, customerID, epoch, reply)
+func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uint64, reply string) {
 	k := queueKey(tenantID, customerID)
 	q := s.getQueue(k)
 
 	q.mu.Lock()
+	// P1-19 代际 fencing：调用方持有的 epoch 与队列当前代际不符 → 旧处理者复活，丢弃
+	if epoch != 0 && epoch != q.epoch {
+		q.mu.Unlock()
+		log.Printf("[合并队列] 客户%s 收到过期 SetReply(代%d vs 当前代%d)，丢弃防踩踏", k, epoch, q.epoch)
+		return
+	}
 	h := q.redisLock
 	q.redisLock = nil
 	q.lastReply = reply
 	q.lastReplyAt = time.Now()
 	q.processing = false
-	log.Printf("[合并队列] 客户%s 回复已设置, 唤醒所有等待者, 回复前20字: %q", k, truncateStr(reply, 20))
+	log.Printf("[合并队列] 客户%s 回复已设置(代%d), 唤醒所有等待者, 回复前20字: %q", k, epoch, truncateStr(reply, 20))
 	// 唤醒所有等待的goroutine
 	q.cond.Broadcast()
 	q.mu.Unlock()
@@ -786,16 +916,21 @@ var storeVisitSecondReplies = []string{
 
 // GetStoreVisitFirstReply 获取到店倾向第一段回复（快速接住意向）
 // 修复：到店倾向客户不走合并队列，直接走快速通道
-func GetStoreVisitFirstReply(content string) string {
-	idx := rand.Intn(len(storeVisitFirstReplies))
-	return storeVisitFirstReplies[idx]
+// P1-29 修复(2026-09-09)：改读行业键 industry.store_visit_first（JSON 数组，租户覆盖→系统默认→
+// 代码兜底）。此前硬编码"到店试驾/看车"话术，edu/realty/wedding 等租户收到汽车话术——打脸泛行业化。
+func GetStoreVisitFirstReply(tenantID uint, content string) string {
+	replies := industryKeywordList(tenantID, IndustryStoreVisitFirst, storeVisitFirstReplies)
+	idx := rand.Intn(len(replies))
+	return replies[idx]
 }
 
 // GetStoreVisitSecondReply 获取到店倾向第二段追问（预约信息收集）
 // 核心字段：姓名、电话、预计人数、试驾时间、其他需求
-func GetStoreVisitSecondReply(content string) string {
-	idx := rand.Intn(len(storeVisitSecondReplies))
-	return storeVisitSecondReplies[idx]
+// P1-29 修复：同步读行业键 industry.store_visit_second
+func GetStoreVisitSecondReply(tenantID uint, content string) string {
+	replies := industryKeywordList(tenantID, IndustryStoreVisitSecond, storeVisitSecondReplies)
+	idx := rand.Intn(len(replies))
+	return replies[idx]
 }
 
 // GetStoreVisitFirstDelay 到店倾向第一段回复延迟

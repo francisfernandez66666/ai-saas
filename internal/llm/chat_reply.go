@@ -35,6 +35,25 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	var genConv model.Conversation
 	db.DB.First(&genConv, conversationID)
 
+	// P2-60 修复(2026-09-09)：引导式反问递减改 defer 统一出口——
+	// 原只在"真实AI成功路径"末尾递减，配额耗尽/降级/硬拦截等提前 return 的路径
+	// 永不递减，租户永久卡在 GuidedRemainingRounds=1，反问永不关闭。
+	// defer 保证所有出口（成功/兜底/降级/硬拦截）都会消耗一轮。
+	defer func() {
+		if genConv.GuidedRemainingRounds > 0 {
+			genConv.GuidedRemainingRounds--
+			updates := map[string]interface{}{
+				"guided_remaining_rounds": genConv.GuidedRemainingRounds,
+			}
+			if genConv.GuidedRemainingRounds == 0 {
+				genConv.GuidedDisabled = true
+				updates["guided_disabled"] = true
+				log.Printf("[引导轮数耗尽] 会话%d 引导式反问轮数已用完，关闭引导", conversationID)
+			}
+			db.DB.Model(&genConv).Updates(updates)
+		}
+	}()
+
 	// ---- 话题硬边界拦截 ----
 	// 修复：只靠提示词软约束不够，AI还是会回答无关话题
 	// 硬边界 = 代码层拦截，命中无关话题直接返回引导话术，不走AI
@@ -45,29 +64,15 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		return reply
 	}
 
-	// ---- 询价硬拦截：客户问价格，一律引导到店，不进AI ----
+	// ---- 询价硬拦截：客户问价格，一律引导到店/体验后报价，不进AI ----
 	// 泛行业化（P2.4）：关键词从 industry.price_keywords 读取，行业包可配置；空回退汽车默认
+	// P1-29(2026-09-09)：话术整体迁入 industry.price_reply_lead/nolead 行业键（行业包可覆盖）；
+	// P1-30：已留资分支不再出现"约试驾"（与 prompt 硬规则【已留资禁止促到店】矛盾）
 	priceKeywords := service.IndustryPriceKeywordsForTenant(customer.TenantID)
 	if service.ContainsKeywordForTenant(userInput, priceKeywords) {
-		log.Printf("[询价硬拦截] 客户%d 触发询价硬拦截, 引导到店", customer.ID)
+		log.Printf("[询价硬拦截] 客户%d 触发询价硬拦截, 引导体验后报价", customer.ID)
 		leadCapturedGuiding := chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0
-		if leadCapturedGuiding {
-			// 已留资且引导关闭：纯陈述引导，不再反问
-			replies := []string{
-				"价格得看具体配置和您的需求来定，要不帮您约个试驾，体验过后我再根据您的配置需求做个报价",
-				"车价跟配置和选装方案有关，建议您先到店试驾体验一下，试好了我按您的需求出个详细报价",
-				"具体价格得看您选什么配置，要不先约个试驾，您亲身感受后再根据您的需求给您报价",
-			}
-			rand.Seed(time.Now().UnixNano())
-			return replies[rand.Intn(len(replies))]
-		}
-		// 未留资或引导未关闭：可以带一句反问引导
-		replies := []string{
-			"要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀",
-			"价格得看配置来定，要不先帮您约个试驾，您试完车我按您的需求做个详细报价，行不",
-			"车价跟具体配置有关，要不我帮您安排个试驾，体验好了我按您的需求出个报价，您看咋样",
-		}
-		rand.Seed(time.Now().UnixNano())
+		replies := service.IndustryPriceRepliesForTenant(customer.TenantID, leadCapturedGuiding)
 		return replies[rand.Intn(len(replies))]
 	}
 
@@ -97,7 +102,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 修复：AI_MOCK_MODE 环境变量应作为模拟模式的权威信号。
 	// 原有 GetBool("mock_mode", env) 会被种子写死的系统配置 false 覆盖，导致 env 失效、
 	// 开发环境实际走真实 LLM 调用（慢且可能无 key 报错）。改为 env 或 系统配置任一为真即模拟。
-	if config.GlobalConfig.AI.MockMode || service.DefaultSystemConfigService.GetBool("mock_mode", false) {
+	if config.GlobalConfig.AI.MockMode || service.SafeCfgBool("mock_mode", false) {
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 
@@ -120,15 +125,17 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	//    达到阈值后：关闭反问，专注解答+适当介绍ROX品牌/车型/能力
 	// 4b. 客户重复性问题超过3次，关闭反问引导式语句，直接走解决陈述
 	// 6. 非车话题重复3次及以上后，改语气，关闭引导式反问，认真说回聊到车上
-	guidedDialogMaxRounds := service.DefaultSystemConfigService.GetInt("guided_dialog_max_rounds", 5)
-	repeatQuestionMaxTimes := service.DefaultSystemConfigService.GetInt("repeat_question_max_times", 3)
-	offtopicRepeatMaxTimes := service.DefaultSystemConfigService.GetInt("offtopic_repeat_max_times", 3)
+	guidedDialogMaxRounds := service.SafeCfgInt("guided_dialog_max_rounds", 5)
+	repeatQuestionMaxTimes := service.SafeCfgInt("repeat_question_max_times", 3)
+	offtopicRepeatMaxTimes := service.SafeCfgInt("offtopic_repeat_max_times", 3)
 
 	// 检测对话轮数（客户发了多少条消息）
+	// P2-61 修复：原全历史 Find 进内存；dialogRoundCount 仅用于引导式对话阈值判断，
+	// 收敛到最近 50 条足够（阈值 5~10 轮）
 	dialogRoundCount := 0
 	var customerMsgCount []model.Message
 	db.DB.Where("customer_id = ? AND sender_type = ?", customer.ID, "customer").
-		Find(&customerMsgCount)
+		Order("id DESC").Limit(50).Find(&customerMsgCount)
 	dialogRoundCount = len(customerMsgCount)
 
 	// 检测重复问题（客户最近的消息和之前的消息相似度）
@@ -176,11 +183,11 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 对话历史轮数由 system_configs 的 chat_history_rounds 控制（DB 默认 3 轮）
 	// =0 时改用核心内容摘要注入 system prompt，避免模型记忆偏移
 	// 核心摘要提取：用户需求、看过哪些车、在开什么车、关注点等
-	chatHistoryRounds := service.DefaultSystemConfigService.GetInt("chat_history_rounds", 3)
+	chatHistoryRounds := service.SafeCfgInt("chat_history_rounds", 3)
 	var historyMessages []ai.ChatMessage
 	if chatHistoryRounds > 0 {
 		// 如果配置了>0轮，仍用传统对话历史注入
-		historyMessages = getConversationHistory(conversationID, chatHistoryRounds)
+		historyMessages = getConversationHistory(customer.TenantID, conversationID, chatHistoryRounds)
 	}
 
 	// 4. 组装消息列表：system → 历史对话 → 当前策略+用户消息
@@ -216,7 +223,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 
 	// 5. 调用AI（走多模型路由，自动降级；stage_models 可为 reply 阶段覆盖专属模型）
 	// 修复：从SystemConfigService读取temperature，后台调参即时生效
-	aiTemp := service.DefaultSystemConfigService.GetFloat("ai_temperature", ai.DefaultClient.Temperature)
+	aiTemp := service.SafeCfgFloat("ai_temperature", ai.DefaultClient.Temperature)
 	callStart := time.Now()
 	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", tenantID, messages, aiTemp)
 	if err != nil {
@@ -323,7 +330,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 检测AI回复中是否包含不确定/兜圈子的信号词，触发后用盲点兜底话术替换
 	// 兜底话术：关闭引导式提问，直接回"好的，稍等，这个问题我查一下"
 	// 如果客户继续提问相关问题："不好意思我现在忙，要不您到店来体验下？"
-	if service.DefaultSystemConfigService.GetBool("knowledge_blindspot_fallback_enabled", true) {
+	if service.SafeCfgBool("knowledge_blindspot_fallback_enabled", true) {
 		blindspotReply := chatflow.DetectKnowledgeBlindspot(reply, userInput)
 		if blindspotReply != "" {
 			log.Printf("[知识库盲点兜底] 客户提问触及盲点，原始AI回复含不确定信号，替换为兜底话术")
@@ -331,20 +338,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 		}
 	}
 
-	// 9. 递减引导式反问剩余轮数
-	// 留资后AI有5轮引导式反问，每轮AI回复后递减，到0后关闭引导
-	if genConv.GuidedRemainingRounds > 0 {
-		genConv.GuidedRemainingRounds--
-		updates := map[string]interface{}{
-			"guided_remaining_rounds": genConv.GuidedRemainingRounds,
-		}
-		if genConv.GuidedRemainingRounds == 0 {
-			genConv.GuidedDisabled = true
-			updates["guided_disabled"] = true
-			log.Printf("[引导轮数耗尽] 会话%d 引导式反问5轮已用完，关闭引导", conversationID)
-		}
-		db.DB.Model(&genConv).Updates(updates)
-	}
+	// 注：引导式反问递减已上移到 defer 统一出口（P2-60），所有 return 路径统一消耗
 
 	// 微修复（2026-08-22）：实测AI回复带前导换行（模型输出习惯），统一去除首尾空白
 	return strings.TrimSpace(reply)
@@ -353,7 +347,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 // getConversationHistory 获取会话的历史对话消息
 // maxRounds: 最多返回几轮对话（一轮=用户+AI各一条）
 // 返回按时间正序排列的消息列表
-func getConversationHistory(conversationID uint, maxRounds int) []ai.ChatMessage {
+func getConversationHistory(tenantID, conversationID uint, maxRounds int) []ai.ChatMessage {
 	if conversationID == 0 || maxRounds <= 0 {
 		return nil
 	}
@@ -361,9 +355,11 @@ func getConversationHistory(conversationID uint, maxRounds int) []ai.ChatMessage
 	var messages []model.Message
 	// 查最近 maxRounds*2 条消息（按ID倒序取，再翻回来）
 	// 过滤掉system类型，只看customer和ai/human
+	// P2-54 修复：查询带租户 scope（原裸 db.DB 靠 PK 全局唯一兜底，显式过滤更稳）
 	limit := maxRounds * 2
-	err := db.DB.Where("conversation_id = ? AND sender_type IN ?",
-		conversationID, []string{"customer", "ai", "human"}).
+	err := db.DB.Scopes(db.TenantFilter(tenantID)).
+		Where("conversation_id = ? AND sender_type IN ?",
+			conversationID, []string{"customer", "ai", "human"}).
 		Order("id DESC").
 		Limit(limit).
 		Find(&messages).Error
@@ -385,15 +381,16 @@ func getConversationHistory(conversationID uint, maxRounds int) []ai.ChatMessage
 // 用于对比锚时注入知识库素材
 // 如果客户没有明确兴趣产品，返回默认产品（行业包第一个），保证知识库始终注入
 func getCustomerModelID(customer *model.Customer) uint {
-	// 有兴趣产品时，按名称匹配
+	tid := customer.TenantID
+	// 有兴趣产品时，按名称匹配（租户隔离：仅系统预置+本租户产品，防跨租户命中）
 	if customer.InterestProduct != "" {
-		carModel := cache.DefaultKnowledgeCache.GetModelByName(customer.InterestProduct)
+		carModel := cache.DefaultKnowledgeCache.GetModelByName(tid, customer.InterestProduct)
 		if carModel != nil {
 			return carModel.ID
 		}
 	}
 	// 没有兴趣车型或匹配失败，返回默认车型（第一个品牌的第一款车）
-	defaultModel := cache.DefaultKnowledgeCache.GetDefaultModel()
+	defaultModel := cache.DefaultKnowledgeCache.GetDefaultModel(tid)
 	if defaultModel != nil {
 		return defaultModel.ID
 	}

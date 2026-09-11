@@ -9,7 +9,6 @@ import (
 	"ai-scrm/internal/config_center"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"fmt"
 	"log"
@@ -22,8 +21,6 @@ import (
 // 系统配置管理API（Admin后台）
 // 路由前缀：/api/v1/admin/config
 // 功能：查询配置、批量更新、恢复默认、获取可用模型列表
-// 暂不鉴权，后续再加
-// ============================================================
 
 // GetSystemConfigs 查询系统配置
 // GET /api/v1/admin/config
@@ -39,11 +36,7 @@ func GetSystemConfigs(c *gin.Context) {
 		configs = service.DefaultSystemConfigService.GetAll()
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data:    configs,
-	})
+	RespOK(c, "success", configs)
 }
 
 // BatchUpdateSystemConfig 批量更新系统配置
@@ -53,20 +46,12 @@ func GetSystemConfigs(c *gin.Context) {
 func BatchUpdateSystemConfig(c *gin.Context) {
 	var items []service.ConfigUpdateItem
 	if err := c.ShouldBindJSON(&items); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{
-			Code:    400,
-			Message: "参数错误: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
 	if len(items) == 0 {
-		c.JSON(http.StatusBadRequest, schema.Response{
-			Code:    400,
-			Message: "更新列表不能为空",
-			Data:    nil,
-		})
+		RespErr(c, http.StatusBadRequest, 400, "更新列表不能为空")
 		return
 	}
 
@@ -100,21 +85,13 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 	// P2 租户化：租户管理员改参数写入 (tenant_id,key) 覆盖层，不污染系统默认(0)
 	// super_admin 未显式指定租户时 tid=默认租户（中间件已裁决），显式指定则写对应租户
 	if err := service.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), tenant); err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{
-			Code:    500,
-			Message: "更新失败: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
 		return
 	}
 	// 平台键走系统默认层（BatchUpdate 内部含 Reload 热加载）
 	if len(platform) > 0 {
 		if err := service.DefaultSystemConfigService.BatchUpdate(platform); err != nil {
-			c.JSON(http.StatusInternalServerError, schema.Response{
-				Code:    500,
-				Message: "平台参数更新失败: " + err.Error(),
-				Data:    nil,
-			})
+			RespErr(c, http.StatusInternalServerError, 500, "平台参数更新失败: "+err.Error())
 			return
 		}
 	}
@@ -142,11 +119,7 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 		service.ReportTuningBehavior(db.EffectiveTenantIDFromGin(c), operator, "strategy", changes)
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "更新成功，已热加载到内存",
-		Data:    nil,
-	})
+	RespOK(c, "更新成功，已热加载到内存", nil)
 }
 
 // ResetSystemConfig 恢复所有配置为默认值
@@ -154,22 +127,14 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 // 会将所有配置项的Value恢复为DefaultValue
 func ResetSystemConfig(c *gin.Context) {
 	if err := service.DefaultSystemConfigService.ResetAll(); err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{
-			Code:    500,
-			Message: "重置失败: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "重置失败: "+err.Error())
 		return
 	}
 
 	// K7修复(2026-08-27)：跨实例广播配置变更
 	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "已恢复所有默认值",
-		Data:    nil,
-	})
+	RespOK(c, "已恢复所有默认值", nil)
 }
 
 // ============================================================
@@ -182,22 +147,14 @@ func ResetSystemConfig(c *gin.Context) {
 func ForceInitSystemConfig(c *gin.Context) {
 	// 调用ForceResetDefaults：删除旧数据 + 重新写入默认配置 + 热加载
 	if err := service.DefaultSystemConfigService.ForceResetDefaults(); err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{
-			Code:    500,
-			Message: "强制初始化失败: " + err.Error(),
-			Data:    nil,
-		})
+		RespErr(c, http.StatusInternalServerError, 500, "强制初始化失败: "+err.Error())
 		return
 	}
 
 	// K7修复(2026-08-27)：跨实例广播配置变更
 	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "默认配置强制初始化成功",
-		Data:    len(service.DefaultConfigs),
-	})
+	RespOK(c, "默认配置强制初始化成功", len(service.DefaultConfigs))
 }
 
 // ============================================================
@@ -274,13 +231,9 @@ func GetAvailableModels(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: modelsResponse{
-			Models:      result,
-			Identifiers: identifiers,
-		},
+	RespOK(c, "success", modelsResponse{
+		Models:      result,
+		Identifiers: identifiers,
 	})
 }
 

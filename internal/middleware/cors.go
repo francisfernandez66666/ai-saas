@@ -27,7 +27,12 @@ var (
 func initCORS() {
 	corsOriginsOnce.Do(func() {
 		corsOrigins = map[string]bool{}
+		// P1-3 修复(2026-09-09)：键名统一为 CORS_ALLOWED_ORIGINS；
+		// 兼容旧写法 CORS_ALLOW_ORIGINS（一个版本），避免按模板配置白名单恒空静默失效
 		raw := os.Getenv("CORS_ALLOWED_ORIGINS")
+		if raw == "" {
+			raw = os.Getenv("CORS_ALLOW_ORIGINS")
+		}
 		for _, o := range strings.Split(raw, ",") {
 			o = strings.TrimSpace(o)
 			if o != "" {

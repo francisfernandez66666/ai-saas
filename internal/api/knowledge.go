@@ -30,7 +30,7 @@ import (
 func GetBrandList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -56,11 +56,8 @@ func GetBrandList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&brands)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: brands,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: brands,
 	})
 }
 
@@ -70,11 +67,11 @@ func GetBrandDetail(c *gin.Context) {
 
 	var brand model.Brand
 	if err := db.PQ(c).Scopes(db.T(c)).First(&brand, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "品牌不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "品牌不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: brand})
+	RespOK(c, "success", brand)
 }
 
 // CreateBrand 创建品牌
@@ -90,7 +87,7 @@ func CreateBrand(c *gin.Context) {
 		Sort        int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -109,11 +106,11 @@ func CreateBrand(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(brand).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: brand})
+	RespOK(c, "创建成功", brand)
 }
 
 // UpdateBrand 更新品牌
@@ -122,7 +119,7 @@ func UpdateBrand(c *gin.Context) {
 
 	var brand model.Brand
 	if err := db.RQ(c).Scopes(db.T(c)).First(&brand, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "品牌不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "品牌不存在")
 		return
 	}
 
@@ -136,7 +133,7 @@ func UpdateBrand(c *gin.Context) {
 		Sort        int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -164,7 +161,7 @@ func UpdateBrand(c *gin.Context) {
 
 	db.RQ(c).Save(&brand)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: brand})
+	RespOK(c, "更新成功", brand)
 }
 
 // DeleteBrand 删除品牌
@@ -174,7 +171,7 @@ func DeleteBrand(c *gin.Context) {
 
 	var brand model.Brand
 	if err := db.RQ(c).Scopes(db.T(c)).First(&brand, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "品牌不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "品牌不存在")
 		return
 	}
 
@@ -184,7 +181,7 @@ func DeleteBrand(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableBrand 启用品牌
@@ -193,7 +190,7 @@ func EnableBrand(c *gin.Context) {
 
 	var brand model.Brand
 	if err := db.RQ(c).Scopes(db.T(c)).First(&brand, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "品牌不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "品牌不存在")
 		return
 	}
 
@@ -203,7 +200,7 @@ func EnableBrand(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: brand})
+	RespOK(c, "启用成功", brand)
 }
 
 // DisableBrand 下线品牌
@@ -212,7 +209,7 @@ func DisableBrand(c *gin.Context) {
 
 	var brand model.Brand
 	if err := db.RQ(c).Scopes(db.T(c)).First(&brand, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "品牌不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "品牌不存在")
 		return
 	}
 
@@ -222,7 +219,7 @@ func DisableBrand(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: brand})
+	RespOK(c, "下线成功", brand)
 }
 
 // ============================================================
@@ -233,7 +230,7 @@ func DisableBrand(c *gin.Context) {
 func GetModelList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -259,11 +256,8 @@ func GetModelList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&models)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: models,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: models,
 	})
 }
 
@@ -273,11 +267,11 @@ func GetModelDetail(c *gin.Context) {
 
 	var carModel model.CarModel
 	if err := db.PQ(c).Scopes(db.T(c)).First(&carModel, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: carModel})
+	RespOK(c, "success", carModel)
 }
 
 // CreateModel 创建车型
@@ -294,7 +288,7 @@ func CreateModel(c *gin.Context) {
 		Sort       int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -322,11 +316,11 @@ func CreateModel(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(carModel).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: carModel})
+	RespOK(c, "创建成功", carModel)
 }
 
 // UpdateModel 更新车型
@@ -335,7 +329,7 @@ func UpdateModel(c *gin.Context) {
 
 	var carModel model.CarModel
 	if err := db.RQ(c).Scopes(db.T(c)).First(&carModel, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
@@ -349,7 +343,7 @@ func UpdateModel(c *gin.Context) {
 		Sort       int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -377,7 +371,7 @@ func UpdateModel(c *gin.Context) {
 
 	db.RQ(c).Save(&carModel)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: carModel})
+	RespOK(c, "更新成功", carModel)
 }
 
 // DeleteModel 删除车型
@@ -387,7 +381,7 @@ func DeleteModel(c *gin.Context) {
 
 	var carModel model.CarModel
 	if err := db.RQ(c).Scopes(db.T(c)).First(&carModel, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
@@ -397,7 +391,7 @@ func DeleteModel(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableModel 启用车型
@@ -406,7 +400,7 @@ func EnableModel(c *gin.Context) {
 
 	var carModel model.CarModel
 	if err := db.RQ(c).Scopes(db.T(c)).First(&carModel, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
@@ -416,7 +410,7 @@ func EnableModel(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: carModel})
+	RespOK(c, "启用成功", carModel)
 }
 
 // DisableModel 下线车型
@@ -425,7 +419,7 @@ func DisableModel(c *gin.Context) {
 
 	var carModel model.CarModel
 	if err := db.RQ(c).Scopes(db.T(c)).First(&carModel, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
@@ -435,7 +429,7 @@ func DisableModel(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: carModel})
+	RespOK(c, "下线成功", carModel)
 }
 
 // ============================================================
@@ -446,7 +440,7 @@ func DisableModel(c *gin.Context) {
 func GetSpecList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -484,11 +478,8 @@ func GetSpecList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&specs)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: specs,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: specs,
 	})
 }
 
@@ -498,7 +489,7 @@ func UpdateSpec(c *gin.Context) {
 
 	var spec model.ModelSpec
 	if err := db.RQ(c).Scopes(db.T(c)).First(&spec, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "参数不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "参数不存在")
 		return
 	}
 
@@ -512,7 +503,7 @@ func UpdateSpec(c *gin.Context) {
 		Status     int    `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -545,7 +536,7 @@ func UpdateSpec(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: spec})
+	RespOK(c, "更新成功", spec)
 }
 
 // EnableSpec 启用规格参数
@@ -554,7 +545,7 @@ func EnableSpec(c *gin.Context) {
 
 	var spec model.ModelSpec
 	if err := db.RQ(c).Scopes(db.T(c)).First(&spec, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "参数不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "参数不存在")
 		return
 	}
 
@@ -564,7 +555,7 @@ func EnableSpec(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: spec})
+	RespOK(c, "启用成功", spec)
 }
 
 // DisableSpec 下线规格参数
@@ -573,7 +564,7 @@ func DisableSpec(c *gin.Context) {
 
 	var spec model.ModelSpec
 	if err := db.RQ(c).Scopes(db.T(c)).First(&spec, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "参数不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "参数不存在")
 		return
 	}
 
@@ -583,7 +574,7 @@ func DisableSpec(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: spec})
+	RespOK(c, "下线成功", spec)
 }
 
 // CreateSpec 创建规格参数
@@ -597,7 +588,7 @@ func CreateSpec(c *gin.Context) {
 		Sort       int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -611,11 +602,11 @@ func CreateSpec(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(spec).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: spec})
+	RespOK(c, "创建成功", spec)
 }
 
 // DeleteSpec 删除规格参数
@@ -625,7 +616,7 @@ func DeleteSpec(c *gin.Context) {
 
 	var spec model.ModelSpec
 	if err := db.RQ(c).Scopes(db.T(c)).First(&spec, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "参数不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "参数不存在")
 		return
 	}
 
@@ -636,7 +627,7 @@ func DeleteSpec(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // ============================================================
@@ -647,7 +638,7 @@ func DeleteSpec(c *gin.Context) {
 func GetCompareList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -684,11 +675,8 @@ func GetCompareList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&compares)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: compares,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: compares,
 	})
 }
 
@@ -704,7 +692,7 @@ func CreateCompare(c *gin.Context) {
 		Status          int                 `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -722,11 +710,11 @@ func CreateCompare(c *gin.Context) {
 	compare.SetCompareItems(req.Items)
 
 	if err := db.RQ(c).Create(compare).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: compare})
+	RespOK(c, "创建成功", compare)
 }
 
 // UpdateCompare 更新竞品对比
@@ -735,7 +723,7 @@ func UpdateCompare(c *gin.Context) {
 
 	var compare model.CompetitorCompare
 	if err := db.RQ(c).Scopes(db.T(c)).First(&compare, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "对比不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "对比不存在")
 		return
 	}
 
@@ -748,7 +736,7 @@ func UpdateCompare(c *gin.Context) {
 		Status          int                 `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -776,7 +764,7 @@ func UpdateCompare(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: compare})
+	RespOK(c, "更新成功", compare)
 }
 
 // DeleteCompare 删除竞品对比
@@ -786,7 +774,7 @@ func DeleteCompare(c *gin.Context) {
 
 	var compare model.CompetitorCompare
 	if err := db.RQ(c).Scopes(db.T(c)).First(&compare, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "对比不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "对比不存在")
 		return
 	}
 
@@ -797,7 +785,7 @@ func DeleteCompare(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableCompare 启用竞品对比
@@ -806,7 +794,7 @@ func EnableCompare(c *gin.Context) {
 
 	var compare model.CompetitorCompare
 	if err := db.RQ(c).Scopes(db.T(c)).First(&compare, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "对比不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "对比不存在")
 		return
 	}
 
@@ -816,7 +804,7 @@ func EnableCompare(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: compare})
+	RespOK(c, "启用成功", compare)
 }
 
 // DisableCompare 下线竞品对比
@@ -825,7 +813,7 @@ func DisableCompare(c *gin.Context) {
 
 	var compare model.CompetitorCompare
 	if err := db.RQ(c).Scopes(db.T(c)).First(&compare, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "对比不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "对比不存在")
 		return
 	}
 
@@ -835,7 +823,7 @@ func DisableCompare(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: compare})
+	RespOK(c, "下线成功", compare)
 }
 
 // ============================================================
@@ -846,7 +834,7 @@ func DisableCompare(c *gin.Context) {
 func GetFragmentList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -878,11 +866,8 @@ func GetFragmentList(c *gin.Context) {
 		Limit(req.PageSize).
 		Find(&fragments)
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: schema.PageResponse{
-			Total: total, Page: req.Page, PageSize: req.PageSize, List: fragments,
-		},
+	RespOK(c, "success", schema.PageResponse{
+		Total: total, Page: req.Page, PageSize: req.PageSize, List: fragments,
 	})
 }
 
@@ -892,11 +877,11 @@ func GetFragmentDetail(c *gin.Context) {
 
 	var fragment model.KnowledgeFragment
 	if err := db.PQ(c).Scopes(db.T(c)).First(&fragment, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "知识片段不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: fragment})
+	RespOK(c, "success", fragment)
 }
 
 // CreateFragment 创建知识片段
@@ -911,7 +896,7 @@ func CreateFragment(c *gin.Context) {
 		Sort             int      `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
 	}
 
@@ -929,11 +914,11 @@ func CreateFragment(c *gin.Context) {
 	fragment.SetApplicableModels(req.ApplicableModels)
 
 	if err := db.RQ(c).Create(fragment).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "创建失败: " + err.Error(), Data: nil})
+		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "创建成功", Data: fragment})
+	RespOK(c, "创建成功", fragment)
 }
 
 // UpdateFragment 更新知识片段
@@ -942,7 +927,7 @@ func UpdateFragment(c *gin.Context) {
 
 	var fragment model.KnowledgeFragment
 	if err := db.RQ(c).Scopes(db.T(c)).First(&fragment, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "知识片段不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
 
@@ -956,7 +941,7 @@ func UpdateFragment(c *gin.Context) {
 		Sort             int      `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "参数错误", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
 
@@ -984,7 +969,7 @@ func UpdateFragment(c *gin.Context) {
 
 	db.RQ(c).Save(&fragment)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "更新成功", Data: fragment})
+	RespOK(c, "更新成功", fragment)
 }
 
 // DeleteFragment 删除知识片段
@@ -994,7 +979,7 @@ func DeleteFragment(c *gin.Context) {
 
 	var fragment model.KnowledgeFragment
 	if err := db.RQ(c).Scopes(db.T(c)).First(&fragment, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "知识片段不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
 
@@ -1004,7 +989,7 @@ func DeleteFragment(c *gin.Context) {
 	// 删除后自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "删除成功", Data: nil})
+	RespOK(c, "删除成功", nil)
 }
 
 // EnableFragment 启用知识片段
@@ -1013,7 +998,7 @@ func EnableFragment(c *gin.Context) {
 
 	var fragment model.KnowledgeFragment
 	if err := db.RQ(c).Scopes(db.T(c)).First(&fragment, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "知识片段不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
 
@@ -1023,7 +1008,7 @@ func EnableFragment(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "启用成功", Data: fragment})
+	RespOK(c, "启用成功", fragment)
 }
 
 // DisableFragment 下线知识片段
@@ -1032,7 +1017,7 @@ func DisableFragment(c *gin.Context) {
 
 	var fragment model.KnowledgeFragment
 	if err := db.RQ(c).Scopes(db.T(c)).First(&fragment, id).Error; err != nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "知识片段不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
 
@@ -1042,19 +1027,15 @@ func DisableFragment(c *gin.Context) {
 	// 自动热更新缓存
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "下线成功", Data: fragment})
+	RespOK(c, "下线成功", fragment)
 }
 
 // ReloadKnowledgeCache 热更新知识库缓存
 func ReloadKnowledgeCache(c *gin.Context) {
 	cache.DefaultKnowledgeCache.Reload()
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "知识库缓存热更新成功",
-		Data: gin.H{
-			"version": cache.DefaultKnowledgeCache.GetVersion(),
-		},
+	RespOK(c, "知识库缓存热更新成功", gin.H{
+		"version": cache.DefaultKnowledgeCache.GetVersion(),
 	})
 }
 
@@ -1064,37 +1045,39 @@ func ReloadKnowledgeCache(c *gin.Context) {
 
 // GetPublicBrands 获取品牌列表（客户端）
 func GetPublicBrands(c *gin.Context) {
-	brands := cache.DefaultKnowledgeCache.GetAllBrands()
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: brands})
+	brands := cache.DefaultKnowledgeCache.GetAllBrands(db.EffectiveTenantIDFromGin(c))
+	RespOK(c, "success", brands)
 }
 
 // GetPublicModels 获取车型列表（客户端）
 func GetPublicModels(c *gin.Context) {
 	brandIDStr := c.Query("brand_id")
+	tid := db.EffectiveTenantIDFromGin(c)
 
 	if brandIDStr != "" {
 		brandID, _ := strconv.Atoi(brandIDStr)
-		models := cache.DefaultKnowledgeCache.GetModelsByBrandID(uint(brandID))
-		c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: models})
+		models := cache.DefaultKnowledgeCache.GetModelsByBrandID(tid, uint(brandID))
+		RespOK(c, "success", models)
 		return
 	}
 
-	models := cache.DefaultKnowledgeCache.GetAllModels()
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: models})
+	models := cache.DefaultKnowledgeCache.GetAllModels(tid)
+	RespOK(c, "success", models)
 }
 
 // GetPublicModelDetail 获取车型详情（含规格参数）
 func GetPublicModelDetail(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	tid := db.EffectiveTenantIDFromGin(c)
 
-	carModel := cache.DefaultKnowledgeCache.GetModelByID(uint(id))
+	carModel := cache.DefaultKnowledgeCache.GetModelByID(tid, uint(id))
 	if carModel == nil {
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "车型不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
 	}
 
 	// 获取规格参数
-	specs := cache.DefaultKnowledgeCache.GetSpecsByModelID(uint(id))
+	specs := cache.DefaultKnowledgeCache.GetSpecsByModelID(tid, uint(id))
 
 	// 按分类组织规格参数
 	specByCategory := make(map[string][]model.ModelSpec)
@@ -1102,13 +1085,10 @@ func GetPublicModelDetail(c *gin.Context) {
 		specByCategory[spec.Category] = append(specByCategory[spec.Category], spec)
 	}
 
-	c.JSON(http.StatusOK, schema.Response{
-		Code: 0, Message: "success",
-		Data: gin.H{
-			"model":            carModel,
-			"specs":            specs,
-			"spec_by_category": specByCategory,
-		},
+	RespOK(c, "success", gin.H{
+		"model":            carModel,
+		"specs":            specs,
+		"spec_by_category": specByCategory,
 	})
 }
 
@@ -1116,17 +1096,18 @@ func GetPublicModelDetail(c *gin.Context) {
 func GetPublicCompares(c *gin.Context) {
 	modelIDStr := c.Query("model_id")
 	if modelIDStr == "" {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "model_id必填", Data: nil})
+		RespErr(c, http.StatusBadRequest, 400, "model_id必填")
 		return
 	}
 
 	modelID, _ := strconv.Atoi(modelIDStr)
-	compares := cache.DefaultKnowledgeCache.GetComparesByModelID(uint(modelID))
+	tid := db.EffectiveTenantIDFromGin(c)
+	compares := cache.DefaultKnowledgeCache.GetComparesByModelID(tid, uint(modelID))
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: compares})
+	RespOK(c, "success", compares)
 }
 
-// SearchFragments 搜索知识片段（客户端）
+// SearchFragments 搜索知识片段（客户端，租户隔离）
 func SearchFragments(c *gin.Context) {
 	keyword := c.Query("keyword")
 	category := c.Query("category")
@@ -1137,7 +1118,8 @@ func SearchFragments(c *gin.Context) {
 		tags = strings.Split(tagsStr, ",")
 	}
 
-	fragments := cache.DefaultKnowledgeCache.SearchFragments(keyword, category, tags)
+	tid := db.EffectiveTenantIDFromGin(c)
+	fragments := cache.DefaultKnowledgeCache.SearchFragments(tid, keyword, category, tags)
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: fragments})
+	RespOK(c, "success", fragments)
 }

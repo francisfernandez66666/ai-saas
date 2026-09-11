@@ -18,7 +18,8 @@ import AppHome from './pages/AppHome'
 import AppReferral from './pages/AppReferral'
 import AppSettings from './pages/AppSettings'
 import AppLayout from './pages/AppLayout'
-import { getToken } from './lib/api'
+import { getToken, verifySession } from './lib/api'
+import { useState, useEffect } from 'react'
 
 // ============================================================
 // P1-2 前端路由守卫（2026-08-30）
@@ -28,14 +29,43 @@ import { getToken } from './lib/api'
 // ============================================================
 
 // ProtectedRoute 受保护路由守卫组件
-// 检查 localStorage 中的 token，无则跳转到登录页
+// P1-50(2026-09-09)：不再只查 token 存在——token 可被篡改/过期，角色可能被 localStorage
+// 造假。现在挂 /auth/me 会话校验（60s 缓存）：无效→登录页；需改密→改密页；有效→放行。
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
-  const token = getToken()
   const location = useLocation()
+  const [checking, setChecking] = useState(true)
+  const [mcp, setMcp] = useState(false)
+
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      if (!getToken()) {
+        if (alive) setChecking(false)
+        return
+      }
+      const info = await verifySession()
+      if (!alive) return
+      if (info === null) {
+        // token 校验失败：token 被 verifySession 清掉(401)→走下方 !token 跳登录；
+        // 仍持有 token 则说明服务端要求改密（must_change_password）→ 跳改密页
+        if (getToken()) { if (alive) setMcp(true) }
+      }
+      if (alive) setChecking(false)
+    })()
+    return () => { alive = false }
+  }, [location.pathname])
+
+  if (checking) return null // 校验中：空白占位（避免闪现受保护内容）
+
+  const token = getToken()
 
   if (!token) {
-    // 无 token：跳转登录页，保留当前路径供登录后跳回
+    // 无 token（含 401 被 verifySession 清除）：跳登录页，保留原路径供登录后跳回
     return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
+  }
+  if (mcp) {
+    // 首登需改密：跳改密表单（change-password 接口在白名单内可用）
+    return <Navigate to="/login?mcp=1" replace />
   }
 
   return <>{children}</>

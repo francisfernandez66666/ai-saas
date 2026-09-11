@@ -1,6 +1,7 @@
 // 实时推送 hook（P1-2，2026-08-29）
 // WS 仅推送"有新消息"信号，收到即触发已有拉取；既有 5s 轮询保留为兜底，保证最终一致。
 import { useEffect, useRef } from 'react'
+import { TOKEN_KEY } from './api'
 
 /**
  * 根据当前页面协议拼接 ws 地址（站同域，SPA 托管）
@@ -25,7 +26,7 @@ export function useAdvisorWS(onEvent: EvHandler) {
   const ref = useRef(onEvent)
   ref.current = onEvent
   useEffect(() => {
-    const token = localStorage.getItem('scrm_auth_token') || ''
+    const token = localStorage.getItem(TOKEN_KEY) || ''
     if (!token) return
     let ws: WebSocket
     try {

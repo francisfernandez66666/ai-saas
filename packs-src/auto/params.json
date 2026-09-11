@@ -1,1 +1,8 @@
-{}
+{
+  "delay_simple_min": 2,
+  "delay_simple_max": 5,
+  "delay_normal_min": 5,
+  "delay_normal_max": 10,
+  "max_merge_messages": 3,
+  "merge_wait_seconds": 25
+}

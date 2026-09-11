@@ -8,7 +8,6 @@ import (
 	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
-	"ai-scrm/internal/schema"
 
 	"github.com/gin-gonic/gin"
 )
@@ -53,14 +52,14 @@ func GetCDPProfile(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	oneID := c.Param("one_id")
 	if oneID == "" {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "one_id 不能为空"})
+		RespErr(c, http.StatusBadRequest, 400, "one_id 不能为空")
 		return
 	}
 
 	view := cdp.GetProfile(tenantID, oneID)
 	if view == nil {
 		// 二次校验失败：不区分"不存在"与"他租户"，统一404防枚举
-		c.JSON(http.StatusNotFound, schema.Response{Code: 404, Message: "画像不存在", Data: nil})
+		RespErr(c, http.StatusNotFound, 404, "画像不存在")
 		return
 	}
 
@@ -70,7 +69,7 @@ func GetCDPProfile(c *gin.Context) {
 		view.Tags[k] = maskSensitiveFields(v)
 	}
 
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: view})
+	RespOK(c, "success", view)
 }
 
 /*
@@ -84,24 +83,24 @@ func GetCDPSegment(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	tagCode := c.Query("tag")
 	if tagCode == "" {
-		c.JSON(http.StatusBadRequest, schema.Response{Code: 400, Message: "tag 参数不能为空"})
+		RespErr(c, http.StatusBadRequest, 400, "tag 参数不能为空")
 		return
 	}
 
 	oneIDs, err := cdp.NewSegmentEngine().SegmentByTag(tenantID, tagCode)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "分群查询失败: " + err.Error()})
+		RespErr(c, http.StatusInternalServerError, 500, "分群查询失败: "+err.Error())
 		return
 	}
 	// OneID 本身是内部标识（c:{id}），非敏感；列表规模保护上限
 	if len(oneIDs) > 1000 {
 		oneIDs = oneIDs[:1000]
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: gin.H{
+	RespOK(c, "success", gin.H{
 		"tag":     tagCode,
 		"total":   len(oneIDs),
 		"one_ids": oneIDs,
-	}})
+	})
 }
 
 /*
@@ -114,10 +113,10 @@ func ListCDPTagDefs(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	defs, err := cdp.ListTagDefinitions(tenantID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, schema.Response{Code: 500, Message: "字典查询失败"})
+		RespErr(c, http.StatusInternalServerError, 500, "字典查询失败")
 		return
 	}
-	c.JSON(http.StatusOK, schema.Response{Code: 0, Message: "success", Data: defs})
+	RespOK(c, "success", defs)
 }
 
 var _ = db.DB // 保持 db 引用对齐（本包其他文件已使用）

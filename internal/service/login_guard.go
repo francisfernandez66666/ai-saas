@@ -3,6 +3,7 @@ package service
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -149,11 +150,9 @@ func recordLoginFailureRedis(username, ip string) {
 	countKeys, lockKeys := loginRedisKeys(username, ip)
 	now := time.Now()
 	for i, ck := range countKeys {
-		n := redisclient.Incr(ck)
-		if n == 1 {
-			// 首次写入：设置窗口 TTL
-			redisclient.SetEx(ck, "1", windowDuration)
-		}
+		// P2-44 修复：INCR 与 TTL 设置改原子 IncrWithTTL——
+		// 原"INCR==1 才 SetEx"在 SetEx 失败时键永不过期→永久锁；且首次语义不原子。
+		n := redisclient.IncrWithTTL(ck, windowDuration)
 		if n >= int64(maxFailures) {
 			redisclient.SetEx(lockKeys[i], fmt.Sprintf("%d", now.Unix()), lockDuration)
 		}
@@ -173,16 +172,16 @@ func ClearLoginFailures(username string) {
 		// 精确删除该用户名两把键（IP 维度用前缀扫）
 		delete(attempts, k)
 	}
-	prefix := "u:" + username
+	// P2-44 修复：IP 维度键按"最后一个冒号段 == username"严格匹配——
+	// 原"后缀==username"会把 bob@1.1.1.1 误伤成 alice_bob@1.1.1.1 的清账。
+	prefix := "ip:"
 	for k := range attempts {
-		if len(k) > 3 && k[:3] == "ip:" {
-			// ip:{ip}:{username} 形态——按后缀匹配清理
-			if idx := len(k) - len(username); idx > 3 && k[idx:] == username {
+		if len(k) > len(prefix) && k[:len(prefix)] == prefix {
+			if idx := strings.LastIndex(k, ":"); idx >= 0 && k[idx+1:] == username {
 				delete(attempts, k)
 			}
 		}
 	}
-	_ = prefix
 }
 
 // clearLoginFailuresRedis 清用户名维度计数/锁键
@@ -198,7 +197,6 @@ func clearLoginFailuresRedis(username string) {
 	for _, k := range keys {
 		redisclient.Del(k)
 	}
-	_ = keys
 }
 
 // sweepIfNeeded 惰性清理过期记录（每分钟最多一次，仅内存版使用）

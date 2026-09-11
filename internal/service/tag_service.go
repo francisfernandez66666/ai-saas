@@ -8,6 +8,9 @@ import (
 	"log"
 	"strings"
 	"time"
+
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================================
@@ -29,16 +32,16 @@ var DefaultTagService = &TagService{}
 // 基础打标操作
 // ============================================================
 
-// ApplyTagsToCustomer 批量给客户打标签
-// 参数：customerID-客户ID, tagNames-标签名称或编码数组, source-标签来源(manual/auto/ai)
+// ApplyTagsToCustomer 批量给客户打标签（P1-8 修复：增加 tenantID 维度，杜绝跨租户打标）
+// 参数：tenantID-租户ID, customerID-客户ID, tagNames-标签名称或编码数组, source-标签来源(manual/auto/ai)
 // 自动匹配标签名称或编码，已存在的标签更新来源，新标签创建关联
-func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, source string) error {
+func (s *TagService) ApplyTagsToCustomer(tenantID uint, customerID uint, tagNames []string, source string) error {
 	if len(tagNames) == 0 {
 		return nil
 	}
 
-	// 获取所有标签（从缓存）
-	allTags := cache.DefaultTagCache.GetAllTags()
+	// 获取所有标签（从缓存，按租户可见范围）
+	allTags := cache.DefaultTagCache.GetAllTags(tenantID)
 	// 建立名称→标签、编码→标签的映射
 	nameMap := make(map[string]model.Tag)
 	codeMap := make(map[string]model.Tag)
@@ -64,9 +67,10 @@ func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, sou
 			continue
 		}
 
-		// 检查是否已存在该客户标签（用联合唯一索引去重）
+		// 检查是否已存在该客户标签（用联合唯一索引去重，带租户过滤）
 		var existing model.CustomerTag
-		result := db.DB.Where("customer_id = ? AND tag_id = ?", customerID, targetTag.ID).First(&existing)
+		result := db.DB.Scopes(db.TenantFilter(tenantID)).
+			Where("customer_id = ? AND tag_id = ?", customerID, targetTag.ID).First(&existing)
 		if result.Error == nil {
 			// 已存在，更新来源
 			existing.Source = source
@@ -74,8 +78,12 @@ func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, sou
 			continue
 		}
 
-		// 新建客户标签关联
+		// 新建客户标签关联（显式落 tenant_id——裸 db.DB 无盖章回调）
+		// P2-43 修复：First→Create 改为 ON CONFLICT upsert——原实现并发窗口
+		// （First 未命中 → 另一请求已 Create → 唯一冲突）会丢标/报错。这里合并为一次
+		// 原子写入：命中冲突则只更新来源与权重（权重用 MAX 取两边较大，防并发回退）。
 		customerTag := &model.CustomerTag{
+			TenantID:   tenantID,
 			CustomerID: customerID,
 			TagID:      targetTag.ID,
 			TagName:    targetTag.Name,
@@ -83,7 +91,17 @@ func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, sou
 			Weight:     1.0,
 			CreatedAt:  now,
 		}
-		if err := db.DB.Create(customerTag).Error; err != nil {
+		// tenant_id、created_at 不在唯一键内，冲突更新仅覆盖 source/weight
+		if err := db.DB.Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "customer_id"},
+				{Name: "tag_id"},
+			},
+			DoUpdates: clause.Assignments(map[string]interface{}{
+				"source": source,
+				"weight": gorm.Expr("MAX(weight, 1.0)"),
+			}),
+		}).Create(customerTag).Error; err != nil {
 			log.Printf("[打标服务] 创建客户标签失败: %v", err)
 			continue
 		}
@@ -94,15 +112,16 @@ func (s *TagService) ApplyTagsToCustomer(customerID uint, tagNames []string, sou
 		customerID, len(tagNames), newTags)
 
 	// 同步更新客户表的Tags字段（冗余存储，方便查询）
-	s.syncCustomerTagsField(customerID)
+	s.syncCustomerTagsField(tenantID, customerID)
 
 	return nil
 }
 
 // RemoveTagFromCustomer 移除客户的某个标签
 // 删除customer_tags表中的关联记录，并同步更新客户表的Tags冗余字段
-func (s *TagService) RemoveTagFromCustomer(customerID uint, tagID uint) error {
-	result := db.DB.Where("customer_id = ? AND tag_id = ?", customerID, tagID).
+func (s *TagService) RemoveTagFromCustomer(tenantID uint, customerID uint, tagID uint) error {
+	result := db.DB.Scopes(db.TenantFilter(tenantID)).
+		Where("customer_id = ? AND tag_id = ?", customerID, tagID).
 		Delete(&model.CustomerTag{})
 	if result.Error != nil {
 		log.Printf("[打标服务] 移除标签失败: %v", result.Error)
@@ -113,16 +132,17 @@ func (s *TagService) RemoveTagFromCustomer(customerID uint, tagID uint) error {
 		customerID, tagID, result.RowsAffected)
 
 	// 同步更新客户表的Tags字段
-	s.syncCustomerTagsField(customerID)
+	s.syncCustomerTagsField(tenantID, customerID)
 
 	return nil
 }
 
-// GetCustomerTags 获取客户的所有标签
+// GetCustomerTags 获取客户的所有标签（带租户过滤）
 // 过滤掉已过期的标签，按创建时间倒序返回
-func (s *TagService) GetCustomerTags(customerID uint) ([]model.CustomerTag, error) {
+func (s *TagService) GetCustomerTags(tenantID uint, customerID uint) ([]model.CustomerTag, error) {
 	var tags []model.CustomerTag
-	err := db.DB.Where("customer_id = ?", customerID).
+	err := db.DB.Scopes(db.TenantFilter(tenantID)).
+		Where("customer_id = ?", customerID).
 		Order("created_at DESC").
 		Find(&tags).Error
 	if err != nil {
@@ -144,8 +164,8 @@ func (s *TagService) GetCustomerTags(customerID uint) ([]model.CustomerTag, erro
 
 // syncCustomerTagsField 同步客户表的Tags冗余字段
 // customer_tags表是主存储，customers.tags是冗余的JSON数组，方便快速查询
-func (s *TagService) syncCustomerTagsField(customerID uint) {
-	customerTags, err := s.GetCustomerTags(customerID)
+func (s *TagService) syncCustomerTagsField(tenantID uint, customerID uint) {
+	customerTags, err := s.GetCustomerTags(tenantID, customerID)
 	if err != nil {
 		log.Printf("[打标服务] 同步标签字段失败: %v", err)
 		return
@@ -156,39 +176,39 @@ func (s *TagService) syncCustomerTagsField(customerID uint) {
 		tagNames = append(tagNames, ct.TagName)
 	}
 
-	// 更新客户表的tags字段
+	// 更新客户表的tags字段（带租户过滤）
 	var customer model.Customer
-	if err := db.DB.First(&customer, customerID).Error; err != nil {
+	if err := db.DB.Scopes(db.TenantFilter(tenantID)).First(&customer, customerID).Error; err != nil {
 		return
 	}
 	customer.SetTags(tagNames)
-	db.DB.Model(&customer).Update("tags", customer.Tags)
+	db.DB.Scopes(db.TenantFilter(tenantID)).Model(&customer).Update("tags", customer.Tags)
 }
 
 // ============================================================
 // 自动打标 - 从文本中识别标签
 // ============================================================
 
-// AutoTagFromText 从客户输入文本中自动打标
+// AutoTagFromText 从客户输入文本中自动打标（带租户过滤）
 // 遍历所有启用的TagRule，命中任何一个关键词就打上对应标签
 // 已有标签的话，累加权重（每次+0.5，上限5.0），而不是跳过
 // 支持三种规则类型：keyword（关键词匹配）、intent（意图识别）、resistance（抗性识别）
 // 返回：新打上的标签名称列表（供前端展示）
-func (s *TagService) AutoTagFromText(customerID uint, text string) ([]string, error) {
+func (s *TagService) AutoTagFromText(tenantID uint, customerID uint, text string) ([]string, error) {
 	if text == "" {
 		return []string{}, nil
 	}
 
 	textLower := strings.ToLower(text)
 
-	// 获取所有启用的打标规则（从缓存）
-	rules := cache.DefaultTagCache.GetAllRules()
+	// 获取所有启用的打标规则（从缓存，按租户可见范围）
+	rules := cache.DefaultTagCache.GetAllRules(tenantID)
 	if len(rules) == 0 {
 		return []string{}, nil
 	}
 
 	// 获取客户已有标签，用于判断是否是新标签
-	existingTags, err := s.GetCustomerTags(customerID)
+	existingTags, err := s.GetCustomerTags(tenantID, customerID)
 	if err != nil {
 		return []string{}, err
 	}
@@ -252,16 +272,17 @@ func (s *TagService) AutoTagFromText(customerID uint, text string) ([]string, er
 
 	// 处理命中的标签：已有标签累加权重，新标签创建
 	if len(hitTagIDs) > 0 {
-		s.applyHitTagsWithWeight(customerID, hitTagIDs, existingTagMap, "auto")
+		s.applyHitTagsWithWeight(tenantID, customerID, hitTagIDs, existingTagMap, "auto")
 	}
 
 	return newTagNames, nil
 }
 
 // applyHitTagsWithWeight 应用命中的标签，已有标签累加权重，新标签创建
-// 权重累加规则：每次+0.5，上限5.0
+// 权重累加规则：每次+0.5，上限5.0（P2-43 修复：用 SQL 原子累加避免读改写丢增量）
 // 已有标签更新权重，新标签创建关联记录
 func (s *TagService) applyHitTagsWithWeight(
+	tenantID uint,
 	customerID uint,
 	hitTagIDs []uint,
 	existingTagMap map[uint]model.CustomerTag,
@@ -271,23 +292,21 @@ func (s *TagService) applyHitTagsWithWeight(
 
 	for _, tagID := range hitTagIDs {
 		if existing, exists := existingTagMap[tagID]; exists {
-			// 已有标签：累加权重（+0.5，上限5.0）
-			newWeight := existing.Weight + 0.5
-			if newWeight > 5.0 {
-				newWeight = 5.0
-			}
-			if newWeight != existing.Weight {
-				db.DB.Model(&existing).Update("weight", newWeight)
-				log.Printf("[自动打标] 客户%d标签[%s]权重累加: %.1f → %.1f",
-					customerID, existing.TagName, existing.Weight, newWeight)
-			}
+			// 已有标签：SQL 原子累加权重（+0.5，上限5.0），避免并发读改写丢增量
+			db.DB.Model(&model.CustomerTag{}).
+				Scopes(db.TenantFilter(tenantID)).
+				Where("customer_id = ? AND tag_id = ?", customerID, tagID).
+				Update("weight", gorm.Expr("LEAST(weight+0.5, 5.0)"))
+			log.Printf("[自动打标] 客户%d标签[%s]权重原子累加 +0.5(上限5.0)",
+				customerID, existing.TagName)
 		} else {
 			// 新标签：从缓存查标签信息，创建记录
-			tag := cache.DefaultTagCache.GetTagByID(tagID)
+			tag := cache.DefaultTagCache.GetTagByID(tenantID, tagID)
 			if tag == nil {
 				continue
 			}
 			customerTag := &model.CustomerTag{
+				TenantID:   tenantID,
 				CustomerID: customerID,
 				TagID:      tagID,
 				TagName:    tag.Name,
@@ -302,7 +321,7 @@ func (s *TagService) applyHitTagsWithWeight(
 	}
 
 	// 同步更新客户表的Tags冗余字段
-	s.syncCustomerTagsField(customerID)
+	s.syncCustomerTagsField(tenantID, customerID)
 }
 
 // ============================================================
@@ -329,13 +348,13 @@ func (s *TagService) applyHitTagsWithWeight(
 // 结构化字段(预算/意向分等)全是空，如果这里再调用BuildBaseTVector()会现算出
 // 一个全零的"假基准"，把客户真实画像清空。
 // 所以基准值必须由持有真实客户结构化字段的一方（chat.go）算好后传进来
-func (s *TagService) ApplyTagWeightsToTVector(customer *model.Customer, baseVector [32]float64) error {
+func (s *TagService) ApplyTagWeightsToTVector(tenantID uint, customer *model.Customer, baseVector [32]float64) error {
 	if customer == nil {
 		return nil
 	}
 
 	// 获取客户所有标签
-	customerTags, err := s.GetCustomerTags(customer.ID)
+	customerTags, err := s.GetCustomerTags(tenantID, customer.ID)
 	if err != nil {
 		log.Printf("[打标驱动] 获取客户标签失败: %v", err)
 		return err
@@ -350,7 +369,7 @@ func (s *TagService) ApplyTagWeightsToTVector(customer *model.Customer, baseVect
 
 	// 对每个标签，应用权重映射
 	for _, ct := range customerTags {
-		mappings := cache.DefaultTagCache.GetWeightMappingsByTagID(ct.TagID)
+		mappings := cache.DefaultTagCache.GetWeightMappingsByTagID(tenantID, ct.TagID)
 		if len(mappings) == 0 {
 			continue
 		}

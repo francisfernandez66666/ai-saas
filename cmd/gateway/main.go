@@ -65,6 +65,10 @@ func main() {
 	if cfg.AI.GatewayListen == "" {
 		log.Fatalf("未配置 LLM_GATEWAY_LISTEN，网关无法监听；请在 .env 中设置（如 :9091）")
 	}
+	// P0-5 修复：网关无共享密钥 = 无鉴权 LLM 代理，拒绝启动（fail-closed）
+	if cfg.AI.GatewayToken == "" {
+		log.Fatalf("未配置 LLM_GATEWAY_TOKEN——网关将无鉴权暴露平台 LLM 额度（P0-5），拒绝启动；请配置共享密钥")
+	}
 	srv := gateway.NewServer()
 	if err := srv.Run(cfg.AI.GatewayListen); err != nil {
 		log.Fatalf("AI 网关启动失败: %v", err)

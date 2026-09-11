@@ -14,7 +14,10 @@ type Dept = { id: number; name: string; depth: number; path: string; user_count:
 type User = { id: number; username: string; real_name?: string; role: string; department_id?: number; dept_name?: string; status: number }
 
 // 组织架构接口鉴权头
-const AUTH = (): any => ({ headers: { Authorization: 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
+// P0-6 修复(2026-09-09)：原写法 `fetch(url, {method, headers: AUTH()})` 把 `{headers:{...}}`
+// 整个塞进 headers 选项，Authorization 从未发出 → 部门增删改在浏览器里全部 401。
+// 改为一等函数返回完整 RequestInit，调用处用 ...AUTH() 展开。
+const AUTH = (): RequestInit => ({ headers: { Authorization: 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
 // 当前用户角色（来自 localStorage，决定可执行的部门/成员操作）
 const ROLE = localStorage.getItem('role') || ''
 // 角色中文映射
@@ -110,9 +113,13 @@ export default function Org() {
    */
   async function submitDept() {
     const name = fName.trim()
-    if (dlg?.mode === 'add') await fetch('/api/v1/org/departments', { method: 'POST', headers: AUTH(), body: JSON.stringify({ name, parent_id: fParent }) })
-    else if (dlg?.mode === 'rename') await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', headers: AUTH(), body: JSON.stringify({ name }) })
-    else if (dlg?.mode === 'move') await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', headers: AUTH(), body: JSON.stringify({ new_parent_id: fParent }) })
+    // P0-6 修复：headers 不能整体当 headers 传，必须 ...AUTH() 展开，否则 Authorization 丢失导致 401
+    let r
+    if (dlg?.mode === 'add') r = await fetch('/api/v1/org/departments', { method: 'POST', ...AUTH(), body: JSON.stringify({ name, parent_id: fParent }) })
+    else if (dlg?.mode === 'rename') r = await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ name }) })
+    else if (dlg?.mode === 'move') r = await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ new_parent_id: fParent }) })
+    const j = r ? await r.json() : null
+    if (j && j.code !== 0) { MessagePlugin.error(j.message || '操作失败'); return }
     setDlg(null); loadTree()
   }
 
@@ -122,8 +129,8 @@ export default function Org() {
    */
   async function delDept(id: number) {
     if (!confirm('删除该空部门？')) return
-    const r = await fetch('/api/v1/org/departments/' + id, { method: 'DELETE', headers: AUTH() })
-    const j = await r.json(); MessagePlugin.info(j.message || ''); loadTree()
+    const r = await fetch('/api/v1/org/departments/' + id, { method: 'DELETE', ...AUTH() })
+    const j = await r.json(); MessagePlugin[j.code === 0 ? 'success' : 'error'](j.message || '删除失败'); if (j.code === 0) loadTree()
   }
 
   /**
@@ -131,7 +138,8 @@ export default function Org() {
    * 仅管理员类角色可见此按钮
    */
   async function toggleU(id: number, st: number) {
-    await fetch('/api/v1/org/users/' + id, { method: 'PUT', headers: AUTH(), body: JSON.stringify({ status: st === 1 ? 0 : 1 }) })
+    const r = await fetch('/api/v1/org/users/' + id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ status: st === 1 ? 0 : 1 }) })
+    const j = await r.json(); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败')
     loadUsers()
   }
 
@@ -143,8 +151,8 @@ export default function Org() {
    * 成功后关闭弹窗并刷新成员与部门树（更新成员计数）
    */
   async function submitUser() {
-    const r = await fetch('/api/v1/org/users', { method: 'POST', headers: AUTH(), body: JSON.stringify(u) })
-    const j = await r.json(); MessagePlugin.info(j.message || '')
+    const r = await fetch('/api/v1/org/users', { method: 'POST', ...AUTH(), body: JSON.stringify(u) })
+    const j = await r.json(); MessagePlugin[j.code === 0 ? 'success' : 'error'](j.message || '新增失败')
     if (j.code === 0) { setUserDlg(false); loadUsers(); loadTree() }
   }
 

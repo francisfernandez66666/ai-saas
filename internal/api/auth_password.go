@@ -4,6 +4,7 @@ package api
 import (
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -18,6 +19,7 @@ import (
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -128,6 +130,14 @@ func hashCode(code string) string {
 	return hex.EncodeToString(h[:])
 }
 
+// hashEqual 常量时间哈希比较（P2-20）：长度不等直接 false（提前返回不泄漏长度信息）
+func hashEqual(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(a), []byte(b)) == 1
+}
+
 // SendResetCode POST /api/v1/auth/reset-password {username,contact}
 // 重构原因：原实现固定验证码123456且直接回传前端=任何人可重置任意账号（演示遗留漏洞）
 func SendResetCode(c *gin.Context) {
@@ -221,7 +231,19 @@ func VerifyResetCode(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "验证码错误或已过期")
 		return
 	}
-	if rec.CodeHash != hashCode(req.Code) {
+	// P2-20 修复：单码尝试次数上限——暴力枚举 6 位码（1e6 组合）若无防爆破可无限尝试。
+	// 次数用 gorm.Expr 原子自增（防并发击穿），超限立即作废该码。
+	if rec.Attempts >= resetMaxAttempts {
+		db.DB.Model(&model.PasswordReset{}).Where("id = ?", rec.ID).
+			Updates(map[string]interface{}{"used": true, "consumed_at": time.Now()})
+		RespErr(c, http.StatusBadRequest, 400, "验证码错误次数过多，请重新获取")
+		return
+	}
+	db.DB.Model(&model.PasswordReset{}).Where("id = ?", rec.ID).
+		Update("attempts", gorm.Expr("attempts + 1"))
+	// P2-20 修复：哈希比较改常量时间（subtle.ConstantTimeCompare）——防时序侧信道
+	// 逐位爆破哈希前缀；rec.CodeHash 与计算值等长时泄漏面收敛。
+	if !hashEqual(rec.CodeHash, hashCode(req.Code)) {
 		RespErr(c, http.StatusBadRequest, 400, "验证码错误或已过期")
 		return
 	}

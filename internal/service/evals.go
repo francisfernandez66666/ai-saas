@@ -2,7 +2,6 @@
 package service
 
 import (
-	"context"
 	"log"
 	"strings"
 	"time"
@@ -10,6 +9,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/redisclient"
 )
 
 // EvalResult 离线评分结果（与 LLM evals 阶段互补，零成本护栏）
@@ -195,33 +195,67 @@ func evaluateWithLLM(tenantID uint, content string) (float64, []string) {
 	if EvalLLMFunc == nil {
 		return 0, nil
 	}
-	score, reasons := EvalLLMFunc(tenantID, content)
-	if score <= 0 {
+	// P2-5 修复：单条 LLM 评估加 60s 硬超时（原无上限，卡住的模型调用会拖死整批评估）
+	type llmResult struct {
+		score   float64
+		reasons []string
+	}
+	ch := make(chan llmResult, 1)
+	go func() {
+		s, r := EvalLLMFunc(tenantID, content)
+		ch <- llmResult{score: s, reasons: r}
+	}()
+	select {
+	case res := <-ch:
+		if res.score <= 0 {
+			return 0, nil
+		}
+		return res.score, res.reasons
+	case <-time.After(60 * time.Second):
+		log.Printf("[DataFlywheel] 单条 LLM 评估超时 tenant=%d material=%s", tenantID, shortStr(content))
 		return 0, nil
 	}
-	return score, reasons
+}
+
+// shortStr 截断字符串用于日志（防超长素材刷日志）
+func shortStr(s string) string {
+	if len(s) <= 40 {
+		return s
+	}
+	return s[:40] + "..."
 }
 
 // StartBatchEvaluator 启动批量评估定时任务（main.go 调用）
 // 每小时评估一批待审素材，加速素材池流转
+// P2-5 修复(2026-09-09)：
+//   - 多实例选主：redisclient.TryLockE 抢 "dataflywheel:batch_eval" 锁，没抢到直接跳过——
+//     原实现多实例各自跑一遍，同一批素材重复烧评估费
+//   - ctx 不再创建即弃：BatchEvaluate 走 per-item 超时（原 5min ctx 被 _ = ctx 丢弃，调 LLM 无上限）
 func StartBatchEvaluator() {
 	go func() {
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
+			// Redis 启用时选主：仅持锁实例执行本轮评估（未启用=单实例，直接跑）
+			lock, err := redisclient.TryLockE("dataflywheel:batch_eval", 10*time.Minute)
+			if err != nil {
+				log.Printf("[DataFlywheel] 批量评估选主失败(Redis故障): %v", err)
+				continue
+			}
+			if lock == nil {
+				continue // 其他实例持锁，本轮跳过
+			}
 			// 遍历所有租户，批量评估
 			var tenants []model.Tenant
 			db.DB.Where("status IN ?", []string{"active", "trial"}).Find(&tenants)
 			for _, t := range tenants {
-				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-				_ = ctx
 				_, err := BatchEvaluate(t.ID, 100)
-				cancel()
 				if err != nil {
 					log.Printf("[DataFlywheel] 批量评估失败 tenant=%d: %v", t.ID, err)
 				}
 			}
+			lock.Unlock()
 		}
 	}()
-	log.Println("[DataFlywheel] 批量评估定时任务已启动（每小时）")
+	log.Println("[DataFlywheel] 批量评估定时任务已启动（每小时，Redis 选主）")
 }

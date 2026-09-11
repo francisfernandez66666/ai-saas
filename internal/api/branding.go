@@ -38,10 +38,10 @@ func GetPublicBranding(c *gin.Context) {
 	t := middleware.ResolveTenantFromHost(c)
 	if t == nil {
 		// 未匹配到租户时返回平台默认品牌
-		c.JSON(http.StatusOK, BrandingResp{PlatformDefault: true, BrandName: defaultBrandName})
+		RespOK(c, "", BrandingResp{PlatformDefault: true, BrandName: defaultBrandName})
 		return
 	}
-	c.JSON(http.StatusOK, brandingData(t))
+	RespOK(c, "", brandingData(t))
 }
 
 // brandingUpdateReq 白标更新请求（超管 / 租户管理员共用）
@@ -107,6 +107,13 @@ func AdminUpdateBranding(c *gin.Context) {
 	if tid == 0 {
 		RespErr(c, http.StatusForbidden, 403, "无法识别租户")
 		return
+	}
+	// P1-45(2026-09-09)：custom_js 仅超管可改——租户管理员可注入任意脚本（XSS 直达
+	// localStorage token / C 端 visitor_key）。租户侧更新白标时 custom_js 恒回填现值，
+	// 租户管理员传入的新值被忽略（页面字段置只读）。超管仍可经 SuperUpdateBranding 修改。
+	var cur model.Tenant
+	if err := db.DB.First(&cur, tid).Error; err == nil {
+		req.CustomJS = cur.CustomJS
 	}
 	t, err := applyBrandingUpdate(tid, req)
 	if err != nil {

@@ -50,6 +50,7 @@ type PasswordReset struct {
 	CodeHash   string     `gorm:"size:200;index" json:"-"`       // SHA256(6位随机码)
 	ExpiredAt  time.Time  `json:"expired_at"`                    // 过期时间（签发+10分钟）
 	Used       bool       `gorm:"default:false" json:"used"`     // 一次性标记（验证成功即置 true）
+	Attempts   int        `gorm:"default:0" json:"-"`            // 尝试次数（P2-20 防爆破：单码超限即废）
 	LastSentAt time.Time  `json:"last_sent_at"`                  // 最近发送时间（限频锚点）
 	CreatedAt  time.Time  `json:"created_at"`                    // 创建时间
 	ConsumedAt *time.Time `json:"consumed_at"`                   // 消费时间（审计）
