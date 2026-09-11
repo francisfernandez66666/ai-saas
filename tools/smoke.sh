@@ -235,8 +235,10 @@ COMP_AFTER=$(echo "$METRICS2" | grep "ai_scrm_complaint_total" | awk '{print $2}
 [ -n "$COMP_AFTER" ] && check "投诉事件集成(complaint counter=${COMP_AFTER})" y y || check "投诉事件集成" y n
 
 echo "---- 十一、G-22 通用行业包 ----"
-[ -d "/Users/zhangzifei/Desktop/ai-scrm-v2/packs-src/general" ] && check "packs-src/general/ 目录存在" y y || check "packs-src/general/ 目录存在" y n
-GEN_COUNT=$(ls /Users/zhangzifei/Desktop/ai-scrm-v2/packs-src/general/*.json 2>/dev/null | wc -l | tr -d ' ')
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+[ -d "${PROJECT_ROOT}/packs-src/general" ] && check "packs-src/general/ 目录存在" y y || check "packs-src/general/ 目录存在" y n
+GEN_COUNT=$(ls "${PROJECT_ROOT}/packs-src/general/"*.json 2>/dev/null | wc -l | tr -d ' ')
 [ "${GEN_COUNT:-0}" -ge 6 ] && check "通用包JSON文件数(≥6)" y y || check "通用包JSON文件数(期望≥6 实际=${GEN_COUNT:-0})" y n
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="

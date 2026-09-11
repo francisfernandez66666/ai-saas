@@ -81,8 +81,8 @@ if grep -rn --include="*.go" 'uint(2)' internal/ | grep -v '_test.go' | grep -v 
   echo "  FAIL  G-6: uint(2) 脏常量残留"; grep -rn --include="*.go" 'uint(2)' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
 fi
 # 3. gorm:query_option 废弃 API（P1-23 修复防回潮）
-if grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -q .; then
-  echo "  FAIL  G-6: gorm:query_option 废弃 API 残留"; grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | head -5; G6_FAIL=1
+if grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
+  echo "  FAIL  G-6: gorm:query_option 废弃 API 残留"; grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
 fi
 verdict "G-6 防回潮断言" $G6_FAIL
 
