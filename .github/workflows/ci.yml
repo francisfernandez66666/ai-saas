@@ -38,6 +38,7 @@ jobs:
       REDIS_ENABLED: "false"
       AI_MOCK_MODE: "true"
       GIN_MODE: release
+      JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"
       # E2E 断言脚本用 TEST_DB_URL 覆盖默认 dev 库连接（脚本默认连本地 ai_scrm:dev123）
       TEST_DB_URL: postgresql://ai_scrm:ci_pass@localhost:5432/ai_scrm
     steps:
@@ -115,6 +116,7 @@ jobs:
       REDIS_ENABLED: "false"
       AI_MOCK_MODE: "true"
       GIN_MODE: release
+      JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -165,6 +167,7 @@ jobs:
       REDIS_ENABLED: "false"
       AI_MOCK_MODE: "true"
       GIN_MODE: release
+      JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
