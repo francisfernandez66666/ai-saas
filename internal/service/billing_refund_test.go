@@ -191,6 +191,10 @@ func TestRefundPaidProportional(t *testing.T) {
 		AmountCents: pkg.PriceCents, OriginalAmountCents: pkg.PriceCents,
 		Status: "paid", Channel: "mock", Period: "monthly",
 	}
+	// R12(2026-09-11)：退款窗口按订单自身生效窗口（paid_at→+30d）计算，
+	// 夹具如实还原"已生效10天"：paid_at 设为 10 天前（此前漏设 PaidAt 靠租户级 expired_at 兜底）
+	paidAt := time.Now().Add(-10 * 24 * time.Hour)
+	o.PaidAt = &paidAt
 	if err := db.DB.Create(o).Error; err != nil {
 		t.Fatalf("建订单失败: %v", err)
 	}
@@ -222,5 +226,64 @@ func TestRefundPaidProportional(t *testing.T) {
 	}
 	if tnt.Status != "expired" && tnt.Status != "active" {
 		t.Fatalf("订阅状态异常: %s", tnt.Status)
+	}
+}
+
+// TestRefundPaidMultiOrderShrink R12(2026-09-11)：两笔包月叠加时退旧单——
+// 只按旧单自身窗口比例退款、到期日回退旧单剩余天数，不得整体摘除新订阅、不得按租户级
+// expired_at（含新单续期）超退。
+func TestRefundPaidMultiOrderShrink(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	pkg := &model.Package{Code: fmt.Sprintf("ut_ms_%d", time.Now().UnixNano()), Name: "多单包月",
+		PType: "paid", TokenAmount: 1000000, PriceCents: 9900, DurationDays: 30, Enabled: true}
+	if err := db.DB.Create(pkg).Error; err != nil {
+		t.Fatalf("建包失败: %v", err)
+	}
+	mkOrder := func(paidDaysAgo int) uint {
+		paidAt := time.Now().Add(-time.Duration(paidDaysAgo) * 24 * time.Hour)
+		o := &model.BillingOrder{
+			OrderNo:  fmt.Sprintf("UTMS%d%d", time.Now().UnixNano(), paidDaysAgo),
+			TenantID: &tid, PackageID: pkg.ID,
+			AmountCents: pkg.PriceCents, OriginalAmountCents: pkg.PriceCents,
+			Status: "paid", Channel: "mock", Period: "monthly", PaidAt: &paidAt,
+		}
+		if err := db.DB.Create(o).Error; err != nil {
+			t.Fatalf("建订单失败: %v", err)
+		}
+		return o.ID
+	}
+	old := mkOrder(10) // 旧单窗口剩 20 天
+	mkOrder(5)         // 新单窗口剩 25 天（租户 expired_at 被续到 +25d）
+	exp := time.Now().Add(25 * 24 * time.Hour)
+	if err := db.DB.Model(&model.Tenant{}).Where("id=?", tid).
+		Updates(map[string]any{"expired_at": exp, "monthly_token_quota": pkg.TokenAmount, "status": "active"}).Error; err != nil {
+		t.Fatalf("设订阅失败: %v", err)
+	}
+
+	o, flowed, err := MarkOrderRefunded(old)
+	if err != nil || !flowed {
+		t.Fatalf("退旧单应成功 flowed=%v err=%v", flowed, err)
+	}
+	// 旧单自身窗口 20/30 → 6600 分（若按租户级 expired_at 25 天会算出 8250，即旧 bug 超退口径）
+	if o.RefundAmountCents != 6600 {
+		t.Fatalf("退旧单应为6600分(旧单窗口20/30), got %d", o.RefundAmountCents)
+	}
+	var tnt model.Tenant
+	if err := db.DB.First(&tnt, tid).Error; err != nil {
+		t.Fatalf("读租户失败: %v", err)
+	}
+	// 到期日回退 20 天：+25d → +5d；订阅仍生效（新单未被误伤），月配额不清零
+	if tnt.ExpiredAt == nil {
+		t.Fatalf("expired_at 不应为空")
+	}
+	leftDays := time.Until(*tnt.ExpiredAt).Hours() / 24
+	if leftDays < 4.5 || leftDays > 5.5 {
+		t.Fatalf("到期日应回退至约+5天, got %.1f", leftDays)
+	}
+	if tnt.MonthlyTokenQuota != pkg.TokenAmount {
+		t.Fatalf("非最新单退款不应清零月配额, got %d", tnt.MonthlyTokenQuota)
 	}
 }

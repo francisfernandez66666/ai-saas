@@ -10,6 +10,8 @@ import (
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================================
@@ -55,8 +57,31 @@ func SubscribePackage(c *gin.Context) {
 	}
 
 	if pkg.PType == model.PackageTypeFree {
-		if err := service.GrantPackage(nil, tid, &pkg); err != nil {
+		// R1 修复(2026-09-11)：free 直发此前无任何幂等台账（db 层 ux_reward_free_pkg 唯一索引
+		// 声明的"同租户同包一生一次"从未有代码写入）——任意租户 admin 反复调用即无限自 mint
+		// ③免费桶。现台账先行：撞唯一索引 = 已领过，409 拒绝。
+		oid := pkg.ID
+		conflict := false
+		err := db.DB.Transaction(func(tx *gorm.DB) error {
+			res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.RewardClaim{
+				GrantType: model.RewardFreePackage, TenantID: tid, RefID: &oid,
+				Note: pkg.Code,
+			})
+			if res.Error != nil {
+				return res.Error
+			}
+			if res.RowsAffected == 0 {
+				conflict = true
+				return nil // 已领过：事务空提交，不发放
+			}
+			return service.GrantPackage(tx, tid, &pkg)
+		})
+		if err != nil {
 			RespErr(c, http.StatusInternalServerError, 500, "发放失败："+err.Error())
+			return
+		}
+		if conflict {
+			RespErr(c, http.StatusConflict, 409, "该试用包每个租户仅可领取一次")
 			return
 		}
 		writeOrderAudit(c, tid, "package_grant_free", &model.BillingOrder{PackageID: pkg.ID})

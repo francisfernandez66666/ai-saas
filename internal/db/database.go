@@ -250,4 +250,34 @@ func ensureRewardClaimIndexes() {
 			log.Printf("[migrate] reward 索引执行失败: %v", err)
 		}
 	}
+	// R15 修复(2026-09-11)：tenant_users.email 此前无唯一约束，注册"重复邮箱"预检在事务外——
+	// 并发同邮箱两请求可同时通过预检各自建号（OneID 邮箱锚被击穿，注册礼邮箱维度防撞也失效）。
+	// 补部分唯一索引（仅约束非空邮箱，存量多用户空邮箱不受影响）。
+	if err := DB.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_users_email_nonempty ON tenant_users(email) WHERE email <> ''`).Error; err != nil {
+		log.Printf("[migrate] tenant_users.email 唯一索引创建失败(可能存在存量重复邮箱，需人工清洗): %v", err)
+	}
+	backfillOrderEntitlementLedger()
+}
+
+// backfillOrderEntitlementLedger R10/R2 配套迁移(2026-09-11)：为存量 paid 订单回填
+// order_entitlement 发放台账。新对账器以"paid 且缺台账行"为唯一补发信号，若不回填，
+// 上线首轮会把全部历史订单重发一遍（历史订单当年确已发放，只是无台账可证）。
+// 代价：历史上极少数"到账但发放失败"的单会被标记为已发放——该窗口仅存在于旧代码期，
+// 新代码发放全程台账先行单事务，此后缺行即真相。幂等：唯一索引 + NOT EXISTS 双保险。
+func backfillOrderEntitlementLedger() {
+	res := DB.Exec(`
+		INSERT INTO reward_claims (grant_type, tenant_id, email, ref_id, note, created_at)
+		SELECT 'order_entitlement', o.tenant_id, '', o.id, 'order:' || o.order_no, NOW()
+		FROM billing_orders o
+		WHERE o.status = 'paid' AND o.package_id > 0 AND o.tenant_id IS NOT NULL
+		  AND NOT EXISTS (SELECT 1 FROM reward_claims r
+		                  WHERE r.grant_type = 'order_entitlement' AND r.ref_id = o.id)
+		ON CONFLICT DO NOTHING`)
+	if res.Error != nil {
+		log.Printf("[migrate] order_entitlement 台账回填失败: %v", res.Error)
+		return
+	}
+	if res.RowsAffected > 0 {
+		log.Printf("[migrate] order_entitlement 台账回填 %d 行（存量已发放订单）", res.RowsAffected)
+	}
 }

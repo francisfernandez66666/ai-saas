@@ -71,7 +71,9 @@ func SuperTenantList(c *gin.Context) {
 			t.used_customers, t.max_customers,
 			TO_CHAR(t.created_at,'YYYY-MM-DD') as created_at`).
 		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id").
-		Order("t.id ASC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error
+		// 2026-09-11：改 id DESC——前端无翻页 UI（一次拉 page_size 上限），
+		// ASC 会让超管只看到最旧 N 家、新注册租户被挤出视野；DESC 优先展示最新
+		Order("t.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
@@ -146,7 +148,16 @@ func SuperGrantTrial(c *gin.Context) {
 	}
 	// P1.5(2026-08-26)：换用幂等的 GrantTrialBucket（双唯一防撞库；
 	// 非审核态重复调用因台账唯一而跳过，不再二次入桶）
-	service.GrantTrialBucket(nil, t.ID, t.ContactEmail)
+	// R9 修复(2026-09-11)：邮箱锚改用租户管理员真实邮箱——t.ContactEmail 从未被 signup 写入
+	// （admin_email 存在 tenant_users.email），恒空导致 GrantTrialBucket 的邮箱维度防撞失效
+	trialEmail := t.ContactEmail
+	if trialEmail == "" {
+		var adminMail string
+		db.DB.Model(&model.User{}).Where("tenant_id = ? AND email <> ''", t.ID).
+			Select("email").Order("id ASC").Limit(1).Scan(&adminMail)
+		trialEmail = adminMail
+	}
+	service.GrantTrialBucket(nil, t.ID, trialEmail)
 	// 设置试用期：当前时间开始，7天后结束
 	now := time.Now()
 	end := now.AddDate(0, 0, 7)

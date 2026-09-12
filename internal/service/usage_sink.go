@@ -43,6 +43,9 @@ type UsageSink struct {
 
 	flushInterval time.Duration
 	maxBatch      int
+	maxBuf        int // R16：缓冲硬上限，DB 长时间不可用时防 flush 失败堆积 OOM
+
+	dropped int64 // R16：超上限丢弃计数（欠账留痕，非静默）
 
 	wake chan struct{}
 	stop chan struct{}
@@ -54,6 +57,7 @@ var DefaultUsageSink = &UsageSink{
 	shadowOk:      map[uint]bool{},
 	flushInterval: 2 * time.Second,
 	maxBatch:      200,
+	maxBuf:        50000,
 	wake:          make(chan struct{}, 1),
 	stop:          make(chan struct{}),
 }
@@ -119,19 +123,47 @@ func tenantTokenRemain(tid uint) int64 {
 }
 
 // Record 追加一条计量；仅强制计费时维护影子余额并做不足留痕。
+// R16 修复(2026-09-11)：①冷 seed 的 tenantTokenRemain（DB 查询）移出锁——原实现持锁
+// 读库，DB 抖动时对话热路径全部串行卡死（P1-17 把 flush 的 DB 读移出了锁，seed 路径漏了）；
+// ②缓冲加硬上限 maxBuf，flush 持续失败时丢弃最旧并计数告警——宁可欠账留痕，不可 OOM 带走全站。
 func (s *UsageSink) Record(r usageSinkRecord) {
-	s.mu.Lock()
 	enforced := billingEnforced()
 	if enforced {
-		if !s.shadowOk[r.Tid] {
-			s.shadow[r.Tid] = tenantTokenRemain(r.Tid)
-			s.shadowOk[r.Tid] = true
+		// 锁外预判 + 读库 seed（双检写回，seed 是幂等新鲜读，并发重复 seed 无害）
+		s.mu.Lock()
+		needSeed := !s.shadowOk[r.Tid]
+		s.mu.Unlock()
+		if needSeed {
+			remain := tenantTokenRemain(r.Tid)
+			s.mu.Lock()
+			if !s.shadowOk[r.Tid] {
+				s.shadow[r.Tid] = remain
+				s.shadowOk[r.Tid] = true
+			}
+			s.mu.Unlock()
 		}
+	}
+	s.mu.Lock()
+	if enforced {
 		s.shadow[r.Tid] -= r.Tokens
 		if s.shadow[r.Tid] < 0 {
 			log.Printf("[UsageSink] 租户%d 影子余额不足（本次 %d token），欠账 %d（前置闸已拦截，此处仅留痕）",
 				r.Tid, r.Tokens, -s.shadow[r.Tid])
 		}
+	}
+	if len(s.buf) >= s.maxBuf {
+		s.dropped++
+		d := s.dropped
+		s.mu.Unlock()
+		if d == 1 || d%1000 == 0 { // 首条与每千条告警，避免刷屏
+			log.Printf("[UsageSink][ERROR] 缓冲超上限(%d)已丢弃第 %d 条计量（DB 长时间不可用？欠账由影子自愈兜底）", s.maxBuf, d)
+		}
+		// 丢弃前仍推一次 flush，尽量把已积压的落库
+		select {
+		case s.wake <- struct{}{}:
+		default:
+		}
+		return
 	}
 	s.buf = append(s.buf, r)
 	over := len(s.buf) >= s.maxBatch
@@ -145,19 +177,32 @@ func (s *UsageSink) Record(r usageSinkRecord) {
 }
 
 // run flusher 主循环。
+// R19 配套(2026-09-11)：flush panic 若击穿本 goroutine，缓冲将永不再落库直至触顶丢弃——
+// 每轮包 recover，单轮崩溃只丢该批（影子自愈兜底欠账），不带走 flusher。
 func (s *UsageSink) run() {
 	ticker := time.NewTicker(s.flushInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-s.stop:
+			s.flushSafe() // 停机前最终落盘
 			return
 		case <-s.wake:
-			s.flush()
+			s.flushSafe()
 		case <-ticker.C:
-			s.flush()
+			s.flushSafe()
 		}
 	}
+}
+
+// flushSafe 带 panic 护栏的一轮 flush。
+func (s *UsageSink) flushSafe() {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[UsageSink][PANIC] flush 崩溃已拦截，本批跳过：%v", r)
+		}
+	}()
+	s.flush()
 }
 
 // flush 取出当前缓冲并按租户分组批量扣减（每租户一次 DeductTokensActual，内部单事务+行锁）。

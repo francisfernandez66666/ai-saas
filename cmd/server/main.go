@@ -27,6 +27,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +44,18 @@ import (
 
 // startTime 进程启动时间（/status 观测用）
 var startTime time.Time
+
+// safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
+// 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
+// 一个对账/清理任务的偶发崩溃不该带走全站。此处 recover 后打全栈日志，循环继续下一轮。
+func safeRun(name string, fn func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[PANIC-GUARD] 后台任务 %s 崩溃已拦截，本轮跳过：%v\n%s", name, r, debug.Stack())
+		}
+	}()
+	fn()
+}
 
 // main 程序入口：按既定顺序编排启动（配置→DB→seed→缓存→引擎→消费者→路由→监听）
 func main() {
@@ -198,14 +211,16 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		for range ticker.C {
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:sm:sweep", 55*time.Second); h != nil {
+			safeRun("sm:sweep", func() {
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:sm:sweep", 55*time.Second); h != nil {
+						statemachine.SweepOnce(10 * time.Minute)
+						h.Unlock()
+					}
+				} else {
 					statemachine.SweepOnce(10 * time.Minute)
-					h.Unlock()
 				}
-			} else {
-				statemachine.SweepOnce(10 * time.Minute)
-			}
+			})
 		}
 	}()
 
@@ -224,26 +239,28 @@ func main() {
 		}
 		if redisclient.IsEnabled() {
 			if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
-				run()
+				safeRun("usage:reset+expire@startup", run)
 				h.Unlock()
 			}
 		} else {
-			run()
+			safeRun("usage:reset+expire@startup", run)
 		}
 		ticker := time.NewTicker(1 * time.Hour)
 		for range ticker.C {
-			runWithLock := func() {
-				service.ResetAllTenantsMonthlyUsageIfDue()
-				service.ExpireCheck()
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
-					runWithLock()
-					h.Unlock()
+			safeRun("usage:reset+expire", func() {
+				runWithLock := func() {
+					service.ResetAllTenantsMonthlyUsageIfDue()
+					service.ExpireCheck()
 				}
-			} else {
-				runWithLock()
-			}
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
+						runWithLock()
+						h.Unlock()
+					}
+				} else {
+					runWithLock()
+				}
+			})
 		}
 	}()
 
@@ -255,7 +272,9 @@ func main() {
 		db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
 		for range ticker.C {
 			// K8修复(2026-08-26)：上报成功才推进 lastID，失败保留以重试，避免增量审计数据漏传
-			if service.ReportAuditIncrement(lastID) {
+			var ok bool
+			safeRun("flywheel:report", func() { ok = service.ReportAuditIncrement(lastID) })
+			if ok {
 				db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
 			}
 		}
@@ -269,14 +288,16 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
 		for range ticker.C {
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:billing:sweep", 4*time.Minute); h != nil {
+			safeRun("billing:sweep", func() {
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:billing:sweep", 4*time.Minute); h != nil {
+						service.SweepExpiredOrders()
+						h.Unlock()
+					}
+				} else {
 					service.SweepExpiredOrders()
-					h.Unlock()
 				}
-			} else {
-				service.SweepExpiredOrders()
-			}
+			})
 		}
 	}()
 
@@ -285,7 +306,9 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		for range ticker.C {
-			service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
+			safeRun("queue:sweep", func() {
+				service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
+			})
 		}
 	}()
 
@@ -296,17 +319,19 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(24 * time.Hour)
 		for range ticker.C {
-			run := func() {
-				service.CleanupMQTables()
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
-					run()
-					h.Unlock()
+			safeRun("mq:cleanup", func() {
+				run := func() {
+					service.CleanupMQTables()
 				}
-			} else {
-				run()
-			}
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
+						run()
+						h.Unlock()
+					}
+				} else {
+					run()
+				}
+			})
 		}
 	}()
 
@@ -314,18 +339,20 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(6 * time.Hour)
 		for range ticker.C {
-			runRecon := func(name string, fn func() int) {
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:"+name, 5*time.Hour); h != nil {
+			safeRun("billing:renew+reconcile", func() {
+				runRecon := func(name string, fn func() int) {
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:"+name, 5*time.Hour); h != nil {
+							fn()
+							h.Unlock()
+						}
+					} else {
 						fn()
-						h.Unlock()
 					}
-				} else {
-					fn()
 				}
-			}
-			runRecon("billing:renew", service.SweepSubscriptionRenewals)
-			runRecon("billing:reconcile", service.ReconcileBilling)
+				runRecon("billing:renew", service.SweepSubscriptionRenewals)
+				runRecon("billing:reconcile", service.ReconcileBilling)
+			})
 		}
 	}()
 
@@ -336,9 +363,11 @@ func main() {
 	go func() {
 		ticker := time.NewTicker(60 * time.Second)
 		for range ticker.C {
-			if ai.Router != nil {
-				ai.Router.RecoverCoolingModels()
-			}
+			safeRun("ai:recover-cooling", func() {
+				if ai.Router != nil {
+					ai.Router.RecoverCoolingModels()
+				}
+			})
 		}
 	}()
 
@@ -368,6 +397,18 @@ func main() {
 
 	// 9. 初始化Gin引擎
 	r := gin.Default()
+
+	// R4 修复(2026-09-11)：gin 默认信任所有来源的 X-Forwarded-For——未经反向代理直连部署时，
+	// 客户端可伪造 XFF 绕过 login_guard 防爆破与注册 IP 限流（"每 IP N 次"形同虚设）。
+	// 显式声明可信代理：TRUSTED_PROXIES=127.0.0.1,10.0.0.0/8（逗号分隔）；未配置则不信任任何代理。
+	if tp := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); tp != "" {
+		if err := r.SetTrustedProxies(strings.Split(tp, ",")); err != nil {
+			log.Printf("[WARN] TRUSTED_PROXIES 配置非法，回退为不信任任何代理: %v", err)
+			_ = r.SetTrustedProxies(nil)
+		}
+	} else {
+		_ = r.SetTrustedProxies(nil)
+	}
 
 	// 10. 注册中间件
 	// 顺序：CORS → TenantResolver（全局，fail-closed）

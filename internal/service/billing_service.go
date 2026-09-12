@@ -30,6 +30,11 @@ import (
 // ErrRefundNoRemaining 退款拒绝哨兵：订单权益已全部消耗/过期，无剩余可退
 var ErrRefundNoRemaining = errors.New("该订单权益已全部消耗，无剩余可退")
 
+// ErrRefundNotWired R8 哨兵(2026-09-11)：账面退款已完成但出款通道未配置/未接入——
+// 必须显式区分"钱退了"与"权益回收了"，杜绝把账面 refunded 误当银库到账（此前 PaymentProvider
+// 连 Refund 方法都没有，退款天然是账面假实现）。
+var ErrRefundNotWired = errors.New("退款出款通道未配置，仅完成账面回收")
+
 // ============================================================
 // 收银台服务（商业化第一批 M1，2026-08-23）
 //
@@ -47,6 +52,9 @@ var ErrRefundNoRemaining = errors.New("该订单权益已全部消耗，无剩�
 type PaymentProvider interface {
 	Name() string                                                      // wechat/alipay
 	CreatePayment(order *model.BillingOrder) (qrURL string, err error) // 下单返回支付凭证
+	// Refund R8 补齐(2026-09-11)：真实出款接口。此前接口无 Refund，订单退款只回收权益
+	// 不触资金侧，账面 refunded 与"客户收到钱"完全脱钩——接真实 PSP 时此方法是必答题。
+	Refund(order *model.BillingOrder, refundCents int) error
 }
 
 // MockProvider 模拟渠道：无真实收款，配合 mock-pay 接口跑通全链路
@@ -59,6 +67,9 @@ func (MockProvider) Name() string { return "mock" }
 func (MockProvider) CreatePayment(order *model.BillingOrder) (string, error) {
 	return fmt.Sprintf("mock://pay/%s?amount=%d", order.OrderNo, order.AmountCents), nil
 }
+
+// Refund 模拟渠道退款：无资金侧，账面语义直接成功
+func (MockProvider) Refund(order *model.BillingOrder, refundCents int) error { return nil }
 
 // GatewayProvider 真实支付网关适配器（pay_mode=sdk 落点，P2 商业化）
 // 对接任意支持「下单接口 + 异步回调」的 PSP（微信/支付宝/聚合码台），
@@ -119,6 +130,60 @@ func (g GatewayProvider) CreatePayment(order *model.BillingOrder) (string, error
 		return "", fmt.Errorf("支付网关下单失败: %s", out.Message)
 	}
 	return out.PayURL, nil
+}
+
+// Refund R8(2026-09-11)：向 PSP 发起真实出款（契约与下单对称：HMAC 签名 + code=0 即成功）。
+// 端点约定 {pay_gateway_url}/refund（可用 pay_gateway_refund_url 覆盖）。
+// 未配置网关 → ErrRefundNotWired（调用方须把订单标记 psp_pending，账面与资金显式分离）。
+func (g GatewayProvider) Refund(order *model.BillingOrder, refundCents int) error {
+	if g.Endpoint == "" || g.AppID == "" || g.Key == "" {
+		return ErrRefundNotWired
+	}
+	endpoint := g.Endpoint + "/refund"
+	if v := getPlatformConf("pay_gateway_refund_url", "PAY_GATEWAY_REFUND_URL"); v != "" {
+		endpoint = v
+	}
+	params := map[string]string{
+		"out_trade_no":  order.OrderNo,
+		"refund_fee":    strconv.Itoa(refundCents),
+		"app_id":        g.AppID,
+		"out_refund_no": fmt.Sprintf("RF%s%s", time.Now().Format("20060102150405"), order.OrderNo),
+		"timestamp":     strconv.FormatInt(time.Now().Unix(), 10),
+	}
+	params["sign"] = signParams(params, g.Key)
+	body, _ := json.Marshal(params)
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("退款出款请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Code    int    `json:"code"`
+		Message string `json:"message"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("退款响应解析失败: %w", err)
+	}
+	if out.Code != 0 {
+		return fmt.Errorf("支付网关退款失败: %s", out.Message)
+	}
+	return nil
+}
+
+// getPlatformConf 平台配置读取（系统层，env 兜底；nil 服务安全）
+func getPlatformConf(sysKey, envKey string) string {
+	if DefaultSystemConfigService != nil {
+		if v := DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
+			return v
+		}
+	}
+	return os.Getenv(envKey)
 }
 
 // signParams 按 key 字典序拼接 sign=HMAC_SHA256(key, k1=v1&k2=v2...)
@@ -280,6 +345,26 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 		if r := SetTenantRLS(tx, tenantID); r.Error != nil {
 			return r.Error
 		}
+		// R11 修复(2026-09-11)：升级抵扣计算（ActivePaidSubscription）是无锁读——并发下两单
+		// 都按同一基数算抵扣 = 同一份剩余价值抵扣两次。落库前锁基数订单行复核：
+		// 状态必须仍为 paid，且不允许存在另一笔 pending 升级单引用同一基数。
+		if order.ReplaceSub && order.UpgradeBaseOrderID > 0 {
+			var base model.BillingOrder
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).First(&base, order.UpgradeBaseOrderID).Error; err != nil {
+				return fmt.Errorf("原订阅状态已变化，请刷新后重试")
+			}
+			if base.Status != "paid" {
+				return fmt.Errorf("原订阅状态已变化，请刷新后重试")
+			}
+			var dup int64
+			if err := tx.Model(&model.BillingOrder{}).
+				Where("upgrade_base_order_id = ? AND status = 'pending'", base.ID).Count(&dup).Error; err != nil {
+				return err
+			}
+			if dup > 0 {
+				return fmt.Errorf("已有进行中的升级订单，请先完成支付或取消")
+			}
+		}
 		return tx.Create(order).Error
 	})
 	if err != nil {
@@ -362,6 +447,40 @@ func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, err
 	return &o, true, nil
 }
 
+// ReopenClosedOrderPaid R5 修复(2026-09-11)：迟到到账保护。
+// 订单被超时巡检 closed 后，真实资金才到达（PSP 回调延迟/银行转账慢）——此前该回调
+// 静默丢弃（扣钱不发货、对账也不覆盖 closed 单）。现允许"真钱信号"通道
+// （webhook 验签后 / 超管人工确认）把 closed 单重新拉回 paid 并补发权益；
+// mock 渠道绝不允许（自助接口无真实资金，reopen 会成白嫖入口）。
+// 条件 UPDATE 保证并发下只有一个调用方拿到流转权。
+func ReopenClosedOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, error) {
+	if channel == "" || channel == "mock" {
+		return nil, false, nil
+	}
+	now := time.Now()
+	res := db.DB.Model(&model.BillingOrder{}).
+		Where("id = ? AND status = 'closed'", orderID).
+		Updates(map[string]interface{}{
+			"status":       "paid",
+			"paid_at":      now,
+			"payment_data": fmt.Sprintf(`{"channel":"%s","late_payment_reopen":true,"confirmed_at":"%s"}`, channel, now.Format(time.RFC3339)),
+		})
+	if res.Error != nil {
+		return nil, false, res.Error
+	}
+	if res.RowsAffected == 0 {
+		return nil, false, nil
+	}
+	var o model.BillingOrder
+	if err := db.DB.First(&o, orderID).Error; err != nil {
+		return nil, false, err
+	}
+	IncPaymentPaid()
+	log.Printf("[Billing][WARN] 订单%s 超时关闭后迟到到账，已自动恢复 paid 并补发权益 channel=%s", o.OrderNo, channel)
+	NotifyGroup(fmt.Sprintf("【迟到到账】订单 %s（%d分）超时关闭后收到 %s 渠道到账，已自动恢复发放，请财务复核", o.OrderNo, o.AmountCents, channel))
+	return &o, true, nil
+}
+
 // ConfirmOrderByChannel 支付网关异步回调统一落点（webhook 复用）：
 // 按 order_no 定位 → 幂等到账 → 发放权益 → 发布 payment 事件。
 // 返回 (订单, 是否本次实际流转)。flowed=false 视为重复回调/已处理。
@@ -370,13 +489,29 @@ func ConfirmOrderByChannel(orderNo, channel string) (*model.BillingOrder, bool, 
 	if err := db.DB.Where("order_no = ?", orderNo).First(&o).Error; err != nil {
 		return nil, false, fmt.Errorf("订单不存在: %s", orderNo)
 	}
+	// L3 修复(2026-09-11)：webhook 路径参数 :channel 与订单实际渠道互验——
+	// 此前任何验签通过的回调打到 /webhook/任意渠道 都能给别渠道订单发货（渠道混淆）。
+	// manual 作为人工确认别名放行。
+	if channel != "" && channel != "manual" && o.Channel != "" && o.Channel != channel {
+		return nil, false, fmt.Errorf("回调渠道(%s)与订单渠道(%s)不一致", channel, o.Channel)
+	}
 	order, flowed, err := MarkOrderPaid(o.ID, channel)
 	if err != nil {
 		return nil, false, err
 	}
+	if !flowed {
+		// R5：真实到账回调遇到超时关单 → 复活补发（mock 渠道在 Reopen 内部已拒）
+		reopened, ok, rerr := ReopenClosedOrderPaid(o.ID, channel)
+		if rerr != nil {
+			return nil, false, rerr
+		}
+		if ok {
+			order, flowed = reopened, true
+		}
+	}
 	if flowed && order.TenantID != nil {
 		if err := GrantOrderEntitlement(nil, order); err != nil {
-			// 钱已收权益未发：记录告警，交由超管后台补救（不回滚到账状态）
+			// 钱已收权益未发：记录告警，交由对账器按台账补发（不回滚到账状态）
 			log.Printf("[Billing][ERROR] 网关回调订单%s 到账但发放失败: %v", order.OrderNo, err)
 		} else {
 			PublishPaymentEvent(order)
@@ -387,8 +522,9 @@ func ConfirmOrderByChannel(orderNo, channel string) (*model.BillingOrder, bool, 
 
 // refundClawback 退款需同步回收的权益（关闭「付费→退款→白嫖」口子）
 type refundClawback struct {
-	tokens int64 // increment：回收②永久余额份额
-	expire bool  // paid：摘除订阅（expired_at=现在 + 月配额清零）
+	tokens    int64 // increment：回收②永久余额份额
+	expire    bool  // paid：摘除订阅（expired_at=现在 + 月配额清零）
+	shrinkDay int   // paid 非最新订阅单：expired_at 仅回退该单剩余天数（R12 多单不误伤）
 }
 
 // MarkOrderRefunded 按剩余比例退款（2026-09-08 商业化审计修复）。
@@ -478,6 +614,23 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 					return r.Error
 				}
 			}
+			// R12：非最新订阅单只把到期日回退本单剩余天数（不误伤后续订阅）
+			if cb.shrinkDay > 0 && t.ExpiredAt != nil {
+				newExp := t.ExpiredAt.AddDate(0, 0, -cb.shrinkDay)
+				if newExp.Before(now) {
+					newExp = now
+				}
+				if r := tx.Model(&model.Tenant{}).Where("id = ?", *o.TenantID).
+					Update("expired_at", newExp); r.Error != nil {
+					return r.Error
+				}
+			}
+			// R7 修复(2026-09-11)：退款回收邀请人"付费推荐奖励"——此前受邀人首笔包月退款后，
+			// 邀请人白留 50 万永久 token（可"付费→退款"洗奖励）。仅当该受邀租户已无其它
+			// paid 包月单（触发单消失）时回收，并重置幂等闸门（再付费可再得，语义一致）。
+			if cb.expire || cb.shrinkDay > 0 {
+				ClawbackPaidReferralReward(tx, t)
+			}
 			InvalidateShadow(*o.TenantID) // 计费统一：退款回收后影子余额失效
 		}
 		return nil
@@ -488,6 +641,23 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 	if flow {
 		IncPaymentFailed() // 退款计为支付失败（成功率分母）
 		log.Printf("[Billing] 退款受理 order=%d refund=%d分 tokens回收=%d", orderID, refundInfo.refund, refundInfo.tokens)
+		// R8 修复(2026-09-11)：真实渠道订单联动 PSP 出款——此前退款只回收权益，
+		// 账面 refunded 与客户实际收到退款完全脱钩。出款失败不吞：订单标 psp_pending
+		// + 群告警，账面与资金状态显式分离，财务可据此人工出款后核销。
+		var o2 model.BillingOrder
+		if db.DB.First(&o2, orderID).Error == nil && refundInfo.refund > 0 &&
+			o2.Channel != "" && o2.Channel != "mock" && o2.Channel != "manual" {
+			gp := loadGatewayProvider()
+			status := "psp_ok"
+			if rerr := gp.Refund(&o2, int(refundInfo.refund)); rerr != nil {
+				status = "psp_pending"
+				log.Printf("[Billing][ERROR] 订单%d(%s) PSP 出款失败: %v（账面已回收，需人工出款核销）",
+					orderID, o2.OrderNo, rerr)
+				NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，PSP 出款异常(%v)，权益已回收但资金未出，请财务人工处理",
+					o2.OrderNo, refundInfo.refund, rerr))
+			}
+			db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).Update("refund_psp_status", status)
+		}
 	}
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
@@ -534,17 +704,36 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 		if pkg.DurationDays <= 0 || o.AmountCents <= 0 {
 			return nil, 0, nil
 		}
-		if t.ExpiredAt == nil || !t.ExpiredAt.After(time.Now()) {
-			return nil, 0, ErrRefundNoRemaining // 订阅已过期/未生效，无剩余
+		// R12 修复(2026-09-11)：退款窗口改用"本订单自身生效窗口"（paid_at → +DurationDays），
+		// 不再读租户级 expired_at——多笔包月叠加时 expired_at 被续到最后一单之后，
+		// 退旧单会按"全部剩余天"超退（旧单第10天退，租户还剩50天 → 竟退 50/30 天封顶全额）。
+		// 多单场景退旧单只回收旧单自己的剩余窗口，租户 expired_at 相应回退（shrinkDay），
+		// 仅当本单是最新一笔付费订阅时才整体摘除（expire）。
+		start := o.CreatedAt
+		if o.PaidAt != nil {
+			start = *o.PaidAt // 到账时间即窗口起点（存量单 paid_at 为空时回落 created_at）
 		}
-		left := int(time.Until(*t.ExpiredAt).Hours()/24) + 1 // 剩余天数（向上取整到天，当天即退）
-		if left <= 0 {
-			return nil, 0, ErrRefundNoRemaining
+		end := start.AddDate(0, 0, pkg.DurationDays)
+		nowT := time.Now()
+		if !end.After(nowT) {
+			return nil, 0, ErrRefundNoRemaining // 本单窗口已耗尽，已消费不退
 		}
+		left := int(end.Sub(nowT).Hours()/24) + 1 // 本单剩余天数（当天即退向上取整）
 		if left > pkg.DurationDays {
 			left = pkg.DurationDays
 		}
 		refund := int64(o.AmountCents) * int64(left) / int64(pkg.DurationDays)
+		// 是否存在比本单更晚生效且仍 paid 的包月单：有 → 只回到期日；无 → 整体摘除
+		var later int64
+		tx.Model(&model.BillingOrder{}).
+			Joins("JOIN packages ON packages.id = billing_orders.package_id").
+			Where("billing_orders.tenant_id = ? AND billing_orders.status = 'paid' AND billing_orders.id <> ?", *o.TenantID, o.ID).
+			Where("packages.p_type = ? AND COALESCE(billing_orders.paid_at, billing_orders.created_at) > ?",
+				model.PackageTypePaid, start).
+			Count(&later)
+		if later > 0 {
+			return &refundClawback{shrinkDay: left}, refund, nil
+		}
 		return &refundClawback{expire: true}, refund, nil
 	default:
 		return nil, 0, nil // free 等：金额0/注册礼，无权益可回收
@@ -664,48 +853,37 @@ func SweepSubscriptionRenewals() int {
 	return n
 }
 
-// ReconcileBilling 对账（P2）：发现「已支付但订阅权益未真正生效」的异常单并幂等重发一次。
-// 判定：订单 paid 且租户仍为 active/trial，但 expired_at 为 NULL（说明 GrantPackage 未落地，属发放失败）。
-// 仅此一种清晰信号才重发，避免对已正常到期的订阅误续费；重发以审计动作去重防循环。
+// ReconcileBilling 对账（P2）：发现「已支付但发放未落地」的异常单并按台账幂等补发。
+// R2 修复(2026-09-11)：旧判定"paid 且租户 expired_at IS NULL"对 increment/free 订单
+// 恒为假阳性（增量包根本不改 expired_at），每轮把已正常发放的增量单再发一遍——
+// 每笔增量单被白送一份 300 万 token（审计单轮漏一次，guard 审计去重只是掩盖而非修复）。
+// 新判定唯一锚：paid 且**缺 order_entitlement 发放台账行**（GrantOrderEntitlement 已改为
+// 台账先行单事务，缺行=发放确实未落地）。created_at 留 10 分钟窗口避让在途发放。
 // 返回本次补救发放数。
 func ReconcileBilling() int {
 	var orders []model.BillingOrder
-	if err := db.DB.Where("status = 'paid' AND package_id > 0").Find(&orders).Error; err != nil {
+	if err := db.DB.Where("status = 'paid' AND package_id > 0 AND tenant_id IS NOT NULL").
+		Where("created_at < NOW() - INTERVAL '10 minutes'").
+		Where("id NOT IN (SELECT ref_id FROM reward_claims WHERE grant_type = ? AND ref_id IS NOT NULL)",
+			model.RewardOrderEntitlement).
+		Limit(200).Find(&orders).Error; err != nil {
 		log.Printf("[Billing] 对账列举订单失败: %v", err)
 		return 0
 	}
 	n := 0
 	for _, o := range orders {
-		if o.TenantID == nil {
+		order := o
+		if err := GrantOrderEntitlement(nil, &order); err != nil {
+			log.Printf("[Billing] 对账重发失败 tenant=%d order=%d: %v", *order.TenantID, order.ID, err)
 			continue
 		}
-		var t model.Tenant
-		if err := db.DB.Where("id = ?", *o.TenantID).First(&t).Error; err != nil {
-			continue
-		}
-		// 仅 active/trial 但 expired_at 为空 → 发放遗漏
-		if (t.Status == "active" || t.Status == "trial") && (t.ExpiredAt == nil) {
-			guard := fmt.Sprintf("billing_reconcile_%d", o.ID)
-			var cnt int64
-			db.DB.Model(&model.TenantAuditLog{}).Where("tenant_id = ? AND action = ?", *o.TenantID, guard).Count(&cnt)
-			if cnt > 0 {
-				continue
-			}
-			var pkg model.Package
-			if err := db.DB.Where("id = ?", o.PackageID).First(&pkg).Error; err != nil {
-				continue
-			}
-			if err := GrantPackage(nil, *o.TenantID, &pkg); err != nil {
-				log.Printf("[Billing] 对账重发失败 tenant=%d order=%d: %v", *o.TenantID, o.ID, err)
-				continue
-			}
-			db.DB.Create(&model.TenantAuditLog{
-				TenantID: *o.TenantID, Action: guard, Resource: fmt.Sprintf("order:%d", o.ID),
-				Detail: `{"reconcile":"regrant_entitlement"}`,
-			})
-			log.Printf("[Billing] 对账补救发放 tenant=%d order=%d pkg=%s", *o.TenantID, o.ID, pkg.Code)
-			n++
-		}
+		db.DB.Create(&model.TenantAuditLog{
+			TenantID: *order.TenantID, Action: fmt.Sprintf("billing_reconcile_%d", order.ID),
+			Resource: fmt.Sprintf("order:%d", order.ID),
+			Detail:   `{"reconcile":"regrant_entitlement"}`,
+		})
+		log.Printf("[Billing] 对账补救发放 tenant=%d order=%d pkg=%d", *order.TenantID, order.ID, order.PackageID)
+		n++
 	}
 	if n > 0 {
 		log.Printf("[Billing] 对账完成，补救发放 %d 笔", n)
@@ -714,29 +892,52 @@ func ReconcileBilling() int {
 }
 
 // GrantOrderEntitlement 按订单关联的商业包发放权益（M2 发放落点）
+// R10 修复(2026-09-11)：此前"改单(paid)"与"发放权益"跨事务、无发放锚点——
+// 到账后进程崩溃 = 钱收了权益永久丢失（注释宣称的 order_entitlement 自愈锚从未有代码写入）。
+// 现在：发放全程收进单事务，事务内先写 order_entitlement 台账（ref_id=order_id 唯一索引
+// ux_reward_order_grant），撞库=已发过直接幂等短路；发放失败随事务整体回滚、可安全重试。
+// 对账器（ReconcileBilling）以"paid 但缺台账行"为唯一补发信号。
 func GrantOrderEntitlement(tx *gorm.DB, order *model.BillingOrder) error {
 	if order.PackageID == 0 || order.TenantID == nil {
 		return fmt.Errorf("订单%d 无商业包/租户归属，跳过发放", order.ID)
 	}
-	var pkg model.Package
-	if err := db.DB.First(&pkg, order.PackageID).Error; err != nil {
-		return fmt.Errorf("订单%d 关联包不存在: %w", order.ID, err)
-	}
-	// 2026-09-09 换包升级：差额抵扣订单（ReplaceSub=true）走"从今天起算"的发放，
-	// 替换旧订阅而非顺延；普通订单走默认顺延语义
-	if order.ReplaceSub {
-		if err := GrantPackageUpgrade(tx, *order.TenantID, &pkg); err != nil {
+	run := func(tx *gorm.DB) error {
+		oid := order.ID
+		res := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&model.RewardClaim{
+			GrantType: model.RewardOrderEntitlement, TenantID: *order.TenantID,
+			RefID: &oid, Note: "order:" + order.OrderNo,
+		})
+		if res.Error != nil {
+			return res.Error
+		}
+		if res.RowsAffected == 0 {
+			log.Printf("[Billing] 订单%s 发放台账已存在，幂等跳过（不二次发放）", order.OrderNo)
+			return nil
+		}
+		var pkg model.Package
+		if err := tx.First(&pkg, order.PackageID).Error; err != nil {
+			return fmt.Errorf("订单%d 关联包不存在: %w", order.ID, err)
+		}
+		// 2026-09-09 换包升级：差额抵扣订单（ReplaceSub=true）走"从今天起算"的发放，
+		// 替换旧订阅而非顺延；普通订单走默认顺延语义
+		if order.ReplaceSub {
+			if err := GrantPackageUpgrade(tx, *order.TenantID, &pkg); err != nil {
+				return err
+			}
+		} else if err := GrantPackage(tx, *order.TenantID, &pkg); err != nil {
 			return err
 		}
-	} else if err := GrantPackage(tx, *order.TenantID, &pkg); err != nil {
-		return err
+		// M-R 邀请推广（2026-08-25）：受邀人首笔 paid 包月套餐到账 →
+		// 邀请人获永久 token（幂等闸门 ReferralPaidRewarded，单受邀限一次；increment/free 不触发）
+		if pkg.PType == model.PackageTypePaid {
+			RewardPaidReferral(tx, *order.TenantID)
+		}
+		return nil
 	}
-	// M-R 邀请推广（2026-08-25）：受邀人首笔 paid 包月套餐到账 →
-	// 邀请人获永久 token（幂等闸门 ReferralPaidRewarded，单受邀限一次；increment/free 不触发）
-	if pkg.PType == model.PackageTypePaid {
-		RewardPaidReferral(tx, *order.TenantID)
+	if tx != nil {
+		return run(tx)
 	}
-	return nil
+	return db.DB.Transaction(run)
 }
 
 // PublishPaymentEvent 确认到账后发布 payment 子事件

@@ -82,6 +82,27 @@ func OpenAPIAuth() gin.HandlerFunc {
 			abortOpenAPI(c, http.StatusUnauthorized, "API Key 未绑定租户")
 			return
 		}
+		// R6 修复(2026-09-11)：OpenAPI 链此前不查租户状态——超管封禁/注销/欠费停用后，
+		// 该租户的 sk_ Key 照常读数据、烧 AI，封禁形同虚设。与 TenantResolver 同口径
+		// fail-closed：仅 active/trial 且未过 cancel_at 生效期可访问。
+		var kt model.Tenant
+		if err := db.DB.Select("id, status, cancel_at").First(&kt, *key.TenantID).Error; err != nil {
+			abortOpenAPI(c, http.StatusForbidden, "Key 归属租户不存在")
+			return
+		}
+		if kt.Status != "active" && kt.Status != "trial" {
+			abortOpenAPI(c, http.StatusForbidden, "Key 归属租户已停用或不可用")
+			return
+		}
+		if kt.CancelAt != nil {
+			// 注销次日零点生效（与 TenantResolver/登录拦截同口径的自然日比较）
+			now := time.Now()
+			today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+			if kt.CancelAt.Before(today) {
+				abortOpenAPI(c, http.StatusForbidden, "Key 归属租户已注销")
+				return
+			}
+		}
 
 		c.Set("user_id", uint(0))
 		c.Set("role", model.RoleReadOnly) // 开放接口只读语义，叠加 DataScope 时按全租户只读处理

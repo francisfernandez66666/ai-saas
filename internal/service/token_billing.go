@@ -21,6 +21,7 @@ package service
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -60,10 +61,17 @@ func CheckTokenAvailability(tenantID uint) bool {
 		return true
 	}
 	var t model.Tenant
+	// R17 修复(2026-09-11)：原实现 DB 读失败即 fail-open 放行——超配额租户在数据库抖动窗口
+	// 可无限白烧真实 AI（成本红线）。改 fail-closed：读不到余额就不给用（DB 挂时聊天主链路
+	// 本就不可用，放行无意义）；仅"租户确实不存在"（ErrRecordNotFound）保留放行兼容 legacy 路径。
 	if err := db.DB.Select("free_token_balance", "free_token_expires_at",
 		"monthly_token_quota", "monthly_token_used", "token_balance").
 		First(&t, tenantID).Error; err != nil {
-		return true // 读不到租户不阻断主链路（fail-open，扣减侧另有日志）
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return true
+		}
+		log.Printf("[Billing] 可用性检查读租户%d失败，按 fail-closed 拒绝: %v", tenantID, err)
+		return false
 	}
 	now := time.Now()
 	freeAvail := int64(0)

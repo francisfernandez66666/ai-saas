@@ -238,12 +238,15 @@ export default function Client() {
             guestPromise = fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }).then((r) => r.json()).finally(() => { guestPromise = null })
           }
           const j = await guestPromise
-          if (j.code === 0 && j.customer_id) {
-            cid = j.customer_id
+          // G-13 信封统一(2026-09-11)：/chat/guest 响应已收口到 RespOK 的 {code,data} 形态，
+          // customer_id/visitor_key 移入 data 下（此前读扁平 j.customer_id 恒 undefined，C端建客死锁）
+          const gd = j.data || {}
+          if (j.code === 0 && gd.customer_id) {
+            cid = gd.customer_id
             custId.current = cid
             localStorage.setItem(LS_ID, String(cid))
-            if (j.visitor_key) localStorage.setItem(LS_KEY, j.visitor_key)
-            setWsCid(cid); setWsVk(j.visitor_key || localStorage.getItem(LS_KEY) || null)
+            if (gd.visitor_key) localStorage.setItem(LS_KEY, gd.visitor_key)
+            setWsCid(cid); setWsVk(gd.visitor_key || localStorage.getItem(LS_KEY) || null)
           }
         } catch {}
       }

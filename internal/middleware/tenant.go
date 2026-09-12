@@ -446,11 +446,29 @@ func applyTenantContext(c *gin.Context, tenant *model.Tenant) {
 
 // TenantConsistency 计算最终生效租户并做一致性校验
 // 规则：
-//  1. super_admin：跨租户必须显式 X-Tenant-ID 指定目标租户（校验存在且可用）；
-//     未指定时落到默认租户（而非全库透传），两种情况均写审计日志
+//  1. super_admin：租户级操作必须显式 X-Tenant-ID 指定目标租户（校验存在且可用）；
+//     平台级路径（/super、配置中心、auth 自助）无头放行，生效租户=0 系统层（见 isPlatformSuperPath）
 //  2. 普通用户：JWT Claims 的 TenantID 必须等于 Host 解析租户，否则 403
 //     （防 A 租户 token 打 B 租户子域名）
-//  3. 旧账号过渡兼容：claims 无租户（=0，sys_users 时代数据）→ 绑定到当前访问租户
+//  3. 旧账号过渡兼容：claims 无租户（=0，sys_users 时代数据）→ fail-closed 拒绝，
+//     存量账号由 db.BackfillTenantIDs 归入默认租户后重新登录恢复
+//
+// isPlatformSuperPath super_admin 无 X-Tenant-ID 时允许放行的平台级路径前缀。
+// 修复(2026-09-11)：P2-15 的"无头一律 400"未区分平台/租户语义，导致超管台
+// （/auth/me 起即 400）与四套 E2E 全红。判定口径：
+//   - /api/v1/super/*     平台台面（处理器全局查库，不依赖生效租户）
+//   - /api/v1/admin/config* 配置中心（平台键强制写系统层；rollback 除外——其语义是"回滚本租户覆盖层"）
+//   - /api/v1/auth/*      登录态自助（me/change-password/邮箱换绑）
+func isPlatformSuperPath(path string) bool {
+	if strings.HasPrefix(path, "/api/v1/super") || strings.HasPrefix(path, "/api/v1/auth") {
+		return true
+	}
+	if strings.HasPrefix(path, "/api/v1/admin/config") {
+		// config/rollback 是租户覆盖层操作（super 需显式指定目标租户），不豁免
+		return path != "/api/v1/admin/config/rollback"
+	}
+	return false
+}
 func TenantConsistency() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if db.DB == nil {
@@ -489,10 +507,18 @@ func TenantConsistency() gin.HandlerFunc {
 				}
 				effective = t.ID
 				viaHeader = true
+			} else if isPlatformSuperPath(c.Request.URL.Path) {
+				// 平台级操作白名单（修复 2026-09-11）：P2-15 曾把 super_admin 无头请求
+				// 一律 400，但平台台面（/super、配置中心、auth 自助）本就无"目标租户"语义，
+				// 导致超管前端 /auth/me 起全挂、E2E 四套全红。现区分两类：
+				//   平台路径 → 放行，生效租户=0（系统层；PlatformLevelKeys 强制写 tenant_id=0，
+				//              读取端系统层语义与此一致；OrgResolve 对 effective==0 已显式放行）
+				//   租户路径（如 /admin/usage、/org、/billing）→ 维持 400 强制显式指定，
+				//              保留 P2-15"消除静默落点漂移"的安全初衷
+				c.Set("tenant_id", uint(0))
+				c.Next()
+				return
 			} else {
-				// P2-15 修复(2026-09-09)：super_admin 未带 X-Tenant-ID 时静默落到"最小 ID 租户"
-				// （loadDefaultTenant 可能返回已停用租户，停用后落点漂移）。改为 400 强制要求显式指定，
-				// 消除歧义且审计日志中可追溯操作目标。
 				c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 					"code":    400,
 					"message": "super_admin 请求必须带 X-Tenant-ID 头（指定目标租户 ID）",

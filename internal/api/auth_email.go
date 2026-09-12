@@ -150,8 +150,10 @@ func ChangeEmail(c *gin.Context) {
 	// 防薅v2 换绑撞库（2026-08-26）：新邮箱曾参与任何奖励领取 → 拒绝换绑。
 	// 奖励双唯一语义（ID主键维度+邮箱外键维度）：放行"被奖励过的邮箱"换入=二次套利入口；
 	// 置于验码之前——撞库邮箱不值得消耗一次真实发信。
+	// R14 修复(2026-09-11)：必须全局查（db.DB）而非租户作用域（db.RQ）——"邮箱在别的租户
+	// 领过注册礼，换绑进来再领一份"正是本检查要堵的跨租户套利，租户作用域查询恒为 0 形同虚设。
 	var rc int64
-	db.RQ(c).Model(&model.RewardClaim{}).Where("email = ?", newEmail).Count(&rc)
+	db.DB.Model(&model.RewardClaim{}).Where("email = ?", newEmail).Count(&rc)
 	if rc > 0 {
 		RespErr(c, http.StatusConflict, 409, "该邮箱涉及历史奖励记录，不可用于换绑")
 		return

@@ -909,7 +909,9 @@ function OpenApiTab() {
   async function load() {
     const r = await fetch('/api/v1/admin/apikeys', { headers: { Authorization: 'Bearer ' + getToken() } })
     const j = await r.json()
-    if (j.code === 0) setKeys(j.data || [])
+    // G-18 分页信封(2026-09-11)：/admin/apikeys 返回 {list,total,page,page_size}，
+    // 此前读 j.data(数组) 恒 undefined → Key 列表全空。取 list
+    if (j.code === 0) setKeys((j.data && j.data.list) || [])
   }
   useEffect(() => { load() }, [])
   // 签发新 Key：明文仅返回一次，确认后尝试写剪贴板

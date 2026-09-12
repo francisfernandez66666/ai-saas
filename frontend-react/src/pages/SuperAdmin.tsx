@@ -67,7 +67,9 @@ export default function SuperAdmin() {
 
   // 拉取租户列表
   async function load() {
-    const j = await AUTH('/api/v1/super/tenants'); setTenants(j.data || [])
+    // G-18 分页信封(2026-09-11)：/super/tenants 返回 {list,total,page,page_size}，
+    // 此前读 j.data(数组) 恒 undefined → 租户表全空。取 list，page_size 拉满(上限100)
+    const j = await AUTH('/api/v1/super/tenants?page_size=100'); setTenants((j.data && j.data.list) || [])
   }
   // 拉取 AI 商业包列表
   async function loadPkgs() {

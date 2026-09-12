@@ -108,3 +108,31 @@ func TestTenantCacheTTL(t *testing.T) {
 		t.Fatalf("负缓存 TTL 应为 10s，实际 %v", tenantNegCacheTTL)
 	}
 }
+
+// TestIsPlatformSuperPath A1 修复回归(2026-09-11)：super_admin 无 X-Tenant-ID 时的
+// 平台级路径白名单判定——P2-15"无头一律400"未区分平台/租户语义，曾致超管台与四套 E2E 全红。
+// 口径：/super、/auth 全放行；/admin/config 放行但 rollback（租户覆盖层操作）除外；
+// 租户作用域路径（/org、/admin/apikeys 等）不在白名单，仍强制显式 X-Tenant-ID。
+func TestIsPlatformSuperPath(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/api/v1/super/tenants", true},
+		{"/api/v1/super/orders/pending", true},
+		{"/api/v1/auth/me", true},
+		{"/api/v1/auth/change-password", true},
+		{"/api/v1/admin/config", true},
+		{"/api/v1/admin/config?category=billing", true},
+		{"/api/v1/admin/config/rollback", false}, // 回滚本租户覆盖层，需显式租户语境
+		{"/api/v1/org/departments/tree", false},  // 租户作用域：必须带 X-Tenant-ID
+		{"/api/v1/admin/apikeys", false},
+		{"/api/v1/customers", false},
+		{"/api/v1/super", true},
+	}
+	for _, c := range cases {
+		if got := isPlatformSuperPath(c.path); got != c.want {
+			t.Errorf("isPlatformSuperPath(%q)=%v，期望 %v", c.path, got, c.want)
+		}
+	}
+}

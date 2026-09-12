@@ -33,4 +33,10 @@ func (RewardClaim) TableName() string { return "reward_claims" }
 // 奖励类型枚举
 const (
 	RewardSignupTrial = "signup_trial" // 注册赠送③免费桶
+	// RewardFreePackage free 试用包领取台账（tenant_id+ref_id=package_id 唯一，
+	// 索引 ux_reward_free_pkg）——修 R1：/billing/subscribe free 直发无幂等=无限自 mint ③桶
+	RewardFreePackage = "free_package"
+	// RewardOrderEntitlement 订单权益发放台账（ref_id=order_id 唯一，索引 ux_reward_order_grant）
+	// ——修 R10：到账→发放跨事务无锚点；修 R2：对账器以"缺台账行"为唯一补发信号
+	RewardOrderEntitlement = "order_entitlement"
 )

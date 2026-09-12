@@ -31,6 +31,7 @@ import (
 	"ai-scrm/internal/model"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // cfgInt 读计费类配置（nil 安全兜底）
@@ -119,18 +120,40 @@ func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, invitee
 	now := time.Now()
 
 	// ---- 受邀人侧：首绑 + 新客免费桶 ----
+	// 修复(2026-09-11)：绑定与发放拆开——桶的发放必须过 signup_trial 台账闸门（见下），
+	// 否则"邮箱曾领过注册礼再受邀开新站"会绕过防薅直接拿 30 万
 	newExp := now.AddDate(0, 0, trialDays)
-	if err := tx.Model(&model.Tenant{}).
+	bind := tx.Model(&model.Tenant{}).
 		Where("id = ? AND invited_by_tenant_id IS NULL", newTenant.ID). // 首绑唯一：并发重复邀请只有第一次生效
-		Updates(map[string]interface{}{
-			"invited_by_tenant_id":  inviter.ID,
-			"free_token_balance":    trialTokens,
-			"free_token_expires_at": newExp,
-		}).Error; err != nil {
-		log.Printf("[Referral] 受邀绑定失败 new=%d: %v（不阻断注册）", newTenant.ID, err)
+		Update("invited_by_tenant_id", inviter.ID)
+	if bind.Error != nil {
+		log.Printf("[Referral] 受邀绑定失败 new=%d: %v（不阻断注册）", newTenant.ID, bind.Error)
+		return
+	}
+	// R20 修复(2026-09-11)：此前不检查 RowsAffected——首绑 UPDATE 落空（并发已被他人绑定）
+	// 时仍会继续给"邀请人"发奖，未来一旦存在 rebind 入口即成双发。现以绑定结果为闸门。
+	if bind.RowsAffected == 0 {
+		log.Printf("[Referral] 受邀租户%d 已存在绑定关系（首绑唯一），本次 ref 不生效、不发奖", newTenant.ID)
 		return
 	}
 	newTenant.InvitedByTenantID = &inviter.ID
+
+	// R9 修复(2026-09-11)：受邀人侧注册礼同样写 signup_trial 台账（与 GrantTrialBucket 同锚）——
+	// 此前该路径不写台账，超管再执行 grant-trial 即叠加第二份 30 万（受邀+审核组合双发漏洞）。
+	// 台账撞库（唯一索引 ux_reward_trial_tenant/email）时跳过受邀侧发放；邀请人侧奖励不受影响。
+	trialClaim := model.RewardClaim{
+		GrantType: model.RewardSignupTrial, TenantID: newTenant.ID,
+		Email: strings.ToLower(strings.TrimSpace(inviteeEmail)),
+	}
+	trialRes := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&trialClaim)
+	if trialRes.Error != nil {
+		log.Printf("[Referral] 受邀注册礼台账写入失败 new=%d: %v", newTenant.ID, trialRes.Error)
+	} else if trialRes.RowsAffected == 0 {
+		log.Printf("[Referral] 受邀租户%d 已有 signup_trial 台账（邮箱/账号撞库或已领），跳过新客桶发放", newTenant.ID)
+	} else if err := tx.Model(&model.Tenant{}).Where("id = ?", newTenant.ID).
+		Updates(map[string]interface{}{"free_token_balance": trialTokens, "free_token_expires_at": newExp}).Error; err != nil {
+		log.Printf("[Referral] 受邀新客桶补写失败 new=%d: %v", newTenant.ID, err)
+	}
 
 	// ---- 邀请人侧：免费桶叠加 + 到期顺延（从当前到期日起算；已过期/为空则从现在起算）----
 	var base time.Time
@@ -202,7 +225,54 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 	_ = tx.Create(&model.RewardClaim{
 		GrantType: "referral_paid", TenantID: *invited.InvitedByTenantID,
 		Email: inviteeEmailLower, RefID: &invitedTenantID,
+		// R7(2026-09-11)：Note 记录实发金额，退款回收按台账口径而非"当前配置"（配置调价后不错账）
+		Note: fmt.Sprintf("bonus:%d", bonus),
 	})
+}
+
+// ClawbackPaidReferralReward R7 修复(2026-09-11)：受邀人首笔包月订单退款时回收邀请人奖励。
+// 触发口径（由 MarkOrderRefunded 在确认"本单是包月订阅权益回收"后调用）：
+// 受邀租户已无任何其它 paid 包月单（触发奖励的付费事实消失）→ 从邀请人②桶扣回实发 bonus
+// （GREATEST 兜底不为负）、删除 referral_paid 台账、重置幂等闸门（受邀人再付费可再获奖，
+// 与"首笔 paid 到账发奖"语义闭环）。存量无台账行：只重置闸门不动 token（不臆测金额）。
+func ClawbackPaidReferralReward(tx *gorm.DB, invited model.Tenant) {
+	if !invited.ReferralPaidRewarded || invited.InvitedByTenantID == nil {
+		return
+	}
+	var other int64
+	if err := tx.Model(&model.BillingOrder{}).
+		Joins("JOIN packages ON packages.id = billing_orders.package_id").
+		Where("billing_orders.tenant_id = ? AND billing_orders.status = 'paid'", invited.ID).
+		Where("packages.p_type = ?", model.PackageTypePaid).Count(&other).Error; err != nil {
+		log.Printf("[Referral] 回收前付费单查询失败 invited=%d: %v", invited.ID, err)
+		return
+	}
+	if other > 0 {
+		return // 仍有生效付费包月单：奖励触发事实未消失，不回收
+	}
+	var claim model.RewardClaim
+	if err := tx.Where("grant_type = ? AND ref_id = ?", "referral_paid", invited.ID).
+		First(&claim).Error; err == nil {
+		bonus := int64(0)
+		if _, e := fmt.Sscanf(claim.Note, "bonus:%d", &bonus); e != nil || bonus <= 0 {
+			bonus = int64(cfgInt("referral_paid_bonus_tokens", 500000)) // 存量台账无金额：按当前配置兜底
+		}
+		if err := tx.Model(&model.Tenant{}).Where("id = ?", claim.TenantID).
+			Update("token_balance", gorm.Expr("GREATEST(COALESCE(token_balance,0)-?,0)", bonus)).Error; err != nil {
+			log.Printf("[Referral] 奖励回收扣减失败 inviter=%d: %v", claim.TenantID, err)
+			return
+		}
+		tx.Delete(&model.RewardClaim{}, claim.ID)
+		InvalidateShadow(claim.TenantID)
+		log.Printf("[Referral] R7 付费推荐奖励已回收：invited=%d 退款触发，inviter=%d -%d token",
+			invited.ID, claim.TenantID, bonus)
+	} else {
+		log.Printf("[Referral] invited=%d 无 referral_paid 台账行（存量数据），仅重置闸门不动 token", invited.ID)
+	}
+	if err := tx.Model(&model.Tenant{}).Where("id = ?", invited.ID).
+		Update("referral_paid_rewarded", false).Error; err != nil {
+		log.Printf("[Referral] 闸门重置失败 invited=%d: %v", invited.ID, err)
+	}
 }
 
 // ReferralInfo 邀请信息聚合出参

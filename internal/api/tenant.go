@@ -261,7 +261,19 @@ func TenantSignup(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "开通失败: "+err.Error())
+		// R15 修复(2026-09-11)：唯一索引是并发注册的最终闸门——撞库返回业务 409，
+		// 不再把裸 DB 错误 500 给前端（且 500 会让用户以为可重试，实际必然再撞）
+		msg := err.Error()
+		switch {
+		case strings.Contains(msg, "ux_tenant_users_email_nonempty"):
+			RespErr(c, http.StatusConflict, 409, "该邮箱刚被并发注册占用，请直接登录或更换")
+		case strings.Contains(msg, "idx_tenants_code"):
+			RespErr(c, http.StatusConflict, 409, "该标识暂不可用，请更换")
+		case strings.Contains(msg, "idx_tenant_users_username"):
+			RespErr(c, http.StatusConflict, 409, "管理员用户名已存在")
+		default:
+			RespErr(c, http.StatusInternalServerError, 500, "开通失败: "+msg)
+		}
 		return
 	}
 

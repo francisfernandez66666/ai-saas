@@ -20,7 +20,7 @@ TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/jso
   -d '{"username":"admin","password":"admin123"}' | jsonget "['data']['token']")
 
 echo "---- 一、部门树基础 ----"
-TREE=$(curl -s "$B/api/v1/org/departments/tree" -H "Authorization: Bearer $TOKEN")
+TREE=$(curl -s "$B/api/v1/org/departments/tree" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
 ROOT_ID=$(echo "$TREE" | python3 -c "
 import sys,json
 d=json.load(sys.stdin)['data']
@@ -28,11 +28,11 @@ print(d[0]['id'] if d else '')")
 [ -n "$ROOT_ID" ] && check "获取根部门ID(root=$ROOT_ID)" y y || check "获取根部门ID" y n
 
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/org/departments" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
   -d "{\"name\":\"烟测部A_$RUN_TAG\",\"parent_id\":$ROOT_ID}")
 check "超管创建子部门A" 200 "$CODE"
 
-DEPT_A=$(curl -s "$B/api/v1/org/departments/tree" -H "Authorization: Bearer $TOKEN" | python3 -c "
+DEPT_A=$(curl -s "$B/api/v1/org/departments/tree" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | python3 -c "
 import sys,json
 def find(ns):
     for n in ns:
@@ -45,14 +45,14 @@ print(find(d))")
 [ -n "$DEPT_A" ] && check "子部门A已入树(id=$DEPT_A)" y y || check "子部门A已入树" y n
 
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/org/departments" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
   -d "{\"name\":\"烟测部B_$RUN_TAG\",\"parent_id\":$ROOT_ID}")
 check "创建兄弟部门B" 200 "$CODE"
 
 echo "---- 二、dept_admin 子树 fail-closed ----"
 DA_USER="smoke_da_$(date +%s)"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/org/users" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
   -d "{\"username\":\"$DA_USER\",\"password\":\"da123456\",\"real_name\":\"烟测部门管理员\",\"role\":\"dept_admin\",\"department_id\":$DEPT_A}")
 check "在A部门创建dept_admin" 200 "$CODE"
 
@@ -78,7 +78,7 @@ check "dept_admin 不能创建根部门" 403 "$CODE"
 echo "---- 四、readonly 写拦截 ----"
 RO_USER="smoke_ro_$(date +%s)"
 curl -s -o /dev/null -X POST "$B/api/v1/org/users" \
-  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
   -d "{\"username\":\"$RO_USER\",\"password\":\"ro123456\",\"role\":\"readonly\",\"department_id\":$ROOT_ID}"
 RO_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
   -d "{\"username\":\"$RO_USER\",\"password\":\"ro123456\"}" | jsonget "['data']['token']")
@@ -97,7 +97,7 @@ for U in "$DA_USER" "$RO_USER"; do
   UID_=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
     "SELECT id FROM tenant_users WHERE username='$U'" 2>/dev/null | tr -d '[:space:]')
   [ -n "$UID_" ] && curl -s -o /dev/null -X PUT "$B/api/v1/org/users/$UID_" \
-    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"status":0}'
+    -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{"status":0}'
 done
 echo "  （账号已停用，部门保留供人工核查）"
 

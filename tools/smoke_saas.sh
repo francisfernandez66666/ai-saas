@@ -65,8 +65,8 @@ check "错误企业码登录被拒" 40101 "$BAD"
 # 5. 超管登录 → 列表含新租户 → 停用后该租户域名访问被拒 → 恢复
 AT=$(curl -s -X POST $B/api/v1/auth/login -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['token'])")
-FOUND=$(curl -s $B/api/v1/super/tenants -H "Authorization: Bearer $AT" \
-  | python3 -c "import sys,json;print(any(t['code']=='e2e-$TAG' for t in json.load(sys.stdin)['data']))")
+FOUND=$(curl -s "$B/api/v1/super/tenants?page_size=100" -H "Authorization: Bearer $AT" \
+  | python3 -c "import sys,json;print(any(t['code']=='e2e-$TAG' for t in (json.load(sys.stdin)['data'].get('list') or [])))")
 check "超管列表含新租户" True "$FOUND"
 
 curl -s -o /dev/null -X PUT "$B/api/v1/super/tenants/$TENANT_ID/status" \

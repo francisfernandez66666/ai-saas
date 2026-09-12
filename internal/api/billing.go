@@ -129,7 +129,15 @@ func ListBillingOrders(c *gin.Context) {
 
 // MockPayOrder POST /api/v1/billing/orders/mock-pay {order_id}
 // 仅 pay_mode=mock 可用；生产环境 403（双保险之接口侧）
+// R3 修复(2026-09-11)：pay_mode 出厂默认 mock（config.GetConfig 兜底值），生产部署若忘配
+// pay_mode=sdk，任何租户 admin 调本接口即可 0 元白嫖权益——加进程级发布闸门：
+// release 构建（GIN_MODE=release）必须显式 ALLOW_MOCK_PAY=true 才开放，否则一律 403。
+// 开发/测试环境不受影响（E2E 冒烟依赖 mock-pay 跑通全链路）。
 func MockPayOrder(c *gin.Context) {
+	if os.Getenv("GIN_MODE") == "release" && os.Getenv("ALLOW_MOCK_PAY") != "true" {
+		RespErr(c, http.StatusForbidden, 403, "生产环境已禁用模拟支付")
+		return
+	}
 	if service.GetPayMode() != "mock" {
 		RespErr(c, http.StatusForbidden, 403, "非模拟模式禁止模拟支付")
 		return
@@ -260,10 +268,17 @@ func SuperConfirmOrder(c *gin.Context) {
 
 // confirmAndGrant 确认到账统一落点：幂等改单 → 发放 → 审计 → MQ payment 事件
 // 返回 confirmed=false 表示订单早已流转（调用方提示幂等命中即可）
+// R5 修复(2026-09-11)：manual 通道遇超时关单时走"迟到到账复活"——真实银行/渠道到账
+// 慢于 24h 关单属正常业务场景，此前该单钱货两失且无人工补救入口（mock 通道在 Reopen 内拒）
 func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) (bool, error) {
 	fresh, confirmed, err := service.MarkOrderPaid(order.ID, channel)
 	if err != nil {
 		return false, err
+	}
+	if !confirmed && channel == "manual" {
+		if reopened, ok, rerr := service.ReopenClosedOrderPaid(order.ID, channel); rerr == nil && ok {
+			fresh, confirmed = reopened, true
+		}
 	}
 	if !confirmed {
 		return false, nil // 幂等命中：不二次发放、不发重复事件

@@ -29,7 +29,10 @@ AH="Authorization: Bearer $ADMIN_TOKEN"
 # 先读取原值，EXIT 时统一恢复。
 orign(){ curl -s "$B/api/v1/admin/config?category=$1" -H "$AH" 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((x['value'] for x in d.get('data',[]) if x['key']=='$2'),'$3'))" 2>/dev/null || echo "$3"; }
 OE=$(orign notify email_verify_enabled true); OPL=$(orign notify pay_mode '"mock"'); OTB=$(orign billing token_billing_enabled false); OBE=$(orign billing billing_enforced false); OIL=$(orign billing register_ip_daily_limit 3); OII=$(orign billing register_ip_min_interval_sec 60)
-trap 'curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$OE\"},{\"category\":\"notify\",\"key\":\"pay_mode\",\"value\":$OPL},{\"category\":\"billing\",\"key\":\"token_billing_enabled\",\"value\":\"$OTB\"},{\"category\":\"billing\",\"key\":\"billing_enforced\",\"value\":\"$OBE\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$OIL\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$OII\"}]" >/dev/null; echo "  [trap] 已恢复全部开关"' EXIT
+# 八节 Token 级联测试需强制走 AI 回复路径（否则真实 AI 低信任度会把会话路由到 pending_human，
+# 关闭 AI 回复→后续轮次不产生扣减→级联断言随机失败）。捕获原阈值，trap 统一恢复。
+OTT=$(orign strategy theta_trust 0.3); OTH=$(orign strategy theta_hook_rate_crit 0.2); OTL=$(orign strategy theta_l3_intent 0.8)
+trap 'curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$OE\"},{\"category\":\"notify\",\"key\":\"pay_mode\",\"value\":$OPL},{\"category\":\"billing\",\"key\":\"token_billing_enabled\",\"value\":\"$OTB\"},{\"category\":\"billing\",\"key\":\"billing_enforced\",\"value\":\"$OBE\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$OIL\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$OII\"},{\"category\":\"strategy\",\"key\":\"theta_trust\",\"value\":\"$OTT\"},{\"category\":\"strategy\",\"key\":\"theta_hook_rate_crit\",\"value\":\"$OTH\"},{\"category\":\"strategy\",\"key\":\"theta_l3_intent\",\"value\":\"$OTL\"}]" >/dev/null; echo "  [trap] 已恢复全部开关"' EXIT
 
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
   -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"1000"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]' >/dev/null
@@ -73,7 +76,7 @@ UA_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/
 check "甲登录" y "$R"
 check "③免费桶=30万" 300000 "$($PSQL "SELECT COALESCE(free_token_balance,0) FROM tenants WHERE id=$UA_ID")"
 check "免费桶有效期已设" t "$($PSQL "SELECT free_token_expires_at IS NOT NULL FROM tenants WHERE id=$UA_ID")"
-INV_A=$(curl -s "$B/api/v1/admin/referral/info" -H "Authorization: Bearer $UA_TOKEN" | jget "d['data']['referral']['invite_code']")
+INV_A=$(curl -s "$B/api/v1/advisor/referral/info" -H "Authorization: Bearer $UA_TOKEN" | jget "d['data']['referral']['invite_code']")
 check "邀请码生成(8位)" 8 "${#INV_A}"
 
 echo ""
@@ -103,7 +106,9 @@ echo "== 三、付费×邀请：paid订阅→邀请人永久token（多邀累计
 UB_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
   -d "{\"tenant_code\":\"$UB_CODE\",\"username\":\"ub$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 BH="Authorization: Bearer $UB_TOKEN"
-PAID_PKG=$($PSQL "SELECT id FROM packages WHERE p_type='paid' ORDER BY sort_order LIMIT 1")
+# 按 code 精确锁定 seed 包（此前 ORDER BY sort_order LIMIT 1 会被单测残留的 ut_* 包
+# 抢占——它们 sort_order=0 且非确定性，导致月度额度断言在 300万/100万 间随机漂移）
+PAID_PKG=$($PSQL "SELECT id FROM packages WHERE code='starter_1000' ORDER BY id LIMIT 1")
 SUB_RAW=$(curl -s -X POST "$B/api/v1/billing/subscribe" -H "$BH" -H "Content-Type: application/json" \
   -d "{\"package_id\":$PAID_PKG}")
 ORDER_B=$(echo "$SUB_RAW" | jget "d['data']['order']['id']")
@@ -146,7 +151,7 @@ echo ""
 echo "== 五、static_qr 人工确认链路 =="
 # P1.5-UAT修复：平台键字符串值必须 JSON 引号编码（BatchUpdate 契约），否则静默跳过
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d '[{"category":"notify","key":"pay_mode","value":"\"static_qr\""},{"category":"notify","key":"static_qr_image","value":"\"https://pay.uat.example.com/x.png\""}]' >/dev/null
-INC_PKG=$($PSQL "SELECT id FROM packages WHERE p_type='increment' ORDER BY sort_order LIMIT 1")
+INC_PKG=$($PSQL "SELECT id FROM packages WHERE code='booster_1000' ORDER BY id LIMIT 1")
 R=$(curl -s -X POST "$B/api/v1/billing/orders" -H "$BH" -H "Content-Type: application/json" -d "{\"package_id\":$INC_PKG}")
 ORD_SQ=$(echo "$R" | jget "d['data']['id']")
 check "下单回收款码" True "$(echo "$R" | jget "bool(d['data'].get('qr_content'))")"
@@ -198,6 +203,12 @@ echo ""
 echo "== 八、Token三桶强制扣减级联 =="
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
   -d '[{"category":"billing","key":"token_billing_enabled","value":"true"},{"category":"billing","key":"billing_enforced","value":"true"}]' >/dev/null
+# 强制 AI 回复路径：信任/接钩率/L3 三项转人工判据全部关闭（theta_trust=0 恒不触发信任转人工，
+# theta_hook_rate_crit=0 恒不触发接钩率转人工，theta_l3_intent=2.0 高于任何意向分）。
+# 目的是隔离"扣减引擎"行为，避免真实 AI 路由把会话切到 pending_human 后不再扣费（非计费 bug）。
+curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
+  -d '[{"category":"strategy","key":"theta_trust","value":"0"},{"category":"strategy","key":"theta_hook_rate_crit","value":"0"},{"category":"strategy","key":"theta_l3_intent","value":"2.0"}]' >/dev/null
+sleep 1
 $PSQL "UPDATE tenants SET free_token_balance=6000, free_token_expires_at=NOW()+INTERVAL '5 days', monthly_token_quota=80000, monthly_token_used=0, token_balance=25000 WHERE id=$UB_ID" >/dev/null
 CUST_RAW=$(curl -s -X POST "$B/api/v1/customers" -H "$BH" -H "Content-Type: application/json" -d '{"name":"UAT乙客户"}')
 CUST_B=$(echo "$CUST_RAW" | jget "d['data']['id']")
@@ -294,7 +305,7 @@ check "注销后OpenAPI Key失效(401)" 401 "$AKOFF"
 
 echo ""
 echo "== 十三、二维码内容类型 =="
-CT=$(curl -s -o /tmp/uat_qr.png -w "%{content_type}" "$B/api/v1/admin/referral/qrcode" -H "$BH")
+CT=$(curl -s -o /tmp/uat_qr.png -w "%{content_type}" "$B/api/v1/advisor/referral/qrcode" -H "$BH")
 check "后端渲染PNG" image/png "$CT"
 
 echo ""
@@ -322,7 +333,7 @@ check "已知行业保留不回落" education "$E_IND"
 A_ID2=$($PSQL "SELECT id FROM tenants WHERE code LIKE 'uata%' ORDER BY id DESC LIMIT 1")
 ATOK2=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
   -d "{\"tenant_code\":\"$($PSQL "SELECT code FROM tenants WHERE id=$A_ID2")\",\"username\":\"$($PSQL "SELECT username FROM tenant_users WHERE tenant_id=$A_ID2 AND role='tenant_admin' LIMIT 1")\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
-REC=$(curl -s "$B/api/v1/admin/referral/records" -H "Authorization: Bearer $ATOK2")
+REC=$(curl -s "$B/api/v1/advisor/referral/records" -H "Authorization: Bearer $ATOK2")
 check "邀请记录接口可达且含记录" True "$(echo "$REC" | jget "len(d['data']['list'])>0")"
 KEYS_OK=$(echo "$REC" | python3 -c '
 import sys,json

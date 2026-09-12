@@ -210,10 +210,11 @@ for TBL in cdp_tag_assignments cdp_tag_definitions event_logs id_mappings inbox_
   [ "$EXISTS" = "1" ] && check "RLS表存在: $TBL" y y || check "RLS表存在: $TBL" y n
 done
 
-# delay_* 前缀表（至少一个）
+# delay_* 表已随「打字+线下偏移」延迟公式废弃而移除（AGENTS.md 延迟铁律：合并25s/简单8s/
+# AI 5~15s 固定随机，旧表不再使用）。此处断言其确已清理，防止残留误导。
 DELAY_TBL=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'delay_%'" 2>/dev/null | tr -d '[:space:]')
-[ "${DELAY_TBL:-0}" -ge 1 ] && check "delay_* 表存在(${DELAY_TBL}张)" y y || check "delay_* 表存在(0张)" y n
+[ "${DELAY_TBL:-0}" -eq 0 ] && check "delay_* 旧表已废弃清理(${DELAY_TBL}张)" y y || check "delay_* 旧表应已清理(实为${DELAY_TBL}张)" y n
 
 echo "---- 九、G-15 Prometheus 指标端点 ----"
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/metrics")
@@ -240,6 +241,34 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 [ -d "${PROJECT_ROOT}/packs-src/general" ] && check "packs-src/general/ 目录存在" y y || check "packs-src/general/ 目录存在" y n
 GEN_COUNT=$(ls "${PROJECT_ROOT}/packs-src/general/"*.json 2>/dev/null | wc -l | tr -d ' ')
 [ "${GEN_COUNT:-0}" -ge 6 ] && check "通用包JSON文件数(≥6)" y y || check "通用包JSON文件数(期望≥6 实际=${GEN_COUNT:-0})" y n
+
+echo "---- 十二、商业化资金安全与契约回归（2026-09-11 修复批次） ----"
+# A2/G-13：chat/guest 响应收口 RespOK 信封——customer_id/visitor_key 必须在 data 下
+#（前端 Client.tsx 同步读 data；扁平形态回归即断链，C端建客死锁）
+GUEST=$(curl -s -X POST "$B/api/v1/chat/guest" -H "Content-Type: application/json" -d '{}')
+GCID=$(echo "$GUEST" | jsonget "['data']['customer_id']")
+[ -n "$GCID" ] && check "chat/guest 信封 data.customer_id=${GCID}" y y || check "chat/guest 信封 data.customer_id" y n
+# A3/G-18：super/tenants 分页信封 {list,total,page,page_size}（前端读 data.list）
+SHAPE=$(curl -s "$B/api/v1/super/tenants?page_size=5" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print('True' if isinstance(d.get('list'),list) and 'total' in d else 'False')")
+check "super/tenants 分页信封(list+total)" True "$SHAPE"
+# A4：admin/apikeys 租户作用域路径——超管须显式 X-Tenant-ID(P2-15)，响应为分页信封
+AKNEED=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/apikeys" -H "Authorization: Bearer $TOKEN")
+check "admin/apikeys 超管无头→400强制显式(P2-15)" 400 "$AKNEED"
+AKSHAPE=$(curl -s "$B/api/v1/admin/apikeys" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print('True' if isinstance(d.get('list'),list) else 'False')")
+check "admin/apikeys 信封 data.list" True "$AKSHAPE"
+# R1：free 包一生一次——reward_claims 台账幂等，二次领取必须 409（无限自 mint ③桶堵口）
+# 用超管 token+X-Tenant-ID:1（sales1 是顾问角色过不了 AdminRequired；租户作用域路径须显式带头）
+FREE_ID=$($PSQL "SELECT id FROM packages WHERE code='trial_500' LIMIT 1" | tr -d '[:space:]')
+curl -s -o /dev/null -X POST "$B/api/v1/billing/subscribe" -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "{\"package_id\":${FREE_ID:-0}}"
+C2=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/subscribe" -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "{\"package_id\":${FREE_ID:-0}}")
+check "free包重复领取拒绝409(R1台账幂等)" 409 "$C2"
+# R15：tenant_users.email 全局唯一索引存在（并发双注册最终闸门）
+EMIDX=$($PSQL "SELECT 1 FROM pg_indexes WHERE indexname='ux_tenant_users_email_nonempty'" | tr -d '[:space:]')
+check "tenant_users.email 唯一索引已建(R15)" 1 "$EMIDX"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

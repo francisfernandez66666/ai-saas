@@ -153,6 +153,7 @@ type BillingOrder struct {
 	PaidAt              *time.Time `json:"paid_at"`                             // 支付时间（unpaid 为零值）
 	RefundedAt          *time.Time `json:"refunded_at"`                         // 退款时间
 	RefundAmountCents   int        `json:"refund_amount_cents"`                 // 实际退款金额（分）：按剩余比例计算，≤AmountCents；0=无剩余可退
+	RefundPspStatus     string     `gorm:"size:20" json:"refund_psp_status"`    // R8(2026-09-11) 出款状态：空=无需出款(mock/manual)，psp_ok=网关已出款，psp_pending=账面已退但出款失败待人工
 	ExpireAt            *time.Time `json:"expire_at"`                           // 订单超时未支付自动关闭
 	PaymentData         string     `json:"payment_data"`                        // 支付平台回调原始数据
 	ManualConfirm       bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）
