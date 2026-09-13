@@ -29,6 +29,7 @@ func parseStatFilter(c *gin.Context, tid *uint) attribution.StatFilter {
 }
 
 // AdminPackStats GET /api/v1/admin/packs/stats — 本租户包/模板效果。
+// apidump:ts PackStatsResp
 func AdminPackStats(c *gin.Context) {
 	tid := db.EffectiveTenantIDFromGin(c)
 	rows, err := attribution.Stats(parseStatFilter(c, &tid))
@@ -40,6 +41,7 @@ func AdminPackStats(c *gin.Context) {
 }
 
 // SuperPackStats GET /api/v1/super/packs/stats — 跨租户包质量视图。
+// apidump:ts PackStatsResp
 func SuperPackStats(c *gin.Context) {
 	var tid *uint
 	if raw := c.Query("tenant_id"); raw != "" {

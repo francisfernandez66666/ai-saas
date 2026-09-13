@@ -42,6 +42,7 @@ type newPasswordRequest struct {
 }
 
 // Login 登录接口
+// apidump:ts AuthResult
 // 修改原因：原接口仅返回{"status":"login"}，不颁发JWTtoken，导致后续JWT鉴权接口（advisor/admin/chat）无法通过认证
 // 现改为：验证凭据 → 生成JWT → 返回token，前端携带Bearer token调用有鉴权的API
 func Login(c *gin.Context) {

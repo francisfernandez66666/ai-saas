@@ -1,0 +1,2263 @@
+{
+  "generated_by": "cmd/apidump",
+  "version": 1,
+  "meta": {
+    "meta_endpoints": [
+      "GET /health",
+      "GET /status",
+      "GET /metrics"
+    ],
+    "spa_fallback": true
+  },
+  "routes": [
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/apikeys/:id",
+      "group": "admin",
+      "handler": "AdminDeleteAPIKey",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/channels/:id",
+      "group": "admin",
+      "handler": "DeleteChannel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/kb/my/:id",
+      "group": "admin",
+      "handler": "TenantKBDelete",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/knowledge/brands/:id",
+      "group": "admin",
+      "handler": "DeleteBrand",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/knowledge/compares/:id",
+      "group": "admin",
+      "handler": "DeleteCompare",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/knowledge/fragments/:id",
+      "group": "admin",
+      "handler": "DeleteFragment",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/knowledge/models/:id",
+      "group": "admin",
+      "handler": "DeleteModel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/knowledge/specs/:id",
+      "group": "admin",
+      "handler": "DeleteSpec",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/tag-rules/:id",
+      "group": "admin",
+      "handler": "DeleteTagRule",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/tag-weights/:id",
+      "group": "admin",
+      "handler": "DeleteTagWeight",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/tags/:id",
+      "group": "admin",
+      "handler": "DeleteTag",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/admin/webhooks/:id",
+      "group": "admin",
+      "handler": "DeleteWebhook",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/customers/:id",
+      "group": "customers",
+      "handler": "DeleteCustomer",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/customers/:id/tags/:tag_id",
+      "group": "customers",
+      "handler": "RemoveCustomerTag",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/org/departments/:id",
+      "group": "org",
+      "handler": "DeleteDepartment",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/strategy/templates/:id",
+      "group": "strategy",
+      "handler": "DeleteTemplate",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/super/packages/:id",
+      "group": "super",
+      "handler": "SuperPackageDelete",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/apikeys",
+      "group": "admin",
+      "handler": "AdminListAPIKeys",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/audit-logs",
+      "group": "admin",
+      "handler": "AdminAuditLogs",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/channel-dlq",
+      "group": "admin",
+      "handler": "ListChannelDeadLetters",
+      "auth": [
+        "jwt",
+        "admin"
+      ],
+      "data_ts": "OutboundListResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/channels",
+      "group": "admin",
+      "handler": "ListChannels",
+      "auth": [
+        "jwt",
+        "admin"
+      ],
+      "data_ts": "ChannelListResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/config",
+      "group": "admin",
+      "handler": "GetSystemConfigs",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/export/conversations.csv",
+      "group": "admin",
+      "handler": "AdminExportConversations",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/export/customers.csv",
+      "group": "admin",
+      "handler": "AdminExportCustomers",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/kb/my",
+      "group": "admin",
+      "handler": "TenantKBMy",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/brands",
+      "group": "admin",
+      "handler": "GetBrandList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/brands/:id",
+      "group": "admin",
+      "handler": "GetBrandDetail",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/compares",
+      "group": "admin",
+      "handler": "GetCompareList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/fragments",
+      "group": "admin",
+      "handler": "GetFragmentList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/fragments/:id",
+      "group": "admin",
+      "handler": "GetFragmentDetail",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/models",
+      "group": "admin",
+      "handler": "GetModelList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/models/:id",
+      "group": "admin",
+      "handler": "GetModelDetail",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/knowledge/specs",
+      "group": "admin",
+      "handler": "GetSpecList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/models",
+      "group": "admin",
+      "handler": "GetAvailableModels",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/packs",
+      "group": "admin",
+      "handler": "TenantPackList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/packs/current",
+      "group": "admin",
+      "handler": "TenantPackCurrent",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/packs/stats",
+      "group": "admin",
+      "handler": "AdminPackStats",
+      "auth": [
+        "jwt",
+        "admin"
+      ],
+      "data_ts": "PackStatsResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/privacy/deletion-requests",
+      "group": "admin",
+      "handler": "AdminListDeletionRequests",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/tag-rules",
+      "group": "admin",
+      "handler": "GetTagRuleList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/tag-weights",
+      "group": "admin",
+      "handler": "GetTagWeightList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/tags",
+      "group": "admin",
+      "handler": "GetTagList",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/tags/:id",
+      "group": "admin",
+      "handler": "GetTagDetail",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/usage/summary",
+      "group": "admin",
+      "handler": "AdminUsageSummary",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/webhooks",
+      "group": "admin",
+      "handler": "ListWebhooks",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/webhooks/:id/deliveries",
+      "group": "admin",
+      "handler": "ListWebhookDeliveries",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/customer/:id",
+      "group": "advisor",
+      "handler": "GetAdvisorCustomerDetail",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/customers",
+      "group": "advisor",
+      "handler": "GetAdvisorCustomers",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/followups",
+      "group": "advisor",
+      "handler": "GetFollowups",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/list",
+      "group": "advisor",
+      "handler": "GetAdvisorList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/referral/info",
+      "group": "advisor",
+      "handler": "GetReferralInfo",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/referral/qrcode",
+      "group": "advisor",
+      "handler": "GetReferralQRCode",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/referral/records",
+      "group": "advisor",
+      "handler": "GetReferralRecords",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/stats",
+      "group": "advisor",
+      "handler": "GetAdvisorStats",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/strategy/recommend",
+      "group": "advisor",
+      "handler": "GetStrategyRecommend",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/tags",
+      "group": "advisor",
+      "handler": "GetTagList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/test-drive/:id",
+      "group": "advisor",
+      "handler": "GetTestDrive",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/test-drives",
+      "group": "advisor",
+      "handler": "GetTestDrives",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/me",
+      "group": "auth",
+      "handler": "GetCurrentUser",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/register-config",
+      "group": "auth",
+      "handler": "RegisterConfig",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/billing/my-package",
+      "group": "billing",
+      "handler": "MyPackage",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/billing/orders",
+      "group": "billing",
+      "handler": "ListBillingOrders",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/billing/orders/:id",
+      "group": "billing",
+      "handler": "GetBillingOrder",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cdp/profiles/:one_id",
+      "group": "cdp",
+      "handler": "GetCDPProfile",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cdp/segments",
+      "group": "cdp",
+      "handler": "GetCDPSegment",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/cdp/tag-defs",
+      "group": "cdp",
+      "handler": "ListCDPTagDefs",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/channel/callback/:id",
+      "group": "channel",
+      "handler": "ChannelCallbackVerify",
+      "auth": [
+        "channel_signature"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/channel/wecom/context",
+      "group": "channel",
+      "handler": "ChannelWecomContext",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/channel/wecom/jsconfig",
+      "group": "channel",
+      "handler": "ChannelWecomJSConfig",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/chat/history",
+      "group": "chat",
+      "handler": "GetChatHistory",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/conversations",
+      "group": "conversations",
+      "handler": "GetConversationList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/conversations/:id/messages",
+      "group": "conversations",
+      "handler": "GetMessages",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/customers",
+      "group": "customers",
+      "handler": "GetCustomerList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/customers/:id",
+      "group": "customers",
+      "handler": "GetCustomer",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/customers/:id/conversations",
+      "group": "customers",
+      "handler": "GetCustomerConversations",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/customers/:id/tags",
+      "group": "customers",
+      "handler": "GetCustomerTags",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/flows",
+      "group": "flows",
+      "handler": "GetFlowList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/flows/:id",
+      "group": "flows",
+      "handler": "GetFlow",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/flows/instances",
+      "group": "flows",
+      "handler": "GetFlowInstanceList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/flows/instances/:id",
+      "group": "flows",
+      "handler": "GetFlowInstance",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge/brands",
+      "group": "knowledge",
+      "handler": "GetPublicBrands",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge/compares",
+      "group": "knowledge",
+      "handler": "GetPublicCompares",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge/fragments/search",
+      "group": "knowledge",
+      "handler": "SearchFragments",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge/models",
+      "group": "knowledge",
+      "handler": "GetPublicModels",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/knowledge/models/:id",
+      "group": "knowledge",
+      "handler": "GetPublicModelDetail",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/org/departments/tree",
+      "group": "org",
+      "handler": "GetDepartmentTree",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/org/users",
+      "group": "org",
+      "handler": "GetManagedUsers",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/packages",
+      "group": "packages",
+      "handler": "ListPackages",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/plans",
+      "group": "plans",
+      "handler": "ListPlans",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/public/branding",
+      "group": "public",
+      "handler": "GetPublicBranding",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/stats/overview",
+      "group": "stats",
+      "handler": "GetOverview",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/strategy/features",
+      "group": "strategy",
+      "handler": "GetFeatureList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/strategy/stats/anchors",
+      "group": "strategy",
+      "handler": "GetAnchorStats",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/strategy/templates",
+      "group": "strategy",
+      "handler": "GetTemplateList",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/strategy/templates/:id",
+      "group": "strategy",
+      "handler": "GetTemplate",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/agreements",
+      "group": "super",
+      "handler": "SuperAgreementList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/audit-logs",
+      "group": "super",
+      "handler": "SuperAuditLogs",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/feedbacks",
+      "group": "super",
+      "handler": "SuperFeedbackList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/materials",
+      "group": "super",
+      "handler": "SuperMaterialList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/monitor/health",
+      "group": "super",
+      "handler": "SuperMonitorHealth",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/orders/pending",
+      "group": "super",
+      "handler": "SuperPendingOrders",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/packages",
+      "group": "super",
+      "handler": "SuperPackageList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/packs",
+      "group": "super",
+      "handler": "SuperPackList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/packs/stats",
+      "group": "super",
+      "handler": "SuperPackStats",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ],
+      "data_ts": "PackStatsResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/tenants",
+      "group": "super",
+      "handler": "SuperTenantList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/tenants/:id/branding",
+      "group": "super",
+      "handler": "SuperGetBranding",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/usage/cost",
+      "group": "super",
+      "handler": "SuperUsageCost",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/tenant/check-code",
+      "group": "tenant",
+      "handler": "CheckTenantCode",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/turnstile/sitekey",
+      "group": "turnstile",
+      "handler": "1",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ws/advisor",
+      "group": "ws",
+      "handler": "WSAdvisor",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/ws/client",
+      "group": "ws",
+      "handler": "WSClient",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/openapi/v1/cdp/profiles/:one_id",
+      "group": "openapi",
+      "handler": "OpenAPICDPProfile",
+      "auth": [
+        "api_key",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/openapi/v1/customers",
+      "group": "openapi",
+      "handler": "OpenAPICustomers",
+      "auth": [
+        "api_key",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/openapi/v1/customers/:id/conversations",
+      "group": "openapi",
+      "handler": "OpenAPICustomerConversations",
+      "auth": [
+        "api_key",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/openapi/v1/usage",
+      "group": "openapi",
+      "handler": "OpenAPIUsage",
+      "auth": [
+        "api_key",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/account/cancel",
+      "group": "admin",
+      "handler": "CancelAccount",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/apikeys",
+      "group": "admin",
+      "handler": "AdminCreateAPIKey",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/apikeys/:id/disable",
+      "group": "admin",
+      "handler": "AdminDisableAPIKey",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/apikeys/:id/enable",
+      "group": "admin",
+      "handler": "AdminEnableAPIKey",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/channel-dlq/:id/retry",
+      "group": "admin",
+      "handler": "RetryChannelDeadLetter",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/channels",
+      "group": "admin",
+      "handler": "CreateChannel",
+      "auth": [
+        "jwt",
+        "admin"
+      ],
+      "data_ts": "CreateChannelResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/channels/:id/verify",
+      "group": "admin",
+      "handler": "VerifyChannel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/config/init",
+      "group": "admin",
+      "handler": "ForceInitSystemConfig",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/config/reset",
+      "group": "admin",
+      "handler": "ResetSystemConfig",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/config/rollback",
+      "group": "admin",
+      "handler": "RollbackTenantConfig",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/kb/upload",
+      "group": "admin",
+      "handler": "TenantKBUpload",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/brands",
+      "group": "admin",
+      "handler": "CreateBrand",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/brands/:id/disable",
+      "group": "admin",
+      "handler": "DisableBrand",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/brands/:id/enable",
+      "group": "admin",
+      "handler": "EnableBrand",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/compares",
+      "group": "admin",
+      "handler": "CreateCompare",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/compares/:id/disable",
+      "group": "admin",
+      "handler": "DisableCompare",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/compares/:id/enable",
+      "group": "admin",
+      "handler": "EnableCompare",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/fragments",
+      "group": "admin",
+      "handler": "CreateFragment",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/fragments/:id/disable",
+      "group": "admin",
+      "handler": "DisableFragment",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/fragments/:id/enable",
+      "group": "admin",
+      "handler": "EnableFragment",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/models",
+      "group": "admin",
+      "handler": "CreateModel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/models/:id/disable",
+      "group": "admin",
+      "handler": "DisableModel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/models/:id/enable",
+      "group": "admin",
+      "handler": "EnableModel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/reload",
+      "group": "admin",
+      "handler": "ReloadKnowledgeCache",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/specs",
+      "group": "admin",
+      "handler": "CreateSpec",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/specs/:id/disable",
+      "group": "admin",
+      "handler": "DisableSpec",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/knowledge/specs/:id/enable",
+      "group": "admin",
+      "handler": "EnableSpec",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/packs/bind",
+      "group": "admin",
+      "handler": "TenantPackBind",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/packs/bind-dept",
+      "group": "admin",
+      "handler": "TenantPackBindDept",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/packs/unbind",
+      "group": "admin",
+      "handler": "TenantPackUnbind",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/packs/unbind-dept",
+      "group": "admin",
+      "handler": "TenantPackUnbindDept",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/privacy/deletion-requests/:id/execute",
+      "group": "admin",
+      "handler": "AdminExecuteDeletionRequest",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tag-rules",
+      "group": "admin",
+      "handler": "CreateTagRule",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tag-rules/:id/disable",
+      "group": "admin",
+      "handler": "DisableTagRule",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tag-rules/:id/enable",
+      "group": "admin",
+      "handler": "EnableTagRule",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tag-weights",
+      "group": "admin",
+      "handler": "CreateTagWeight",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tags",
+      "group": "admin",
+      "handler": "CreateTag",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tags/:id/disable",
+      "group": "admin",
+      "handler": "DisableTag",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tags/:id/enable",
+      "group": "admin",
+      "handler": "EnableTag",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tags/reload",
+      "group": "admin",
+      "handler": "ReloadTagCache",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/webhooks",
+      "group": "admin",
+      "handler": "CreateWebhook",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/webhooks/:id/test",
+      "group": "admin",
+      "handler": "TestWebhook",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/chat/ai-reply",
+      "group": "advisor",
+      "handler": "AdvisorTriggerAIReply",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/chat/send",
+      "group": "advisor",
+      "handler": "AdvisorSendMessage",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/chat/takeover",
+      "group": "advisor",
+      "handler": "AdvisorTakeover",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/chat/toggle-ai-reply",
+      "group": "advisor",
+      "handler": "ToggleAiReply",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/customer/:id/followup",
+      "group": "advisor",
+      "handler": "CreateFollowup",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/test-drive",
+      "group": "advisor",
+      "handler": "CreateTestDrive",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/change-password",
+      "group": "auth",
+      "handler": "ChangePassword",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/email-code",
+      "group": "auth",
+      "handler": "SendRegisterEmailCode",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/email/change",
+      "group": "auth",
+      "handler": "ChangeEmail",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/email/code",
+      "group": "auth",
+      "handler": "SendBindEmailCode",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "group": "auth",
+      "handler": "Login",
+      "auth": [
+        "public"
+      ],
+      "data_ts": "AuthResult"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/register",
+      "group": "auth",
+      "handler": "Register",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/reset-password",
+      "group": "auth",
+      "handler": "SendResetCode",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/verify-reset-code",
+      "group": "auth",
+      "handler": "VerifyResetCode",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/manual-confirm",
+      "group": "billing",
+      "handler": "ManualConfirmPaid",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/orders",
+      "group": "billing",
+      "handler": "CreateBillingOrder",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/orders/:id/invoice",
+      "group": "billing",
+      "handler": "RequestInvoice",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/orders/:id/refund",
+      "group": "billing",
+      "handler": "RefundOrder",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/orders/mock-pay",
+      "group": "billing",
+      "handler": "MockPayOrder",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/subscribe",
+      "group": "billing",
+      "handler": "SubscribePackage",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/billing/webhook/:channel",
+      "group": "billing",
+      "handler": "BillingWebhook",
+      "auth": [
+        "webhook_signature"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/channel/callback/:id",
+      "group": "channel",
+      "handler": "ChannelCallbackReceive",
+      "auth": [
+        "channel_signature"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat",
+      "group": "chat",
+      "handler": "Chat",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/clear-delay",
+      "group": "chat",
+      "handler": "ClearDelay",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/guest",
+      "group": "chat",
+      "handler": "CreateGuest",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/human/reply",
+      "group": "chat",
+      "handler": "HumanReply",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/test",
+      "group": "chat",
+      "handler": "ChatTest",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/transfer/ai",
+      "group": "chat",
+      "handler": "TransferToAI",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/transfer/human",
+      "group": "chat",
+      "handler": "TransferToHuman",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/welcome",
+      "group": "chat",
+      "handler": "Welcome",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/client-errors",
+      "group": "client-errors",
+      "handler": "ClientErrorReport",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/collector",
+      "group": "collector",
+      "handler": "CollectorReceive",
+      "auth": [
+        "collector_key"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/customers",
+      "group": "customers",
+      "handler": "CreateCustomer",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/customers/:id/tags",
+      "group": "customers",
+      "handler": "AddTagsToCustomer",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/feedback",
+      "group": "feedback",
+      "handler": "CreateFeedback",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/feedback/rating",
+      "group": "feedback",
+      "handler": "CreateFeedbackRating",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/flows/advance",
+      "group": "flows",
+      "handler": "AdvanceFlow",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/flows/start",
+      "group": "flows",
+      "handler": "StartFlow",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/org/departments",
+      "group": "org",
+      "handler": "CreateDepartment",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/org/users",
+      "group": "org",
+      "handler": "CreateUser",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/privacy/deletion-request",
+      "group": "privacy",
+      "handler": "PrivacyDeletionRequest",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/strategy/templates",
+      "group": "strategy",
+      "handler": "CreateTemplate",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/strategy/test",
+      "group": "strategy",
+      "handler": "StrategyTest",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/feedbacks/resolve",
+      "group": "super",
+      "handler": "SuperResolveFeedback",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/materials/:id/evals",
+      "group": "super",
+      "handler": "SuperMaterialEvals",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/materials/:id/review",
+      "group": "super",
+      "handler": "SuperMaterialReview",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/orders/:id/confirm",
+      "group": "super",
+      "handler": "SuperConfirmOrder",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/packages",
+      "group": "super",
+      "handler": "SuperPackageCreate",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/packs",
+      "group": "super",
+      "handler": "SuperPackUpload",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/tenants/:id/grant-trial",
+      "group": "super",
+      "handler": "SuperGrantTrial",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/tenant/signup",
+      "group": "tenant",
+      "handler": "TenantSignup",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/openapi/v1/chat/completions",
+      "group": "openapi",
+      "handler": "OpenAPIChatCompletions",
+      "auth": [
+        "api_key",
+        "ip_limit"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/channels/:id",
+      "group": "admin",
+      "handler": "UpdateChannel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/channels/:id/status",
+      "group": "admin",
+      "handler": "SetChannelStatus",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/config",
+      "group": "admin",
+      "handler": "BatchUpdateSystemConfig",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/knowledge/brands/:id",
+      "group": "admin",
+      "handler": "UpdateBrand",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/knowledge/compares/:id",
+      "group": "admin",
+      "handler": "UpdateCompare",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/knowledge/fragments/:id",
+      "group": "admin",
+      "handler": "UpdateFragment",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/knowledge/models/:id",
+      "group": "admin",
+      "handler": "UpdateModel",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/knowledge/specs/:id",
+      "group": "admin",
+      "handler": "UpdateSpec",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/tag-rules/:id",
+      "group": "admin",
+      "handler": "UpdateTagRule",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/tag-weights/:id",
+      "group": "admin",
+      "handler": "UpdateTagWeight",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/tags/:id",
+      "group": "admin",
+      "handler": "UpdateTag",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/tenant/branding",
+      "group": "admin",
+      "handler": "AdminUpdateBranding",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/webhooks/:id",
+      "group": "admin",
+      "handler": "UpdateWebhook",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/advisor/customer/:id/info",
+      "group": "advisor",
+      "handler": "EditCustomerInfo",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/advisor/customer/:id/stage",
+      "group": "advisor",
+      "handler": "UpdateCustomerStage",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/advisor/customer/:id/tags",
+      "group": "advisor",
+      "handler": "EditCustomerTags",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/advisor/test-drive/:id",
+      "group": "advisor",
+      "handler": "UpdateTestDrive",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/customers/:id",
+      "group": "customers",
+      "handler": "UpdateCustomer",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/org/departments/:id",
+      "group": "org",
+      "handler": "UpdateDepartment",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/org/users/:id",
+      "group": "org",
+      "handler": "UpdateUser",
+      "auth": [
+        "jwt",
+        "org_manage"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/strategy/templates/:id",
+      "group": "strategy",
+      "handler": "UpdateTemplate",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/packages/:id",
+      "group": "super",
+      "handler": "SuperPackageUpdate",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/packs/:id/share",
+      "group": "super",
+      "handler": "SuperPackShare",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/packs/:id/status",
+      "group": "super",
+      "handler": "SuperPackStatus",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/tenants/:id/branding",
+      "group": "super",
+      "handler": "SuperUpdateBranding",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/tenants/:id/status",
+      "group": "super",
+      "handler": "SuperTenantStatus",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    }
+  ]
+}

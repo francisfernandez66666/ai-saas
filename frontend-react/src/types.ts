@@ -513,6 +513,75 @@ export interface ReferralRecord {
 }
 
 // ============================================================
+// 包质量 / 通道接入（T7 codegen 锚点类型）
+// ============================================================
+
+export interface PackStatRow {
+  tenant_id?: number
+  pack_code: string
+  pack_version: string
+  template_id: string
+  sample_count: number
+  hook_rate: number
+  lead_rate: number
+  pending_human_rate: number
+  avg_intent_delta: number
+  avg_eval_score?: number
+}
+
+export interface PackStatsResp {
+  list: PackStatRow[]
+  sample_min: number
+  total_samples?: number
+}
+
+export interface ChannelView {
+  id: number
+  type: string
+  name: string
+  corpid: string
+  appid: string
+  status: string
+  department_id: number
+  secret_mask: string
+  token_mask: string
+  aeskey_mask: string
+  config_json: string
+  created_at: string
+}
+
+export interface ChannelListResp {
+  list: ChannelView[]
+}
+
+export interface CreateChannelResp {
+  channel: ChannelView
+  plaintext?: { secret?: string; token?: string; encoding_aes_key?: string }
+  callback_url?: string
+}
+
+export interface OutboundView {
+  id: number
+  tenant_id: number
+  channel_id: number
+  customer_id: number
+  conversation_id: number
+  content: string
+  msg_type: string
+  status: string
+  retries: number
+  next_retry_at?: string | null
+  error: string
+  sent_at?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface OutboundListResp {
+  list: OutboundView[]
+}
+
+// ============================================================
 // 表格行数据类型（P1-2：消除 TDesign 单元格回调中的 any 漂移）
 // ============================================================
 

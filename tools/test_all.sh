@@ -114,6 +114,13 @@ verdict "前端 tsc --noEmit" $?
 ( cd frontend-react && npm run build >/tmp/test_all_febuild.log 2>&1 )
 verdict "前端 vite build" $?
 
+# ---------- 阶段二.5：契约层（T7 codegen 防漂移） ----------
+step "契约层：T7 apidump golden + api.d.ts + FE 路径孤儿 + as-any 基线"
+./tools/check_api_contract.sh >/tmp/test_all_contract.log 2>&1
+CONTRACT_RC=$?
+verdict "check_api_contract.sh" $CONTRACT_RC
+if [ "$CONTRACT_RC" != "0" ]; then tail -20 /tmp/test_all_contract.log || true; fi
+
 # ---------- 阶段三：E2E 层（五套断言脚本） ----------
 step "E2E 层：起服务（端口 ${PORT}）"
 ./stop.sh >/dev/null 2>&1 || true

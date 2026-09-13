@@ -106,6 +106,7 @@ func injectAgentID(cfgJSON, agentID string) string {
 }
 
 // ListChannels GET /admin/channels
+// apidump:ts ChannelListResp
 func ListChannels(c *gin.Context) {
 	list, err := channel.List(tenantIDOf(c))
 	if err != nil {
@@ -120,6 +121,7 @@ func ListChannels(c *gin.Context) {
 }
 
 // CreateChannel POST /admin/channels —— 凭据加密落库，明文一次性回显。
+// apidump:ts CreateChannelResp
 func CreateChannel(c *gin.Context) {
 	var req channelCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -223,6 +225,7 @@ func VerifyChannel(c *gin.Context) {
 }
 
 // ListChannelDeadLetters GET /admin/channels/dead-letters （W6 死信可见）
+// apidump:ts OutboundListResp
 func ListChannelDeadLetters(c *gin.Context) {
 	list, err := channel.ListDeadLetters(tenantIDOf(c))
 	if err != nil {
