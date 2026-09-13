@@ -9,6 +9,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
+	"ai-scrm/internal/service"
 	"net/http"
 	"strconv"
 	"strings"
@@ -865,6 +866,7 @@ func GetFragmentList(c *gin.Context) {
 		Offset(req.GetOffset()).
 		Limit(req.PageSize).
 		Find(&fragments)
+	service.FillFragmentVectorStatus(db.RQ(c), fragments)
 
 	RespOK(c, "success", schema.PageResponse{
 		Total: total, Page: req.Page, PageSize: req.PageSize, List: fragments,
@@ -880,6 +882,7 @@ func GetFragmentDetail(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "知识片段不存在")
 		return
 	}
+	service.FillFragmentVectorStatus(db.RQ(c), []model.KnowledgeFragment{fragment})
 
 	RespOK(c, "success", fragment)
 }
@@ -917,6 +920,9 @@ func CreateFragment(c *gin.Context) {
 		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
 		return
 	}
+	service.EmbedAndSetFragment(fragment)
+	service.FillFragmentVectorStatus(db.RQ(c), []model.KnowledgeFragment{*fragment})
+	cache.DefaultKnowledgeCache.Reload()
 
 	RespOK(c, "创建成功", fragment)
 }
@@ -967,7 +973,13 @@ func UpdateFragment(c *gin.Context) {
 		fragment.Sort = req.Sort
 	}
 
-	db.RQ(c).Save(&fragment)
+	if err := db.RQ(c).Save(&fragment).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
+		return
+	}
+	service.EmbedAndSetFragment(&fragment)
+	service.FillFragmentVectorStatus(db.RQ(c), []model.KnowledgeFragment{fragment})
+	cache.DefaultKnowledgeCache.Reload()
 
 	RespOK(c, "更新成功", fragment)
 }

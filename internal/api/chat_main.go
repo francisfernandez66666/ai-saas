@@ -5,10 +5,12 @@ package api
 // 含会话竞态保护、三层分流(硬边界/到店快速通道/简单消息)、合并队列、延迟清零、留资检测与OneID合并。
 
 import (
+	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
@@ -208,7 +210,7 @@ func Chat(c *gin.Context) {
 				overlapRate := float64(overlapCount) / float64(len(currentKeywords))
 				if overlapRate > 0.5 {
 					log.Printf("[相似消息合并] 客户%d 当前:%q 与历史:%q 重叠度%.0f%%, 合并为一次回答",
-						customer.ID, req.Content, pastMsg.Content, overlapRate*100)
+						customer.ID, logx.Safe(req.Content, 40), logx.Safe(pastMsg.Content, 40), overlapRate*100)
 
 					// 修复：之前这里直接return，客户这条消息完全没落库，
 					// 顾问端翻聊天记录会发现客户明明说了话但历史里没有，容易误判。
@@ -250,6 +252,8 @@ func Chat(c *gin.Context) {
 		CreatedAt:      now,
 	}
 	db.RQ(c).Create(&customerMsg)
+	// D9：客户消息到达即回填上一轮 AI 回复的接钩归因。
+	_ = attribution.MarkHookedBeforeMessage(tenantID, conversation.ID, customerMsg.ID)
 	// P1-1 实时推送：客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
 	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer",
 		customerMsg.ID, req.Content, customer.Name, now.Format("2006-01-02T15:04:05Z"))
@@ -281,7 +285,7 @@ func Chat(c *gin.Context) {
 			ConversationID: conversation.ID,
 			Message: gin.H{
 				"sender_type": "system",
-				"content":     "已收到您的消息，销售顾问正在赶来的路上，请稍候~",
+				"content":     "已收到你的消息，销售顾问正在赶来的路上，请稍候~",
 			},
 			RouteResult: "human",
 			Mode:        "human",
@@ -356,7 +360,7 @@ func Chat(c *gin.Context) {
 			// 3. 通知顾问
 			// 4. 硬编码确认回复（不走AI）
 			log.Printf("[到店倾向-已留资线索] 客户%d 消息含手机号%s，走已留资硬编码路径",
-				customer.ID, phoneMatch)
+				customer.ID, service.MaskPhone(phoneMatch))
 
 			// 0. OneID合并：手机号匹配到老客户时，迁移所有数据
 			mergedTargetID := chatflow.MergeCustomerByPhone(&customer, phoneMatch)
@@ -457,7 +461,7 @@ func Chat(c *gin.Context) {
 
 			// 3. 通知顾问（当前简化为日志，后续可接WebSocket/邮件/飞书）
 			log.Printf("[通知顾问] 顾问%d 有新的已留资到店线索：客户%d，手机号%s",
-				customer.AssignedUserID, customer.ID, phoneMatch)
+				customer.AssignedUserID, customer.ID, service.MaskPhone(phoneMatch))
 
 			// 4. 标记待人工接管，但AI先发一条引导式反问
 			// 硬编码：留资后第一条回复是固定引导句，不走AI
@@ -470,14 +474,14 @@ func Chat(c *gin.Context) {
 			db.RQ(c).Save(&conversation)
 
 			// 5. 固定引导式反问（硬编码，不走AI避免延迟）
-			// 已留资客户第一条回复浓缩成固定引导句，不再发"我先帮您约上时间"式确认语
+			// 已留资客户第一条回复浓缩成固定引导句，不再发"我先帮你约上时间"式确认语
 			firstDelay := service.GetStoreVisitFirstDelay()
 			chatflow.CancellableSleep(customer.ID, firstDelay)
 
 			leadCapturedReplies := []string{
-				"好呀，要不您再详细跟我说说您的用车需求，关注哪些方面，有没有老车要置换，大概什么时候想用车吧",
-				"好嘞，您方便详细聊聊您的用车需求吗？关注什么方面比较多？有没有旧车考虑置换，大概啥时候想用车呢",
-				"好的，您要不跟我说说您的用车场景和需求？关注哪些地方比较多，有没有老车要换，大概打算啥时候用车",
+				"好呀，要不你再详细跟我说说你的用车需求，关注哪些方面，有没有老车要置换，大概什么时候想用车吧",
+				"好嘞，你方便详细聊聊你的用车需求吗？关注什么方面比较多？有没有旧车考虑置换，大概啥时候想用车呢",
+				"好的，你要不跟我说说你的用车场景和需求？关注哪些地方比较多，有没有老车要换，大概打算啥时候用车",
 			}
 			leadCapturedReply := leadCapturedReplies[rand.Intn(len(leadCapturedReplies))]
 
@@ -733,7 +737,7 @@ skipStoreVisitFast:
 		// AI接不住：软接管（用户侧无感知的硬切）
 		// AI发退场词后关闭AI回复，不分配顾问
 		// 顾问分配推迟到客户回复手机号时，由 DetectLeadCapture 根据手机号校验决定
-		aiReply = "您好，我现在有点忙，您要不留个信息咱们到店谈，我顺便帮您查一下您的问题"
+		aiReply = "你好，我现在有点忙，你要不留个信息咱们到店谈，我顺便帮你查一下你的问题"
 		conversation.Mode = "human"
 		conversation.IsHumanLocked = true
 		conversation.IsAiReplyEnabled = false
@@ -756,7 +760,7 @@ skipStoreVisitFast:
 		// 直接转人工（硬切，用户有感知）
 		// AI发退场词后关闭AI回复，不分配顾问
 		// 顾问分配推迟到客户回复手机号时，由 DetectLeadCapture 根据手机号校验决定
-		aiReply = "您好，我现在有点忙，您要不留个信息咱们到店谈，我顺便帮您查一下您的问题"
+		aiReply = "你好，我现在有点忙，你要不留个信息咱们到店谈，我顺便帮你查一下你的问题"
 		conversation.Mode = "human"
 		conversation.IsHumanLocked = true
 		conversation.IsAiReplyEnabled = false
@@ -770,8 +774,29 @@ skipStoreVisitFast:
 	case strategy.RouteFish:
 		// 养鱼模式
 		conversation.Mode = "fish"
-		aiReply = "好的，您先考虑考虑，有任何问题随时找我~ 我会持续关注您的需求，有好消息也会及时通知您的。"
+		aiReply = "好的，你先考虑考虑，有任何问题随时找我~ 我会持续关注你的需求，有好消息也会及时通知你。"
 		conversation.Status = "active"
+	}
+
+	// 7.5 内容安全闸门（C1，2026-09-12）：AI 出站回复统一过滤
+	//   MASK→改写；BLOCK(enforce)→丢弃AI话、发无感知退场语、关AI回复等顾问（复用 RouteHuman 语义）
+	//   shadow 模式仅计数不改写，供上线首周演练误杀率
+	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
+		switch action {
+		case GateRewrite:
+			aiReply = out
+		case GateBlock:
+			aiReply = SafetyHandoffReply()
+			conversation.Mode = "human"
+			conversation.IsHumanLocked = true
+			conversation.IsAiReplyEnabled = false
+			db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+				"mode":                "human",
+				"is_human_locked":     true,
+				"is_ai_reply_enabled": false,
+			})
+			log.Printf("[对话] 会话%d 内容安全拦截，已转人工等待顾问", conversation.ID)
+		}
 	}
 
 	// 8. 保存AI回复消息
@@ -822,6 +847,24 @@ skipStoreVisitFast:
 	newTVector[0] = newIntent // 更新意向分
 	customer.SaveTVector(newTVector)
 	db.RQ(c).Save(&customer)
+
+	// D9：AI 回复落包/模板/意向变化快照，供包效果归因。
+	if aiMsg.ID > 0 {
+		_ = attribution.RecordReply(attribution.RecordReplyInput{
+			TenantID:       tenantID,
+			MessageID:      aiMsg.ID,
+			ConversationID: conversation.ID,
+			CustomerID:     customer.ID,
+			TemplateID:     strategyOutput.TemplateID,
+			AnchorType:     strategyOutput.FinalAnchor,
+			RouteResult:    routeResult,
+			IntentBefore:   tVector[0],
+			IntentAfter:    newIntent,
+		})
+		if routeResult == strategy.RoutePendingHuman {
+			_ = attribution.MarkPendingHuman(tenantID, conversation.ID, customer.ID)
+		}
+	}
 
 	// 11. 构造策略信息（供B端查看）
 	strategyInfo := schema.StrategyInfo{

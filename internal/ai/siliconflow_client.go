@@ -4,6 +4,7 @@ package ai
 import (
 	"ai-scrm/config"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -107,7 +108,7 @@ func (c *SiliconFlowClient) GetModelName() string {
 // P2-59 修复：callProvider 的临时模型覆盖——原 SetModel 改全局单例 ModelName，
 // 并发阶段覆盖请求互相串模型（A 读了 B 的 SetModel）。改用 per-call override 字段，
 // GenerateTextWithUsage 优先读 override、清空后复原，加 mutex 防并发覆盖。
-func (c *SiliconFlowClient) GenerateTextWithModelOverride(messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
+func (c *SiliconFlowClient) GenerateTextWithModelOverride(ctx context.Context, messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
 	orig := c.ModelName
 	c.modelMu.Lock()
 	c.modelOverride = overrideModel
@@ -118,16 +119,16 @@ func (c *SiliconFlowClient) GenerateTextWithModelOverride(messages []ChatMessage
 		c.modelOverride = ""
 		c.modelMu.Unlock()
 	}()
-	return c.GenerateTextWithUsage(messages, temperature)
+	return c.GenerateTextWithUsage(ctx, messages, temperature)
 }
 
 // GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座）
-func (c *SiliconFlowClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
+func (c *SiliconFlowClient) GenerateTextWithUsage(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	if !c.Enabled {
 		return "", Usage{}, fmt.Errorf("硅基流动未启用（缺少API Key）")
 	}
 
-	reply, usage, err := c.generateWithRetry(messages, temperature)
+	reply, usage, err := c.generateWithRetry(ctx, messages, temperature)
 	if err != nil {
 		return "", Usage{}, err
 	}
@@ -143,9 +144,13 @@ func (c *SiliconFlowClient) GenerateTextWithUsage(messages []ChatMessage, temper
 
 // generateWithRetry 带重试的API调用
 // 重试策略：指数退避 base=4s，429限流翻倍，加随机抖动
-func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, Usage, error) {
+func (c *SiliconFlowClient) generateWithRetry(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
+		// D4：重试前若 ctx 已到期立即放弃，不再空耗退避
+		if ctx.Err() != nil {
+			return "", Usage{}, ctx.Err()
+		}
 		if attempt > 0 {
 			// 指数退避 base=4s：4s, 8s
 			waitSeconds := int(math.Pow(2, float64(attempt))) * 2
@@ -163,10 +168,15 @@ func (c *SiliconFlowClient) generateWithRetry(messages []ChatMessage, temperatur
 			jitter := float64(waitSeconds) * 0.2
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			waitSeconds = int(float64(waitSeconds) - jitter + r.Float64()*2*jitter)
-			time.Sleep(time.Duration(waitSeconds) * time.Second)
+			// D4：退避等待可被取消
+			select {
+			case <-ctx.Done():
+				return "", Usage{}, ctx.Err()
+			case <-time.After(time.Duration(waitSeconds) * time.Second):
+			}
 		}
 
-		reply, usage, err := c.callAPI(messages, temperature)
+		reply, usage, err := c.callAPI(ctx, messages, temperature)
 		if err == nil {
 			return reply, usage, nil
 		}
@@ -193,8 +203,8 @@ func (c *SiliconFlowClient) effectiveModel() string {
 	return c.ModelName
 }
 
-// callAPI 调用硅基流动API
-func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
+// callAPI 调用硅基流动API（D4：ctx 贯穿，超时/取消可中断挂死请求）
+func (c *SiliconFlowClient) callAPI(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := SiliconFlowChatRequest{
 		Model:       c.effectiveModel(),
 		Messages:    messages,
@@ -208,7 +218,7 @@ func (c *SiliconFlowClient) callAPI(messages []ChatMessage, temperature float64)
 	}
 
 	url := c.BaseURL + "/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("创建请求失败: %v", err)
 	}

@@ -13,7 +13,10 @@ package service
 import (
 	"fmt"
 	"runtime"
+	"sort"
 	"strconv"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -91,6 +94,104 @@ var complaintTotal uint64
 // IncComplaint 投诉事件 +1（api/feedback.go 低评分投诉触发）
 // 调用时机：评分≤2 且评论非空时，发布 complaint 事件到 CDP 后调用
 func IncComplaint() { atomic.AddUint64(&complaintTotal, 1) }
+
+// ---- Q5 去 AI 味：敬语「您」出站兜底替换计数 ----
+// addressPoliteTotal AI 出站回复命中「您」被兜底替换的次数。
+// 铁律要求说"你"不说"您"，正常应为 0；非 0 说明 prompt/硬编码话术仍有漏网点，可配告警。
+var addressPoliteTotal uint64
+
+// IncAddressPolite AI 回复含「您」已兜底替换 +1（llm.sanitizeAddress 调用）
+func IncAddressPolite() { atomic.AddUint64(&addressPoliteTotal, 1) }
+
+// ---- C1 内容安全闸门计数 ----
+// contentSafetyHitTotal 命中词库/机审次数（含 shadow 观察）
+var contentSafetyHitTotal uint64
+
+// contentSafetyBlockTotal enforce 模式实际拦截（转人工/丢弃）次数
+var contentSafetyBlockTotal uint64
+
+// IncContentSafetyHit 内容安全命中 +1
+func IncContentSafetyHit() { atomic.AddUint64(&contentSafetyHitTotal, 1) }
+
+// IncContentSafetyBlock 内容安全 enforce 拦截 +1
+func IncContentSafetyBlock() { atomic.AddUint64(&contentSafetyBlockTotal, 1) }
+
+// ---- D9 行业包质量指标（带 pack/template 标签）----
+type packMetricKey struct {
+	Pack     string
+	Template string
+}
+
+var (
+	packReplyTotal        sync.Map
+	packLeadCapturedTotal sync.Map
+	packAlertTotal        sync.Map
+)
+
+func incPackCounter(m *sync.Map, pack, template string) {
+	key := packMetricKey{Pack: pack, Template: template}
+	if p, ok := m.Load(key); ok {
+		atomic.AddUint64(p.(*uint64), 1)
+		return
+	}
+	p := new(uint64)
+	actual, _ := m.LoadOrStore(key, p)
+	atomic.AddUint64(actual.(*uint64), 1)
+}
+
+// IncPackReply 包/模板维度 AI 回复归因计数 +1
+func IncPackReply(pack, template string) { incPackCounter(&packReplyTotal, pack, template) }
+
+// IncPackLeadCaptured 包维度留资归因计数 +1
+func IncPackLeadCaptured(pack string) { incPackCounter(&packLeadCapturedTotal, pack, "") }
+
+// IncPackAlert 包质量告警计数 +1
+func IncPackAlert(pack string) { incPackCounter(&packAlertTotal, pack, "") }
+
+func promEscape(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	s = strings.ReplaceAll(s, "\n", `\n`)
+	return s
+}
+
+func renderPackCounter(b *[]byte, name, help string, m *sync.Map, withTemplate bool) {
+	type entry struct {
+		key   packMetricKey
+		value uint64
+	}
+	var entries []entry
+	m.Range(func(k, v interface{}) bool {
+		key, ok := k.(packMetricKey)
+		if !ok {
+			return true
+		}
+		p, ok := v.(*uint64)
+		if !ok {
+			return true
+		}
+		entries = append(entries, entry{key: key, value: atomic.LoadUint64(p)})
+		return true
+	})
+	if len(entries) == 0 {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].key.Pack != entries[j].key.Pack {
+			return entries[i].key.Pack < entries[j].key.Pack
+		}
+		return entries[i].key.Template < entries[j].key.Template
+	})
+	*b = append(*b, fmt.Sprintf("# HELP %s %s\n", name, help)...)
+	*b = append(*b, fmt.Sprintf("# TYPE %s counter\n", name)...)
+	for _, e := range entries {
+		labels := fmt.Sprintf(`pack="%s"`, promEscape(e.key.Pack))
+		if withTemplate {
+			labels = fmt.Sprintf(`%s,template="%s"`, labels, promEscape(e.key.Template))
+		}
+		*b = append(*b, fmt.Sprintf("%s{%s} %d\n", name, labels, e.value)...)
+	}
+}
 
 // ---- HTTP 请求延迟直方图（P99 来源）----
 // 桶（秒）：指数分布覆盖 5ms~10s，用于Prometheus histogram计算
@@ -266,6 +367,24 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_complaint_total complaint events published\n"...)
 	b = append(b, "# TYPE ai_scrm_complaint_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_complaint_total %d\n", atomic.LoadUint64(&complaintTotal))...)
+
+	// ---- Q5 指标：敬语「您」兜底替换 ----
+	b = append(b, "# HELP ai_scrm_address_polite_total AI replies containing 您 sanitized on exit\n"...)
+	b = append(b, "# TYPE ai_scrm_address_polite_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_address_polite_total %d\n", atomic.LoadUint64(&addressPoliteTotal))...)
+
+	// ---- C1 指标：内容安全 ----
+	b = append(b, "# HELP ai_scrm_contentsafety_hit_total AI replies hitting content-safety filter\n"...)
+	b = append(b, "# TYPE ai_scrm_contentsafety_hit_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_contentsafety_hit_total %d\n", atomic.LoadUint64(&contentSafetyHitTotal))...)
+	b = append(b, "# HELP ai_scrm_contentsafety_block_total AI replies blocked in enforce mode\n"...)
+	b = append(b, "# TYPE ai_scrm_contentsafety_block_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_contentsafety_block_total %d\n", atomic.LoadUint64(&contentSafetyBlockTotal))...)
+
+	// ---- D9 指标：行业包质量归因 ----
+	renderPackCounter(&b, "ai_scrm_pack_reply_total", "AI reply attribution count by pack/template", &packReplyTotal, true)
+	renderPackCounter(&b, "ai_scrm_pack_lead_captured_total", "Lead captured count attributed by pack", &packLeadCapturedTotal, false)
+	renderPackCounter(&b, "ai_scrm_pack_alert_total", "Pack quality alert count by pack", &packAlertTotal, false)
 
 	return string(b)
 }

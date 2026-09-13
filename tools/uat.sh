@@ -181,7 +181,11 @@ case "$HTTP" in 400|404) check "mock-pay不存在单保护" y y;; *) check "mock
 
 echo ""
 echo "== 七、订单超时15分钟自动关闭 =="
-$PSQL "INSERT INTO billing_orders (order_no,tenant_id,amount_cents,channel,status,created_at) VALUES ('BO_UAT_T2',${UB_ID},9900,'mock','pending',NOW()-INTERVAL '20 minutes')" >/dev/null
+# Q2 修复(2026-09-12)：固定 order_no='BO_UAT_T2' 重跑必撞唯一索引 idx_billing_orders_order_no
+# （上轮的同名单已 closed 仍在库）→ 改随机后缀 + 预清理历史 BO_UAT_T2% 残留，保证幂等可重复跑
+STALE_NO="BO_UAT_T2_$$_$RANDOM"
+$PSQL "DELETE FROM billing_orders WHERE order_no LIKE 'BO_UAT_T2%'" >/dev/null
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,amount_cents,channel,status,created_at) VALUES ('${STALE_NO}',${UB_ID},9900,'mock','pending',NOW()-INTERVAL '20 minutes')" >/dev/null
 for _ in 1 2 3; do pkill -x ai-scrm 2>/dev/null; sleep 2; done; pgrep -x ai-scrm >/dev/null && kill -9 $(pgrep -x ai-scrm) 2>/dev/null
 python3 - << 'PY'
 import subprocess
@@ -197,7 +201,7 @@ $PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'
 ADMIN_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
 AH="Authorization: Bearer $ADMIN_TOKEN"
-STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='BO_UAT_T2'"); check "僵尸单已写入待小时巡检ExpireCheck关闭" closed "$STALE"
+STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='${STALE_NO}'"); check "僵尸单已写入待小时巡检ExpireCheck关闭" closed "$STALE"
 
 echo ""
 echo "== 八、Token三桶强制扣减级联 =="
@@ -260,6 +264,19 @@ curl -s -X POST "$B/api/v1/admin/packs/bind" -H "$BH" -H "Content-Type: applicat
 echo "== 十、KB双层 / 行业包视图 / 素材池 抽样 =="
 check "KB上传" 0 "$(curl -s -X POST "$B/api/v1/admin/kb/upload" -H "$BH" -H "Content-Type: application/json" -d '{"title":"UAT知识","content":"极石01支持对外放电3.3千瓦。"}' | code)"
 check "行业包当前绑定(bound)" True "$(curl -s "$B/api/v1/admin/packs/current" -H "$BH" | jget "d['data']['bound']")"
+# D9 包效果归因闭环断言：绑定 auto_rox 后走测试通道触发策略回复，端点和底表都应能看到该包。
+$PSQL "UPDATE tenants SET free_token_balance=100000, free_token_expires_at=NOW()+INTERVAL '5 days', monthly_token_used=0, token_balance=100000 WHERE id=$UB_ID" >/dev/null
+ATTR_VK=$($PSQL "SELECT visitor_key FROM customers WHERE id=$CUST_B" | tr -d '[:space:]')
+ATTR_HTTP=$(curl -s --max-time 170 -o /tmp/uat_pack_attr.json -w "%{http_code}" -X POST "$B/api/v1/chat/test?visitor_key=$ATTR_VK" -H "X-Tenant-ID: $UB_ID" -H "Content-Type: application/json" -d "{\"customer_id\":$CUST_B,\"content\":\"极石01后备箱容量多大\"}")
+[ "$ATTR_HTTP" != "200" ] && echo "    [debug] D9归因测试原始: $(cat /tmp/uat_pack_attr.json 2>/dev/null | head -c 220)"
+ATTR_ROWS=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  ATTR_ROWS=$($PSQL "SELECT COUNT(*) FROM reply_attributions WHERE tenant_id=$UB_ID AND pack_code='auto_rox'" | tr -d '[:space:]')
+  [ "${ATTR_ROWS:-0}" -gt 0 ] && break
+  sleep 1
+done
+check "D9归因行落库(reply_attributions)" True "$([ "${ATTR_ROWS:-0}" -gt 0 ] && echo True || echo False)"
+check "D9包效果端点含pack_code字段" y "$(curl -s "$B/api/v1/admin/packs/stats?days=30&pack_code=auto_rox" -H "$BH" | grep -q auto_rox && echo y || echo n)"
 $PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
 check "素材池列表可达" 0 "$(curl -s "$B/api/v1/super/materials?page=1" -H "$AH" | code)"
 
@@ -344,6 +361,54 @@ except Exception:
     print("False")')
 [ "$KEYS_OK" != "True" ] && echo "    [debug] records原始: $(echo "$REC" | head -c 220)"
 check "记录含邮箱/支付/奖励字段" True "$KEYS_OK"
+
+echo ""
+echo "== 十五、退款 E2E（T3：零消耗增量全额退 + 包月按窗口摘除）=="
+RF_CODE="uatrf$((TS%100000))"; RF_USER="rf$TS"
+R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"UAT退款\",\"code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}")
+check "退款租户注册" 0 "$(echo "$R"|code)"
+RF_ID=$($PSQL "SELECT id FROM tenants WHERE code='$RF_CODE'")
+RF_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"tenant_code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+RH="Authorization: Bearer $RF_TOKEN"
+check "退款租户登录" y "$([ -n "$RF_TOKEN" ] && echo y || echo n)"
+# 15.1 零消耗 increment：mock-pay → ②桶 +300万 → 全额退款 → 桶回收 → 重复退 409
+RF_TB0=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+RF_ORDER=$(curl -s -X POST "$B/api/v1/billing/orders" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"package_id\":$INC_PKG}" | jget "d['data']['id']")
+curl -s -X POST "$B/api/v1/billing/orders/mock-pay" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$RF_ORDER}" >/dev/null
+RF_TB1=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "增量包到账后②桶+300万" "$((RF_TB0+3000000))" "$RF_TB1"
+RF_AMT=$($PSQL "SELECT COALESCE(amount_cents,0) FROM billing_orders WHERE id=$RF_ORDER" | tr -d '[:space:]')
+RF_REFUND_RAW=$(curl -s -X POST "$B/api/v1/billing/orders/$RF_ORDER/refund" -H "$RH")
+RF_REFUND_CODE=$(echo "$RF_REFUND_RAW" | code)
+RF_REFUND_AMT=$(echo "$RF_REFUND_RAW" | jget "d['data']['refund_amount_cents']")
+check "零消耗增量包全额退款(code=0)" 0 "$RF_REFUND_CODE"
+check "零消耗增量包退款金额=支付金额" "$RF_AMT" "$RF_REFUND_AMT"
+RF_TB2=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "退款后②桶回收(无消耗则归零到到账前)" "$RF_TB0" "$RF_TB2"
+RF_DUP_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/orders/$RF_ORDER/refund" -H "$RH")
+check "重复退款409" 409 "$RF_DUP_HTTP"
+# 15.2 包月零消耗：订阅+到账 → 月配额生效 → 按本单窗口全额退 → 到期日回退到当前、配额清零
+RF_SUB_RAW=$(curl -s -X POST "$B/api/v1/billing/subscribe" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"package_id\":$PAID_PKG}")
+RF_SUB_ORDER=$(echo "$RF_SUB_RAW" | jget "d['data']['order']['id']")
+check "包月订阅创建订单" y "$([ -n "$RF_SUB_ORDER" ] && echo y || echo n)"
+RF_PAY_RAW=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$RF_SUB_ORDER}")
+check "包月mock-pay到账" True "$(echo "$RF_PAY_RAW" | jget "d['data']['granted']")"
+RF_QUOTA=$($PSQL "SELECT COALESCE(monthly_token_quota,0) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "包月月度配额已生效" 3000000 "$RF_QUOTA"
+RF_REFUND_SUB_RAW=$(curl -s -X POST "$B/api/v1/billing/orders/$RF_SUB_ORDER/refund" -H "$RH")
+RF_REFUND_SUB_CODE=$(echo "$RF_REFUND_SUB_RAW" | code)
+RF_REFUND_SUB_AMT=$(echo "$RF_REFUND_SUB_RAW" | jget "d['data']['refund_amount_cents']")
+RF_SUB_AMT=$($PSQL "SELECT COALESCE(amount_cents,0) FROM billing_orders WHERE id=$RF_SUB_ORDER" | tr -d '[:space:]')
+check "零消耗包月全额退款" 0 "$RF_REFUND_SUB_CODE"
+check "包月退款金额=支付金额" "$RF_SUB_AMT" "$RF_REFUND_SUB_AMT"
+RF_AFTER=$($PSQL "SELECT monthly_token_quota, COALESCE(EXTRACT(EPOCH FROM (NOW()-expired_at)) < 120, false) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "退款后到期日回退且月配额清零" "0|t" "$RF_AFTER"
 
 echo ""
 echo "== 恢复现场 =="

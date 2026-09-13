@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -163,11 +164,14 @@ func ForceInitSystemConfig(c *gin.Context) {
 
 // modelInfo 单个模型的信息（返回给前端）
 type modelInfo struct {
-	Provider    string `json:"provider"`     // 提供商标识：siliconflow / zhipu / fallback
-	ModelName   string `json:"model_name"`   // 模型全名（API调用时的参数）
-	Identifier  string `json:"identifier"`   // 标识符（与model_priority配置中的值对应）
-	Available   bool   `json:"available"`    // 当前是否可用
-	DisplayName string `json:"display_name"` // 中文显示名（前端展示用）
+	Provider         string     `json:"provider"`          // 提供商标识：siliconflow / zhipu / fallback
+	ModelName        string     `json:"model_name"`        // 模型全名（API调用时的参数）
+	Identifier       string     `json:"identifier"`        // 标识符（与model_priority配置中的值对应）
+	Available        bool       `json:"available"`         // 当前是否可用
+	DisplayName      string     `json:"display_name"`      // 中文显示名（前端展示用）
+	ConsecutiveFails int        `json:"consecutive_fails"` // 连续失败次数（F9 健康看板）
+	LastFailAt       *time.Time `json:"last_fail_at"`      // 最后失败时间（F9 健康看板）
+	CooldownLeftSec  int        `json:"cooldown_left_sec"` // 剩余冷却秒数（F9 健康看板）
 }
 
 // modelsResponse 可用模型列表响应
@@ -204,13 +208,29 @@ func GetAvailableModels(c *gin.Context) {
 		if displayName == "" {
 			displayName = m.ModelName
 		}
+		var lastFailAt *time.Time
+		if !m.LastFailTime.IsZero() {
+			t := m.LastFailTime
+			lastFailAt = &t
+		}
+		cooldownLeft := 0
+		if !m.Available && !m.LastFailTime.IsZero() {
+			elapsed := int(time.Since(m.LastFailTime).Seconds())
+			cooldownLeft = ai.Router.CooldownSeconds() - elapsed
+			if cooldownLeft < 0 {
+				cooldownLeft = 0
+			}
+		}
 
 		result = append(result, modelInfo{
-			Provider:    string(m.Provider),
-			ModelName:   m.ModelName,
-			Identifier:  identifier,
-			Available:   m.Available,
-			DisplayName: displayName,
+			Provider:         string(m.Provider),
+			ModelName:        m.ModelName,
+			Identifier:       identifier,
+			Available:        m.Available,
+			DisplayName:      displayName,
+			ConsecutiveFails: m.ConsecutiveFails,
+			LastFailAt:       lastFailAt,
+			CooldownLeftSec:  cooldownLeft,
 		})
 	}
 

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"time"
 
+	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
@@ -114,6 +115,8 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		RespErr(c, http.StatusInternalServerError, 500, "消息落库失败")
 		return
 	}
+	// D9：外部渠道客户回复同样回填上一轮 AI 接钩归因。
+	_ = attribution.MarkHookedBeforeMessage(tenantID, conversation.ID, customerMsg.ID)
 	// P1-1 实时推送：外部渠道客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
 	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer",
 		customerMsg.ID, userInput, customer.Name, time.Now().Format("2006-01-02T15:04:05Z"))
@@ -176,10 +179,21 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	if strategyOutput.RouteResult == "human" || strategyOutput.RouteResult == "pending_human" {
 		reply := service.GetHumanTakeoverReplyForTenant(tenantID, userInput)
 		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "human_takeover")
+		_ = attribution.MarkPendingHuman(tenantID, conversation.ID, customer.ID)
 		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
 		return
 	}
 	aiReply := flow.DefaultEngine.OrchestrateReply(customer, conversation.ID, userInput, &strategyOutput, nil)
+
+	// 内容安全闸门（C1）：外部渠道出站同样过滤；BLOCK 用退场语替换，绝不下发违规原文
+	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
+		if action == GateRewrite {
+			aiReply = out
+		} else {
+			aiReply = SafetyHandoffReply()
+			log.Printf("[OpenAPI] 会话%d 内容安全拦截，已用退场语替换", conversation.ID)
+		}
+	}
 
 	// 8. 持久化 AI 消息
 	aiMsgID := persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, aiReply,
@@ -187,6 +201,26 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	// P1-1 实时推送：外部渠道 AI 回复通知客户端与顾问端（推送消息内容，前端即时更新）
 	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai",
 		aiMsgID, aiReply, "AI顾问", time.Now().Format("2006-01-02T15:04:05Z"))
+
+	// D9：OpenAPI 外部渠道 AI 回复同样落包/模板归因。
+	openIntentAfter := tVector[0] + strategyOutput.IntentDelta
+	if openIntentAfter < 0 {
+		openIntentAfter = 0
+	}
+	if openIntentAfter > 1 {
+		openIntentAfter = 1
+	}
+	_ = attribution.RecordReply(attribution.RecordReplyInput{
+		TenantID:       tenantID,
+		MessageID:      aiMsgID,
+		ConversationID: conversation.ID,
+		CustomerID:     customer.ID,
+		TemplateID:     strategyOutput.TemplateID,
+		AnchorType:     strategyOutput.FinalAnchor,
+		RouteResult:    "ai_triggered_by_openapi",
+		IntentBefore:   tVector[0],
+		IntentAfter:    openIntentAfter,
+	})
 
 	// 9. 返回 OpenAI 兼容结构（stream=true 走 SSE 逐帧，false 全量 JSON）
 	openAIRespond(c, req.Stream, req.Model, aiReply, estimateTokens(userInput), estimateTokens(aiReply))

@@ -50,7 +50,7 @@ func TestMaskName(t *testing.T) {
 // TestMaskPhoneInText 验证长文本内混排的多个手机号都被掩码
 func TestMaskPhoneInText(t *testing.T) {
 	got := MaskPhoneInText("联系 13800001111 或 13912345678 谢谢")
-	want := "联系 1380***1111 或 1391***5678 谢谢"
+	want := "联系 138****1111 或 139****5678 谢谢"
 	if got != want {
 		t.Errorf("MaskPhoneInText=%q want %q", got, want)
 	}

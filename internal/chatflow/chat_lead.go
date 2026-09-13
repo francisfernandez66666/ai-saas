@@ -2,11 +2,14 @@
 package chatflow
 
 import (
+	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/webhook"
 	"context"
 	"fmt"
 	"log"
@@ -129,6 +132,20 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 		}
 		log.Printf("[留资检测] 客户%d留资成功: phone=%s, stage=%v, assigned=%v",
 			customer.ID, service.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"])
+		// D6：出站事件 webhook 扇出（旁路，不阻塞）。载荷只带 customer_id/阶段，不外发手机号明文（商户可凭 OpenAPI Key 取详情）
+		webhook.Emit(customer.TenantID, model.WebhookEventLeadCaptured, map[string]interface{}{
+			"customer_id": customer.ID,
+			"stage":       updates["journey_stage"],
+		})
+		if v, ok := updates["assigned_user_id"].(uint); ok && v > 0 {
+			webhook.Emit(customer.TenantID, model.WebhookEventHumanAssigned, map[string]interface{}{
+				"customer_id":      customer.ID,
+				"assigned_user_id": v,
+			})
+			_ = attribution.MarkPendingHuman(customer.TenantID, 0, customer.ID)
+		}
+		// D9：把留资结果回填到最近一条已归因 AI 回复。
+		_ = attribution.MarkLeadCaptured(customer.TenantID, 0, customer.ID)
 	}
 
 	// 修复：留资成功后生成线索记录（已留资线索，分配给顾问）
@@ -162,7 +179,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 
 	// 通知顾问（当前简化为日志，后续可接WebSocket/邮件/飞书）
 	log.Printf("[通知顾问] 顾问%d 有新的已留资线索：客户%d，手机号%s",
-		customer.AssignedUserID, customer.ID, phoneMatch)
+		customer.AssignedUserID, customer.ID, logx.Mask(phoneMatch))
 
 	// 商业化批次一顺手做（2026-08-23）：留资成功 → 企微群机器人推送
 	// SCRM 最高价值触达：销售群实时收到"新留资线索"通知（手机号脱敏）
@@ -244,7 +261,7 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	}
 
 	log.Printf("[OneID合并] 检测到同手机号老客户: 访客%d → 老客户%d, 手机号=%s, 租户=%d",
-		guestCustomer.ID, existingCustomer.ID, phone, tid)
+		guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), tid)
 
 	// 1. 迁移会话 → 老客户（租户守卫：只迁本租户数据）
 	db.DB.Model(&model.Conversation{}).

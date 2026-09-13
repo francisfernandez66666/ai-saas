@@ -5,20 +5,25 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/api"
+	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/cdp"
+	"ai-scrm/internal/channel"
 	"ai-scrm/internal/chatflow"
 	configcenter "ai-scrm/internal/config_center"
+	"ai-scrm/internal/contentsafety"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/gateway"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/privacy"
 	"ai-scrm/internal/realtime"
 	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
+	"ai-scrm/internal/webhook"
 	"ai-scrm/seed"
 	"context"
 	"encoding/json"
@@ -96,6 +101,12 @@ func main() {
 	// 3. 设置Gin模式
 	gin.SetMode(cfg.Server.Mode)
 
+	// C3(2026-09-12)：生产禁用 debug——SQL 全量日志即便已掩码仍不该对外，release 才合规。
+	// debug 态打醒目告警，提醒部署切 GIN_MODE=release。
+	if cfg.Server.Mode != "release" {
+		log.Printf("⚠️  ⚠️  ⚠️  当前运行模式 GIN_MODE=%s（非 release）：SQL/业务日志按调试级别输出，生产环境务必设 GIN_MODE=release ⚠️  ⚠️  ⚠️", cfg.Server.Mode)
+	}
+
 	// 4. 初始化数据库
 	err = db.Init()
 	if err != nil {
@@ -111,6 +122,9 @@ func main() {
 
 	// 5.6 组织架构迁移：角色四级化(sales→user) + 每租户默认根部门 + 存量用户挂载
 	db.MigrateOrgData()
+
+	// 5.7 内容安全词库加载（C1，2026-09-12）：文件缺失则空词库运行，不阻塞启动
+	contentsafety.Load()
 
 	// 6. 初始化缓存层（标签缓存 + 知识库缓存，热更新基础）
 	// 顺序：先缓存，再引擎，因为引擎依赖缓存
@@ -158,6 +172,18 @@ func main() {
 			reasons = append(reasons, out.Note)
 		}
 		return out.Score, reasons
+	}
+
+	// D9 包质量归因旁路：指标/群告警由组合根注入，归因包不直接依赖 service。
+	attribution.OnReplyRecorded = service.IncPackReply
+	attribution.OnLeadCaptured = func(packCode string) { service.IncPackLeadCaptured(packCode) }
+	attribution.ReplyScoreFunc = func(content string, anchors, forbidden []string) (int, []string) {
+		res := service.ScoreReplyOffline(content, anchors, forbidden)
+		return int(res.Score*20 + 0.5), res.Reasons
+	}
+	attribution.PackAlertFunc = func(packCode, message string) {
+		service.IncPackAlert(packCode)
+		service.NotifyGroup(message)
 	}
 
 	// 7.5 内嵌 AI 网关（P0-1）：仅在"本进程即网关"模式启动（GatewayListen 非空 且 非网关客户端）。
@@ -395,6 +421,143 @@ func main() {
 	// 8.5 启动消息消费循环（kafka 模式生效；log 模式空操作）
 	go mq.StartConsumers(context.Background())
 
+	// 8.6 通道出站队列 worker（W6，2026-09-12）：3s 取到期 pending→适配器发送→指数退避，多实例 Redis 选主
+	go func() {
+		tk := time.NewTicker(3 * time.Second)
+		defer tk.Stop()
+		for range tk.C {
+			run := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				channel.ProcessDueOutbound(ctx)
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:channel:outbound", 20*time.Second); h != nil {
+					safeRun("channel:outbound", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("channel:outbound", run)
+			}
+		}
+	}()
+
+	// 8.7 微信客服增量拉取（W4，2026-09-12）：5s 轮询启用的 kf 通道 sync_msg 拉增量，多实例 Redis 选主
+	go func() {
+		tk := time.NewTicker(5 * time.Second)
+		defer tk.Stop()
+		for range tk.C {
+			run := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				channel.SyncAllActiveKfChannels(ctx)
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:channel:kf_sync", 25*time.Second); h != nil {
+					safeRun("channel:kf_sync", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("channel:kf_sync", run)
+			}
+		}
+	}()
+
+	// 8.8 PIPL 删除请求日批（C2，2026-09-12）：每 15 分钟扫描到期的 pending 请求并匿名化（多实例 Redis 选主）
+	go func() {
+		tk := time.NewTicker(15 * time.Minute)
+		defer tk.Stop()
+		// 启动即跑一次，缩短验收等待（deadline 通常 +15d，这里只是扫描器节奏）
+		run := func() { privacy.ProcessExpired() }
+		safeRun("privacy:sweep", run)
+		for range tk.C {
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:privacy:sweep", 10*time.Minute); h != nil {
+					safeRun("privacy:sweep", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("privacy:sweep", run)
+			}
+		}
+	}()
+
+	// 8.85 包质量归因小时任务（D9，2026-09-13）：评分补洞 → 物化小时快照 → 低分告警；多实例 Redis 选主。
+	go func() {
+		packCfgBool := func(key string, def bool) bool {
+			if service.DefaultSystemConfigService == nil {
+				return def
+			}
+			return service.DefaultSystemConfigService.GetBool(key, def)
+		}
+		packCfgInt := func(key string, def int) int {
+			if service.DefaultSystemConfigService == nil {
+				return def
+			}
+			return service.DefaultSystemConfigService.GetInt(key, def)
+		}
+		runPackQuality := func() {
+			if _, err := attribution.ScoreReplyAttributions(500); err != nil {
+				log.Printf("[PackQuality] 离线评分失败: %v", err)
+			}
+			if err := attribution.SyncPackStats(); err != nil {
+				log.Printf("[PackQuality] 包效果快照失败: %v", err)
+			}
+			if !packCfgBool("evals_pack_alert_enabled", true) {
+				return
+			}
+			alerts, err := attribution.CheckPackQualityAlerts(attribution.AlertFilter{
+				Days:        3,
+				MinSamples:  packCfgInt("evals_pack_alert_min_samples", 5),
+				Threshold:   packCfgInt("evals_pack_alert_score", 60),
+				Consecutive: packCfgInt("evals_pack_alert_consecutive", 3),
+			})
+			if err != nil {
+				log.Printf("[PackQuality] 低分告警检查失败: %v", err)
+			}
+			for _, msg := range alerts {
+				log.Printf("[PackQuality] %s", msg)
+			}
+		}
+		if redisclient.IsEnabled() {
+			if h := redisclient.TryLock("lock:pack:quality:sweep", 10*time.Minute); h != nil {
+				safeRun("pack:quality:sweep@startup", runPackQuality)
+				h.Unlock()
+			}
+		} else {
+			safeRun("pack:quality:sweep@startup", runPackQuality)
+		}
+		tk := time.NewTicker(1 * time.Hour)
+		defer tk.Stop()
+		for range tk.C {
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:pack:quality:sweep", 50*time.Minute); h != nil {
+					safeRun("pack:quality:sweep", runPackQuality)
+					h.Unlock()
+				}
+			} else {
+				safeRun("pack:quality:sweep", runPackQuality)
+			}
+		}
+	}()
+
+	// 8.9 出站事件 webhook worker（D6，2026-09-12）：3s 取到期 pending→签名投递→指数退避/死信/熔断，多实例 Redis 选主
+	go func() {
+		tk := time.NewTicker(3 * time.Second)
+		defer tk.Stop()
+		for range tk.C {
+			run := func() { webhook.ProcessDue() }
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:webhook:deliver", 20*time.Second); h != nil {
+					safeRun("webhook:deliver", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("webhook:deliver", run)
+			}
+		}
+	}()
+
 	// 9. 初始化Gin引擎
 	r := gin.Default()
 
@@ -572,439 +735,6 @@ func registerRoutes(r *gin.Engine) {
 		service.RecordRequestLatency(time.Since(start))
 	})
 
-	// ---- API v1 路由组 ----
-	v1 := r.Group("/api/v1")
-
-	// ---- WebSocket 实时推送（P1-2，独立鉴权：advisor 用 query token，client 用 visitor_key）----
-	// 不挂 JWTAuth 组：WS 难以附带 Authorization header，改用 query 参数手动校验
-	// P2-16 修复(2026-09-09)：WSAdvisor 握手无限流——匿名/故障客户端可无限并发建立
-	// 长连接（每连接占一个 goroutine + 内存），攻击者可耗尽服务器资源。
-	// 挂 IPRateLimit：每 IP 10 次/分钟（正常用户同时不超过 3 个 WS 标签页）。
-	v1.GET("/ws/advisor", middleware.IPRateLimit("ws_advisor", 10, time.Minute), api.WSAdvisor)
-	// P2-16 修复：WSClient 同理，每 IP 20 次/分钟（客户连接比顾问更多）。
-	v1.GET("/ws/client", middleware.IPRateLimit("ws_client", 20, time.Minute), api.WSClient)
-
-	// ---- 数据飞轮聚合接收端（P2 collector，自有 X-Collector-Key 鉴权，独立于 JWT）----
-	r.POST("/api/v1/collector", api.CollectorReceive)
-
-	// 认证相关（无需登录）
-	auth := v1.Group("/auth")
-	{
-		auth.POST("/login", api.Login)                                                                                                                  // 登录
-		auth.POST("/register", middleware.TurnstileGuard(), middleware.IPRateLimit("register", 10, 10*time.Minute), api.Register)                       // 注册（P1-10：补 IPRateLimit 防脚本批量开号；邮箱验证开关开启时需验证码）
-		auth.GET("/register-config", api.RegisterConfig)                                                                                                // 注册页配置下发（邮箱验证显隐）
-		auth.POST("/email-code", middleware.TurnstileGuard(), middleware.IPRateLimit("reset_email_code", 5, 10*time.Minute), api.SendRegisterEmailCode) // 注册验证码发送（J6 防枚举/限频）
-		auth.POST("/reset-password", middleware.IPRateLimit("reset_pwd", 5, 10*time.Minute), api.SendResetCode)                                         // 发送重置验证码（J6 防枚举+限频）
-		auth.POST("/verify-reset-code", middleware.IPRateLimit("verify_reset", 10, 10*time.Minute), api.VerifyResetCode)                                // 验证验证码重置密码（J6 限频防爆破）
-	}
-
-	// 邮箱换绑（登录态）：向新邮箱发码 → 校验完成绑定
-	v1.POST("/auth/email/code", middleware.JWTAuth(), api.SendBindEmailCode)
-	v1.POST("/auth/email/change", middleware.JWTAuth(), middleware.OrgResolve(), api.ChangeEmail)
-
-	// ---- 租户入驻与套餐（免登录公开）----
-	v1.POST("/tenant/signup", middleware.IPRateLimit("tenant_signup", 15, 10*time.Minute), api.TenantSignup)           // J6 入驻限频防刷
-	v1.GET("/tenant/check-code", middleware.IPRateLimit("tenant_check_code", 30, 10*time.Minute), api.CheckTenantCode) // J6 标识查询限频
-	v1.GET("/plans", api.ListPlans)                                                                                    // 定价页：legacy plans + 商业包并存
-	v1.GET("/packages", api.ListPackages)                                                                              // 公开商业包列表（M2 定价数据源）
-
-	// ---- 公开品牌配置（按 Host 解析租户白标，免登录）----
-	v1.GET("/public/branding", api.GetPublicBranding)
-
-	// ---- OpenAPI 开放接口（M4，独立鉴权链）----
-	// 不走 JWTAuth/TenantConsistency/TenantResolver：租户来自 API Key 归属
-	openapi := r.Group("/openapi/v1")
-	openapi.Use(middleware.OpenAPIAuth())
-	// P2-11 修复(2026-09-09)：OpenAPI 路由组此前无限流——恶意/故障客户端可无限并发打穿 DB。
-	// sk_ 维度限流（与站内租户隔离限流共用 ipLimitMap，bucket=apikey），阈值 60/min/sk；
-	// 同时 touchAPIKey 改同步（鉴权函数内直接调用），去无界 goroutine。
-	openapi.Use(middleware.IPRateLimit("apikey", 60, time.Minute))
-	{
-		openapi.GET("/customers", middleware.RequirePerm(middleware.PermCustomerRead), api.OpenAPICustomers)
-		openapi.GET("/customers/:id/conversations", middleware.RequirePerm(middleware.PermCustomerRead), api.OpenAPICustomerConversations)
-		openapi.GET("/cdp/profiles/:one_id", middleware.RequirePerm(middleware.PermCDPRead), api.OpenAPICDPProfile)
-		openapi.GET("/usage", middleware.RequirePerm(middleware.PermAll), api.OpenAPIUsage)
-		// 渠道嵌入对话端点（M4 扩展 2026-08-29）：与站内同池同链路，复用 OrchestrateReply
-		openapi.POST("/chat/completions", middleware.RequirePerm(middleware.PermChatWrite), api.OpenAPIChatCompletions)
-	}
-
-	// AI对话测试（免登录，方便调试）
-	// TurnstileGuard：防薅人机验证（后台开关关闭时零开销直通）
-	// IPRateLimit（P0安全止血 2026-08-26）：每IP每租户20次/分钟——
-	// 该接口每条消息真调 AI+扣商业包额度+写多表，是匿名刷量的最大入口
-	v1.POST("/chat/test", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_test", 20, time.Minute), api.ChatTest)
-
-	// 访客注册（免登录，每次打开client页面创建新访客）
-	v1.POST("/chat/guest", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_guest", 10, time.Minute), api.CreateGuest)
-
-	// Turnstile 站点键下发（免登录公开；enabled=false 时前端不渲染组件）
-	v1.GET("/turnstile/sitekey", func(c *gin.Context) {
-		enabled, siteKey := middleware.GetTurnstileSiteKey()
-		c.JSON(200, gin.H{"code": 0, "data": gin.H{"enabled": enabled, "site_key": siteKey}})
-	})
-
-	// 会话欢迎接口（免登录，独立秒回，无AI处理）
-	// 前端在用户打开页面时调用，立刻返回欢迎消息，不等AI生成
-	// P0安全止血(2026-08-26)：原接口连 Turnstile 都没有且每次调用插一条 Message，
-	// 是最廉价的 DB 写放大入口——加 IP 限流 30 次/分钟
-	v1.POST("/chat/welcome", middleware.IPRateLimit("chat_welcome", 30, time.Minute), api.Welcome)
-
-	// 聊天历史查询（免登录，客户端和销售端共用）
-	// 2026-09-08 修复：该路由注册在 v1.Use(JWTAuth...) 之前永远不挂 JWT，
-	// CheckVisitorKey 登录态分支（依赖 user_id）恒不命中 → 顾问/管理员拉历史 403。
-	// 挂 OptionalJWTAuth：有合法 Bearer 即注入身份（B端放行），匿名仍走 visitor_key 校验（C端不变）。
-	v1.GET("/chat/history", middleware.OptionalJWTAuth(), api.GetChatHistory)
-
-	// 延迟清零接口（顾问/管理员点击"立即回复"按钮时调用）
-	// 修复问题3：顾问发完人工消息后，AI的模拟延迟还没结束，客户等太久
-	// P0-9 修复(2026-09-09)：挂 IPRateLimit（原完全裸奔，匿名可批量取消任意客户延迟），
-	// 且 handler 内已做客户租户归属 + visitor_key/登录态双重校验。
-	v1.POST("/chat/clear-delay", middleware.IPRateLimit("chat_clear_delay", 30, time.Minute), api.ClearDelay)
-
-	// 支付网关异步回调（免登录，服务端到服务端）：必须挂在此处（v1.Use(JWTAuth...) 之前），
-	// 支付网关回调不携带用户 JWT，安全性靠 HMAC 验签（VerifyGatewaySign），
-	// 若挂在下方鉴权组内会被 JWTAuth 401 拦截导致永远无法到账（UAT 2026-08-31 修复）。
-	v1.POST("/billing/webhook/:channel", api.BillingWebhook)
-
-	// ---- 客户端/销售端页面由 React SPA 统一托管（NoRoute 回退 index.html）----
-
-	// ============================================================
-	// 顾问端 + 后台管理接口鉴权
-	// 修复（安全）：这两组接口原来完全不鉴权，任何能访问到这个端口的人
-	// 都能读写全部客户数据、改配置、改标签规则。现在补上JWT鉴权：
-	// - advisorGroup：只要求登录（顾问和管理员都能进）
-	// - admin：要求登录 + admin角色
-	// 对应地，advisor.html / admin.html 前端也补了登录页 + 请求自动带Token，
-	// 见 frontend/advisor.html、frontend/admin.html 里的 apiFetch()。
-	// ============================================================
-
-	// ---- 顾问工作台API（销售端专用，需登录 + 租户一致性校验）----
-	// TenantConsistency：JWT Claims 租户 ↔ Host 解析租户一致性校验 + 生效租户裁决
-	// M3：MustChangePasswordGuard 首登强改密拦截（全鉴权组统一挂载）
-	advisorGroup := v1.Group("/advisor")
-	advisorGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
-		middleware.MustChangePasswordGuard(), middleware.ReadonlyWriteGuard())
-	{
-		advisorGroup.GET("/list", api.GetAdvisorList)                     // 顾问列表（切换身份用）
-		advisorGroup.GET("/tags", api.GetTagList)                         // 标签目录只读（2026-09-08 修复：顾问页标签弹窗调 /admin/tags 被 AdminRequired 403）
-		advisorGroup.GET("/stats", api.GetAdvisorStats)                   // 工作台数据统计
-		advisorGroup.GET("/customers", api.GetAdvisorCustomers)           // 客户列表
-		advisorGroup.GET("/customer/:id", api.GetAdvisorCustomerDetail)   // 客户详情
-		advisorGroup.PUT("/customer/:id/tags", api.EditCustomerTags)      // 编辑客户标签
-		advisorGroup.PUT("/customer/:id/info", api.EditCustomerInfo)      // 编辑客户信息
-		advisorGroup.PUT("/customer/:id/stage", api.UpdateCustomerStage)  // 修改线索状态（已到店/已试驾/已报价）
-		advisorGroup.POST("/customer/:id/followup", api.CreateFollowup)   // 设置跟进提醒
-		advisorGroup.GET("/followups", api.GetFollowups)                  // 跟进提醒列表
-		advisorGroup.POST("/chat/takeover", api.AdvisorTakeover)          // 一键接管
-		advisorGroup.POST("/chat/send", api.AdvisorSendMessage)           // 人工发送消息
-		advisorGroup.POST("/chat/ai-reply", api.AdvisorTriggerAIReply)    // 手动触发AI回复
-		advisorGroup.POST("/chat/toggle-ai-reply", api.ToggleAiReply)     // 手动切换AI回复开关
-		advisorGroup.GET("/strategy/recommend", api.GetStrategyRecommend) // 策略话术推荐
-		advisorGroup.POST("/test-drive", api.CreateTestDrive)             // 创建试驾单
-		advisorGroup.GET("/test-drives", api.GetTestDrives)               // 试驾单列表
-		advisorGroup.GET("/test-drive/:id", api.GetTestDrive)             // 试驾单详情
-		advisorGroup.PUT("/test-drive/:id", api.UpdateTestDrive)          // 更新试驾单
-		// ---- 邀请推广只读（P1-42，2026-09-09）：从 /admin 组迁来——
-		// 邀请是个人推广资产，移动端 /app 的 sales 等非管理员角色也必须能看邀请/二维码 ----
-		advisorGroup.GET("/referral/info", api.GetReferralInfo)
-		advisorGroup.GET("/referral/records", api.GetReferralRecords)
-		advisorGroup.GET("/referral/qrcode", api.GetReferralQRCode)
-	}
-
-	// ---- 平台超管后台（仅 super_admin）----
-	super := v1.Group("/super")
-	super.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
-		middleware.MustChangePasswordGuard(), api.SuperRequired())
-	{
-		super.GET("/tenants", api.SuperTenantList)
-		super.PUT("/tenants/:id/status", api.SuperTenantStatus)
-		super.POST("/tenants/:id/grant-trial", api.SuperGrantTrial) // M1 审核模式放行（幂等）
-		// ---- 商业化 M1/M2/M5 ----
-		super.GET("/orders/pending", api.SuperPendingOrders)       // 待人工确认收款列表
-		super.POST("/orders/:id/confirm", api.SuperConfirmOrder)   // 确认到账→幂等发放
-		super.GET("/packages", api.SuperPackageList)               // 商业包全量列表
-		super.POST("/packages", api.SuperPackageCreate)            // 新建商业包
-		super.PUT("/packages/:id", api.SuperPackageUpdate)         // 编辑/启停
-		super.DELETE("/packages/:id", api.SuperPackageDelete)      // 删除（有订单引用则转下架）
-		super.GET("/audit-logs", api.SuperAuditLogs)               // 审计日志查询（全平台）
-		super.GET("/usage/cost", api.SuperUsageCost)               // 模型成本核算（M3 选型依据）
-		super.GET("/feedbacks", api.SuperFeedbackList)             // 用户反馈列表（M2）
-		super.POST("/feedbacks/resolve", api.SuperResolveFeedback) // 反馈标记已处理
-		// ---- 行业包平台侧（P1，2026-08-25）：上传验签/列表/启停 ----
-		super.POST("/packs", api.SuperPackUpload)
-		super.GET("/packs", api.SuperPackList)
-		super.GET("/materials", api.SuperMaterialList)               // P3 素材池列表
-		super.POST("/materials/:id/review", api.SuperMaterialReview) // 人工评审
-		super.POST("/materials/:id/evals", api.SuperMaterialEvals)   // AI evals 评分
-		super.GET("/agreements", api.SuperAgreementList)             // 协议签署台账（注册即同意审计）
-		super.PUT("/tenants/:id/branding", api.SuperUpdateBranding)  // 超管设置任意租户白标（品牌名/logo/域名）
-		super.GET("/tenants/:id/branding", api.SuperGetBranding)     // 超管读取任意租户白标
-		super.PUT("/packs/:id/status", api.SuperPackStatus)
-		super.PUT("/packs/:id/share", api.SuperPackShare) // KB继承链：跨部门共享 opt-out
-		// ---- 监控告警（P1-4，2026-08-29）----
-		super.GET("/monitor/health", api.SuperMonitorHealth) // 平台级结构化健康探测
-	}
-
-	// ---- 组织架构管理（四级用户体系，P2）----
-	// 权限：tenant_admin=全租户；dept_admin=本子树（不含本级任命管理员）
-	orgGroup := v1.Group("/org")
-	orgGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
-		middleware.MustChangePasswordGuard(), middleware.ReadonlyWriteGuard(), api.OrgManageRequired())
-	{
-		orgGroup.GET("/departments/tree", api.GetDepartmentTree)
-		orgGroup.POST("/departments", api.CreateDepartment)
-		orgGroup.PUT("/departments/:id", api.UpdateDepartment)
-		orgGroup.DELETE("/departments/:id", api.DeleteDepartment)
-		orgGroup.GET("/users", api.GetManagedUsers)
-		orgGroup.POST("/users", api.CreateUser)
-		orgGroup.PUT("/users/:id", api.UpdateUser)
-	}
-
-	// ---- CDP OpenAPI（只读出口，Phase A）----
-	// 服务端二次校验租户归属 + 字段脱敏 + 只查不写；仅 B 端登录可见
-	cdpGroup := v1.Group("/cdp")
-	cdpGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(), middleware.MustChangePasswordGuard())
-	{
-		cdpGroup.GET("/profiles/:one_id", api.GetCDPProfile)
-		cdpGroup.GET("/segments", api.GetCDPSegment)
-		cdpGroup.GET("/tag-defs", api.ListCDPTagDefs)
-	}
-
-	// ---- 客户端知识库接口（免鉴权，公开查询）----
-	knowledge := v1.Group("/knowledge")
-	{
-		knowledge.GET("/brands", api.GetPublicBrands)           // 品牌列表
-		knowledge.GET("/models", api.GetPublicModels)           // 车型列表
-		knowledge.GET("/models/:id", api.GetPublicModelDetail)  // 车型详情（含规格）
-		knowledge.GET("/compares", api.GetPublicCompares)       // 竞品对比
-		knowledge.GET("/fragments/search", api.SearchFragments) // 搜索知识片段
-	}
-
-	// ---- 管理端接口（需登录 + admin角色 + 租户一致性校验）----
-	admin := v1.Group("/admin")
-	// H1 修复：AdminRequired 必须放在 OrgResolve 之后。
-	// 原顺序 AdminRequired(读JWT claim) → OrgResolve(从DB覆盖role)，
-	// 导致降权/升权在重新登录前不生效。现改为 DB 角色权威：先 OrgResolve 再 AdminRequired。
-	admin.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
-		middleware.MustChangePasswordGuard(), middleware.AdminRequired())
-	{
-		// ---- 审计日志查询（M5，本租户）----
-		admin.GET("/audit-logs", api.AdminAuditLogs)
-
-		// ---- 用量看板（M3，本租户：趋势+阶段分布+成本口径）----
-		admin.GET("/usage/summary", api.AdminUsageSummary)
-
-		// ---- 行业包租户侧（P1 三级架构，2026-08-26）：分层列表/两级绑定/部门绑定 ----
-		admin.GET("/packs", api.TenantPackList)
-		admin.POST("/packs/bind", api.TenantPackBind)
-		admin.POST("/packs/unbind", api.TenantPackUnbind)
-		admin.GET("/packs/current", api.TenantPackCurrent)
-		admin.POST("/packs/bind-dept", api.TenantPackBindDept)
-		admin.POST("/packs/unbind-dept", api.TenantPackUnbindDept)
-
-		// ---- 租户自定义知识库（P2 双层KB，2026-08-26）----
-		admin.POST("/kb/upload", api.TenantKBUpload)
-		admin.GET("/kb/my", api.TenantKBMy)
-		admin.DELETE("/kb/my/:id", api.TenantKBDelete)
-
-		// ---- 账号注销（P4，2026-08-26）：次日生效禁登录+同步禁用API Key+数据保留 ----
-		admin.POST("/account/cancel", api.CancelAccount)
-
-		// ---- API Key 自助管理（M4，B端开放平台）----
-		apikeys := admin.Group("/apikeys")
-		{
-			apikeys.POST("", api.AdminCreateAPIKey)
-			apikeys.GET("", api.AdminListAPIKeys)
-			apikeys.POST("/:id/disable", api.AdminDisableAPIKey)
-			apikeys.POST("/:id/enable", api.AdminEnableAPIKey)
-			apikeys.DELETE("/:id", api.AdminDeleteAPIKey)
-		}
-
-		// ---- 系统配置管理 ----
-		admin.GET("/config", api.GetSystemConfigs)             // 查询配置
-		admin.PUT("/config", api.BatchUpdateSystemConfig)      // 批量更新配置
-		admin.PUT("/tenant/branding", api.AdminUpdateBranding) // 租户管理员设置自身租户白标
-		// J1修复(2026-08-26)：reset/init 重置/强刷平台配置，仅超管可操作（防租户admin误清全局配置）
-		admin.POST("/config/reset", api.SuperRequired(), api.ResetSystemConfig) // 恢复默认值
-		// 修复(2026-08-25)：rollback handler 存在但路由从未注册——补上。
-		// 走 config_center.Rollback 会发布 tenant_cfg_event 驱动各引擎热加载（M3 闭环）
-		admin.POST("/config/rollback", api.RollbackTenantConfig)
-		// J1修复(2026-08-26)：强制初始化默认配置同样仅超管可操作
-		admin.POST("/config/init", api.SuperRequired(), api.ForceInitSystemConfig) // 强制初始化默认配置
-		admin.GET("/models", api.GetAvailableModels)                               // 获取可用模型列表
-
-		// ---- 标签管理 ----
-		adminTags := admin.Group("/tags")
-		{
-			adminTags.GET("", api.GetTagList)
-			adminTags.GET("/:id", api.GetTagDetail)
-			adminTags.POST("", api.CreateTag)
-			adminTags.PUT("/:id", api.UpdateTag)
-			adminTags.POST("/:id/enable", api.EnableTag)
-			adminTags.POST("/:id/disable", api.DisableTag)
-			adminTags.DELETE("/:id", api.DeleteTag)
-			adminTags.POST("/reload", api.ReloadTagCache)
-		}
-
-		// ---- 打标规则管理 ----
-		adminTagRules := admin.Group("/tag-rules")
-		{
-			adminTagRules.GET("", api.GetTagRuleList)
-			adminTagRules.POST("", api.CreateTagRule)
-			adminTagRules.PUT("/:id", api.UpdateTagRule)
-			adminTagRules.POST("/:id/enable", api.EnableTagRule)
-			adminTagRules.POST("/:id/disable", api.DisableTagRule)
-			adminTagRules.DELETE("/:id", api.DeleteTagRule)
-		}
-
-		// ---- 标签权重映射管理 ----
-		adminTagWeights := admin.Group("/tag-weights")
-		{
-			adminTagWeights.GET("", api.GetTagWeightList)
-			adminTagWeights.POST("", api.CreateTagWeight)
-			adminTagWeights.PUT("/:id", api.UpdateTagWeight)
-			adminTagWeights.DELETE("/:id", api.DeleteTagWeight)
-		}
-
-		// ---- 知识库管理 ----
-		adminKnowledge := admin.Group("/knowledge")
-		{
-			adminKnowledge.GET("/brands", api.GetBrandList)
-			adminKnowledge.GET("/brands/:id", api.GetBrandDetail)
-			adminKnowledge.POST("/brands", api.CreateBrand)
-			adminKnowledge.PUT("/brands/:id", api.UpdateBrand)
-			adminKnowledge.POST("/brands/:id/enable", api.EnableBrand)
-			adminKnowledge.POST("/brands/:id/disable", api.DisableBrand)
-			adminKnowledge.DELETE("/brands/:id", api.DeleteBrand)
-
-			adminKnowledge.GET("/models", api.GetModelList)
-			adminKnowledge.GET("/models/:id", api.GetModelDetail)
-			adminKnowledge.POST("/models", api.CreateModel)
-			adminKnowledge.PUT("/models/:id", api.UpdateModel)
-			adminKnowledge.POST("/models/:id/enable", api.EnableModel)
-			adminKnowledge.POST("/models/:id/disable", api.DisableModel)
-			adminKnowledge.DELETE("/models/:id", api.DeleteModel)
-
-			adminKnowledge.GET("/specs", api.GetSpecList)
-			adminKnowledge.POST("/specs", api.CreateSpec)
-			adminKnowledge.PUT("/specs/:id", api.UpdateSpec)
-			adminKnowledge.POST("/specs/:id/enable", api.EnableSpec)
-			adminKnowledge.POST("/specs/:id/disable", api.DisableSpec)
-			adminKnowledge.DELETE("/specs/:id", api.DeleteSpec)
-
-			adminKnowledge.GET("/compares", api.GetCompareList)
-			adminKnowledge.POST("/compares", api.CreateCompare)
-			adminKnowledge.PUT("/compares/:id", api.UpdateCompare)
-			adminKnowledge.POST("/compares/:id/enable", api.EnableCompare)
-			adminKnowledge.POST("/compares/:id/disable", api.DisableCompare)
-			adminKnowledge.DELETE("/compares/:id", api.DeleteCompare)
-
-			adminKnowledge.GET("/fragments", api.GetFragmentList)
-			adminKnowledge.GET("/fragments/:id", api.GetFragmentDetail)
-			adminKnowledge.POST("/fragments", api.CreateFragment)
-			adminKnowledge.PUT("/fragments/:id", api.UpdateFragment)
-			adminKnowledge.POST("/fragments/:id/enable", api.EnableFragment)
-			adminKnowledge.POST("/fragments/:id/disable", api.DisableFragment)
-			adminKnowledge.DELETE("/fragments/:id", api.DeleteFragment)
-
-			adminKnowledge.POST("/reload", api.ReloadKnowledgeCache)
-		}
-	}
-
-	// 需要登录的接口（JWT鉴权 + 租户一致性校验 + 组织上下文）
-	// M3：追加 MustChangePasswordGuard——首登强改密标记=true 时，
-	// 除 change-password / auth/me 外全部 403，改密成功自动解除
-	v1.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(), middleware.MustChangePasswordGuard())
-	{
-		// 当前用户信息
-		v1.GET("/auth/me", api.GetCurrentUser)
-
-		// ---- 修改密码（M3 安全三件套）----
-		v1.POST("/auth/change-password", api.ChangePassword)
-
-		// ---- 用户反馈（M2）：登录用户均可提交 ----
-		v1.POST("/feedback", api.CreateFeedback)
-		// P0-2：满意度评分采集（CDP att_satisfaction 标签驱动）
-		v1.POST("/feedback/rating", api.CreateFeedbackRating)
-
-		// ---- 收银台（商业化 M1/M2）----
-		// 查询/订阅入口全员可看；下单/支付/确认需管理员权限
-		billing := v1.Group("/billing")
-		{
-			billing.GET("/my-package", api.MyPackage) // 顶栏额度展示（全员）
-			// 支付网关异步回调已上移到公开路由区（/billing/webhook/:channel，见上方注册），
-			// 回调不携带用户 JWT，仅靠 HMAC 验签，不能挂在此鉴权组内。
-			billingAdmin := billing.Group("")
-			billingAdmin.Use(middleware.AdminRequired())
-			{
-				billingAdmin.GET("/orders", api.ListBillingOrders)           // 订单列表（服务端锚定租户）
-				billingAdmin.POST("/orders", api.CreateBillingOrder)         // 创建订单
-				billingAdmin.GET("/orders/:id", api.GetBillingOrder)         // 轮询状态
-				billingAdmin.POST("/orders/mock-pay", api.MockPayOrder)      // 模拟到账（仅mock模式）
-				billingAdmin.POST("/manual-confirm", api.ManualConfirmPaid)  // 「我已付费」
-				billingAdmin.POST("/subscribe", api.SubscribePackage)        // 订阅商业包
-				billingAdmin.POST("/orders/:id/refund", api.RefundOrder)     // 退款（幂等）
-				billingAdmin.POST("/orders/:id/invoice", api.RequestInvoice) // 申请发票
-			}
-		}
-
-		// ---- 客户管理 ----
-		customers := v1.Group("/customers")
-		{
-			customers.GET("", api.GetCustomerList)
-			customers.POST("", api.CreateCustomer)
-			customers.GET("/:id", api.GetCustomer)
-			customers.PUT("/:id", api.UpdateCustomer)
-			customers.DELETE("/:id", api.DeleteCustomer)
-			customers.GET("/:id/conversations", api.GetCustomerConversations)
-			customers.GET("/:id/tags", api.GetCustomerTags)
-			customers.POST("/:id/tags", api.AddTagsToCustomer)
-			customers.DELETE("/:id/tags/:tag_id", api.RemoveCustomerTag)
-		}
-
-		// ---- 对话相关 ----
-		chat := v1.Group("/chat")
-		{
-			chat.POST("", api.Chat)
-			chat.POST("/human/reply", api.HumanReply)
-			chat.POST("/transfer/human", api.TransferToHuman)
-			chat.POST("/transfer/ai", api.TransferToAI)
-		}
-
-		conversations := v1.Group("/conversations")
-		{
-			conversations.GET("", api.GetConversationList)
-			conversations.GET("/:id/messages", api.GetMessages)
-		}
-
-		// ---- 策略中心管理 ----
-		strategyGroup := v1.Group("/strategy")
-		{
-			strategyGroup.POST("/test", api.StrategyTest)
-			strategyGroup.GET("/templates", api.GetTemplateList)
-			strategyGroup.GET("/templates/:id", api.GetTemplate)
-			strategyGroup.POST("/templates", api.CreateTemplate)
-			strategyGroup.PUT("/templates/:id", api.UpdateTemplate)
-			strategyGroup.DELETE("/templates/:id", api.DeleteTemplate)
-			strategyGroup.GET("/features", api.GetFeatureList)
-			strategyGroup.GET("/stats/anchors", api.GetAnchorStats)
-		}
-
-		// ---- 流程引擎 ----
-		flowGroup := v1.Group("/flows")
-		{
-			flowGroup.GET("", api.GetFlowList)
-			flowGroup.GET("/:id", api.GetFlow)
-			flowGroup.POST("/start", api.StartFlow)
-			flowGroup.POST("/advance", api.AdvanceFlow)
-			flowGroup.GET("/instances", api.GetFlowInstanceList)
-			flowGroup.GET("/instances/:id", api.GetFlowInstance)
-		}
-
-		// ---- 统计 ----
-		stats := v1.Group("/stats")
-		{
-			stats.GET("/overview", api.GetOverview)
-		}
-	}
+	// ---- 业务路由树（D2a 拆分至 internal/api/routes*.go，按作用域分文件）----
+	api.RegisterRoutes(r)
 }

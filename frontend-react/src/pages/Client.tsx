@@ -7,6 +7,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
+import { getToken } from '../lib/api'
 import { Msg } from '../types'
 import { collectFreshMessages, filterReplyMessages, promoteTempAndRegister, dropSystemNotice } from '../lib/chat'
 
@@ -17,7 +18,9 @@ const LS_ID = 'scrm_customer_id'
 // C3：访客密钥，匿名访问 /chat/history、/chat/welcome 必须携带，防横向越权
 const LS_KEY = 'scrm_visitor_key'
 // 模块级访客创建去重：StrictMode 双挂载/连续进入页面时，防止并发重复建客
-let guestPromise: Promise<{ code: number; customer_id: number; visitor_key?: string }> | null = null
+// Q1 修复(2026-09-12)：G-13 信封统一后 /chat/guest 响应为 {code,data} 形态，
+// 旧扁平类型标注导致 j.data 访问 TS2339（CI tsc --noEmit 必红），类型对齐实际契约
+let guestPromise: Promise<{ code: number; data?: { customer_id?: number; name?: string; visitor_key?: string } }> | null = null
 
 /**
  * C 端客户聊天页组件
@@ -37,6 +40,7 @@ export default function Client() {
   const [wsVk, setWsVk] = useState<string | null>(null)
   // 输入框内容
   const [input, setInput] = useState('')
+  const [privacyBusy, setPrivacyBusy] = useState(false)
   // 当前会话 ID（用于历史记录查询）
   const [convId, setConvId] = useState<number>(0)
   // 会话 ID 引用：轮询/欢迎判断走 ref，避免闭包捕获首帧旧值导致逻辑错乱
@@ -263,6 +267,43 @@ export default function Client() {
   // P1-2 实时推送：客户身份就绪后连 WS，收到新消息信号即触发即时轮询（5s 轮询保留兜底）
   useClientWS(wsCid, wsVk, () => poll())
 
+  /**
+   * F13/C2：C 端 PIPL 删除权入口。
+   * 匿名访客用 visitor_key 自证；登录态可额外带 Authorization，后端按 user_id 放行本人关联客户。
+   */
+  async function requestCustomerDeletion() {
+    if (!custId.current) { alert('请先开始对话'); return }
+    if (privacyBusy) return
+    if (!confirm('申请删除你的咨询资料？提交后将在到期前匿名化，历史内容不再用于后续服务。')) return
+    setPrivacyBusy(true)
+    try {
+      const token = getToken()
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (token) headers.Authorization = 'Bearer ' + token
+      const r = await fetch(`${API}/privacy/deletion-request`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          scope: 'customer',
+          customer_id: custId.current,
+          visitor_key: localStorage.getItem(LS_KEY) || '',
+        }),
+      })
+      const j = await r.json().catch(() => null)
+      if (j?.code === 0) {
+        const deadline = j.data?.deadline ? new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''
+        setMsgs((m) => [...m, { sender_type: 'system', content: `已受理删除申请${deadline ? '，预计 ' + deadline : ''}` }])
+        scrollBottom()
+      } else {
+        alert(j?.message || '删除申请提交失败')
+      }
+    } catch {
+      alert('删除申请提交失败')
+    } finally {
+      setPrivacyBusy(false)
+    }
+  }
+
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', height: '100vh', display: 'flex', flexDirection: 'column', background: 'var(--bg, #f5f7fa)' }}>
       {/* 顶栏：品牌 Logo/名称 + 在线状态（主色统一走品牌/--pri） */}
@@ -271,8 +312,11 @@ export default function Client() {
           {brand.logoUrl && <img src={brand.logoUrl} alt="" style={{ height: 24, borderRadius: 4 }} />}
           <span style={{ fontWeight: 600 }}>{brand.brandName}</span>
         </div>
-        {/* G-20：aria-label 无障碍标注——屏幕阅读器可识别在线/离线状态 */}
-        <span style={{ fontSize: 12 }} aria-label={online ? '当前在线' : '当前离线'}>{online ? '🟢 在线' : '🌙 离线'}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button onClick={requestCustomerDeletion} disabled={privacyBusy} aria-label="申请删除我的资料" style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{privacyBusy ? '提交中' : '删除资料'}</button>
+          {/* G-20：aria-label 无障碍标注——屏幕阅读器可识别在线/离线状态 */}
+          <span style={{ fontSize: 12 }} aria-label={online ? '当前在线' : '当前离线'}>{online ? '🟢 在线' : '🌙 离线'}</span>
+        </div>
       </header>
 
       {/* 消息列表区域：根据 sender_type 区分客户消息（右侧主色）与 AI/系统消息（左侧白色） */}

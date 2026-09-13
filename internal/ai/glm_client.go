@@ -4,6 +4,7 @@ package ai
 import (
 	"ai-scrm/config"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
@@ -139,7 +140,8 @@ func (c *GLMClient) effectiveModel() string {
 }
 
 // GenerateTextWithModelOverride P2-59 修复：callProvider 的临时模型覆盖
-func (c *GLMClient) GenerateTextWithModelOverride(messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
+// D4 修复(2026-09-12)：贯穿 ctx，超时预算由上游 AIRouter 派生，单模型挂死可被取消
+func (c *GLMClient) GenerateTextWithModelOverride(ctx context.Context, messages []ChatMessage, temperature float64, overrideModel string) (string, Usage, error) {
 	orig := c.ModelName
 	c.modelMu.Lock()
 	c.modelOverride = overrideModel
@@ -150,7 +152,7 @@ func (c *GLMClient) GenerateTextWithModelOverride(messages []ChatMessage, temper
 		c.modelOverride = ""
 		c.modelMu.Unlock()
 	}()
-	return c.GenerateTextWithUsage(messages, temperature)
+	return c.GenerateTextWithUsage(ctx, messages, temperature)
 }
 
 // GenerateText 生成文本（核心接口）
@@ -164,7 +166,7 @@ func (c *GLMClient) GenerateTextWithModelOverride(messages []ChatMessage, temper
 //  3. 可以配合"正在输入中"状态做先接住再回复
 //
 // GenerateTextWithUsage 生成并返回 token 用量（M3 计量底座；mock 路径用量为零值）
-func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64) (string, Usage, error) {
+func (c *GLMClient) GenerateTextWithUsage(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var reply string
 	var usage Usage
 	var err error
@@ -178,7 +180,7 @@ func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature fl
 		reply = "【AI服务未配置，请设置ZHIPU_API_KEY环境变量后重启服务】"
 	} else {
 		// 带重试调用（指数退避 + 429特殊处理）
-		reply, usage, err = c.generateWithRetry(messages, temperature)
+		reply, usage, err = c.generateWithRetry(ctx, messages, temperature)
 		if err != nil {
 			return "", Usage{}, err
 		}
@@ -197,9 +199,13 @@ func (c *GLMClient) GenerateTextWithUsage(messages []ChatMessage, temperature fl
 // generateWithRetry 带重试的API调用
 // 重试策略：指数退避(2s→4s→8s)，429限流翻倍(4s→8s→16s)
 // 参数类错误(4xx非429)不重试
-func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float64) (string, Usage, error) {
+func (c *GLMClient) generateWithRetry(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	var lastErr error
 	for attempt := 0; attempt <= c.MaxRetries; attempt++ {
+		// D4：预算/取消优先——重试前若 ctx 已到期则立即放弃，不再空耗退避
+		if ctx.Err() != nil {
+			return "", Usage{}, ctx.Err()
+		}
 		if attempt > 0 {
 			// 计算等待时间：指数退避 base=8s，即 8s, 16s, 32s
 			// 为什么基数8秒？429限流通常持续10-30秒，太短的退避等于继续撞墙
@@ -218,10 +224,15 @@ func (c *GLMClient) generateWithRetry(messages []ChatMessage, temperature float6
 			jitter := float64(waitSeconds) * 0.2
 			r := rand.New(rand.NewSource(time.Now().UnixNano()))
 			waitSeconds = int(float64(waitSeconds) - jitter + r.Float64()*2*jitter)
-			time.Sleep(time.Duration(waitSeconds) * time.Second)
+			// D4：退避等待可被取消，避免重试间隙吃满上游预算
+			select {
+			case <-ctx.Done():
+				return "", Usage{}, ctx.Err()
+			case <-time.After(time.Duration(waitSeconds) * time.Second):
+			}
 		}
 
-		reply, u, err := c.callAPI(messages, temperature)
+		reply, u, err := c.callAPI(ctx, messages, temperature)
 		if err == nil {
 			return reply, u, nil
 		}
@@ -274,8 +285,8 @@ func calcTypingDelay(text string, speed float64, minDelay float64, maxDelay floa
 }
 
 // callAPI 调用智谱API
-// 注意：使用复用的httpClient，避免每次创建连接
-func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string, Usage, error) {
+// 注意：使用复用的httpClient，避免每次创建连接；D4 起用 NewRequestWithContext 让上游预算能真正取消挂死请求
+func (c *GLMClient) callAPI(ctx context.Context, messages []ChatMessage, temperature float64) (string, Usage, error) {
 	reqBody := ChatRequest{
 		Model:       c.effectiveModel(),
 		Messages:    messages,
@@ -289,7 +300,7 @@ func (c *GLMClient) callAPI(messages []ChatMessage, temperature float64) (string
 	}
 
 	url := c.BaseURL + "/chat/completions"
-	httpReq, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonData))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(jsonData))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("创建请求失败: %v", err)
 	}

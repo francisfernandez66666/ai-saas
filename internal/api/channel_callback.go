@@ -1,0 +1,98 @@
+// 渠道回调公开入口（W3-5，2026-09-12）——注册在 v1.Use(JWTAuth) 之前，靠签名验证保证安全。
+// 路径含 :id 精确定位通道（多租户多通道无歧义）。GET=URL 验证回显，POST=消息/事件回调。
+package api
+
+import (
+	"io"
+	"log"
+	"net/http"
+	"strconv"
+
+	"github.com/gin-gonic/gin"
+
+	"ai-scrm/internal/channel"
+	"ai-scrm/internal/model"
+)
+
+// loadChannelForCallback 按路径 :id 取通道 + 解密凭据（不校验租户 JWT，靠后续签名验证）。
+func loadChannelForCallback(c *gin.Context) (*model.Channel, *channel.Credential, bool) {
+	n, _ := strconv.ParseUint(c.Param("id"), 10, 64)
+	ch, err := channel.GetByID(uint(n))
+	if err != nil {
+		c.String(http.StatusNotFound, "channel not found")
+		return nil, nil, false
+	}
+	cred, err := channel.DecryptCredential(ch)
+	if err != nil {
+		log.Printf("[通道回调] channel=%d 凭据解密失败(密钥轮换?): %v", ch.ID, err)
+		c.String(http.StatusOK, "success") // 不暴露内部错误给渠道
+		return nil, nil, false
+	}
+	return ch, cred, true
+}
+
+// ChannelCallbackVerify GET /channel/callback/:id —— 接入配置阶段的 URL 校验（echostr 原样/解密回显）。
+func ChannelCallbackVerify(c *gin.Context) {
+	ch, cred, ok := loadChannelForCallback(c)
+	if !ok {
+		return
+	}
+	echo := c.Query("echostr")
+	if echo == "" {
+		c.String(http.StatusBadRequest, "missing echostr")
+		return
+	}
+	var msgSig string
+	if ch.Type == model.ChannelTypeWechatMP {
+		msgSig = c.Query("signature")
+	} else {
+		msgSig = c.Query("msg_signature")
+	}
+	adapter, ok := channel.AdapterFor(ch)
+	if !ok {
+		c.String(http.StatusInternalServerError, "no adapter")
+		return
+	}
+	plain, err := adapter.VerifyURLEcho(cred, msgSig, c.Query("timestamp"), c.Query("nonce"), echo)
+	if err != nil {
+		log.Printf("[通道回调] channel=%d URL验证失败: %v", ch.ID, err)
+		c.String(http.StatusForbidden, "verify failed")
+		return
+	}
+	c.String(http.StatusOK, plain)
+}
+
+// ChannelCallbackReceive POST /channel/callback/:id —— 消息/事件回调：验签解密→归一化入站→处理链。
+// 无论业务结果如何都回 "success"（企微/微信约定：非 success 会重推），错误只落日志，避免重推风暴。
+func ChannelCallbackReceive(c *gin.Context) {
+	ch, cred, ok := loadChannelForCallback(c)
+	if !ok {
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, 1<<20))
+	if err != nil {
+		c.String(http.StatusOK, "success")
+		return
+	}
+	adapter, ok := channel.AdapterFor(ch)
+	if !ok {
+		log.Printf("[通道回调] channel=%d 无适配器 type=%s", ch.ID, ch.Type)
+		c.String(http.StatusOK, "success")
+		return
+	}
+	// 安全模式签名参数：企微用 msg_signature；公众号安全模式同样用 msg_signature，明文模式回落 signature。
+	msgSig := c.Query("msg_signature")
+	if msgSig == "" {
+		msgSig = c.Query("signature")
+	}
+	in, err := adapter.DecryptInbound(cred, c.Query("timestamp"), c.Query("nonce"), msgSig, body)
+	if err != nil {
+		log.Printf("[通道回调] channel=%d 验签/解密失败: %v", ch.ID, err)
+		c.String(http.StatusForbidden, "success") // 回 success 止重推，但 403 标记
+		return
+	}
+	if err := channel.ProcessInbound(ch, in); err != nil {
+		log.Printf("[通道回调] channel=%d 入站处理失败: %v", ch.ID, err)
+	}
+	c.String(http.StatusOK, "success")
+}

@@ -7,6 +7,7 @@ package api
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
+	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
@@ -226,7 +227,7 @@ func ChatTest(c *gin.Context) {
 		if phoneMatchTest != "" {
 			// ====== 分支B：已留资线索（硬编码） ======
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 消息含手机号%s，走已留资硬编码路径",
-				customer.ID, phoneMatchTest)
+				customer.ID, service.MaskPhone(phoneMatchTest))
 
 			// 0. OneID合并：手机号匹配到老客户时，迁移所有数据
 			mergedTargetIDTest := chatflow.MergeCustomerByPhone(&customer, phoneMatchTest)
@@ -315,7 +316,7 @@ func ChatTest(c *gin.Context) {
 
 			// 3. 通知顾问
 			log.Printf("[通知顾问-测试接口] 顾问%d 有新的已留资到店线索：客户%d，手机号%s",
-				customer.AssignedUserID, customer.ID, phoneMatchTest)
+				customer.AssignedUserID, customer.ID, service.MaskPhone(phoneMatchTest))
 
 			// 4. 标记待人工接管，留1轮引导式反问（下一条AI回复时抛）
 			// 顺序：先发确认语→客户继续聊→AI再抛反问句
@@ -480,6 +481,8 @@ skipStoreVisitFastTest:
 		}
 		// 修复问题4：更新先存的那条客户消息的conversation_id
 		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conv.ID)
+		// D9：简单消息也回填上一轮 AI 的接钩归因。
+		_ = attribution.MarkHookedBeforeMessage(tenantID, conv.ID, testCustomerMsgID)
 		simpleMsg := model.Message{
 			ConversationID: conv.ID,
 			CustomerID:     customer.ID,
@@ -605,6 +608,8 @@ skipStoreVisitFastTest:
 	if backfilledCustMsg.ID > 0 {
 		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer", backfilledCustMsg.ID, backfilledCustMsg.Content, customer.Name, backfilledCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
 	}
+	// D9：测试接口同样回填上一轮 AI 回复的接钩归因。
+	_ = attribution.MarkHookedBeforeMessage(tenantID, conversation.ID, testCustomerMsgID)
 
 	// ---- 人工接管模式：顾问超时未回则AI回复，已回则跳过AI ----
 	aiTimeout := service.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
@@ -847,6 +852,22 @@ skipStoreVisitFastTest:
 	newTVector[0] = newIntent
 	customer.SaveTVector(newTVector)
 	db.RQ(c).Save(&customer)
+
+	// D9：测试链路也写入包/模板/意向变化归因快照。
+	_ = attribution.RecordReply(attribution.RecordReplyInput{
+		TenantID:       tenantID,
+		MessageID:      aiMsg.ID,
+		ConversationID: conversation.ID,
+		CustomerID:     customer.ID,
+		TemplateID:     strategyOutput.TemplateID,
+		AnchorType:     strategyOutput.FinalAnchor,
+		RouteResult:    strategyOutput.RouteResult,
+		IntentBefore:   tVector[0],
+		IntentAfter:    newIntent,
+	})
+	if strategyOutput.RouteResult == strategy.RoutePendingHuman {
+		_ = attribution.MarkPendingHuman(tenantID, conversation.ID, customer.ID)
+	}
 
 	// ---- 自动打标（测试接口也集成，方便验证打标效果） ----
 	// 修复问题7：不再仅限RouteAI路径，所有路由结果都打标

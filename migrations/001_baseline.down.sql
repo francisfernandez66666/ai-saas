@@ -1,0 +1,28 @@
+-- 001 基线迁移回退：只删除 001_baseline.up.sql 明确创建的基线表。
+-- 后续迁移新增的表由各自 .down.sql 负责回退，避免本文件偷偷扩大删除面。
+BEGIN;
+
+DROP TABLE IF EXISTS invite_rewards CASCADE;
+DROP TABLE IF EXISTS email_verifies CASCADE;
+DROP TABLE IF EXISTS cdp_tag_assignments CASCADE;
+DROP TABLE IF EXISTS cdp_tag_definitions CASCADE;
+DROP TABLE IF EXISTS cdp_profiles CASCADE;
+DROP TABLE IF EXISTS api_keys CASCADE;
+DROP TABLE IF EXISTS tenant_audit_logs CASCADE;
+DROP TABLE IF EXISTS usage_ledger CASCADE;
+DROP TABLE IF EXISTS usage_records CASCADE;
+DROP TABLE IF EXISTS packages CASCADE;
+DROP TABLE IF EXISTS orders CASCADE;
+DROP TABLE IF EXISTS tenant_pack_bindings CASCADE;
+DROP TABLE IF EXISTS industry_packs CASCADE;
+DROP TABLE IF EXISTS knowledge_bases CASCADE;
+DROP TABLE IF EXISTS strategies CASCADE;
+DROP TABLE IF EXISTS system_configs CASCADE;
+DROP TABLE IF EXISTS messages CASCADE;
+DROP TABLE IF EXISTS conversations CASCADE;
+DROP TABLE IF EXISTS customers CASCADE;
+DROP TABLE IF EXISTS departments CASCADE;
+DROP TABLE IF EXISTS tenant_users CASCADE;
+DROP TABLE IF EXISTS tenants CASCADE;
+
+COMMIT;

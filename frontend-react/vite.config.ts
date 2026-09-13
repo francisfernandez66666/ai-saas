@@ -13,5 +13,11 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // D1：路由级 lazy 先保证页面可用；TDesign 自动分块避免手工切分触发 ES 循环初始化。
+      },
+    },
+    chunkSizeWarningLimit: 300,
   },
 })

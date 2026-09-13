@@ -49,6 +49,8 @@ export default function Advisor() {
   const [checkedTags, setCheckedTags] = useState<string[]>([])
   const [fbOpen, setFbOpen] = useState(false)
   const [fbText, setFbText] = useState('')
+  const [chanCtx, setChanCtx] = useState<any>(null)
+  const [chanKey, setChanKey] = useState<{ corpid: string; external_userid: string } | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   // P2-84 修复：已展示消息 ID 集合——轮询从"全量替换"改"只追加新消息"（对齐 Client 已修语义）
   const localIds = useRef<Set<string>>(new Set())
@@ -61,9 +63,25 @@ export default function Advisor() {
   const loadFollowups = async () => { const j = await AUTH(API + '/followups'); if (j.code === 0) setFollowups(j.data || []) }
   // 加载当前租户套餐与三桶余额，用于顶栏额度展示
   const loadQuota = async () => { const j = await AUTH('/api/v1/billing/my-package'); if (j.code === 0) setQuota(j.data) }
+  // 通道侧边栏：URL 带 corpid/external_userid 时拉取微信客户上下文，并直接落到对应客户详情
+  const loadChannelContext = async () => {
+    const q = new URLSearchParams(location.search)
+    const corpid = q.get('corpid') || ''
+    const external_userid = q.get('external_userid') || ''
+    if (!corpid || !external_userid) return
+    setChanKey({ corpid, external_userid })
+    const j = await AUTH(`/api/v1/channel/wecom/context?corpid=${encodeURIComponent(corpid)}&external_userid=${encodeURIComponent(external_userid)}`)
+    if (j?.code === 0 && j.data?.customer_id) {
+      setChanCtx(j.data)
+      setView('home')
+      openDetail(Number(j.data.customer_id))
+    } else if (j?.code !== 0) {
+      MessagePlugin.warning(j?.message || '未找到该渠道客户')
+    }
+  }
 
   // 路由守卫：无 token 直接跳登录；否则加载统计、客户列表、全部标签
-  useEffect(() => { if (!getToken()) { location.href = '/login'; return } loadStats(); loadCustomers(); loadAllTags() }, [])
+  useEffect(() => { if (!getToken()) { location.href = '/login'; return } loadStats(); loadCustomers(); loadAllTags(); loadChannelContext() }, [])
   useEffect(() => { loadCustomers() }, [status])
   useEffect(() => { if (view === 'followup') loadFollowups(); if (view === 'me') loadQuota() }, [view])
   useEffect(() => { if (chatRef.current) chatRef.current.scrollTop = chatRef.current.scrollHeight }, [msgs])
@@ -208,6 +226,25 @@ export default function Advisor() {
             <button onClick={() => setEditOpen(true)} aria-label="编辑客户资料" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 13 }}>编辑</button>
           </header>
           <div style={{ padding: 12, overflowY: 'auto', height: 'calc(100vh - 110px)' }}>
+            {chanCtx && Number(chanCtx.customer_id) === Number(c?.id) && (
+              <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13, border: '1px solid #eef2ff' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <b>企业微信客户</b>
+                  <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#eef2ff', color: '#4338ca' }}>侧边栏</span>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: '6px 12px', marginTop: 8 }}>
+                  <div><span style={{ color: '#a0aec0' }}>阶段</span><div>{STAGE_LABELS[chanCtx.journey_stage] || chanCtx.journey_stage || '-'}</div></div>
+                  <div><span style={{ color: '#a0aec0' }}>关注产品</span><div>{chanCtx.interest_model || '-'}</div></div>
+                  <div><span style={{ color: '#a0aec0' }}>企业微信ID</span><div style={{ wordBreak: 'break-all' }}>{chanCtx.external_userid || chanKey?.external_userid || '-'}</div></div>
+                  <div><span style={{ color: '#a0aec0' }}>接待成员</span><div>{chanCtx.staff_id || '-'}</div></div>
+                </div>
+                {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).length > 0 && (
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
+                    {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).map((x: string) => <span key={x} style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, background: '#f1f5f9', color: '#475569' }}>{x}</span>)}
+                  </div>
+                )}
+              </div>
+            )}
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
               {(detail?.tags || []).map((t, i) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)}
               <Tag theme="default" style={{ cursor: 'pointer' }} onClick={() => { setCheckedTags((detail?.tags || []).map((t) => t.tag_name)); setTagOpen(true) }}>+ 标签</Tag>
@@ -226,7 +263,7 @@ export default function Advisor() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <b style={{ fontSize: 13 }}>聊天记录</b>
                 {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
-                <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭AI自动回复' : '开启AI自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>🤖 AI{aiOn ? '开' : '关'}</span>
+                <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
               </div>
               <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {msgs.map((m, i) => <div key={i} style={{ alignSelf: m.sender_type === 'human' ? 'flex-end' : 'flex-start', background: m.sender_type === 'human' ? 'var(--pri)' : m.sender_type === 'ai' ? '#ecfdf5' : '#f1f5f9', color: m.sender_type === 'human' ? '#fff' : '#1f2937', padding: '8px 12px', borderRadius: 10, maxWidth: '80%', fontSize: 13 }}>{m.content}</div>)}

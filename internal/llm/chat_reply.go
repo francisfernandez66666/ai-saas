@@ -23,12 +23,21 @@ import (
 // P2 将重构为只被策略引擎调用，业务层（chat.go）不再直连。
 // ============================================================
 
-// GenerateAIReply 生成AI回复
+// GenerateAIReply 生成AI回复（对外唯一入口）。
+// Q5 修复(2026-09-12)：统一收口 sanitizeAddress——prompt 铁律与硬编码话术仍可能漏出
+// 敬语「您」（去 AI 味铁律：说"你"不说"您"），出站前做一次替换 + 告警计数作纵深防御。
+// 原多 return 路径的实现整体改名 generateAIReplyInner，此处只包一层清洗。
+func GenerateAIReply(customer *model.Customer, conversationID uint, userInput string,
+	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
+	return sanitizeAddress(generateAIReplyInner(customer, conversationID, userInput, strategyOutput, features))
+}
+
+// generateAIReplyInner 生成AI回复（内部实现，含全部提前 return 分支）
 // 完整流程：构建系统Prompt → 构建历史对话 → 构建策略Prompt → 调用GLM → 失败兜底用模板
 // 模拟真人延迟已外移到调用方（思考20-40s + 打字40字/分钟）
 // GenerateAIReply 生成AI回复（P2-B 起签名带 features：引擎特性集由调用方传入，
 // 本包不再反向依赖 engine/strategy，依赖方向收敛为 llm→strategytypes/ai/chatflow）
-func GenerateAIReply(customer *model.Customer, conversationID uint, userInput string,
+func generateAIReplyInner(customer *model.Customer, conversationID uint, userInput string,
 	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
 
 	// 加载会话，检查引导式反问状态
@@ -286,7 +295,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 	// 7c. 硬拦截：胡搅蛮缠分支
 	// 3轮非车话题后关闭引导+固定回复
 	if offtopicRepeatCount >= offtopicRepeatMaxTimes {
-		reply = "我这边只能回答您车和品牌相关的问题哈。咱们要不还是回到车和品牌上来？车相关的咱们还是专业对口的哈，您放心"
+		reply = "我这边只能回答你车和品牌相关的问题哈。咱们要不还是回到车和品牌上来？车相关的咱们还是专业对口的哈，你放心"
 		log.Printf("[胡搅蛮缠-硬拦截] 客户%d 非车话题%d次 >= 阈值%d，已替换回复",
 			customer.ID, offtopicRepeatCount, offtopicRepeatMaxTimes)
 	}
@@ -395,4 +404,28 @@ func getCustomerModelID(customer *model.Customer) uint {
 		return defaultModel.ID
 	}
 	return 0
+}
+
+// ============================================================
+// Q5 修复(2026-09-12)：去 AI 味铁律出站兜底——说"你"不说"您"
+// 根因：prompt_builder 历史指令自带"用「您好」开头"「等您试驾」话术，与"不说您"铁律
+// 自相矛盾，模型随机命中；硬编码兜底话术亦有多处「您」。指令清洗之外，此处在
+// AI 回复唯一出口做一次替换（纵深防御），命中即告警计数供回归观察。
+// 仅处理生成侧出站文本；chatflow 敏感词/反问检测清单不经过本函数，不受影响。
+// ============================================================
+
+// sanitizeAddress 出站敬语清洗："您"→"你"（含"您"字符即替换，边界中文无需分词）。
+// 命中时打 WARN 日志并计数（ai_scrm_address_polite_total），供发现漏网的 prompt/话术。
+func sanitizeAddress(reply string) string {
+	if reply == "" || !strings.Contains(reply, "您") {
+		return reply
+	}
+	clean := strings.ReplaceAll(reply, "您", "你")
+	r := []rune(clean)
+	if len(r) > 60 {
+		r = append(r[:60], '…')
+	}
+	log.Printf("[人设][WARN] AI回复含「您」已兜底替换: %q", string(r))
+	service.IncAddressPolite()
+	return clean
 }

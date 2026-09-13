@@ -1,25 +1,26 @@
 // 全站根路由组件：声明路由表，区分公开页（登录/注册/协议）与业务页（/admin、/super、/advisor、/client、/billing 等）
 // /app 为嵌套布局路由，其内部子页由 AppLayout 统一做登录态守卫与顶栏
-// 注意：BrowserRouter 已由 main.tsx 统一提供，此处不再嵌套（避免双 Router 冲突）
+// D1：业务大页路由级 lazy，首屏只加载当前页；TDesign/React 由 vite manualChunks 稳定拆包
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import Index from './pages/Index'
-import Login from './pages/Login'
-import Register from './pages/Register'
-import UserAgreement from './pages/UserAgreement'
-import PrivacyPolicy from './pages/PrivacyPolicy'
-import Admin from './pages/Admin'
-import SuperAdmin from './pages/SuperAdmin'
-import Advisor from './pages/Advisor'
-import Client from './pages/Client'
-import Billing from './pages/Billing'
-import Org from './pages/Org'
-import Pricing from './pages/Pricing'
-import AppHome from './pages/AppHome'
-import AppReferral from './pages/AppReferral'
-import AppSettings from './pages/AppSettings'
-import AppLayout from './pages/AppLayout'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { getToken, verifySession } from './lib/api'
-import { useState, useEffect } from 'react'
+const Index = lazy(() => import('./pages/Index'))
+const Login = lazy(() => import('./pages/Login'))
+const Register = lazy(() => import('./pages/Register'))
+const UserAgreement = lazy(() => import('./pages/UserAgreement'))
+const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'))
+const Admin = lazy(() => import('./pages/Admin'))
+const SuperAdmin = lazy(() => import('./pages/SuperAdmin'))
+const Advisor = lazy(() => import('./pages/Advisor'))
+const Client = lazy(() => import('./pages/Client'))
+const Billing = lazy(() => import('./pages/Billing'))
+const Org = lazy(() => import('./pages/Org'))
+const Pricing = lazy(() => import('./pages/Pricing'))
+const AppHome = lazy(() => import('./pages/AppHome'))
+const AppReferral = lazy(() => import('./pages/AppReferral'))
+const AppSettings = lazy(() => import('./pages/AppSettings'))
+const AppLayout = lazy(() => import('./pages/AppLayout'))
 
 // ============================================================
 // P1-2 前端路由守卫（2026-08-30）
@@ -75,12 +76,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 // /app 为嵌套布局路由，其内部子页由 AppLayout 统一做登录态守卫与顶栏
 // 注意：BrowserRouter 已由 main.tsx 统一提供，此处不再嵌套（避免双 Router 冲突）
 export default function App() {
-  // /app 为嵌套布局路由，内部 login/register/chat/advisor/billing/referral/settings
-  // 由 AppLayout 统一做登录态守卫与顶栏
   return (
-    <Routes>
-      {/* 首页：产品官网落地页，展示平台能力与 CTA */}
-      <Route path="/" element={<Index />} />
+    <ErrorBoundary>
+      <Suspense fallback={<RouteLoading />}>
+        <Routes>
+          {/* 首页：产品官网落地页，展示平台能力与 CTA */}
+          <Route path="/" element={<Index />} />
       {/* 登录页：支持租户码登录、首登强改密、验证码找回密码 */}
       <Route path="/login" element={<Login />} />
       {/* 注册页：租户自助开通试用，填写企业信息并创建管理员账号 */}
@@ -124,7 +125,17 @@ export default function App() {
       </Route>
       {/* 兜底路由：未匹配路径跳转首页 */}
       <Route path="*" element={<Index />} />
-    </Routes>
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
+function RouteLoading() {
+  return (
+    <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa' }}>
+      <div style={{ color: '#6b7280', fontSize: 14 }}>加载中…</div>
+    </div>
   )
 }
 

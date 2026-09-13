@@ -3,6 +3,7 @@ package db
 
 import (
 	"ai-scrm/config"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/model"
 	"fmt"
 	"log"
@@ -35,7 +36,8 @@ func Init() error {
 		dbLogLevel = logger.Warn
 	}
 	DB, err = gorm.Open(postgres.Open(config.GlobalConfig.Database.DSN()), &gorm.Config{
-		Logger: logger.Default.LogMode(dbLogLevel),
+		// C3(2026-09-12)：包一层脱敏 logger，Info 态 SQL 参数(手机号/身份证/邮箱)掩码后再落盘
+		Logger: logx.NewGormLogger(logger.Default.LogMode(dbLogLevel)),
 	})
 	if err != nil {
 		log.Printf("数据库连接失败: %v", err)
@@ -68,6 +70,13 @@ func Init() error {
 	}
 
 	log.Println("数据库表结构迁移完成")
+
+	// C4 迁移纪律(2026-09-12)：版本化 SQL 迁移（migrations/*.up.sql）在 AutoMigrate 之后应用。
+	// 后置原因见 migrations.go：002 的 RLS 策略依赖 AutoMigrate 已建出的全部租户表。
+	if err := MigrateUp(); err != nil {
+		log.Printf("[migrate] 版本化迁移失败: %v", err)
+		return err
+	}
 
 	// 清理旧版单列唯一索引（AutoMigrate 只增不删，需手动降级）
 	// - system_configs.key 原全局唯一 → 已改为 (tenant_id, key) 联合唯一
@@ -162,6 +171,18 @@ func autoMigrate() error {
 		&model.CustomerIdentity{},
 		// ---- 协议签署台账（注册即同意《用户协议》《隐私政策》，超管审计）
 		&model.AgreementSignature{},
+		// ---- 企微/微信通道接入（W2/W6，2026-09-12；建表真源见 migrations/003、004，AutoMigrate 幂等共存）
+		&model.Channel{},
+		&model.ChannelOutbound{},
+		&model.ChannelIdentity{},
+		// ---- PIPL 删除请求（C2，2026-09-12；建表真源见 migrations/006，AutoMigrate 幂等共存）
+		&model.DeletionRequest{},
+		// ---- 出站事件 webhook（D6，2026-09-12；建表真源见 migrations/007）
+		&model.TenantWebhook{},
+		&model.WebhookDelivery{},
+		// ---- 行业包质量归因（D9，2026-09-13；建表真源见 migrations/009/010）
+		&model.ReplyAttribution{},
+		&model.PackStatSnapshot{},
 	)
 }
 

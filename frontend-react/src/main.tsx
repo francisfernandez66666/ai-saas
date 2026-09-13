@@ -6,8 +6,11 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { BrandingProvider } from './lib/branding'
 import ErrorBoundary from './lib/ErrorBoundary'
+import { installGlobalErrorHandlers } from './lib/errorReport'
 import 'tdesign-react/es/style/index.css'
 import './index.css'
+
+installGlobalErrorHandlers()
 
 // 应用入口：挂载 React 根节点，外层包 BrowserRouter（路由）与 BrandingProvider（按域名拉取租户白标）
 // ErrorBoundary 兜底渲染异常，避免整页白屏

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ai-scrm/config"
+	"ai-scrm/internal/logx"
 )
 
 // ============================================================
@@ -55,7 +56,7 @@ func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, on
 		"trace_id":   env.Header.TraceID,
 		"payload":    json.RawMessage(env.Payload),
 	})
-	log.Printf("[MQ-LOG] %s", string(line))
+	log.Printf("[MQ-LOG] %s", logx.Mask(string(line))) // C3：事件载荷含手机号/邮箱等 PII，日志侧掩码（不影响投递给消费者的真实对象）
 
 	// 本地异步分发（fan-out 到该 topic 全部订阅方；panic 隔离，不阻断发布方）
 	// P1-37(2026-09-09)：原 `_ = h(ctx, envCopy)` 错误被吞、无重试——log 模式（默认）反而是

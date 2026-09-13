@@ -123,6 +123,10 @@ func SuperFeedbackList(c *gin.Context) {
 	if status := c.Query("status"); status != "" {
 		q = q.Where("f.status = ?", status)
 	}
+	// C6 前端异常与人工反馈共用 feedbacks 表，超管可按 target_type 分流排查
+	if target := c.Query("target_type"); target != "" {
+		q = q.Where("f.target_type = ?", target)
+	}
 
 	var total int64
 	q.Count(&total)

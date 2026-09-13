@@ -270,5 +270,104 @@ check "free包重复领取拒绝409(R1台账幂等)" 409 "$C2"
 EMIDX=$($PSQL "SELECT 1 FROM pg_indexes WHERE indexname='ux_tenant_users_email_nonempty'" | tr -d '[:space:]')
 check "tenant_users.email 唯一索引已建(R15)" 1 "$EMIDX"
 
+echo "---- 十三、C3 日志 PII 脱敏（2026-09-12）----"
+# 经 guest+test 真实跑一轮含手机号的对话，验证 ai-scrm.log 新增行：
+#   (a) 无连续 11 位手机号明文；(b) 掩码形态 139****2222 出现（证明脱敏确实生效、非空跑）
+LOGFILE="${PROJECT_ROOT}/ai-scrm.log"
+if [ -f "$LOGFILE" ]; then
+  PVK=$(curl -s -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{}')
+  PCID=$(echo "$PVK" | jsonget "['data']['customer_id']")
+  PKEY=$(echo "$PVK" | jsonget "['data']['visitor_key']")
+  MARK=$(wc -c < "$LOGFILE" 2>/dev/null | tr -d '[:space:]')
+  curl -s -o /dev/null --max-time 40 -X POST "$B/api/v1/chat/test?visitor_key=$PKEY" -H "X-Tenant-ID: 1" \
+    -H "Content-Type: application/json" \
+    -d "{\"customer_id\":${PCID:-1},\"content\":\"我电话13911112222，方便给我回个报价吗谢谢\"}"
+  sleep 3
+  NEWLOG=$(tail -c +$((MARK + 1)) "$LOGFILE" 2>/dev/null)
+  LEAK=$(printf '%s' "$NEWLOG" | grep -cE '(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)')
+  MASKED=$(printf '%s' "$NEWLOG" | grep -c '139\*\*\*\*2222')
+  [ "${LEAK:-0}" = "0" ] && check "对话后日志无手机号明文(PII脱敏)" y y || check "对话后日志无手机号明文(发现${LEAK}行泄露)" y n
+  [ "${MASKED:-0}" -ge 1 ] && check "手机号已脱敏落盘(${MASKED}行掩码形态)" y y || check "手机号应出现掩码形态(脱敏生效证据)" y n
+else
+  check "ai-scrm.log 不存在，跳过PII断言" y y
+fi
+
+echo "---- 十四、D7 数据导出 CSV（2026-09-12）----"
+EXP_HDR="$(mktemp)"; EXP_BODY="$(mktemp)"
+curl -s -D "$EXP_HDR" -o "$EXP_BODY" "$B/api/v1/admin/export/customers.csv" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
+check "导出客户CSV 200" 200 "$(head -1 "$EXP_HDR" | awk '{print $2}')"
+check "导出 content-type=text/csv" 1 "$(grep -i '^content-type:' "$EXP_HDR" | grep -c 'text/csv')"
+check "CSV 表头含 id,name,phone" y "$(tail -c +4 "$EXP_BODY" | head -1 | grep -q 'id,name,phone' && echo y || echo n)"
+RAWP=$(grep -Eo '1[3-9][0-9]{9}' "$EXP_BODY" | wc -l | tr -d ' ')
+[ "${RAWP:-0}" = "0" ] && check "导出无明文手机号(PII掩码)" y y || check "导出应掩码手机号(发现${RAWP})" y n
+EXPNOC=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/export/customers.csv")
+check "导出未登录 401/403" y "$(echo "$EXPNOC" | grep -qE '401|403' && echo y || echo n)"
+rm -f "$EXP_HDR" "$EXP_BODY"
+
+echo "---- 十五、C2 PIPL 删除权（2026-09-12）----"
+GJSON=$(curl -s -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{}')
+GCID=$(echo "$GJSON" | jsonget "['data']['customer_id']")
+GKEY=$(echo "$GJSON" | jsonget "['data']['visitor_key']")
+DR=$(curl -s -X POST "$B/api/v1/privacy/deletion-request" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"scope\":\"customer\",\"customer_id\":${GCID:-0},\"visitor_key\":\"$GKEY\"}")
+DRID=$(echo "$DR" | jsonget "['data']['id']")
+check "删除请求受理返回id" y "$([ -n "$DRID" ] && [ "$DRID" != "None" ] && echo y || echo n)"
+# 幂等：同主体重复受理应标记 duplicated=true
+DR2=$(curl -s -X POST "$B/api/v1/privacy/deletion-request" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"scope\":\"customer\",\"customer_id\":${GCID:-0},\"visitor_key\":\"$GKEY\"}")
+check "重复受理幂等duplicated" True "$(echo "$DR2" | jsonget "['data']['duplicated']")"
+# 越权：错误 visitor_key 匿名应 403
+BADVK=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/privacy/deletion-request" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d "{\"scope\":\"customer\",\"customer_id\":${GCID:-0},\"visitor_key\":\"wrong_vk\"}")
+check "错误visitor_key拒绝403" 403 "$BADVK"
+# 手动立即执行
+curl -s -o /dev/null -X POST "$B/api/v1/admin/privacy/deletion-requests/$DRID/execute" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
+DLIST=$(curl -s "$B/api/v1/admin/privacy/deletion-requests?status=anonymized" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "执行后状态转anonymized" y "$(echo "$DLIST" | python3 -c "import sys,json;d=json.load(sys.stdin)['data']['list'];print('y' if any(str(x['id'])=='$DRID' for x in d) else 'n')" 2>/dev/null)"
+# 数据侧断言：该客户 PII 列已清空（name/visitor_key 置空），保留行与统计列
+CLEARED=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc "SELECT count(*) FROM customers WHERE id=$GCID AND COALESCE(name,'')='' AND COALESCE(visitor_key,'')=''" | tr -d '[:space:]')
+check "客户PII列已清空" 1 "$CLEARED"
+
+echo "---- 十六、D6 出站事件 webhook（2026-09-12）----"
+WHCREATE=$(curl -s -X POST "$B/api/v1/admin/webhooks" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"smoke-hook","url":"http://127.0.0.1:9/webhook","secret":"wh_s3cr3t_top","events":["payment.paid","order.refunded"]}')
+WHID=$(echo "$WHCREATE" | jsonget "['data']['id']")
+check "创建 webhook 订阅返回id" y "$([ -n "$WHID" ] && [ "$WHID" != "None" ] && echo y || echo n)"
+check "创建回显一次性明文secret" "wh_s3cr3t_top" "$(echo "$WHCREATE" | jsonget "['data']['secret']")"
+WHLIST=$(curl -s "$B/api/v1/admin/webhooks" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "webhook 列表不泄露明文secret" n "$(echo "$WHLIST" | grep -q "wh_s3cr3t_top" && echo y || echo n)"
+check "webhook 列表含掩码字段" y "$(echo "$WHLIST" | grep -q "secret_mask" && echo y || echo n)"
+WHAUTH=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/webhooks")
+check "webhook 未登录访问 401/403" y "$(echo "$WHAUTH" | grep -qE '401|403' && echo y || echo n)"
+# 清理本次订阅
+curl -s -o /dev/null -X DELETE "$B/api/v1/admin/webhooks/$WHID" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
+
+echo "---- 十七、D3 KB pgvector 向量检索底座（2026-09-13）----"
+VECVER=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='008_kb_embedding_vector'" 2>/dev/null | tr -d '[:space:]')
+check "D3 迁移008已应用" 1 "$VECVER"
+VECCOL=$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='knowledge_fragments' AND column_name='embedding'" 2>/dev/null | tr -d '[:space:]')
+check "KB embedding 向量列存在" 1 "$VECCOL"
+VECIDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname='idx_kf_embedding'" 2>/dev/null | tr -d '[:space:]')
+check "KB HNSW 索引存在" 1 "$VECIDX"
+VECFLAG=$($PSQL "SELECT count(*) FROM system_configs WHERE \"key\"='kb_vector_search' AND tenant_id=0" 2>/dev/null | tr -d '[:space:]')
+check "kb_vector_search 默认开关已播种" 1 "$VECFLAG"
+FRAGJSON=$(curl -s "$B/api/v1/admin/knowledge/fragments?page=1&page_size=1" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "KB片段列表返回 vectorized 状态" y "$(echo "$FRAGJSON" | grep -q 'vectorized' && echo y || echo n)"
+
+echo "---- 十八、C6 前端异常上报（2026-09-13）----"
+CE_BAD=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/client-errors" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '{"stack":"missing message"}')
+check "前端异常缺 message 拒绝400" 400 "$CE_BAD"
+CE_RES=$(curl -s -X POST "$B/api/v1/client-errors" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d '{"message":"页面崩了 13911112222","stack":"Error: crash\n  at Admin","route":"/admin","user_agent":"smoke","page":"http://localhost/admin","app":"desktop"}')
+CE_ID=$(echo "$CE_RES" | jsonget "['data']['id']")
+check "前端异常上报返回id" y "$([ -n "$CE_ID" ] && [ "$CE_ID" != "None" ] && echo y || echo n)"
+CE_DB=$($PSQL "SELECT count(*) FROM feedbacks WHERE id=${CE_ID:-0} AND target_type='client_error' AND content NOT LIKE '%13911112222%' AND content LIKE '%***%'" 2>/dev/null | tr -d '[:space:]')
+check "前端异常落库且PII掩码" 1 "$CE_DB"
+CE_FILTER=$(curl -s "$B/api/v1/super/feedbacks?target_type=client_error&page_size=1" -H "Authorization: Bearer $TOKEN" \
+  | jsonget "['data']['list'][0]['target_type']")
+check "超管按 client_error 筛选" client_error "$CE_FILTER"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

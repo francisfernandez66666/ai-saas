@@ -163,6 +163,7 @@ type KnowledgeFragment struct {
 	Status           int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
 	Sort             int       `gorm:"default:0" json:"sort"`                     // 排序
 	EmbeddingJSON    string    `gorm:"type:text" json:"embedding_json"`           // 向量检索：内容+标题embedding（JSON数组，PG无pgvector时按内存余弦混合）
+	Vectorized       bool      `gorm:"-" json:"vectorized"`                       // 向量状态：pgvector列已写或JSON回退向量已写，供管理端展示
 	CreatedAt        time.Time `json:"created_at"`                                // 创建时间
 	UpdatedAt        time.Time `json:"updated_at"`                                // 更新时间
 }

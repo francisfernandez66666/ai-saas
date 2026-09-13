@@ -1,0 +1,6 @@
+BEGIN;
+
+DROP TABLE IF EXISTS webhook_deliveries CASCADE;
+DROP TABLE IF EXISTS tenant_webhooks CASCADE;
+
+COMMIT;

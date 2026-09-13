@@ -37,11 +37,9 @@ func MaskPhoneInText(text string) string {
 		}
 		// 遇到非数字或结尾，检查是否有11位连续数字（疑似手机号）
 		if digitRun == 11 {
-			// 脱敏中间4位：索引 [i-11, i-4) 区间
-			for j := i - 11; j < i; j++ {
-				if j >= i-7 && j < i-4 {
-					runes[j] = '*'
-				}
+			// 脱敏中间4位：索引 [i-8, i-4) 区间，与 MaskPhone 保持一致（前3后4保留）
+			for j := i - 8; j < i-4; j++ {
+				runes[j] = '*'
 			}
 		}
 		digitRun = 0

@@ -7,6 +7,7 @@
 
 # Binary/Generated files
 ai-scrm
+/migrate
 .pid
 tmp/
 /tmp/*
@@ -31,6 +32,9 @@ backups/
 # ---- P-FE React 工程（构建产物与依赖不入库）----
 frontend-react/node_modules/
 frontend-react/dist/
+
+# ---- 通道冒烟自建二进制（smoke_channel: ai-scrm-chan / mockwx）----
+bin/
 
 # ---- 行业包密钥与打包产物（涉密/二进制）----
 keys/

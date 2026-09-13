@@ -6,7 +6,7 @@ import "testing"
 // TestAnonymizeText 验证文本匿名化：手机号/邮箱被掩码替换
 func TestAnonymizeText(t *testing.T) {
 	got := AnonymizeText("手机13800001111 邮箱a@b.com")
-	want := "手机1380***1111 邮箱a***@b.com"
+	want := "手机138****1111 邮箱a***@b.com"
 	if got != want {
 		t.Errorf("AnonymizeText=%q want %q", got, want)
 	}
@@ -20,7 +20,7 @@ func TestAnonymizePayload(t *testing.T) {
 		"list":   []any{"call13800001111", 123},
 	}
 	out := AnonymizePayload(in)
-	if out["text"] != "联系1380***1111" {
+	if out["text"] != "联系138****1111" {
 		t.Errorf("text 未脱敏: %v", out["text"])
 	}
 	nested := out["nested"].(map[string]any)
@@ -28,7 +28,7 @@ func TestAnonymizePayload(t *testing.T) {
 		t.Errorf("nested 未脱敏: %v", nested["memo"])
 	}
 	list := out["list"].([]any)
-	if list[0] != "call1380***1111" {
+	if list[0] != "call138****1111" {
 		t.Errorf("list 未脱敏: %v", list[0])
 	}
 	if list[1] != 123 {

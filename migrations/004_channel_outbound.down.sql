@@ -1,0 +1,5 @@
+BEGIN;
+
+DROP TABLE IF EXISTS channel_outbound CASCADE;
+
+COMMIT;

@@ -10,7 +10,7 @@ const { Header, Aside, Content } = Layout
 const { MenuItem, MenuGroup } = Menu
 
 // FB_TYPES 反馈类型码 → 中文名（反馈列表列渲染）
-const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', other: '其他' }
+const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', rating: '满意度', other: '其他', client_error: '前端异常' }
 // TYPE_NAMES 商业包类型码 → 中文名（包管理列表列渲染）
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
 
@@ -28,6 +28,7 @@ type Pending = { id: number; order_no: string; tenant_id: number; tenant_name?: 
 type Audit = { created_at: string; tenant_id: number; action: string; username?: string; resource?: string; detail?: string; ip?: string }
 // 协议签署记录（用户/隐私）
 type Ag = { id: number; username?: string; tenant_id: number; tenant_name?: string; agreement_type: string; version: string; status: string; signed_at: string }
+type PackQualityRow = { key: string; tenant_id: number; pack_code: string; pack_version: string; template_id: string; sample_count: number; hook_rate: number; lead_rate: number; pending_human_rate: number; avg_intent_delta: number; avg_eval_score?: number | null }
 
 // 平台超管后台：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 // 依赖 /api/v1/super/* 系列接口；仅 role=super_admin 可访问（前端双重守卫 + 后端鉴权）
@@ -42,12 +43,17 @@ export default function SuperAdmin() {
   const [tenants, setTenants] = useState<Tenant[]>([])
   // AI 商业包列表
   const [pkgs, setPkgs] = useState<Pkg[]>([])
+  // D9 包质量跨租户聚合
+  const [packQuality, setPackQuality] = useState<PackQualityRow[]>([])
+  const [packQualityDays, setPackQualityDays] = useState('30')
   // 模型成本核算汇总（近 N 天）
   const [cost, setCost] = useState<Cost | null>(null)
   // 用户反馈列表
   const [fbs, setFbs] = useState<Fb[]>([])
   // 反馈筛选状态（open/resolved/''）
   const [fbStatus, setFbStatus] = useState('open')
+  // C6 前端异常与用户反馈共用列表，可按 target_type 分流
+  const [fbTarget, setFbTarget] = useState('')
   // 待确认收款订单列表
   const [pendings, setPendings] = useState<Pending[]>([])
   // 审计日志列表
@@ -75,13 +81,22 @@ export default function SuperAdmin() {
   async function loadPkgs() {
     const j = await AUTH('/api/v1/super/packages'); setPkgs(j.data || [])
   }
+  // 拉取 D9 包质量视图
+  async function loadPackQuality() {
+    const j = await AUTH('/api/v1/super/packs/stats?days=' + encodeURIComponent(packQualityDays))
+    const list = ((j.data && j.data.list) || []) as Omit<PackQualityRow, 'key'>[]
+    setPackQuality(list.map((r) => ({ ...r, key: `${r.tenant_id}:${r.pack_code}:${r.pack_version}:${r.template_id}` })))
+  }
   // 拉取近 30 天模型成本核算汇总
   async function loadCost() {
     const j = await AUTH('/api/v1/super/usage/cost?days=30'); if (j.code === 0) setCost(j.data)
   }
-  // 按状态拉取用户反馈列表
+  // 按状态/类型拉取用户反馈列表
   async function loadFeedbacks() {
-    const j = await AUTH('/api/v1/super/feedbacks?status=' + fbStatus + '&page_size=50'); setFbs((j.data && j.data.list) || [])
+    const q = new URLSearchParams({ page_size: '50' })
+    if (fbStatus) q.set('status', fbStatus)
+    if (fbTarget) q.set('target_type', fbTarget)
+    const j = await AUTH('/api/v1/super/feedbacks?' + q); setFbs((j.data && j.data.list) || [])
   }
   // 拉取待确认收款订单
   async function loadPending() {
@@ -117,12 +132,13 @@ export default function SuperAdmin() {
   // 超管守卫：非 super_admin 直接跳登录；加载各模块并每 30s 刷新待确认收款
   useEffect(() => {
     if (localStorage.getItem('role') !== 'super_admin') { location.href = '/login'; return }
-    load(); loadPkgs(); loadCost(); loadPending(); loadFeedbacks(); loadAudit(); loadAgreements()
+    load(); loadPkgs(); loadPackQuality(); loadCost(); loadPending(); loadFeedbacks(); loadAudit(); loadAgreements()
     const t = setInterval(loadPending, 30000)
     return () => clearInterval(t)
   }, [])
-  useEffect(() => { loadFeedbacks() }, [fbStatus])
+  useEffect(() => { loadFeedbacks() }, [fbStatus, fbTarget])
   useEffect(() => { loadAgreements() }, [agType])
+  useEffect(() => { loadPackQuality() }, [packQualityDays])
 
   if (localStorage.getItem('role') !== 'super_admin') return null
 
@@ -232,6 +248,7 @@ export default function SuperAdmin() {
             <MenuGroup title="平台管理">
               <MenuItem value="tenants">租户管理</MenuItem>
               <MenuItem value="packages">AI 商业包</MenuItem>
+              <MenuItem value="pack_quality">包质量</MenuItem>
               <MenuItem value="cost">模型成本核算</MenuItem>
               <MenuItem value="feedbacks">用户反馈</MenuItem>
               <MenuItem value="pending">待确认收款</MenuItem>
@@ -268,6 +285,25 @@ export default function SuperAdmin() {
                 <Table rowKey="id" data={pkgs} columns={pkgCols} size="small" />
               </Section>
             )}
+            {view === 'pack_quality' && (
+              <Section title="包质量视图" desc="跨租户查看行业包/企业包模板效果；样本 <50 仅作趋势参考，不直接作为包迭代结论。">
+                <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
+                  <Select value={packQualityDays} onChange={(v) => setPackQualityDays(String(v))} options={[{ label: '近7天', value: '7' }, { label: '近30天', value: '30' }, { label: '近90天', value: '90' }]} style={{ width: 130 }} />
+                  <Button theme="primary" variant="outline" onClick={loadPackQuality}>刷新</Button>
+                </div>
+                <Table rowKey="key" data={packQuality as TableRowData[]} columns={[
+                  { colKey: 'tenant_id', title: '租户', width: 90 },
+                  { colKey: 'pack_code', title: '包', width: 150 },
+                  { colKey: 'pack_version', title: '版本', width: 110, cell: (p: CellProps) => <Tag>{p.row.pack_version || '-'}</Tag> },
+                  { colKey: 'template_id', title: '模板', width: 220 },
+                  { colKey: 'sample_count', title: '样本', width: 100, cell: (p: CellProps) => Number(p.row.sample_count || 0) < 50 ? <Tag theme="warning">积累中 {p.row.sample_count}</Tag> : p.row.sample_count },
+                  { colKey: 'hook_rate', title: '接钩率', width: 100, cell: (p: CellProps) => (Number(p.row.hook_rate || 0) * 100).toFixed(1) + '%' },
+                  { colKey: 'lead_rate', title: '留资率', width: 100, cell: (p: CellProps) => (Number(p.row.lead_rate || 0) * 100).toFixed(1) + '%' },
+                  { colKey: 'pending_human_rate', title: '待人工', width: 100, cell: (p: CellProps) => (Number(p.row.pending_human_rate || 0) * 100).toFixed(1) + '%' },
+                  { colKey: 'avg_eval_score', title: '质量分', width: 90, cell: (p: CellProps) => typeof p.row.avg_eval_score === 'number' ? p.row.avg_eval_score.toFixed(0) : '-' },
+                ]} size="small" empty="暂无包质量数据" />
+              </Section>
+            )}
             {view === 'cost' && (
               <Section title={<>模型成本核算 <span style={{ fontSize: 13, color: '#718096' }}>{cost ? `近${cost.days}天 · 共${cost.total_calls}次 / ${cost.total_tokens} tokens / ¥${cost.total_cost_yuan}` : ''}</span></>}>
                 <Table rowKey="model" data={cost?.models || []} columns={[
@@ -278,8 +314,11 @@ export default function SuperAdmin() {
               </Section>
             )}
             {view === 'feedbacks' && (
-              <Section title="用户反馈" desc="顾问端AI回复气泡「反馈」提交，新反馈推群机器人">
-                <div style={{ marginBottom: 12 }}><Select value={fbStatus} onChange={(v) => setFbStatus(v as string)} options={[{ label: '待处理', value: 'open' }, { label: '已处理', value: 'resolved' }, { label: '全部', value: '' }]} style={{ width: 160 }} /></div>
+              <Section title="用户反馈" desc="顾问端AI回复气泡「反馈」提交，C6 前端异常也会进入这里；新反馈推群机器人">
+                <div style={{ marginBottom: 12, display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                  <Select value={fbStatus} onChange={(v) => setFbStatus(v as string)} options={[{ label: '待处理', value: 'open' }, { label: '已处理', value: 'resolved' }, { label: '全部', value: '' }]} style={{ width: 160 }} />
+                  <Select value={fbTarget} onChange={(v) => setFbTarget(v as string)} options={[{ label: '全部类型', value: '' }, { label: 'AI话术', value: 'ai_reply' }, { label: '功能建议', value: 'feature' }, { label: '满意度', value: 'rating' }, { label: '前端异常', value: 'client_error' }, { label: '其他', value: 'other' }]} style={{ width: 160 }} />
+                </div>
                 <Table rowKey="id" data={fbs} columns={fbCols} size="small" empty="暂无反馈" />
               </Section>
             )}

@@ -17,7 +17,7 @@
       "id": "feat_selection",
       "feature_name": "选品与数据分析",
       "category": "选品",
-      "desc_template": "基于海外社媒趋势+平台热销数据帮您筛品测款，周度数据复盘跟进广告ROI，帮您砍掉低效品，集中弹药打蓝海款。",
+      "desc_template": "基于海外社媒趋势+平台热销数据帮你筛品测款，周度数据复盘跟进广告ROI，帮你砍掉低效品，集中弹药打蓝海款。",
       "short_desc": "数据驱动选品测款+周度复盘",
       "applicable_models": ["品牌增长版"],
       "applicable_tags": ["数据驱动", "新手启动"],

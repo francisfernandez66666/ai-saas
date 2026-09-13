@@ -3,6 +3,7 @@ package ai
 
 import (
 	"ai-scrm/config"
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -49,9 +50,13 @@ type AIRouter struct {
 	mu          sync.RWMutex  // 并发保护
 	models      []*ModelState // 模型列表（按优先级排序）
 	coolDownSec int           // 失败后冷却时间（秒）
+	// budget 单条消息降级链的总时间预算（D4，2026-09-12）：整条链共享一个 ctx deadline，
+	// 每个模型再按剩余预算派生子 ctx——单模型挂死会被取消并降级，最坏总耗时≈budget。
+	// 默认 110s（留 ~15s 给真人延迟/网络边际），测试可注入缩短。
+	budget time.Duration
 	// callOverride 测试注入点（2026-09-05 降级演练用例）：非 nil 时替代 callProvider，
 	// 用于故障注入（429/超时/余额耗尽/全链失败）而无需真实厂商 Key；生产恒为 nil
-	callOverride func(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error)
+	callOverride func(ctx context.Context, provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error)
 }
 
 // Router 默认路由器实例
@@ -128,7 +133,9 @@ func InitRouter() {
 func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
 	// 阶段覆盖优先：配置的专属模型先行尝试
 	if provStr, model, ok := ResolveStageModel(stage); ok {
-		reply, usage, err := r.callProvider(ModelProvider(provStr), model, messages, temperature, tenantID, stage)
+		sctx, scancel := context.WithTimeout(context.Background(), r.totalBudget())
+		defer scancel()
+		reply, usage, err := r.callProvider(sctx, ModelProvider(provStr), model, messages, temperature, tenantID, stage)
 		if err == nil && reply != "" {
 			log.Printf("[AI路由] 阶段[%s]使用stage_models覆盖模型: [%s] %s", stage, provStr, model)
 			return reply, provStr, model, usage, nil
@@ -139,21 +146,29 @@ func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []
 	return reply, provider, model, usage, err
 }
 
+// totalBudget 返回降级链总预算（默认 110s，测试可缩短）
+func (r *AIRouter) totalBudget() time.Duration {
+	if r.budget > 0 {
+		return r.budget
+	}
+	return 110 * time.Second
+}
+
 // callProvider 定向调用指定 provider+model（阶段覆盖专用）
 // P2-59 修复(2026-09-09)：原 SetModel 改全局单例 ModelName，并发阶段覆盖请求
 // 互相串模型（A 读了 B 的 SetModel）。改用 per-call GenerateTextWithModelOverride，
 // 临时覆盖 + 恢复，加 mutex 防并发覆盖。
-func (r *AIRouter) callProvider(provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
+func (r *AIRouter) callProvider(ctx context.Context, provider ModelProvider, modelName string, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
 	switch provider {
 	case ProviderZhipu:
-		return DefaultClient.GenerateTextWithModelOverride(messages, temperature, modelName)
+		return DefaultClient.GenerateTextWithModelOverride(ctx, messages, temperature, modelName)
 	case ProviderSiliconFlow:
-		return SiliconFlowDefaultClient.GenerateTextWithModelOverride(messages, temperature, modelName)
+		return SiliconFlowDefaultClient.GenerateTextWithModelOverride(ctx, messages, temperature, modelName)
 	case ProviderGateway:
 		if DefaultGatewayClient == nil {
 			return "", Usage{}, fmt.Errorf("网关未初始化")
 		}
-		return DefaultGatewayClient.GenerateTextWithUsage(messages, temperature, tenantID, stage)
+		return DefaultGatewayClient.GenerateTextWithUsage(ctx, messages, temperature, tenantID, stage)
 	}
 	return "", Usage{}, fmt.Errorf("未知provider: %s", string(provider))
 }
@@ -175,10 +190,13 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 
 	// 按优先级依次尝试每个模型
 	// P2-63 修复(2026-09-09)：总预算 deadline——原每次失败后继续降级，最坏叠加多个
-	// HTTP 超时(45s+60s+...)达 450s+，客户端早已超时。2min 内必须出结果，
-	// 超预算直接终止降级链走模板兜底。
-	budget := 110 * time.Second // 给 AI 留 ≤110s，剩余给模拟真人延迟(humanlikeDelay)和网络边际
+	// HTTP 超时(45s+60s+...)达 450s+，客户端早已超时。2min 内必须出结果，超预算直接终止降级链走模板兜底。
+	// D4 强化(2026-09-12)：原预算只在"模型之间"检查，单个模型 HTTP 挂死仍会卡满其 client 超时（网关 120s）。
+	// 现整条链共享一个 ctx deadline，每个模型再按"剩余预算"派生子 ctx，真正能取消挂死的 HTTP 调用。
+	budget := r.totalBudget()
 	deadline := now.Add(budget)
+	baseCtx, baseCancel := context.WithTimeout(context.Background(), budget)
+	defer baseCancel()
 	for idx, model := range models {
 		// 总预算检查：已用时间超限 → 不再尝试后续模型
 		if time.Since(now) >= budget || time.Now().After(deadline) {
@@ -211,12 +229,28 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 		var reply string
 		var usage Usage
 		var err error
+		// D4：单模型预算 = min(剩余总预算, 总预算/候选数)——公平分片，防止首个模型挂死吃光全链、
+		// 让后续模型没机会被尝试（原实现按"剩余预算"给首个模型满额，一个 hang 即饿死降级链）。
+		remain := time.Until(deadline)
+		perModel := budget / time.Duration(len(models))
+		if perModel <= 0 {
+			perModel = budget
+		}
+		mto := remain
+		if perModel < mto {
+			mto = perModel
+		}
+		if mto <= 0 {
+			break // 剩余预算已尽，不再尝试
+		}
+		mctx, mcancel := context.WithTimeout(baseCtx, mto)
 		if r.callOverride != nil {
 			// 测试注入路径（故障演练），生产恒走 callProvider
-			reply, usage, err = r.callOverride(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
+			reply, usage, err = r.callOverride(mctx, model.Provider, model.ModelName, messages, temperature, tenantID, stage)
 		} else {
-			reply, usage, err = r.callProvider(model.Provider, model.ModelName, messages, temperature, tenantID, stage)
+			reply, usage, err = r.callProvider(mctx, model.Provider, model.ModelName, messages, temperature, tenantID, stage)
 		}
+		mcancel()
 
 		if err == nil && reply != "" {
 			// 成功，重置失败计数
@@ -286,6 +320,13 @@ func (r *AIRouter) GetModels() []*ModelState {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.models
+}
+
+// CooldownSeconds 返回失败冷却窗口秒数（Admin F9 模型健康看板计算剩余冷却）。
+func (r *AIRouter) CooldownSeconds() int {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.coolDownSec
 }
 
 // RecoverCoolingModels 定时恢复冷却中的模型

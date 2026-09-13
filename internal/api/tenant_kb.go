@@ -185,6 +185,7 @@ func TenantKBMy(c *gin.Context) {
 	var rows []model.KnowledgeFragment
 	db.DB.Where("tenant_id = ? AND category = ?", ti.ID, "企业知识").
 		Order("id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Find(&rows)
+	service.FillFragmentVectorStatus(db.DB, rows)
 	RespOK(c, "", gin.H{
 		"list": rows, "total": total, "page": page, "page_size": pageSize,
 	})

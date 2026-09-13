@@ -52,6 +52,23 @@ for t in tenants tenant_users customers conversations messages packages system_c
   fi
 done
 
+echo "---- 迁移升降回滚演练 ----"
+if command -v go >/dev/null 2>&1; then
+  MIG_ENV=(env DB_HOST="$PGHOST" DB_PORT="$PGPORT" DB_USER="$PGUSER" DB_PASSWORD="${PGPASSWORD:-}" DB_NAME="$DRILL_DB" DB_SSLMODE=disable JWT_SECRET="${JWT_SECRET:-restore-drill-secret}")
+  if printf 'yes\n' | "${MIG_ENV[@]}" go run ./cmd/migrate down 6 >/tmp/migrate_down.out 2>&1; then
+    echo "  OK   down 6"; PASS=$((PASS+1))
+  else
+    echo "  FAIL down 6"; tail -20 /tmp/migrate_down.out; FAIL=$((FAIL+1))
+  fi
+  if "${MIG_ENV[@]}" go run ./cmd/migrate up >/tmp/migrate_up.out 2>&1; then
+    echo "  OK   up after down"; PASS=$((PASS+1))
+  else
+    echo "  FAIL up after down"; tail -20 /tmp/migrate_up.out; FAIL=$((FAIL+1))
+  fi
+else
+  echo "  SKIP 未安装 go，无法执行 cmd/migrate 升降回滚演练"
+fi
+
 echo "---- 结论 ----"
 if [ "$FAIL" = "0" ] && [ "$PASS" -gt 0 ]; then
   echo "✅ 演练通过：备份可恢复（$PASS 张关键表行数抽样正常）"

@@ -5,6 +5,7 @@
 package ai
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -51,7 +52,7 @@ func TestSFFailover429FastFail(t *testing.T) {
 	defer srv.Close()
 
 	c := newSFTestClient(srv.URL, 0, 5*time.Second)
-	_, _, err := c.GenerateTextWithUsage([]ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
+	_, _, err := c.GenerateTextWithUsage(context.Background(), []ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
 	if err == nil {
 		t.Fatal("429 应返回错误")
 	}
@@ -73,7 +74,7 @@ func TestSFFailoverTimeout(t *testing.T) {
 
 	c := newSFTestClient(srv.URL, 0, 50*time.Millisecond)
 	start := time.Now()
-	_, _, err := c.GenerateTextWithUsage([]ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
+	_, _, err := c.GenerateTextWithUsage(context.Background(), []ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
 	if err == nil {
 		t.Fatal("超时应返回错误")
 	}
@@ -97,7 +98,7 @@ func TestSFFailoverBalanceExhaustedNoRetry(t *testing.T) {
 
 	// MaxRetries=1：若是 4xx 账户错误应立即跳出，只发 1 次请求
 	c := newSFTestClient(srv.URL, 1, 5*time.Second)
-	_, _, err := c.GenerateTextWithUsage([]ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
+	_, _, err := c.GenerateTextWithUsage(context.Background(), []ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
 	if err == nil {
 		t.Fatal("余额耗尽应返回错误")
 	}
@@ -121,7 +122,7 @@ func TestSFSuccessParsesUsage(t *testing.T) {
 	defer srv.Close()
 
 	c := newSFTestClient(srv.URL, 0, 5*time.Second)
-	reply, usage, err := c.GenerateTextWithUsage([]ChatMessage{{Role: "user", Content: "有四驱吗"}}, 0.5)
+	reply, usage, err := c.GenerateTextWithUsage(context.Background(), []ChatMessage{{Role: "user", Content: "有四驱吗"}}, 0.5)
 	if err != nil || reply != "这款车有四驱。" {
 		t.Fatalf("应成功返回话术，reply=%q err=%v", reply, err)
 	}
@@ -141,7 +142,7 @@ func newTestRouter(names []string, call func(attempt int, provider ModelProvider
 	for _, n := range names {
 		r.models = append(r.models, &ModelState{Provider: ProviderSiliconFlow, ModelName: n, Available: true})
 	}
-	r.callOverride = func(provider ModelProvider, model string, _ []ChatMessage, _ float64, _ uint, _ string) (string, Usage, error) {
+	r.callOverride = func(_ context.Context, provider ModelProvider, model string, _ []ChatMessage, _ float64, _ uint, _ string) (string, Usage, error) {
 		calls = append(calls, model)
 		return call(len(calls), provider, model)
 	}
@@ -226,5 +227,64 @@ func TestRouterSuccessResetsFailCounter(t *testing.T) {
 	}
 	if r.models[0].ConsecutiveFails != 0 || !r.models[0].LastFailTime.IsZero() {
 		t.Fatalf("成功后应重置计数与冷却，实际 fails=%d", r.models[0].ConsecutiveFails)
+	}
+}
+
+// D4 用例一：首个模型永不返回（在 callOverride 里死等 ctx）→ 应在剩余预算内被取消并降级到第二个模型，
+// 总耗时受 budget 约束而非单模型 client 超时。验收"单模型挂死不吃满全链"。
+func TestRouterBudgetCancelsHangingModel(t *testing.T) {
+	var calls []string
+	r := &AIRouter{coolDownSec: 300, budget: 1200 * time.Millisecond}
+	r.models = []*ModelState{
+		{Provider: ProviderSiliconFlow, ModelName: "挂死模型", Available: true},
+		{Provider: ProviderSiliconFlow, ModelName: "健康模型", Available: true},
+	}
+	r.callOverride = func(ctx context.Context, _ ModelProvider, model string, _ []ChatMessage, _ float64, _ uint, _ string) (string, Usage, error) {
+		calls = append(calls, model)
+		if model == "挂死模型" {
+			<-ctx.Done() // 永不主动返回，靠上游预算取消
+			return "", Usage{}, ctx.Err()
+		}
+		return "预算内被顶上", Usage{}, nil
+	}
+	start := time.Now()
+	reply, _, model, _, err := r.GenerateTextWithUsage(routerMessages(), 0.5, 1, "reply")
+	elapsed := time.Since(start)
+	if err != nil || reply != "预算内被顶上" || model != "健康模型" {
+		t.Fatalf("挂死后应降级到健康模型，reply=%q model=%q err=%v", reply, model, err)
+	}
+	if len(calls) != 2 || calls[0] != "挂死模型" || calls[1] != "健康模型" {
+		t.Fatalf("应先挂死模型再健康模型，实际 %v", calls)
+	}
+	// 首个模型用光 ~1.2s 预算被取消后第二个立即成功；应远小于"两个模型各 120s"级别
+	if elapsed > 3*time.Second {
+		t.Fatalf("总耗时应≈budget量级(≤3s)，实际 %v", elapsed)
+	}
+}
+
+// D4 用例二：HTTP 层 ctx 取消——单模型 client.Timeout 故意设很长（10s），但上游只给 200ms 预算，
+// 挂死的 httptest handler 应在 200ms 内被 NewRequestWithContext 取消返回，而非卡满 10s。
+func TestSFContextCancelsHangingHTTPRequest(t *testing.T) {
+	srvDone := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// 永不写响应；测试结束 close(srvDone) 放行，避免 srv.Close() 死等
+		select {
+		case <-r.Context().Done():
+		case <-srvDone:
+		}
+	}))
+	defer func() { close(srvDone); srv.Close() }()
+
+	c := newSFTestClient(srv.URL, 0, 10*time.Second) // client 超时远超 ctx 预算
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, _, err := c.GenerateTextWithUsage(ctx, []ChatMessage{{Role: "user", Content: "你好"}}, 0.5)
+	elapsed := time.Since(start)
+	if err == nil {
+		t.Fatal("ctx 到期应返回错误")
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("应在 ctx 预算内中断（证明 ctx 生效），实际耗时 %v", elapsed)
 	}
 }

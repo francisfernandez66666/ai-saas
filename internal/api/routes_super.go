@@ -1,0 +1,45 @@
+// 平台超管路由（D2a，2026-09-12）
+package api
+
+import (
+	"github.com/gin-gonic/gin"
+
+	"ai-scrm/internal/middleware"
+)
+
+// registerSuper 平台超管后台（仅 super_admin）：租户治理、商业化订单/包、审计、成本、反馈、行业包、素材、协议、白标、监控。
+func registerSuper(v1 *gin.RouterGroup) {
+	super := v1.Group("/super")
+	super.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
+		middleware.MustChangePasswordGuard(), SuperRequired())
+	{
+		super.GET("/tenants", SuperTenantList)
+		super.PUT("/tenants/:id/status", SuperTenantStatus)
+		super.POST("/tenants/:id/grant-trial", SuperGrantTrial)
+		// 商业化 M1/M2/M5
+		super.GET("/orders/pending", SuperPendingOrders)
+		super.POST("/orders/:id/confirm", SuperConfirmOrder)
+		super.GET("/packages", SuperPackageList)
+		super.POST("/packages", SuperPackageCreate)
+		super.PUT("/packages/:id", SuperPackageUpdate)
+		super.DELETE("/packages/:id", SuperPackageDelete)
+		super.GET("/audit-logs", SuperAuditLogs)
+		super.GET("/usage/cost", SuperUsageCost)
+		super.GET("/feedbacks", SuperFeedbackList)
+		super.POST("/feedbacks/resolve", SuperResolveFeedback)
+		// 行业包平台侧：上传验签/列表/启停
+		super.POST("/packs", SuperPackUpload)
+		super.GET("/packs", SuperPackList)
+		super.GET("/materials", SuperMaterialList)
+		super.POST("/materials/:id/review", SuperMaterialReview)
+		super.POST("/materials/:id/evals", SuperMaterialEvals)
+		super.GET("/agreements", SuperAgreementList)
+		super.PUT("/tenants/:id/branding", SuperUpdateBranding)
+		super.GET("/tenants/:id/branding", SuperGetBranding)
+		super.GET("/packs/stats", SuperPackStats)
+		super.PUT("/packs/:id/status", SuperPackStatus)
+		super.PUT("/packs/:id/share", SuperPackShare)
+		// 监控告警（P1-4）
+		super.GET("/monitor/health", SuperMonitorHealth)
+	}
+}

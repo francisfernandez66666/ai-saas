@@ -41,6 +41,8 @@ export default function AppSettings() {
   // 注销相关状态
   const [cancelPwd, setCancelPwd] = useState('') // 注销确认密码
   const [cMsg, setCMsg] = useState('')          // 注销结果提示
+  const [delBusy, setDelBusy] = useState(false)
+  const [dMsg, setDMsg] = useState('')
 
   useEffect(() => {
     // 检查 URL 参数 must=1，首次登录强制改密时展示提示
@@ -119,6 +121,18 @@ export default function AppSettings() {
     setCMsg(j.message || '')
   }
 
+  /**
+   * F13/C2：账号 PII 删除请求。
+   * 与账号注销不同：注销只停用，删除申请到期后匿名化账号侧 PII。
+   */
+  async function requestUserDeletion() {
+    if (!confirm('申请删除你的账号个人信息？提交后将在到期前匿名化，账号注销需另行确认。')) return
+    setDelBusy(true)
+    const j: ApiResp<{ deadline?: string; duplicated?: boolean }> = await AUTH('/api/v1/privacy/deletion-request', { method: 'POST', body: { scope: 'user' } })
+    setDMsg(j.code === 0 ? `已受理${j.data?.deadline ? '，预计 ' + new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''}` : (j.message || '提交失败'))
+    setDelBusy(false)
+  }
+
   // 卡片样式
   const card: React.CSSProperties = { background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)', marginBottom: 16 }
   // 输入框样式
@@ -152,6 +166,14 @@ export default function AppSettings() {
         <label style={labelStyle}>验证码</label><input value={emailCode} onChange={(e) => setEmailCode(e.target.value)} style={inputStyle} />
         <button onClick={bindEmail} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>换绑</button>
         {emMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{emMsg}</p>}
+      </div>
+
+      {/* 个人数据删除申请（F13/C2：登录态所有成员可撤回本人账号 PII） */}
+      <div style={{ ...card, border: '1px solid #ddd6fe' }}>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>个人信息删除</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>用于行使删除权；提交后 15 天内匿名化账号可识别信息，不等同于注销停用。</p>
+        <button disabled={delBusy} onClick={requestUserDeletion} style={{ padding: '9px 16px', borderRadius: 8, border: '1px solid #7c3aed', background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>{delBusy ? '提交中…' : '申请删除账号信息'}</button>
+        {dMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{dMsg}</p>}
       </div>
 
       {/* 企业知识库模块（P1-42：仅管理员展示，成员角色不触发 403） */}

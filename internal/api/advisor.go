@@ -1241,6 +1241,19 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 	// 生成AI回复
 	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, userInput, &strategyOutput, service.DeptChainForUser(currentUserID(c)))
 
+	// 内容安全闸门（C1）：顾问触发的AI回复同样出站过滤；BLOCK 则发退场语并关AI等接管
+	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
+		if action == GateRewrite {
+			aiReply = out
+		} else {
+			aiReply = SafetyHandoffReply()
+			db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+				"mode": "human", "is_human_locked": true, "is_ai_reply_enabled": false,
+			})
+			log.Printf("[顾问] 会话%d 内容安全拦截(AI代答)，已转人工", conversation.ID)
+		}
+	}
+
 	// 保存AI回复消息
 	now := time.Now()
 	aiMsg := model.Message{

@@ -3,7 +3,7 @@
 # test_all.sh —— 自动化测试统一编排入口（能力基建，2026-09-05）
 #
 # 解决的历史欠账：
-#   1. 四套 E2E 脚本共享"改全局开关再恢复"模式，无并发护栏——
+#   1. 五套 E2E 脚本共享"改全局开关再恢复"模式，无并发护栏——
 #      本入口用 flock 文件锁强制单实例，并跑即拒绝（防互相踩配置）；
 #   2. 单测/E2E/前端各自为战，无统一汇总——这里串行编排并输出
 #      PASS/FAIL 总账，任一环节失败 exit=1（CI 可直接消费）。
@@ -14,7 +14,7 @@
 #   ./tools/test_all.sh --unit     # 仅单元测试层（go test -cover + 前端 vitest）
 #   SERVER_PORT=9090 ./tools/test_all.sh   # 指定服务端口（默认 9090）
 #
-# 阶段顺序：单元层 → 构建 → E2E 层（四套） → 汇总。每阶段失败继续跑后续
+# 阶段顺序：单元层 → 构建 → E2E 层（五套） → 汇总。每阶段失败继续跑后续
 #（除非 --failfast），最终以总账定 exit code。
 # ============================================================
 set -u
@@ -35,7 +35,7 @@ acquire_lock() {
   return 0
 }
 if ! acquire_lock; then
-  echo "[test_all] ✗ 已有测试在跑（$LOCK_FILE 被占）——四套 E2E 共享全局开关，禁止并发，请等待其结束。"
+  echo "[test_all] ✗ 已有测试在跑（$LOCK_FILE 被占）——五套 E2E 共享全局开关，禁止并发，请等待其结束。"
   exit 1
 fi
 release_lock() {
@@ -88,13 +88,17 @@ verdict "G-6 防回潮断言" $G6_FAIL
 
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
-go vet ./... && verdict "go vet ./..." $?
-go test -cover ./... >/tmp/test_all_go.log 2>&1 && verdict "go test ./...（覆盖率见下方）" $?
+go vet ./... >/tmp/test_all_vet.log 2>&1
+verdict "go vet ./..." $?
+go test -cover ./... >/tmp/test_all_go.log 2>&1
+verdict "go test ./...（覆盖率见下方）" $?
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
 
 step "单元测试层：前端 vitest"
-( cd frontend-react && npm run test >/tmp/test_all_fe.log 2>&1 ) && verdict "frontend vitest" $? \
-  || { verdict "frontend vitest" $?; tail -20 /tmp/test_all_fe.log; }
+( cd frontend-react && npm run test >/tmp/test_all_fe.log 2>&1 )
+FE_RC=$?
+verdict "frontend vitest" $FE_RC
+if [ "$FE_RC" != "0" ]; then tail -20 /tmp/test_all_fe.log || true; fi
 
 if [ "$MODE" = "unit" ]; then
   echo "==== [test_all] 汇总: PASS=$PASS FAIL=${FAIL}（unit 模式）===="
@@ -103,11 +107,14 @@ fi
 
 # ---------- 阶段二：构建层 ----------
 step "构建层：后端编译 + 前端 build + typecheck"
-go build -o ai-scrm ./cmd/server && verdict "go build ./cmd/server" $?
-( cd frontend-react && npx tsc --noEmit >/tmp/test_all_tsc.log 2>&1 ) && verdict "前端 tsc --noEmit" $?
-( cd frontend-react && npm run build >/tmp/test_all_febuild.log 2>&1 ) && verdict "前端 vite build" $?
+go build -o ai-scrm ./cmd/server >/tmp/test_all_build.log 2>&1
+verdict "go build ./cmd/server" $?
+( cd frontend-react && npx tsc --noEmit >/tmp/test_all_tsc.log 2>&1 )
+verdict "前端 tsc --noEmit" $?
+( cd frontend-react && npm run build >/tmp/test_all_febuild.log 2>&1 )
+verdict "前端 vite build" $?
 
-# ---------- 阶段三：E2E 层（四套断言脚本） ----------
+# ---------- 阶段三：E2E 层（五套断言脚本） ----------
 step "E2E 层：起服务（端口 ${PORT}）"
 ./stop.sh >/dev/null 2>&1 || true
 # 兜底清端口：stop.sh 依赖 .pid 文件，nohup 直启未写时会残留旧进程占端口
@@ -119,8 +126,14 @@ for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$P
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（35 项）"
+step "E2E 层：smoke.sh（83 项）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
+
+step "E2E 层：smoke_perm.sh（角色权限矩阵 17 项）"
+./tools/smoke_perm.sh "$PORT" >/tmp/test_all_perm.log 2>&1; verdict "smoke_perm.sh" $?; tail -2 /tmp/test_all_perm.log
+
+step "E2E 层：smoke_chat_identity.sh（聊天身份缺口 9 项）"
+./tools/smoke_chat_identity.sh "$PORT" >/tmp/test_all_identity.log 2>&1; verdict "smoke_chat_identity.sh" $?; tail -2 /tmp/test_all_identity.log
 
 step "E2E 层：smoke_org.sh（11 项）"
 ./tools/smoke_org.sh "$PORT" >/tmp/test_all_org.log 2>&1; verdict "smoke_org.sh" $?; tail -2 /tmp/test_all_org.log
@@ -128,8 +141,11 @@ step "E2E 层：smoke_org.sh（11 项）"
 step "E2E 层：smoke_saas.sh（注册漏斗 8 项）"
 ./tools/smoke_saas.sh "$PORT" >/tmp/test_all_saas.log 2>&1; verdict "smoke_saas.sh" $?; tail -2 /tmp/test_all_saas.log
 
+step "E2E 层：smoke_channel.sh（企微/公众号通道 E2E 32 项，自建 9091+mockwx）"
+./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
+
 if [ "$MODE" != "fast" ]; then
-  step "E2E 层：uat.sh（59 断言全场景，较长）"
+  step "E2E 层：uat.sh（67 断言全场景，较长）"
   # uat 含真实 AI 调用与长时间等待，默认纳入 full 模式；CI 建议 --fast
   ./tools/uat.sh "$PORT" >/tmp/test_all_uat.log 2>&1; verdict "uat.sh" $?; tail -3 /tmp/test_all_uat.log
 else

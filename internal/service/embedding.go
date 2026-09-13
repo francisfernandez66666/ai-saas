@@ -24,6 +24,8 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // EmbeddingClient 文本向量化接口（可替换实现：本地模型/远端服务）
@@ -66,6 +68,8 @@ type embeddingResponse struct {
 // 未配置时 DefaultEmbeddingClient 为空，SearchTenantKnowledge 自动回退纯关键词检索
 func InitEmbeddingClient() {
 	cfg := config.GlobalConfig.AI
+	// D3：即使 embedding 端点未配置，也尽量让 pgvector schema 就位；向量列存在但不写不会破坏主链路。
+	EnsurePgvector()
 	if cfg.EmbeddingURL == "" {
 		DefaultEmbeddingClient = nil
 		log.Println("[向量检索] 未配置 EMBEDDING_API_URL，回退纯关键词检索")
@@ -78,24 +82,26 @@ func InitEmbeddingClient() {
 		http:  &http.Client{Timeout: 30 * time.Second},
 	}
 	log.Printf("[向量检索] 已启用，端点: %s model=%s", cfg.EmbeddingURL, cfg.EmbeddingModel)
-	// pgvector 补充（P1-补）：启用扩展 + 定长向量列 + 索引（best-effort，缺失则回退）
-	EnsurePgvector()
-	// 启动期回填：历史未向量化片段（embedding IS NULL）批量补齐，使其也能走向量索引
+	// 启动期回填：历史未向量化片段（embedding_json 空或 embedding IS NULL）批量补齐，使其也能走向量索引
 	BackfillEmbeddings()
 }
 
-// BackfillEmbeddings 后台分批回填历史片段的向量列（embedding IS NULL）
+// BackfillEmbeddings 后台分批回填历史片段的向量列（embedding_json 空或 pgvector 列为空）
 // 限流避免打爆 Embedding 端点（每条20ms间隔）；租户隔离按行天然成立（逐行更新）
 // 失败单条跳过，整体不阻断
 func BackfillEmbeddings() {
-	if !pgvectorEnabled || DefaultEmbeddingClient == nil {
+	if DefaultEmbeddingClient == nil || !kbVectorSearchEnabled() {
 		return
 	}
 	go func() {
 		defer func() { _ = recover() }()
 		for {
 			var batch []model.KnowledgeFragment
-			db.DB.Where("embedding IS NULL").Order("id ASC").Limit(50).Find(&batch)
+			q := db.DB.Where("COALESCE(embedding_json, '') = ''")
+			if pgvectorEnabled {
+				q = q.Or("embedding IS NULL")
+			}
+			q.Order("id ASC").Limit(50).Find(&batch)
 			if len(batch) == 0 {
 				log.Println("[向量检索] 历史向量回填完成")
 				return
@@ -109,10 +115,17 @@ func BackfillEmbeddings() {
 					emb = []float32{}
 				}
 				if b, err := json.Marshal(emb); err == nil {
-					vec := toVectorLiteral(emb)
-					if err := db.DB.Exec("UPDATE knowledge_fragments SET embedding_json = ?, embedding = ?::vector WHERE id = ?",
-						string(b), vec, f.ID).Error; err != nil {
-						log.Printf("[向量检索] 回填失败 id=%d: %v", f.ID, err)
+					if pgvectorEnabled {
+						vec := toVectorLiteral(emb)
+						if err := db.DB.Exec("UPDATE knowledge_fragments SET embedding_json = ?, embedding = ?::vector WHERE id = ?",
+							string(b), vec, f.ID).Error; err != nil {
+							log.Printf("[向量检索] 回填失败 id=%d: %v", f.ID, err)
+						}
+					} else {
+						if err := db.DB.Exec("UPDATE knowledge_fragments SET embedding_json = ? WHERE id = ?",
+							string(b), f.ID).Error; err != nil {
+							log.Printf("[向量检索] 回填失败 id=%d: %v", f.ID, err)
+						}
 					}
 				}
 				time.Sleep(20 * time.Millisecond) // 限流
@@ -124,12 +137,23 @@ func BackfillEmbeddings() {
 // pgvectorEnabled 标记 pgvector 扩展是否就绪（决定 KB 检索走 SQL 向量索引还是 Go 内余弦）
 var pgvectorEnabled bool
 
+// PgvectorEnabled 对外暴露 pgvector 就绪状态（API 列表/诊断用）
+func PgvectorEnabled() bool {
+	return pgvectorEnabled
+}
+
+// kbVectorSearchEnabled 读取 D3 热开关；单测或未初始化配置时默认开，保持 fail-open 到可用向量路径。
+func kbVectorSearchEnabled() bool {
+	return SafeCfgBool("kb_vector_search", true)
+}
+
 // EnsurePgvector 幂等启用 pgvector：建扩展 + knowledge_fragments.embedding 定长列 + HNSW 索引
 // 任意步骤失败均静默降级（pgvectorEnabled=false → 检索回退关键词+内存余弦，不影响主链路）
 func EnsurePgvector() {
 	if db.DB == nil {
 		return
 	}
+	pgvectorEnabled = false
 	if err := db.DB.Exec("CREATE EXTENSION IF NOT EXISTS vector").Error; err != nil {
 		log.Printf("[向量检索] pgvector 扩展不可用（回退关键词+内存余弦）: %v", err)
 		return
@@ -137,6 +161,26 @@ func EnsurePgvector() {
 	dim := config.GlobalConfig.AI.EmbeddingDim
 	if dim <= 0 {
 		dim = 1536
+	}
+	// 维度不一致时宁可回退旧路径，不能让 toVectorLiteral 往错误维度的列里写，否则拖垮检索/回填。
+	var colType string
+	db.DB.Raw(`
+		SELECT coalesce(format_type(a.atttypid, a.atttypmod), '')
+		FROM pg_attribute a
+		JOIN pg_class c ON c.oid = a.attrelid
+		WHERE c.relname = 'knowledge_fragments'
+		  AND a.attname = 'embedding'
+		  AND a.attnum > 0`).Scan(&colType)
+	if colType != "" {
+		var got int
+		if !strings.HasPrefix(colType, "vector(") {
+			log.Printf("[向量检索] embedding 列类型不是 vector（%s），回退关键词+内存余弦", colType)
+			return
+		}
+		if _, err := fmt.Sscanf(colType, "vector(%d)", &got); err != nil || got != dim {
+			log.Printf("[向量检索] embedding 列维度 %d 与 EMBEDDING_DIM %d 不一致，回退关键词+内存余弦", got, dim)
+			return
+		}
 	}
 	if err := db.DB.Exec(fmt.Sprintf("ALTER TABLE knowledge_fragments ADD COLUMN IF NOT EXISTS embedding vector(%d)", dim)).Error; err != nil {
 		log.Printf("[向量检索] 添加 embedding 列失败（回退）: %v", err)
@@ -148,6 +192,40 @@ func EnsurePgvector() {
 	}
 	pgvectorEnabled = true
 	log.Printf("[向量检索] pgvector 已启用（dim=%d），KB 检索走 SQL 向量索引", dim)
+}
+
+// FillFragmentVectorStatus 给管理端补"是否已向量化"状态，避免把大 embedding_json 当状态列返回。
+// 说明：gdb 由调用方传入（通常带租户 scope），这里仅按 ID 回读状态，不扩大可见范围。
+func FillFragmentVectorStatus(gdb *gorm.DB, frags []model.KnowledgeFragment) {
+	if gdb == nil || len(frags) == 0 {
+		return
+	}
+	ids := make([]uint, 0, len(frags))
+	for _, f := range frags {
+		if f.ID != 0 {
+			ids = append(ids, f.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	type row struct {
+		ID    uint
+		Ready bool
+	}
+	var rows []row
+	if pgvectorEnabled {
+		gdb.Raw(`SELECT id, (COALESCE(embedding_json, '') <> '' OR embedding IS NOT NULL) AS ready FROM knowledge_fragments WHERE id IN ?`, ids).Scan(&rows)
+	} else {
+		gdb.Raw(`SELECT id, COALESCE(embedding_json, '') <> '' AS ready FROM knowledge_fragments WHERE id IN ?`, ids).Scan(&rows)
+	}
+	m := make(map[uint]bool, len(rows))
+	for _, r := range rows {
+		m[r.ID] = r.Ready
+	}
+	for i := range frags {
+		frags[i].Vectorized = m[frags[i].ID]
+	}
 }
 
 // toVectorLiteral 将向量格式化为 pgvector 文本字面量 [..]，并按配置维度裁剪/补零对齐

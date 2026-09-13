@@ -145,6 +145,8 @@ func CleanupTenant(t *testing.T, id uint) {
 		"kb_feedback_materials", "reward_claims", "usage_ledger",
 		"cdp_profiles", "cdp_tag_entities", "cdp_tag_assignments",
 		"tenant_pack_bindings", "user_preferences",
+		"reply_attributions", "pack_stats", "deletion_requests",
+		"tenant_webhooks", "webhook_deliveries",
 	}
 	for _, tb := range tenantChildTables {
 		if err := db.DB.Exec("DELETE FROM "+tb+" WHERE tenant_id = ?", id).Error; err != nil {

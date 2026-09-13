@@ -226,7 +226,7 @@ type TemplateListRequest struct {
 // CreateTemplateRequest 创建话术模板请求
 type CreateTemplateRequest struct {
 	ID               string   `json:"id" binding:"required"`              // 注释：主键ID
-	AnchorType       int      `json:"anchor_type" binding:"required"`     // 注释：锚类型
+	AnchorType       int      `json:"anchor_type"`                        // 注释：锚类型（0=不抛，也是合法锚位）
 	SubType          string   `json:"sub_type"`                           // 注释：子类型
 	Name             string   `json:"name" binding:"required"`            // 注释：名称
 	Category         string   `json:"category"`                           // 注释：分类

@@ -263,15 +263,15 @@ func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.K
 	if len(query) == 0 {
 		return nil
 	}
-	// 查询向量（仅一次）：未启用向量客户端则为空 → 跳过语义分量
+	// 查询向量（仅一次）：D3 热开关关闭或未配置向量客户端则跳过语义分量。
 	var queryEmb []float32
-	if DefaultEmbeddingClient != nil {
+	if DefaultEmbeddingClient != nil && kbVectorSearchEnabled() {
 		queryEmb = DefaultEmbeddingClient.Embed(userInput)
 	}
 
 	var rows []model.KnowledgeFragment
 	if pgvectorEnabled && len(queryEmb) > 0 {
-		// P1-补 pgvector：SQL 向量近邻召回候选集（租户隔离 + 已向量化），再走混合打分
+		// D3 pgvector：SQL 向量近邻召回候选集（租户隔离 + 已向量化），再走混合打分
 		qvec := toVectorLiteral(queryEmb)
 		db.DB.Raw(`SELECT * FROM knowledge_fragments WHERE tenant_id = ? AND status = 1 AND category = ? AND embedding IS NOT NULL ORDER BY embedding <=> ?::vector LIMIT ?`,
 			tenantID, "企业知识", qvec, limit*8+50).Scan(&rows)

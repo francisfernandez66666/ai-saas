@@ -5,6 +5,7 @@ package ai
 
 import (
 	"bytes"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -105,7 +106,8 @@ func (g *GatewayClient) signTenant(tenantID uint) string {
 
 // GenerateTextWithUsage 经网关转发并透传 token 用量（与 SiliconFlow/GLM 客户端对齐签名）
 // tenantID 用于网关侧还原租户并做三桶计量；stage 透传供网关侧 stage_models 覆盖。
-func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
+// D4：ctx 贯穿，转发挂死可被上游预算取消。
+func (g *GatewayClient) GenerateTextWithUsage(ctx context.Context, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, Usage, error) {
 	model := g.Model
 	if model == "" {
 		model = "default"
@@ -121,7 +123,7 @@ func (g *GatewayClient) GenerateTextWithUsage(messages []ChatMessage, temperatur
 		return "", Usage{}, fmt.Errorf("网关请求序列化失败: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, g.BaseURL, bytes.NewReader(raw))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.BaseURL, bytes.NewReader(raw))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("网关请求构建失败: %w", err)
 	}

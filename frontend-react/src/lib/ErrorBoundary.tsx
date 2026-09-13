@@ -4,6 +4,7 @@
  * 生产环境展示可重试兜底 UI，开发环境打印错误详情到控制台
  */
 import React from 'react'
+import { reportClientError } from './errorReport'
 
 /**
  * 顶层错误边界：捕获渲染期异常，避免整页白屏（生产环境给出可重试兜底）
@@ -27,6 +28,7 @@ export default class ErrorBoundary extends React.Component<
   // 实例方法：报错时打印到控制台，方便排查
   componentDidCatch(error: Error, info: React.ErrorInfo) {
     console.error('[ErrorBoundary] 捕获到渲染异常:', error, info)
+    reportClientError(error, window.location.pathname, info.componentStack || '')
   }
 
   // 渲染逻辑：出错展示可重试页面，否则正常渲染子节点
