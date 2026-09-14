@@ -9,6 +9,7 @@ import (
 	"ai-scrm/internal/config_center"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	"fmt"
 	"log"
@@ -32,9 +33,9 @@ func GetSystemConfigs(c *gin.Context) {
 
 	var configs []model.SystemConfig
 	if category != "" {
-		configs = service.DefaultSystemConfigService.GetByCategory(category)
+		configs = runtimecfg.DefaultSystemConfigService.GetByCategory(category)
 	} else {
-		configs = service.DefaultSystemConfigService.GetAll()
+		configs = runtimecfg.DefaultSystemConfigService.GetAll()
 	}
 
 	RespOK(c, "success", configs)
@@ -45,7 +46,7 @@ func GetSystemConfigs(c *gin.Context) {
 // Body: [{key, value}, ...]
 // 更新后自动热加载到内存，无需重启服务
 func BatchUpdateSystemConfig(c *gin.Context) {
-	var items []service.ConfigUpdateItem
+	var items []runtimecfg.ConfigUpdateItem
 	if err := c.ShouldBindJSON(&items); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
 		return
@@ -64,10 +65,10 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 	roleV, _ := c.Get("role")
 	roleStr, _ := roleV.(string)
 	isSuper := roleStr == model.RoleSuperAdmin
-	platform := []service.ConfigUpdateItem{}
-	tenant := []service.ConfigUpdateItem{}
+	platform := []runtimecfg.ConfigUpdateItem{}
+	tenant := []runtimecfg.ConfigUpdateItem{}
 	for _, it := range items {
-		if service.PlatformLevelKeys[it.Key] {
+		if runtimecfg.PlatformLevelKeys[it.Key] {
 			platform = append(platform, it)
 		} else {
 			tenant = append(tenant, it)
@@ -85,13 +86,13 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 	// 批量更新DB + 热加载内存
 	// P2 租户化：租户管理员改参数写入 (tenant_id,key) 覆盖层，不污染系统默认(0)
 	// super_admin 未显式指定租户时 tid=默认租户（中间件已裁决），显式指定则写对应租户
-	if err := service.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), tenant); err != nil {
+	if err := runtimecfg.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), tenant); err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
 		return
 	}
 	// 平台键走系统默认层（BatchUpdate 内部含 Reload 热加载）
 	if len(platform) > 0 {
-		if err := service.DefaultSystemConfigService.BatchUpdate(platform); err != nil {
+		if err := runtimecfg.DefaultSystemConfigService.BatchUpdate(platform); err != nil {
 			RespErr(c, http.StatusInternalServerError, 500, "平台参数更新失败: "+err.Error())
 			return
 		}
@@ -127,7 +128,7 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 // POST /api/v1/admin/config/reset
 // 会将所有配置项的Value恢复为DefaultValue
 func ResetSystemConfig(c *gin.Context) {
-	if err := service.DefaultSystemConfigService.ResetAll(); err != nil {
+	if err := runtimecfg.DefaultSystemConfigService.ResetAll(); err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "重置失败: "+err.Error())
 		return
 	}
@@ -145,9 +146,10 @@ func ResetSystemConfig(c *gin.Context) {
 // 场景：用户反复反馈"后台什么参数都没有"，ensureDefaults幂等逻辑在脏DB下可能失效
 // 修复方案：不管有没有旧数据，一律删除重建，确保配置一定存在
 // ============================================================
+// ForceInitSystemConfig 强制初始化系统配置单例。
 func ForceInitSystemConfig(c *gin.Context) {
 	// 调用ForceResetDefaults：删除旧数据 + 重新写入默认配置 + 热加载
-	if err := service.DefaultSystemConfigService.ForceResetDefaults(); err != nil {
+	if err := runtimecfg.DefaultSystemConfigService.ForceResetDefaults(); err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "强制初始化失败: "+err.Error())
 		return
 	}
@@ -155,7 +157,7 @@ func ForceInitSystemConfig(c *gin.Context) {
 	// K7修复(2026-08-27)：跨实例广播配置变更
 	configcenter.BroadcastReload(db.EffectiveTenantIDFromGin(c))
 
-	RespOK(c, "默认配置强制初始化成功", len(service.DefaultConfigs))
+	RespOK(c, "默认配置强制初始化成功", len(runtimecfg.DefaultConfigs))
 }
 
 // ============================================================

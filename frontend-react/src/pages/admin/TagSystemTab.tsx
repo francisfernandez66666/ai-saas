@@ -64,6 +64,7 @@ const TAG_WEIGHT_ALL_FIELDS: FieldSpec[] = [
   { key: 'status', label: '状态', type: 'number' },
 ]
 
+/** 标签定义维护 Tab。 */
 function TagTab({ categoryOptions }: { categoryOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/tags"
@@ -100,6 +101,7 @@ function TagTab({ categoryOptions }: { categoryOptions: Option[] }) {
   />
 }
 
+/** 标签规则维护 Tab。 */
 function TagRuleTab({ tagOptions }: { tagOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/tag-rules"
@@ -130,6 +132,7 @@ function TagRuleTab({ tagOptions }: { tagOptions: Option[] }) {
   />
 }
 
+/** 标签权重映射维护 Tab。 */
 function TagWeightTab({ tagOptions }: { tagOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/tag-weights"
@@ -163,6 +166,7 @@ function TagWeightTab({ tagOptions }: { tagOptions: Option[] }) {
   />
 }
 
+/** 标签体系 Tab：维护标签、规则、权重与 TTL。 */
 export function TagSystemTab() {
   const [tab, setTab] = useState('tags')
   const [tagOptions, setTagOptions] = useState<Option[]>([])

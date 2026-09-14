@@ -1,7 +1,12 @@
 // 收银台API：商业化收银台，含下单/支付回调/退款/发票等接口。
 package api
 
+import "ai-scrm/internal/billing"
+
+import "ai-scrm/internal/notify"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"errors"
 	"fmt"
 	"log"
@@ -12,7 +17,6 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -39,6 +43,7 @@ type createOrderReq struct {
 }
 
 // CreateBillingOrder POST /api/v1/billing/orders
+// CreateBillingOrder 为指定商业包创建支付订单。
 func CreateBillingOrder(c *gin.Context) {
 	var req createOrderReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -57,7 +62,7 @@ func CreateBillingOrder(c *gin.Context) {
 		return
 	}
 
-	order, err := service.CreateOrderForPackage(tid, &pkg)
+	order, err := billing.CreateOrderForPackage(tid, &pkg)
 	if err != nil {
 		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
@@ -138,7 +143,7 @@ func MockPayOrder(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, "生产环境已禁用模拟支付")
 		return
 	}
-	if service.GetPayMode() != "mock" {
+	if billing.GetPayMode() != "mock" {
 		RespErr(c, http.StatusForbidden, 403, "非模拟模式禁止模拟支付")
 		return
 	}
@@ -200,7 +205,7 @@ func ManualConfirmPaid(c *gin.Context) {
 	var tName string
 	db.DB.Model(&model.Tenant{}).Select("name").Where("id = ?", tid).Scan(&tName)
 	writeOrderAudit(c, tid, "order_manual_confirm_critical", &order)
-	service.NotifyManualConfirmPaid(order.OrderNo, tName, order.AmountCents)
+	notify.NotifyManualConfirmPaid(order.OrderNo, tName, order.AmountCents)
 
 	order.ManualConfirm = true
 	RespOK(c, "已提交，平台核实收款后将自动开通（通常10分钟内）", order)
@@ -271,12 +276,12 @@ func SuperConfirmOrder(c *gin.Context) {
 // R5 修复(2026-09-11)：manual 通道遇超时关单时走"迟到到账复活"——真实银行/渠道到账
 // 慢于 24h 关单属正常业务场景，此前该单钱货两失且无人工补救入口（mock 通道在 Reopen 内拒）
 func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) (bool, error) {
-	fresh, confirmed, err := service.MarkOrderPaid(order.ID, channel)
+	fresh, confirmed, err := billing.MarkOrderPaid(order.ID, channel)
 	if err != nil {
 		return false, err
 	}
 	if !confirmed && channel == "manual" {
-		if reopened, ok, rerr := service.ReopenClosedOrderPaid(order.ID, channel); rerr == nil && ok {
+		if reopened, ok, rerr := billing.ReopenClosedOrderPaid(order.ID, channel); rerr == nil && ok {
 			fresh, confirmed = reopened, true
 		}
 	}
@@ -286,7 +291,7 @@ func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) 
 	if fresh.TenantID == nil {
 		return true, fmt.Errorf("订单%d 无租户归属，无法发放", fresh.ID)
 	}
-	if err := service.GrantOrderEntitlement(nil, fresh); err != nil {
+	if err := billing.GrantOrderEntitlement(nil, fresh); err != nil {
 		// 发放失败必须显式暴露：钱已收权益未发，超管需看到错误重试
 		log.Printf("[Billing][ERROR] 订单%s 已到账但发放失败: %v", fresh.OrderNo, err)
 		return true, fmt.Errorf("权益发放失败请联系平台核查: %w", err)
@@ -296,7 +301,7 @@ func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) 
 		action = "order_paid_mock"
 	}
 	writeOrderAudit(c, *fresh.TenantID, action, fresh)
-	service.PublishPaymentEvent(fresh)
+	billing.PublishPaymentEvent(fresh)
 	return true, nil
 }
 
@@ -325,13 +330,13 @@ func BillingWebhook(c *gin.Context) {
 	}
 	// 网关签名密钥（与 CreatePayment 对称）
 	key := ""
-	if service.DefaultSystemConfigService != nil {
-		key = service.DefaultSystemConfigService.GetString("pay_gateway_key", "")
+	if runtimecfg.DefaultSystemConfigService != nil {
+		key = runtimecfg.DefaultSystemConfigService.GetString("pay_gateway_key", "")
 	}
 	if key == "" {
 		key = os.Getenv("PAY_GATEWAY_KEY")
 	}
-	if !service.VerifyGatewaySign(key, orderNo, cb.TradeStatus, cb.Sign) {
+	if !billing.VerifyGatewaySign(key, orderNo, cb.TradeStatus, cb.Sign) {
 		RespErr(c, http.StatusForbidden, 403, "签名校验失败")
 		return
 	}
@@ -339,7 +344,7 @@ func BillingWebhook(c *gin.Context) {
 		RespOK(c, "非成功状态，忽略", nil)
 		return
 	}
-	order, flowed, err := service.ConfirmOrderByChannel(orderNo, channel)
+	order, flowed, err := billing.ConfirmOrderByChannel(orderNo, channel)
 	if err != nil {
 		RespErr(c, http.StatusNotFound, 404, err.Error())
 		return
@@ -360,10 +365,10 @@ func RefundOrder(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
-	o, flowed, err := service.MarkOrderRefunded(order.ID)
+	o, flowed, err := billing.MarkOrderRefunded(order.ID)
 	if err != nil {
 		// 已全部消耗无剩余可退：409 明确拒绝而非 500（退款语义对齐 2026-09-08）
-		if errors.Is(err, service.ErrRefundNoRemaining) {
+		if errors.Is(err, billing.ErrRefundNoRemaining) {
 			RespErr(c, http.StatusConflict, int(CodeBizErr), err.Error())
 			return
 		}
@@ -393,7 +398,7 @@ func RequestInvoice(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
-	o, err := service.RequestInvoice(order.ID)
+	o, err := billing.RequestInvoice(order.ID)
 	if err != nil {
 		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return

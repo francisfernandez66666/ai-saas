@@ -13,6 +13,7 @@ export type UseCrudOptions = {
   parseList?: (json: any) => { rows: CrudRow[]; total: number }
 }
 
+/** 默认列表响应解析器，兼容 rows/data 两类后端分页结构。 */
 function defaultParseList(json: any): { rows: CrudRow[]; total: number } {
   const data = json?.data
   if (Array.isArray(data)) return { rows: data, total: data.length }
@@ -20,6 +21,7 @@ function defaultParseList(json: any): { rows: CrudRow[]; total: number } {
   return { rows, total: Number(data?.total ?? rows.length) }
 }
 
+/** 给列表接口拼接页码、分页大小和筛选条件。 */
 function withQuery(base: string, page: number, pageSize: number, filters: Record<string, any>) {
   const q = new URLSearchParams()
   if (page > 1 || filters.page === undefined) q.set('page', String(page))
@@ -31,6 +33,7 @@ function withQuery(base: string, page: number, pageSize: number, filters: Record
   return base + joiner + q
 }
 
+/** 通用 CRUD Hook：管理列表、分页、筛选、表单和增删改查请求。 */
 export function useCrud(base: string, opts: UseCrudOptions = {}) {
   const { pageSize: initialPageSize = 20, initialFilters = {}, autoLoad = true } = opts
   const parseList = opts.parseList || defaultParseList

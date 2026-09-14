@@ -34,6 +34,7 @@ publishConversationMsg 发布对话消息事件
   - 红线禁止由行为硬推态度，必须基于 NLP 语义分析
   - 对话事件同时进入数据飞轮（脱敏在 Collect 内完成）
 */
+// publishConversationMsg 向会话相关连接发布实时消息事件。
 func publishConversationMsg(tenantID uint, customerID uint, route, emotion string) {
 	// 发布到消息队列，供下游消费者处理
 	// 无 gin 上下文可用的后台 helper：trace 缺失容忍（P2-4 主路径已在有 c 的调用点串联）

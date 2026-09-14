@@ -120,6 +120,7 @@ func sendOne(ctx context.Context, ob *model.ChannelOutbound) SendResult {
 	return res
 }
 
+// truncateErr 截断错误文本，避免出站队列记录超长异常。
 func truncateErr(err error) string {
 	if err == nil {
 		return ""

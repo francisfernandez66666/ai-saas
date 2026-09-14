@@ -9,6 +9,7 @@ import (
 	"ai-scrm/internal/strategytypes"
 )
 
+// TestStrategyPromptNoPolitePositiveExamples 覆盖 StrategyPromptNoPolitePositiveExamples 相关行为与边界。
 func TestStrategyPromptNoPolitePositiveExamples(t *testing.T) {
 	// 促到店-对比锚：原「您可以到店来看看」应为「你可以…」
 	pCompare := BuildStrategyPrompt(&strategytypes.StrategyOutput{FinalAnchor: strategytypes.AnchorCompare},

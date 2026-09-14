@@ -18,6 +18,7 @@ const ANCHOR_OPTS: FieldSpec['options'] = [
 const STATUS_OPTS = [{ label: '启用', value: 1 }, { label: '停用', value: 0 }]
 const ANCHOR_NAMES = ['不抛', '同类/场景', '拆解', '对比', '损失', '稀缺', '代价自担']
 
+/** 把锚点编号转换为策略中文名称。 */
 function anchorLabel(v: number) {
   return ANCHOR_NAMES[v] ?? String(v ?? '-')
 }
@@ -51,10 +52,12 @@ type PackTemplateStat = {
   avg_eval_score?: number | null
 }
 
+/** 格式化比例值为百分比文本。 */
 function formatPercent(v: number) {
   return `${(Number(v || 0) * 100).toFixed(1)}%`
 }
 
+/** 策略模板效果单元格：展示钩子、留资与评分指标。 */
 function PackEffectCell({ row, stats }: { row: CrudRow; stats: Record<string, PackTemplateStat> }) {
   const stat = stats[String(row.id)]
   if (!stat || Number(stat.sample_count || 0) <= 0) return <span className="text-xs text-gray-400">-</span>
@@ -67,6 +70,7 @@ function PackEffectCell({ row, stats }: { row: CrudRow; stats: Record<string, Pa
   )
 }
 
+/** 策略模板 Tab：查看和维护话术/锚点模板。 */
 export function StrategyTemplateTab() {
   const [packStats, setPackStats] = useState<Record<string, PackTemplateStat>>({})
 
@@ -147,6 +151,7 @@ type TestOutput = {
 
 type CustomerOption = { label: string; value: number }
 
+/** 策略测试 Tab：模拟客户输入并查看策略推荐结果。 */
 export function StrategyTestTab() {
   const [customers, setCustomers] = useState<CustomerOption[]>([])
   const [form, setForm] = useState({

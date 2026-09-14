@@ -21,6 +21,7 @@ type ErrTokenFailed struct {
 	Msg  string
 }
 
+// Error 返回 access_token 获取失败的稳定错误文本。
 func (e *ErrTokenFailed) Error() string {
 	return fmt.Sprintf("换取 access_token 失败: code=%d msg=%s", e.Code, e.Msg)
 }
@@ -113,6 +114,7 @@ func (tm *TokenManager) FetchMPWechatToken(ctx context.Context, baseURL, appid, 
 	return tm.doToken(ctx, u)
 }
 
+// doToken 请求通道 access_token 并刷新缓存。
 func (tm *TokenManager) doToken(ctx context.Context, u string) (string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {

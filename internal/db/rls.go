@@ -1,5 +1,5 @@
-// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
-package service
+// Package db 承载连接池、迁移、租户查询作用域与行级安全策略。
+package db
 
 // ============================================================
 // 多租户行级隔离 RLS（P2 RLS，2026-08-29）
@@ -17,7 +17,6 @@ import (
 	"log"
 
 	"ai-scrm/config"
-	"ai-scrm/internal/db"
 	"gorm.io/gorm"
 )
 
@@ -92,10 +91,10 @@ var rlsTenantTables = []string{
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
 // 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
 // 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
-// service.WithTenantRLS(tid, fn) 或 SET LOCAL app.current_tenant 激活后即被 DB 强制收敛。
+// db.WithTenantRLS(tid, fn) 或 SET LOCAL app.current_tenant 激活后即被 DB 强制收敛。
 // 采用休眠式设计：默认 app.current_tenant 未设置时策略恒真，零行为变更
 func EnableRLS() {
-	if db.DB == nil {
+	if DB == nil {
 		return
 	}
 	if !config.GlobalConfig.RLS.Enabled {
@@ -105,7 +104,7 @@ func EnableRLS() {
 	// P1-5 修复(2026-09-09)：启动时对清单与 information_schema.tables 比对，
 	// 表名不匹配即 Fatal（防漂移：新增/改名核心表后 RLS 静默漏保护）
 	var exist []string
-	db.DB.Raw("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()").Scan(&exist)
+	DB.Raw("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()").Scan(&exist)
 	existSet := make(map[string]bool, len(exist))
 	for _, t := range exist {
 		existSet[t] = true
@@ -123,17 +122,17 @@ func EnableRLS() {
 	failed := 0
 	for _, t := range rlsTenantTables {
 		// FORCE：即便表 owner 也受策略约束；因 NULL 旁路，当前不生效，仅作激活准备
-		if err := db.DB.Exec(fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY", t)).Error; err != nil {
+		if err := DB.Exec(fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY", t)).Error; err != nil {
 			log.Printf("[RLS] 表 %s FORCE 失败: %v", t, err)
 			failed++
 		}
-		db.DB.Exec(fmt.Sprintf("DROP POLICY IF EXISTS tenant_isolation ON %s", t))
+		DB.Exec(fmt.Sprintf("DROP POLICY IF EXISTS tenant_isolation ON %s", t))
 		policy := fmt.Sprintf(
 			`CREATE POLICY tenant_isolation ON %s FOR ALL USING (
 				tenant_id::text = current_setting('app.current_tenant', true)
 				OR current_setting('app.current_tenant', true) IS NULL
 			)`, t)
-		if err := db.DB.Exec(policy).Error; err != nil {
+		if err := DB.Exec(policy).Error; err != nil {
 			log.Printf("[RLS] 表 %s 策略创建失败: %v", t, err)
 			failed++
 		}
@@ -157,11 +156,13 @@ func SetTenantRLS(d *gorm.DB, tenantID uint) *gorm.DB {
 // 示例：
 //
 //	var rows []model.Customer
-//	err := service.WithTenantRLS(tid, func(tx *gorm.DB) error {
+//	err := db.WithTenantRLS(tid, func(tx *gorm.DB) error {
 //	    return tx.Where("phone = ?", phone).Find(&rows).Error
 //	})
+//
+// WithTenantRLS 在事务内激活租户行级安全并执行回调。
 func WithTenantRLS(tenantID uint, fn func(tx *gorm.DB) error) error {
-	return db.DB.Transaction(func(tx *gorm.DB) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec(fmt.Sprintf("SET LOCAL app.current_tenant = '%d'", tenantID)).Error; err != nil {
 			return err
 		}

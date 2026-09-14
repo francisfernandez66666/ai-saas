@@ -105,6 +105,7 @@ func (r *Runner) Info() []map[string]interface{} {
 	return result
 }
 
+// runTask 调度并执行单个定时任务。
 func (r *Runner) runTask(t *Task) {
 	defer r.wg.Done()
 
@@ -131,6 +132,7 @@ func (r *Runner) runTask(t *Task) {
 	}
 }
 
+// execute 在任务锁保护下执行任务体。
 func (r *Runner) execute(t *Task) {
 	defer func() {
 		if rec := recover(); rec != nil {

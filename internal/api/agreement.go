@@ -40,6 +40,7 @@ RecordAgreementSignatures 注册即同意协议
 
 设计说明：注册即视为同意，无需用户主动签署，符合产品业务逻辑。
 */
+// RecordAgreementSignatures 记录用户协议签署事实。
 func RecordAgreementSignatures(tenantID uint, userID uint) {
 	now := time.Now()
 	// 协议类型：user（用户协议）、privacy（隐私政策）
@@ -80,6 +81,7 @@ GET /api/v1/super/agreements
 
 设计说明：限制最多返回 500 条，避免大数据量查询性能问题。
 */
+// SuperAgreementList 平台超管查看协议签署记录。
 func SuperAgreementList(c *gin.Context) {
 	atype := c.Query("type") // user|privacy 可空
 	// 超管专属(SuperRequired 守卫)跨租户查看协议台账：全平台语义（rls_scope_test 已验证）

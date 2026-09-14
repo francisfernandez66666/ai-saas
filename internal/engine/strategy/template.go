@@ -4,7 +4,7 @@ package strategy
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/pkg/utils"
 	"fmt"
 	"strings"
@@ -80,7 +80,7 @@ func Step4_RecallTemplate(
 		}
 
 		// 相似度阈值过滤
-		if similarity < service.DefaultSystemConfigService.GetFloat("sim_thresh", config.GlobalConfig.Strategy.SimThresh)*0.5 {
+		if similarity < runtimecfg.DefaultSystemConfigService.GetFloat("sim_thresh", config.GlobalConfig.Strategy.SimThresh)*0.5 {
 			continue
 		}
 

@@ -1,7 +1,10 @@
 // 邮箱验证码服务：注册/换绑场景验证码发送与一次性校验，含防薅四件套。
 package service
 
+import "ai-scrm/internal/notify"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -88,9 +91,9 @@ func SendEmailCode(email, purpose, ip string) error {
 		return fmt.Errorf("验证码写入失败")
 	}
 
-	sender := DefaultResetSender() // 复用通道选择（smtp/log，配置驱动）
+	sender := notify.DefaultResetSender() // 复用通道选择（smtp/log，配置驱动）
 	subject, body := buildEmailCodeContent(purpose, code)
-	if _, isLog := sender.(LogSender); isLog {
+	if _, isLog := sender.(notify.LogSender); isLog {
 		// P1-20 修复(2026-09-09)：log 通道是内测/开发语义（默认 reset_code_channel="log"，
 		// 开箱即用状态下邮箱注册验证/密码重置必须能走通）。原实现把验证码明文打码——
 		// 用户永远拿不到码，验证流程死路。现统一为"明文落服务端日志 + 水位标记"，
@@ -101,7 +104,7 @@ func SendEmailCode(email, purpose, ip string) error {
 	if err := sender.SendRaw([]string{email}, subject, body); err != nil {
 		return fmt.Errorf("邮件发送失败：%v", err)
 	}
-	log.Printf("[邮箱验证码] 已发送 用途=%s to=%s", purpose, maskEmail(email))
+	log.Printf("[邮箱验证码] 已发送 用途=%s to=%s", purpose, notify.MaskEmailForLog(email))
 	return nil
 }
 
@@ -140,10 +143,10 @@ func VerifyEmailCode(email, purpose, code string) error {
 // EmailVerifyEnabled 注册邮箱验证开关（平台级热配置）
 // 通过 system_configs 表控制，支持热更新无需重启
 func EmailVerifyEnabled() bool {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return false
 	}
-	return DefaultSystemConfigService.GetBool("email_verify_enabled", false)
+	return runtimecfg.DefaultSystemConfigService.GetBool("email_verify_enabled", false)
 }
 
 // buildEmailCodeContent 按用途组装邮件标题与正文

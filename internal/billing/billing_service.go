@@ -1,7 +1,8 @@
 // 收银台商业化服务：pay_mode 三态分发、订单幂等发放/到账、超时扫描关闭。
-package service
+package billing
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"bytes"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -169,8 +170,8 @@ func (g GatewayProvider) Refund(order *model.BillingOrder, refundCents int) erro
 
 // getPlatformConf 平台配置读取（系统层，env 兜底；nil 服务安全）
 func getPlatformConf(sysKey, envKey string) string {
-	if DefaultSystemConfigService != nil {
-		if v := DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
+	if runtimecfg.DefaultSystemConfigService != nil {
+		if v := runtimecfg.DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
 			return v
 		}
 	}
@@ -214,8 +215,8 @@ func VerifyGatewaySign(key, orderNo, status, sign string) bool {
 // loadGatewayProvider 从系统配置/环境变量装配网关（热加载，缺省环境变量兜底）
 func loadGatewayProvider() GatewayProvider {
 	get := func(sysKey, envKey string) string {
-		if DefaultSystemConfigService != nil {
-			if v := DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
+		if runtimecfg.DefaultSystemConfigService != nil {
+			if v := runtimecfg.DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
 				return v
 			}
 		}
@@ -247,10 +248,10 @@ func selectProvider() (PaymentProvider, error) {
 
 // GetPayMode 读当前收款模式（系统配置热加载，默认 mock）
 func GetPayMode() string {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return "mock"
 	}
-	mode := DefaultSystemConfigService.GetString("pay_mode", "mock")
+	mode := runtimecfg.DefaultSystemConfigService.GetString("pay_mode", "mock")
 	if mode != "mock" && mode != "static_qr" && mode != "sdk" {
 		return "mock" // 脏配置兜底
 	}

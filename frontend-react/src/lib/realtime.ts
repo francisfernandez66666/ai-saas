@@ -8,6 +8,7 @@ import { TOKEN_KEY } from './api'
  * @param path - WebSocket 路径（如 /api/v1/ws/advisor）
  * @returns 完整的 WebSocket URL（ws:// 或 wss://）
  */
+/** 把相对 WS 路径转换为当前浏览器 origin 下的 WebSocket URL。 */
 function wsURL(path: string): string {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${location.host}${path}`
@@ -22,6 +23,7 @@ type EvHandler = (ev: any) => void
  * 断线不主动重连（轮询兜底），仅在组件卸载时释放连接
  * @param onEvent - 收到 WS 消息时的回调函数
  */
+/** 顾问端 WS Hook：自动重连并把新消息/状态事件回抛给页面。 */
 export function useAdvisorWS(onEvent: EvHandler) {
   const ref = useRef(onEvent)
   ref.current = onEvent
@@ -60,6 +62,7 @@ export function useAdvisorWS(onEvent: EvHandler) {
  * @param visitorKey - 访客密钥（字符串，用于防横向越权）
  * @param onEvent - 收到 WS 消息时的回调函数
  */
+/** 客户端 WS Hook：按 customer_id 与 visitor_key 订阅自身消息。 */
 export function useClientWS(customerId: number | null, visitorKey: string | null, onEvent: EvHandler) {
   const ref = useRef(onEvent)
   ref.current = onEvent

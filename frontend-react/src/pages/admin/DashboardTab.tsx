@@ -34,16 +34,19 @@ const STAGE_CN: Record<string, string> = {
   lost: '已战败',
 }
 
+/** 把数值按百分比展示。 */
 function pct(v: number) {
   return `${(Number(v || 0) * 100).toFixed(1)}%`
 }
 
+/** 格式化模型冷却剩余秒数。 */
 function formatCooldown(sec: number) {
   if (!sec) return '-'
   if (sec < 60) return `${sec}s`
   return `${Math.ceil(sec / 60)}min`
 }
 
+/** 后台工作台：聚合核心指标、模型状态和近期运营事件。 */
 export function DashboardTab() {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [advisorStats, setAdvisorStats] = useState<StatItem[]>([])

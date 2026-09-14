@@ -87,6 +87,7 @@ func notifyWSTyping(tenantID, customerID, conversationID uint, isTyping bool) {
 var wsOriginsOnce sync.Once
 var wsOrigins map[string]bool
 
+// initWSOrigins 解析并缓存允许建立 WS 的来源白名单。
 func initWSOrigins() {
 	wsOriginsOnce.Do(func() {
 		wsOrigins = map[string]bool{}

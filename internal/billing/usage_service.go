@@ -1,7 +1,8 @@
 // 用量计量底座：AI 调用计数/配额判定/月度重置 + usage_ledger 落账与分级看板。
-package service
+package billing
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"fmt"
 	"log"
 	"strings"
@@ -135,13 +136,13 @@ func estimateCostMicro(provider string, totalTokens int) int64 {
 	var unitPrice int64 = 8000 // 默认硅基流动档
 	switch {
 	case strings.Contains(lower, "zhipu"):
-		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_zhipu", 15000))
+		unitPrice = int64(runtimecfg.SafeCfgInt("price_micro_per_ktok_zhipu", 15000))
 	case strings.Contains(lower, "gateway"):
-		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_gateway", 8000))
+		unitPrice = int64(runtimecfg.SafeCfgInt("price_micro_per_ktok_gateway", 8000))
 	default:
-		unitPrice = int64(SafeCfgInt("price_micro_per_ktok_siliconflow", 8000))
+		unitPrice = int64(runtimecfg.SafeCfgInt("price_micro_per_ktok_siliconflow", 8000))
 	}
-	markup := SafeCfgFloat("billing_markup_multiplier", 1.5)
+	markup := runtimecfg.SafeCfgFloat("billing_markup_multiplier", 1.5)
 	return int64(float64(totalTokens) / 1000 * float64(unitPrice) * markup)
 }
 

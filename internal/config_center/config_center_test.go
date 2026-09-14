@@ -1,3 +1,4 @@
+// 配置中心单测：覆盖默认配置播种、租户覆盖与热更新一致性。
 package configcenter
 
 import (

@@ -12,6 +12,7 @@ package service
 // ============================================================
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -144,7 +145,7 @@ func PgvectorEnabled() bool {
 
 // kbVectorSearchEnabled 读取 D3 热开关；单测或未初始化配置时默认开，保持 fail-open 到可用向量路径。
 func kbVectorSearchEnabled() bool {
-	return SafeCfgBool("kb_vector_search", true)
+	return runtimecfg.SafeCfgBool("kb_vector_search", true)
 }
 
 // EnsurePgvector 幂等启用 pgvector：建扩展 + knowledge_fragments.embedding 定长列 + HNSW 索引

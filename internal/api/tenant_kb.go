@@ -47,6 +47,7 @@ splitKBChunks 将长文本内容按段落和长度进行智能切片。
 参数：content - 需要切片的原始文本内容
 返回：切片后的字符串数组，每个元素是一个知识片段
 */
+// splitKBChunks 将租户上传文本切分为知识片段。
 func splitKBChunks(content string) []string {
 	content = strings.TrimSpace(content)
 	if content == "" {
@@ -101,6 +102,7 @@ TenantKBUpload 处理 POST /api/v1/admin/kb/upload 请求，上传企业自有�
 返回：上传结果，包含切片数量和每片的处理状态
 设计决策：上传后触发知识缓存Reload，通过版本戳实现多实例广播
 */
+// TenantKBUpload 上传并解析租户知识库文件。
 func TenantKBUpload(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
@@ -164,6 +166,7 @@ TenantKBMy 处理 GET /api/v1/admin/kb/my 请求，查询当前租户已上传�
 参数：c - Gin请求上下文，通过query参数传递分页信息
 返回：分页后的知识片段列表，包含total、page、page_size等分页元数据
 */
+// TenantKBMy 返回当前租户知识库片段列表。
 func TenantKBMy(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {
@@ -197,6 +200,7 @@ TenantKBDelete 处理 DELETE /api/v1/admin/kb/my/:id 请求，删除当前租户
 参数：c - Gin请求上下文，通过路径参数id指定要删除的片段ID
 返回：删除结果，成功后触发知识缓存Reload
 */
+// TenantKBDelete 删除租户知识库片段。
 func TenantKBDelete(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {

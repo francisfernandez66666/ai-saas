@@ -1,6 +1,8 @@
 // 超管后台API：平台运营接口，仅 super_admin 可访问，操作全留审计。
 package api
 
+import "ai-scrm/internal/billing"
+
 import (
 	"fmt"
 	"log"
@@ -13,7 +15,6 @@ import (
 	"ai-scrm/internal/model"
 
 	"ai-scrm/internal/schema"
-	"ai-scrm/internal/service"
 	"github.com/gin-gonic/gin"
 )
 
@@ -157,7 +158,7 @@ func SuperGrantTrial(c *gin.Context) {
 			Select("email").Order("id ASC").Limit(1).Scan(&adminMail)
 		trialEmail = adminMail
 	}
-	service.GrantTrialBucket(nil, t.ID, trialEmail)
+	billing.GrantTrialBucket(nil, t.ID, trialEmail)
 	// 设置试用期：当前时间开始，7天后结束
 	now := time.Now()
 	end := now.AddDate(0, 0, 7)

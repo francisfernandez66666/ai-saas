@@ -40,6 +40,7 @@ export const SHADOW = '0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1)
  * @param onConfirm - 用户点击"确认"后的回调
  * @param onCancel - 用户点击"取消"或遮罩层时的回调
  */
+/** 通用二次确认弹窗，统一危险动作前的确认交互。 */
 export function ConfirmDialog({ open, title, message, onConfirm, onCancel }: {
   open: boolean; title: string; message: string; onConfirm: () => void; onCancel: () => void;
 }) {

@@ -4,7 +4,7 @@ package strategy
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"strings"
 )
@@ -26,11 +26,11 @@ import (
 //   - L3：意向分 ≥ θ_urgency_L2（高意向，需重点关注）
 func Step5_CalcUrgency(intentScore float64, highIntentRounds int) string {
 	// 修复：从SystemConfigService读取阈值，后台调参即时生效
-	L1 := service.SafeCfgFloat("theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
-	L2 := service.SafeCfgFloat("theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
+	L1 := runtimecfg.SafeCfgFloat("theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
+	L2 := runtimecfg.SafeCfgFloat("theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
 
 	// L3：高意向持续多轮
-	if intentScore >= L2 && highIntentRounds >= service.SafeCfgInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
+	if intentScore >= L2 && highIntentRounds >= runtimecfg.SafeCfgInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
 		return UrgencyL3
 	}
 
@@ -96,11 +96,11 @@ func Step6_RouteDecision(
 	intentScore := tVector[0]
 	trustLevel := tVector[6]
 	// 修复：从SystemConfigService读取路由阈值，后台调参即时生效
-	thetaTrust := service.DefaultSystemConfigService.GetFloat("theta_trust", config.GlobalConfig.Strategy.ThetaTrust)
-	thetaRounds := service.DefaultSystemConfigService.GetInt("theta_rounds", config.GlobalConfig.Strategy.ThetaRounds)
-	thetaHookRateCrit := service.DefaultSystemConfigService.GetFloat("theta_hook_rate_crit", config.GlobalConfig.Strategy.ThetaHookRateCrit)
-	thetaL3Intent := service.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
-	thetaL3Rounds := service.DefaultSystemConfigService.GetInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds)
+	thetaTrust := runtimecfg.DefaultSystemConfigService.GetFloat("theta_trust", config.GlobalConfig.Strategy.ThetaTrust)
+	thetaRounds := runtimecfg.DefaultSystemConfigService.GetInt("theta_rounds", config.GlobalConfig.Strategy.ThetaRounds)
+	thetaHookRateCrit := runtimecfg.DefaultSystemConfigService.GetFloat("theta_hook_rate_crit", config.GlobalConfig.Strategy.ThetaHookRateCrit)
+	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
+	thetaL3Rounds := runtimecfg.DefaultSystemConfigService.GetInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds)
 
 	// ============================================================
 	// 先判断是否需要转人工（优先级最高）

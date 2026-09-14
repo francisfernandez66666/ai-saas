@@ -1,6 +1,10 @@
 // 数据飞轮采集器：进程内批量缓冲 + 脱敏上报（休眠式，URL 空则零外发）。
 package service
 
+import "ai-scrm/internal/notify"
+
+import "ai-scrm/internal/pii"
+
 import (
 	"bytes"
 	"crypto/rand"
@@ -132,8 +136,8 @@ func AnonymizePayload(p map[string]any) map[string]any {
 
 // AnonymizeText 文本级脱敏（手机号+邮箱）
 func AnonymizeText(s string) string {
-	s = MaskPhoneInText(s)
-	s = MaskEmailAddr(s)
+	s = pii.MaskPhoneInText(s)
+	s = notify.MaskEmailAddr(s)
 	return s
 }
 

@@ -4,6 +4,7 @@ package service
 
 import (
 	"ai-scrm/config"
+	"ai-scrm/internal/runtimecfg"
 	"log"
 	"math/rand"
 	"strings"
@@ -60,7 +61,7 @@ func IsSimpleMessage(content string) bool {
 // 不看工作时间，不分工作日/周末，统一固定值——简单消息的核心是"快速接住"
 // 简单消息（"你好"/"在吗"等）先独立回复，不跟正式消息混排队
 func GetSimpleReplyDelay() time.Duration {
-	sec := DefaultSystemConfigService.GetInt("simple_msg_delay", 8)
+	sec := runtimecfg.DefaultSystemConfigService.GetInt("simple_msg_delay", 8)
 	return time.Duration(sec) * time.Second
 }
 
@@ -264,11 +265,11 @@ func GetStoreVisitSecondReply(tenantID uint, content string) string {
 // 比简单消息(8秒)略长——因为需要表现"确认安排"的思考感
 func GetStoreVisitFirstDelay() time.Duration {
 	// 秒回模式下到店快速通道零延迟
-	mode := DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	mode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 	if mode == "instant" {
 		return 0
 	}
-	sec := DefaultSystemConfigService.GetInterval("store_visit_first_delay", 10, 15)
+	sec := runtimecfg.DefaultSystemConfigService.GetInterval("store_visit_first_delay", 10, 15)
 	return time.Duration(sec) * time.Second
 }
 
@@ -277,10 +278,10 @@ func GetStoreVisitFirstDelay() time.Duration {
 // 第二段在第一段之后发出，模拟顾问"查档后追问"，默认25-45秒
 func GetStoreVisitSecondDelay() time.Duration {
 	// 秒回模式下到店快速通道零延迟
-	mode := DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	mode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 	if mode == "instant" {
 		return 0
 	}
-	sec := DefaultSystemConfigService.GetInterval("store_visit_second_delay", 25, 45)
+	sec := runtimecfg.DefaultSystemConfigService.GetInterval("store_visit_second_delay", 25, 45)
 	return time.Duration(sec) * time.Second
 }

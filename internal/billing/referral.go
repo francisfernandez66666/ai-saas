@@ -1,5 +1,5 @@
 // 邀请推广：注册/邀请/付费三档奖励发放，三桶 token 与幂等闸门防重。
-package service
+package billing
 
 // ============================================================
 // 邀请推广服务（M-R，2026-08-25）
@@ -20,6 +20,7 @@ package service
 // ============================================================
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
 	"fmt"
 	"log"
@@ -37,10 +38,10 @@ import (
 // cfgInt 读计费类配置（nil 安全兜底）
 // 从 system_configs 表读取配置值，nil 安全兜底返回默认值
 func cfgInt(key string, def int) int {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return def
 	}
-	return DefaultSystemConfigService.GetInt(key, def)
+	return runtimecfg.DefaultSystemConfigService.GetInt(key, def)
 }
 
 // GenerateInviteCode 生成8位大写字母数字邀请码（去除易混淆字符 0/O/1/I）

@@ -12,6 +12,7 @@
 #   ./tools/test_all.sh            # 完整回归（含 uat，耗时约 20-40 分钟）
 #   ./tools/test_all.sh --fast     # 快回归：单测+构建+smoke/org/saas，跳过 uat
 #   ./tools/test_all.sh --unit     # 仅单元测试层（go test -cover + 前端 vitest）
+#   ./tools/test_all.sh --capacity # 单测+构建+T7契约+C5 双实例 WS/Redis 广播矩阵（本地环境）
 #   SERVER_PORT=9090 ./tools/test_all.sh   # 指定服务端口（默认 9090）
 #
 # 阶段顺序：单元层 → 构建 → E2E 层（五套） → 汇总。每阶段失败继续跑后续
@@ -49,6 +50,7 @@ PORT="${SERVER_PORT:-9090}"
 MODE="full"
 [ "${1:-}" = "--fast" ] && MODE="fast"
 [ "${1:-}" = "--unit" ] && MODE="unit"
+[ "${1:-}" = "--capacity" ] && MODE="capacity"
 [ "${1:-}" = "--failfast" ] && FAILFAST=1 || FAILFAST=0
 
 PASS=0; FAIL=0
@@ -120,6 +122,17 @@ step "契约层：T7 apidump golden + api.d.ts + FE 路径孤儿 + as-any 基线
 CONTRACT_RC=$?
 verdict "check_api_contract.sh" $CONTRACT_RC
 if [ "$CONTRACT_RC" != "0" ]; then tail -20 /tmp/test_all_contract.log || true; fi
+
+# ---------- 阶段二.6：C5 容量矩阵（本地双实例 Redis 广播，可选模式） ----------
+if [ "$MODE" = "capacity" ]; then
+  step "容量矩阵：C5 双实例 WS ${MATRIX_N:-1000} 建连 + Redis 跨实例广播"
+  MATRIX_N="${MATRIX_N:-1000}" ./tools/capacity_matrix.sh >/tmp/test_all_capacity.log 2>&1
+  CAP_RC=$?
+  verdict "capacity_matrix.sh" $CAP_RC
+  if [ "$CAP_RC" != "0" ]; then tail -40 /tmp/test_all_capacity.log || true; fi
+  echo "==== [test_all] 汇总: PASS=$PASS FAIL=${FAIL}（capacity 模式）===="
+  [ "$FAIL" = "0" ] && exit 0 || exit 1
+fi
 
 # ---------- 阶段三：E2E 层（五套断言脚本） ----------
 step "E2E 层：起服务（端口 ${PORT}）"

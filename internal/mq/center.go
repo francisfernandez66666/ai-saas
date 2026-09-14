@@ -59,14 +59,14 @@ func Publish(ctx context.Context, topic string, tenantID uint, oneID string, eve
 
 // OnPublishSuccess 是 Kafka 消息发布成功的回调函数指针
 // G-15 机制说明：
-// 1. mq 包不能直接调用 service.IncKafkaPublish()（会循环依赖：mq→service→mq）
+// 1. mq 包不能直接调用 metrics.IncKafkaPublish()（会循环依赖：mq→service→mq）
 // 2. 解决方案：mq 包暴露注册接口 SetOnPublishSuccess()，由 service 包在 Init() 时注入回调
 // 3. 每次 Kafka 消息发布成功后，mq.Publish() 自动调用此回调，触发 Prometheus 计数+1
 // 回调函数指针，由 service 包注册（避免 mq→service 循环依赖）
 var onPublishSuccess func()
 
 // SetOnPublishSuccess 注册 Kafka 发布成功回调（service.InitMQ() 调用时注入）
-// 回调函数由 service.IncKafkaPublish 实现，用于 Prometheus 指标计数
+// 回调函数由 metrics.IncKafkaPublish 实现，用于 Prometheus 指标计数
 func SetOnPublishSuccess(fn func()) { onPublishSuccess = fn }
 
 // Subscribe 注册消费者回调

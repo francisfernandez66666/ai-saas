@@ -1,7 +1,7 @@
 //go:build linux || darwin
 
-// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
-package service
+// Package metrics 承载零依赖 Prometheus 文本指标采集与平台磁盘水位探测。
+package metrics
 
 import "syscall"
 

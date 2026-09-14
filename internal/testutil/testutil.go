@@ -29,7 +29,7 @@ import (
 //   - go test 的工作目录是各包目录，必须手动定位项目根 .env（不能用默认相对路径）
 //   - 本包刻意不 import service（避免 service 测试包反向依赖形成 import cycle）；
 //     依赖 DefaultSystemConfigService 的测试（如计费/配额）需在 SetupTestDB 后自行
-//     调用 service.InitSystemConfigService()（同包测试可直接调用）。
+//     调用 runtimecfg.InitSystemConfigService()（同包测试可直接调用）。
 func SetupTestDB(t *testing.T) {
 	t.Helper()
 	loadRootEnv()
@@ -110,7 +110,7 @@ func CreateTenantCode(t *testing.T, code string) uint {
 	return tt.ID
 }
 
-// randInviteCode 生成随机 8 位邀请码（与 service.GenerateInviteCode 同字符集，测试用）
+// randInviteCode 生成随机 8 位邀请码（与 billing.GenerateInviteCode 同字符集，测试用）
 // 不能直接调用 service（service 测试包反向依赖 testutil 会成环）
 func randInviteCode() string {
 	const alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"

@@ -1,4 +1,5 @@
-package service
+// 退款计费单测：覆盖按比例退款、多订单份额一致性与包月窗口回退。
+package billing
 
 import (
 	"errors"
@@ -73,6 +74,7 @@ func TestRefundIncrementProportional(t *testing.T) {
 	}
 }
 
+// TestRefundIncrementFullyConsumed 覆盖 RefundIncrementFullyConsumed 相关行为与边界。
 func TestRefundIncrementFullyConsumed(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)
@@ -101,6 +103,7 @@ func TestRefundIncrementFullyConsumed(t *testing.T) {
 	}
 }
 
+// TestRefundMultiOrdersSharesConsistent 覆盖 RefundMultiOrdersSharesConsistent 相关行为与边界。
 func TestRefundMultiOrdersSharesConsistent(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)
@@ -174,6 +177,7 @@ func createPaidIncrementOrder(t *testing.T, tid uint, pkg *model.Package) uint {
 	return o.ID
 }
 
+// TestRefundPaidProportional 覆盖 RefundPaidProportional 相关行为与边界。
 func TestRefundPaidProportional(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)

@@ -6,19 +6,23 @@ export type KBUpsertPayload = { title: string; content: string; category?: strin
 const DEFAULT_CATEGORY = '企业知识'
 const MAX_UPLOAD_RUNES = 20000
 
+/** 把未知字段清洗成可展示的字符串。 */
 function clean(v: unknown, fallback = ''): string {
   const s = String(v ?? '').trim()
   return s || fallback
 }
 
+/** 移除文件名扩展名，作为知识库标题兜底。 */
 function stripExtension(name: string): string {
   return clean(name, '未命名资料').replace(/\.(json|md|markdown|txt)$/i, '')
 }
 
+/** 按 Unicode 字符数统计文本长度。 */
 function textLength(s: string): number {
   return Array.from(s).length
 }
 
+/** 把超长知识正文按固定长度切片，保留可检索粒度。 */
 function splitLongContent(content: string): string[] {
   if (textLength(content) <= MAX_UPLOAD_RUNES) return [content]
   const chars = Array.from(content)
@@ -29,6 +33,7 @@ function splitLongContent(content: string): string[] {
   return chunks
 }
 
+/** 规范化单条知识库片段，补齐标题/内容/标签等字段。 */
 function normalize(item: any, fallbackTitle: string): KBUpsertPayload | null {
   if (!item || typeof item !== 'object') return null
   const content = item.content ?? item.text ?? item.body ?? item.value
@@ -40,6 +45,7 @@ function normalize(item: any, fallbackTitle: string): KBUpsertPayload | null {
   }
 }
 
+/** 解析 Markdown front matter，返回元数据和正文。 */
 function parseFrontMatter(text: string, fallbackTitle: string): { meta: Record<string, string>; body: string } {
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?/.exec(text)
   if (!m) return { meta: {}, body: text }
@@ -51,10 +57,12 @@ function parseFrontMatter(text: string, fallbackTitle: string): { meta: Record<s
   return { meta, body: text.slice(m[0].length) }
 }
 
+/** 为长文切片生成带序号的稳定标题。 */
 function chunkTitle(base: string, index: number, total: number): string {
   return total > 1 ? `${base} (${index + 1}/${total})` : base
 }
 
+/** 解析上传的 JSON/Markdown/TXT 文件并生成知识库片段。 */
 export function parseKBFile(name: string, text: string): KBUpsertPayload[] {
   const lower = name.toLowerCase()
   const fallbackTitle = stripExtension(name)

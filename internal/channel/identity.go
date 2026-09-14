@@ -80,6 +80,7 @@ func UpsertIdentity(tenantID, channelID, customerID uint, externalID, staffID st
 	}).Error
 }
 
+// tailN 返回字符串末尾 n 个字符，用于身份尾号展示。
 func tailN(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

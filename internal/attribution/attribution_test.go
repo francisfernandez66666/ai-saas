@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestSnapshotFromBindingPrefersEnterprise 覆盖 SnapshotFromBindingPrefersEnterprise 相关行为与边界。
 func TestSnapshotFromBindingPrefersEnterprise(t *testing.T) {
 	entID := uint(7)
 	bind := &model.TenantPackBinding{
@@ -22,6 +23,7 @@ func TestSnapshotFromBindingPrefersEnterprise(t *testing.T) {
 	}
 }
 
+// TestReplyAttributionRecordMarkAndStats 覆盖 ReplyAttributionRecordMarkAndStats 相关行为与边界。
 func TestReplyAttributionRecordMarkAndStats(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)
@@ -95,6 +97,7 @@ func TestReplyAttributionRecordMarkAndStats(t *testing.T) {
 	}
 }
 
+// TestSyncPackStatsMaterializesRows 覆盖 SyncPackStatsMaterializesRows 相关行为与边界。
 func TestSyncPackStatsMaterializesRows(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)
@@ -127,6 +130,7 @@ func TestSyncPackStatsMaterializesRows(t *testing.T) {
 	}
 }
 
+// TestScoreAndAlertPackQuality 覆盖 ScoreAndAlertPackQuality 相关行为与边界。
 func TestScoreAndAlertPackQuality(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)

@@ -15,6 +15,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestSignVerifyRoundTrip 覆盖 SignVerifyRoundTrip 相关行为与边界。
 func TestSignVerifyRoundTrip(t *testing.T) {
 	ts, body := "1700000000", `{"a":1}`
 	sig := "sha256=" + Sign("s3cr3t", ts, body)
@@ -29,6 +30,7 @@ func TestSignVerifyRoundTrip(t *testing.T) {
 	}
 }
 
+// newSub 创建测试租户 Webhook 订阅。
 func newSub(t *testing.T, tid uint, url, secret, events string) uint {
 	t.Helper()
 	w := model.TenantWebhook{TenantID: tid, Name: "test", URL: url, Secret: secret, Events: events, Active: true}

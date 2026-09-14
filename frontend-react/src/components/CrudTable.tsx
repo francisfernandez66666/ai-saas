@@ -17,6 +17,7 @@ type CrudTableProps = {
   onPageChange?: (page: number, pageSize: number) => void
 }
 
+/** 通用 CRUD 表格组件，负责列渲染、分页、空态与行操作入口。 */
 export function CrudTable({
   rowKey = 'id',
   data,
@@ -63,6 +64,7 @@ export function CrudTable({
   )
 }
 
+/** 表格行内操作按钮，统一普通/危险动作样式与点击回调。 */
 export function RowActionButton(props: { children: React.ReactNode; onClick: () => void; danger?: boolean }) {
   return (
     <Button

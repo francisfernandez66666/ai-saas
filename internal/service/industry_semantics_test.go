@@ -3,14 +3,15 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"testing"
 )
 
 // TestIndustryListFallback 未配置行业键时回退代码内置（汽车）
 func TestIndustryListFallback(t *testing.T) {
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = nil
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = nil
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
 	// 无关话题：纯无关消息拦截、白名单词放行
 	if !IsOffTopicForTenant(1, "帮我解一下这道高数题") {
@@ -27,12 +28,12 @@ func TestIndustryListFallback(t *testing.T) {
 
 // TestIndustryListSystemDefault 系统层(tenant_id=0)配置生效
 func TestIndustryListSystemDefault(t *testing.T) {
-	old := DefaultSystemConfigService
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{
 		"industry.topic_keywords": `["产品","套餐","服务"]`,
-	}}
+	}, nil)
 
 	// 新行业词命中白名单放行
 	if IsOffTopicForTenant(3, "你们的产品怎么样") {
@@ -51,18 +52,15 @@ func TestIndustryListSystemDefault(t *testing.T) {
 
 // TestIndustryListTenantOverride 租户覆盖优先于系统默认
 func TestIndustryListTenantOverride(t *testing.T) {
-	old := DefaultSystemConfigService
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
-	svc := &SystemConfigService{
-		cache: map[string]string{
-			"industry.offtopic_keywords": `["银行","信贷"]`,
-		},
-		tenantCache: map[uint]map[string]string{
-			9: {"industry.offtopic_keywords": `["股票","期货"]`},
-		},
-	}
-	DefaultSystemConfigService = svc
+	svc := runtimecfg.NewStaticService(map[string]string{
+		"industry.offtopic_keywords": `["银行","信贷"]`,
+	}, map[uint]map[string]string{
+		9: {"industry.offtopic_keywords": `["股票","期货"]`},
+	})
+	runtimecfg.DefaultSystemConfigService = svc
 
 	// 系统默认层：命中"银行"
 	if !IsOffTopicForTenant(1, "聊聊银行理财") {
@@ -79,10 +77,10 @@ func TestIndustryListTenantOverride(t *testing.T) {
 
 // TestGetOffTopicReplyForTenant 话术确定性 + 租户配置话术
 func TestGetOffTopicReplyForTenant(t *testing.T) {
-	old := DefaultSystemConfigService
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
-	DefaultSystemConfigService = nil
+	runtimecfg.DefaultSystemConfigService = nil
 	if p := GetOffTopicReplyForTenant(1, "abc"); p == "" {
 		t.Error("回退话术不应为空")
 	}
@@ -91,9 +89,9 @@ func TestGetOffTopicReplyForTenant(t *testing.T) {
 	}
 
 	// 租户配置自定义话术
-	DefaultSystemConfigService = &SystemConfigService{tenantCache: map[uint]map[string]string{
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(nil, map[uint]map[string]string{
 		2: {"industry.offtopic_replies": `["我们不聊这个，聊点正事吧"]`},
-	}}
+	})
 	if p := GetOffTopicReplyForTenant(2, "anything"); p != "我们不聊这个，聊点正事吧" {
 		t.Errorf("租户自定义话术未生效, got %q", p)
 	}

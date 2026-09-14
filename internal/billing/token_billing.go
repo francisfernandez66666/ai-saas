@@ -1,5 +1,7 @@
 // Token 三桶扣减引擎：③免费→①订阅→②余额优先级，灰度双开关与防薅双唯一。
-package service
+package billing
+
+import "ai-scrm/internal/pii"
 
 // ============================================================
 // Token 三桶扣减引擎（P1.5 Token统一计费，2026-08-26）
@@ -19,6 +21,7 @@ package service
 // ============================================================
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -37,10 +40,10 @@ import (
 
 // TokenBillingEnabled 引擎总闸（平台级热开关）
 func TokenBillingEnabled() bool {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return false
 	}
-	return DefaultSystemConfigService.GetBool("token_billing_enabled", false)
+	return runtimecfg.DefaultSystemConfigService.GetBool("token_billing_enabled", false)
 }
 
 // billingEnforced 计费强制（false=超额不停服仅留痕，沿用商业化M5灰度语义）
@@ -50,7 +53,7 @@ func billingEnforced() bool {
 	if !TokenBillingEnabled() {
 		return false
 	}
-	return DefaultSystemConfigService.GetBool("billing_enforced", false)
+	return runtimecfg.DefaultSystemConfigService.GetBool("billing_enforced", false)
 }
 
 // CheckTokenAvailability 前置可用性检查：三桶任一有可用余额即放行。
@@ -109,7 +112,7 @@ func DeductTokensActual(tenantID uint, tokens int64) error {
 	}
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		// P2-2 RLS热路径接入：事务内激活租户行级隔离（RLS_ENABLED=true 时 DB 强制收敛）
-		if r := SetTenantRLS(tx, tenantID); r.Error != nil {
+		if r := db.SetTenantRLS(tx, tenantID); r.Error != nil {
 			return r.Error
 		}
 		var t model.Tenant
@@ -192,7 +195,7 @@ func GrantTrialBucket(tx *gorm.DB, tenantID uint, email string) {
 		tx.Model(&model.RewardClaim{}).
 			Where("grant_type = ? AND email = ?", model.RewardSignupTrial, email).Count(&cnt)
 		if cnt > 0 {
-			log.Printf("[TokenBilling] 邮箱%s 曾参与注册礼领取，撞库拦截(账号%d)", MaskEmail(email), tenantID)
+			log.Printf("[TokenBilling] 邮箱%s 曾参与注册礼领取，撞库拦截(账号%d)", pii.MaskEmail(email), tenantID)
 			return
 		}
 	}
@@ -233,10 +236,10 @@ func minInt64(a, b int64) int64 {
 // （数据飞轮：所有租户实际把参数往哪调 = 行业包迭代的免费标注数据）
 // 返回是否成功上报（成功才推进 lastID，失败保留以重试，避免增量审计数据漏传）
 func ReportAuditIncrement(lastID uint) bool {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return false
 	}
-	url := DefaultSystemConfigService.GetString("feedback_collector_url", "")
+	url := runtimecfg.DefaultSystemConfigService.GetString("feedback_collector_url", "")
 	if url == "" {
 		return false // 未配置云端地址：关闭
 	}

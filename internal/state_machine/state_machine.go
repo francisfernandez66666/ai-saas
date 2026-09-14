@@ -2,6 +2,7 @@
 package state_machine
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"context"
 	"errors"
 	"log"
@@ -10,7 +11,6 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
-	"ai-scrm/internal/service"
 
 	"gorm.io/gorm"
 )
@@ -156,8 +156,8 @@ func SweepOnce(heartbeatTimeout time.Duration) int {
 
 // isRequeueEnabled 读巡检 requeue 开关（默认 false，止血 Bug3）
 func isRequeueEnabled() bool {
-	if service.DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return false
 	}
-	return service.DefaultSystemConfigService.GetBool("sm_sweep_requeue_enabled", false)
+	return runtimecfg.DefaultSystemConfigService.GetBool("sm_sweep_requeue_enabled", false)
 }

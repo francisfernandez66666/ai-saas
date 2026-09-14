@@ -19,6 +19,7 @@ func chanID(c *gin.Context) uint {
 	return uint(n)
 }
 
+// strPtrIfNotEmpty 把非空字符串转换为指针，便于 JSON 省略空字段。
 func strPtrIfNotEmpty(s string) *string {
 	if s == "" {
 		return nil
@@ -26,6 +27,7 @@ func strPtrIfNotEmpty(s string) *string {
 	return &s
 }
 
+// errString 将 error 安全转换为字符串。
 func errString(err error) string {
 	if err == nil {
 		return ""
@@ -67,6 +69,7 @@ type channelView struct {
 	CreatedAt    string `json:"created_at"`
 }
 
+// maskOf 返回通道凭据字段掩码。
 func maskOf(cipherStr string) string {
 	// 解出明文再掩码（仅本租户管理员可见掩码）；解不开→"****"
 	if plain, err := crypto.Decrypt(cipherStr); err == nil {
@@ -75,6 +78,7 @@ func maskOf(cipherStr string) string {
 	return "****"
 }
 
+// toView 将通道模型转换为管理端响应视图。
 func toView(ch model.Channel) channelView {
 	return channelView{
 		ID: ch.ID, Type: ch.Type, Name: ch.Name, CorpID: ch.CorpID, AppID: ch.AppID,
@@ -107,6 +111,7 @@ func injectAgentID(cfgJSON, agentID string) string {
 
 // ListChannels GET /admin/channels
 // apidump:ts ChannelListResp
+// ListChannels 返回租户接入通道列表。
 func ListChannels(c *gin.Context) {
 	list, err := channel.List(tenantIDOf(c))
 	if err != nil {
@@ -122,6 +127,7 @@ func ListChannels(c *gin.Context) {
 
 // CreateChannel POST /admin/channels —— 凭据加密落库，明文一次性回显。
 // apidump:ts CreateChannelResp
+// CreateChannel 创建通道并加密保存凭据。
 func CreateChannel(c *gin.Context) {
 	var req channelCreateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -226,6 +232,7 @@ func VerifyChannel(c *gin.Context) {
 
 // ListChannelDeadLetters GET /admin/channels/dead-letters （W6 死信可见）
 // apidump:ts OutboundListResp
+// ListChannelDeadLetters 返回出站死信队列。
 func ListChannelDeadLetters(c *gin.Context) {
 	list, err := channel.ListDeadLetters(tenantIDOf(c))
 	if err != nil {
@@ -236,6 +243,7 @@ func ListChannelDeadLetters(c *gin.Context) {
 }
 
 // RetryChannelDeadLetter POST /admin/channels/dead-letters/:id/retry
+// RetryChannelDeadLetter 手动重发一条出站死信。
 func RetryChannelDeadLetter(c *gin.Context) {
 	id := chanID(c)
 	if err := channel.RetryDeadLetter(tenantIDOf(c), id); err != nil {

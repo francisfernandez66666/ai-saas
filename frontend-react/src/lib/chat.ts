@@ -26,6 +26,7 @@ export type ChatMsg = {
  * @param knownIds 已展示消息 ID 集合（Set<string>，按 String(id) 比较）
  * @returns 仅新增的消息数组
  */
+/** 从新消息列表中剔除已知 ID，返回可追加的增量消息。 */
 export function collectFreshMessages<T extends ChatMsg>(items: T[], knownIds: Set<string>): T[] {
   const fresh: T[] = []
   for (const m of items) {
@@ -46,6 +47,7 @@ export function collectFreshMessages<T extends ChatMsg>(items: T[], knownIds: Se
  * @param knownIds 已展示消息 ID 集合
  * @returns 真正需要追加渲染的消息数组
  */
+/** 过滤 AI/人工回复中的重复消息，只保留未登记的新回复。 */
 export function filterReplyMessages<T extends ChatMsg>(replies: T[], knownIds: Set<string>): T[] {
   return replies.filter(
     (m) => m.sender_type !== 'system' && (m.id == null || !knownIds.has(String(m.id)))
@@ -61,6 +63,7 @@ export function filterReplyMessages<T extends ChatMsg>(replies: T[], knownIds: S
  * @param dbId   后端返回的真实消息主键
  * @returns 替换后的新列表（不可变更新）
  */
+/** 将本地临时消息替换为服务端落库后的真实消息。 */
 export function promoteTempMessage<T extends ChatMsg>(
   msgs: T[],
   tempId: string,
@@ -83,6 +86,7 @@ export function promoteTempMessage<T extends ChatMsg>(
  * @param knownIds 已展示消息 ID 集合（就地新增 dbId）
  * @returns 替换后的新列表（不可变更新）
  */
+/** 替换临时消息并登记真实 ID，防止后续轮询重复插入。 */
 export function promoteTempAndRegister<T extends ChatMsg>(
   msgs: T[],
   tempId: string,
@@ -101,6 +105,7 @@ export function promoteTempAndRegister<T extends ChatMsg>(
  * @param notice 要移除的占位文案（精确匹配）
  * @returns 过滤后的新列表
  */
+/** 从消息列表中移除指定系统提示，避免历史区重复显示。 */
 export function dropSystemNotice<T extends ChatMsg>(msgs: T[], notice: string): T[] {
   return msgs.filter((x) => x.sender_type !== 'system' || x.content !== notice)
 }

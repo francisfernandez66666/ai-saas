@@ -3,6 +3,8 @@
 // 业务实例配 LLM_GATEWAY_URL 指向本进程即可把出网与计费上收网关。
 package main
 
+import "ai-scrm/internal/billing"
+
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
@@ -10,6 +12,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/gateway"
 	"ai-scrm/internal/redisclient"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -44,10 +47,10 @@ func main() {
 	cache.InitKnowledgeCache()
 
 	// 4. 系统配置（配额阈值、计费开关等热参）
-	service.InitSystemConfigService()
+	runtimecfg.InitSystemConfigService()
 
 	// 4.1 实时计量批量落库（P1 计费统一 2026-09-03：网关侧三桶扣减收敛到 UsageSink）
-	service.InitUsageSink()
+	billing.InitUsageSink()
 
 	// 5. AI 客户端与路由（网关持有平台厂商 Key，负责多模型降级出网）
 	ai.InitClient()
@@ -56,7 +59,7 @@ func main() {
 	service.InitEmbeddingClient()
 
 	// 6. RLS 休眠式兜底（与本进程无强依赖，但保持与业务实例一致的安全姿态）
-	service.EnableRLS()
+	db.EnableRLS()
 
 	// 7. 数据飞轮采集器（素材回流；COLLECTOR_URL 空则空转）
 	service.StartCollector()

@@ -65,6 +65,7 @@ func notifyPackChange(c *gin.Context, tenantID uint, action string) {
 }
 
 // SuperPackUpload POST /api/v1/super/packs （multipart: file）
+// SuperPackUpload 上传并安装行业包。
 func SuperPackUpload(c *gin.Context) {
 	fh, err := c.FormFile("file")
 	if err != nil {
@@ -162,6 +163,7 @@ func SuperPackUpload(c *gin.Context) {
 }
 
 // SuperPackList GET /api/v1/super/packs
+// SuperPackList 返回平台行业包列表。
 func SuperPackList(c *gin.Context) {
 	var rows []model.IndustryPack
 	q := db.DB.Order("id DESC")
@@ -173,6 +175,7 @@ func SuperPackList(c *gin.Context) {
 }
 
 // SuperPackStatus PUT /api/v1/super/packs/:id/status
+// SuperPackStatus 查询行业包发布状态。
 func SuperPackStatus(c *gin.Context) {
 	var req struct {
 		Status string `json:"status" binding:"required"`
@@ -565,6 +568,7 @@ func TenantPackBindDept(c *gin.Context) {
 }
 
 // TenantPackUnbindDept POST /api/v1/admin/packs/unbind-dept {department_id}
+// TenantPackUnbindDept 解除租户部门与行业包绑定。
 func TenantPackUnbindDept(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {

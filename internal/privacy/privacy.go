@@ -198,6 +198,7 @@ func anonymizeUser(tx *gorm.DB, tenantID, userID uint) error {
 		}).Error
 }
 
+// truncate 按 rune 安全截断字符串到 n 个字符。
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

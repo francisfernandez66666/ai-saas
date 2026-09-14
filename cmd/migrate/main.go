@@ -21,6 +21,7 @@ import (
 	"ai-scrm/internal/db"
 )
 
+// main 启动当前命令入口。
 func main() {
 	log.SetFlags(log.LstdFlags)
 	_ = godotenv.Load(".env")
@@ -75,6 +76,7 @@ func main() {
 	}
 }
 
+// confirmDestructive 在破坏性迁移前要求人工确认。
 func confirmDestructive() {
 	fmt.Print("即将执行数据库迁移回退（可能删除表/列），输入 yes 继续: ")
 	r := bufio.NewReader(os.Stdin)

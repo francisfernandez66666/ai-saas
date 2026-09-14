@@ -1,7 +1,10 @@
 // 账号安全三件套：改密、首登强改密、重置密码去演示化（随机码+SHA256哈希+一次性+限频）
 package api
 
+import "ai-scrm/internal/notify"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -16,7 +19,6 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
@@ -159,7 +161,7 @@ func SendResetCode(c *gin.Context) {
 		return
 	}
 
-	channel := service.DefaultSystemConfigService.GetString("reset_code_channel", "log")
+	channel := runtimecfg.DefaultSystemConfigService.GetString("reset_code_channel", "log")
 
 	// log 通道防薅：必须匹配注册手机号/邮箱才发码（smtp 通道下选填，不阻断）
 	if channel == "log" {
@@ -191,13 +193,13 @@ func SendResetCode(c *gin.Context) {
 	}
 
 	// Sender 抽象分发：smtp=发到账号绑定邮箱；log=打日志（开发调试，仍要求contact校验）
-	if err := service.DefaultResetSender().SendResetCode(user.Email, code); err != nil {
+	if err := notify.DefaultResetSender().SendResetCode(user.Email, code); err != nil {
 		log.Printf("[重置码] 发送失败 username=%s: %v", req.Username, err)
 		RespErr(c, http.StatusBadGateway, 502, "邮件发送失败，请稍后再试或联系管理员")
 		return
 	}
 
-	msg := "验证码已发送至绑定邮箱 " + service.MaskEmailAddr(user.Email) + "，10分钟内有效"
+	msg := "验证码已发送至绑定邮箱 " + notify.MaskEmailAddr(user.Email) + "，10分钟内有效"
 	if channel == "log" {
 		msg = "验证码已生成（当前为日志通道，请查看服务端日志），10分钟内有效"
 	}

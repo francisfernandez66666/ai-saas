@@ -40,6 +40,7 @@ func decodeEv(t *testing.T, b []byte) map[string]any {
 	return m
 }
 
+// TestHubPublishRouteToAdvisorAndClient 覆盖 HubPublishRouteToAdvisorAndClient 相关行为与边界。
 func TestHubPublishRouteToAdvisorAndClient(t *testing.T) {
 	h := NewHub()
 	// 顾问端（本租户全收）：客户ID=0、UserID>0
@@ -95,6 +96,7 @@ func TestHubPublishRouteToAdvisorAndClient(t *testing.T) {
 	}
 }
 
+// TestHubPublishWithContentCarriesBody 覆盖 HubPublishWithContentCarriesBody 相关行为与边界。
 func TestHubPublishWithContentCarriesBody(t *testing.T) {
 	h := NewHub()
 	cl := NewClient(1, 0, 5) // 客户端 5
@@ -125,6 +127,7 @@ func TestHubPublishWithContentCarriesBody(t *testing.T) {
 	}
 }
 
+// TestHubSendBufferFullNoBlock 覆盖 HubSendBufferFullNoBlock 相关行为与边界。
 func TestHubSendBufferFullNoBlock(t *testing.T) {
 	// 发送缓冲写满时 Publish 应静默丢弃（不阻塞调用方，由轮询兜底），防止推送路径卡死主流程
 	h := NewHub()
@@ -143,6 +146,7 @@ func TestHubSendBufferFullNoBlock(t *testing.T) {
 	}
 }
 
+// TestHubUnregisterDeliversNoMore 覆盖 HubUnregisterDeliversNoMore 相关行为与边界。
 func TestHubUnregisterDeliversNoMore(t *testing.T) {
 	h := NewHub()
 	cl := NewClient(1, 0, 5)
@@ -153,5 +157,68 @@ func TestHubUnregisterDeliversNoMore(t *testing.T) {
 		[]byte(`{"type":"new_message"}`))
 	if got := drainRecv(t, cl.SendQueue()); got != nil {
 		t.Error("注销后不应再收到推送")
+	}
+}
+
+// fakeBroadcaster 记录本实例发出的跨实例事件，验证 Redis 旁路不改变本地路由语义。
+type fakeBroadcaster struct {
+	seen []BroadcastEnvelope
+}
+
+// error 提供当前包的辅助逻辑。
+func (f *fakeBroadcaster) Broadcast(env BroadcastEnvelope) error {
+	f.seen = append(f.seen, env)
+	return nil
+}
+
+// TestHubPublishBroadcastsRemote 本地投递与远端扇出必须同时发生，保证顾问/客户任一实例连接均可达。
+func TestHubPublishBroadcastsRemote(t *testing.T) {
+	old := currentBroadcaster()
+	b := &fakeBroadcaster{}
+	SetBroadcaster(b)
+	defer SetBroadcaster(old)
+
+	h := NewHub()
+	cl := NewClient(1, 0, 5)
+	h.Register(cl)
+	defer h.Unregister(cl)
+
+	payload := []byte(`{"type":"new_message","tenant_id":1,"customer_id":5}`)
+	h.Publish(RealtimeEvent{Type: "new_message", TenantID: 1, CustomerID: 5}, payload)
+
+	if got := drainRecv(t, cl.SendQueue()); got == nil {
+		t.Fatal("本地连接应收到推送")
+	}
+	if len(b.seen) != 1 || b.seen[0].TenantID != 1 || b.seen[0].CustomerID != 5 {
+		t.Fatalf("远端广播信封错误: %+v", b.seen)
+	}
+}
+
+// TestHubDeliverRemoteRoutesWithoutRebroadcast 远端事件只补本实例连接，不得二次广播成环。
+func TestHubDeliverRemoteRoutesWithoutRebroadcast(t *testing.T) {
+	old := currentBroadcaster()
+	b := &fakeBroadcaster{}
+	SetBroadcaster(b)
+	defer SetBroadcaster(old)
+
+	h := NewHub()
+	advisor := NewClient(1, 11, 0)
+	other := NewClient(1, 0, 6)
+	h.Register(advisor)
+	h.Register(other)
+	defer h.Unregister(advisor)
+	defer h.Unregister(other)
+
+	payload := []byte(`{"type":"message_content","tenant_id":1,"customer_id":5}`)
+	h.DeliverRemote(BroadcastEnvelope{Origin: "remote", TenantID: 1, CustomerID: 5, Data: payload})
+
+	if got := drainRecv(t, advisor.SendQueue()); got == nil {
+		t.Error("远端顾问事件应投递到本实例顾问连接")
+	}
+	if got := drainRecv(t, other.SendQueue()); got != nil {
+		t.Error("远端定向客户事件不得泄漏给其它客户")
+	}
+	if len(b.seen) != 0 {
+		t.Errorf("DeliverRemote 不得再次广播: %+v", b.seen)
 	}
 }

@@ -4,6 +4,7 @@ package ai
 import (
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"fmt"
@@ -36,7 +37,7 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 
 	// 修复：语气风格从后台配置读取(tone_style)，无需改代码发版
 	// neutral=冷静专业 / warm=略带热情 / enthusiastic=热情主动
-	toneStyle := service.DefaultSystemConfigService.GetString("tone_style", "warm")
+	toneStyle := runtimecfg.DefaultSystemConfigService.GetString("tone_style", "warm")
 
 	// 人设——优先行业包配置，缺省按tone_style动态调整
 	// 泛行业化（P2）：industry.salesperson 由行业包注入，空回退内置汽车人设

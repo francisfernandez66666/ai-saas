@@ -31,6 +31,7 @@ type sentMsg struct {
 	HaveToken bool        `json:"has_token"`
 }
 
+// main 启动当前命令入口。
 func main() {
 	listen := flag.String("listen", "127.0.0.1:9099", "mock 监听地址")
 	out := flag.String("out", "mockwx_outbox.jsonl", "出站消息 JSONL 落盘路径")
@@ -142,6 +143,7 @@ func main() {
 	}
 }
 
+// strOf 将 JSON 字段安全转换为字符串。
 func strOf(v interface{}) string {
 	if s, ok := v.(string); ok {
 		return s

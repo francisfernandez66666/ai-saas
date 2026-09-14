@@ -1,7 +1,10 @@
 // 商业包服务：free/paid/increment 三态发放语义、配额查询与到期巡检提醒。
-package service
+package billing
+
+import "ai-scrm/internal/notify"
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"fmt"
 	"log"
 	"time"
@@ -59,7 +62,7 @@ func grantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package, replace bool) 
 	case model.PackageTypeFree:
 		// P1.5(2026-08-26)：配置了 token_amount 的 free 包 → 发③免费体验桶（有效期取注册赠送天数）
 		if pkg.TokenAmount > 0 {
-			days := DefaultSystemConfigService.GetInt("trial_token_valid_days", 14)
+			days := runtimecfg.DefaultSystemConfigService.GetInt("trial_token_valid_days", 14)
 			expiry := time.Now().AddDate(0, 0, days)
 			res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
 				"free_token_balance":    gorm.Expr("COALESCE(free_token_balance,0)+?", pkg.TokenAmount),
@@ -216,7 +219,7 @@ func ExpireCheck() int {
 			if sent > 0 {
 				continue
 			}
-			NotifyGroup(fmt.Sprintf("【到期提醒】租户「%s」(%s) 将于 %s 到期（剩%d天），请联系续费",
+			notify.NotifyGroup(fmt.Sprintf("【到期提醒】租户「%s」(%s) 将于 %s 到期（剩%d天），请联系续费",
 				t.Name, t.Code, t.ExpiredAt.Format("2006-01-02"), daysLeft))
 			db.DB.Create(&model.TenantAuditLog{
 				TenantID: t.ID, Action: b.action, Resource: fmt.Sprintf("tenant:%d", t.ID),

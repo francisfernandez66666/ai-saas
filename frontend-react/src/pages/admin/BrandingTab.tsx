@@ -8,6 +8,7 @@ type BrandForm = {
   favicon_url: string; primary_color: string; secondary_color: string
 }
 
+/** 品牌白标配置 Tab：编辑租户展示名、Logo 和主题色。 */
 export function BrandingTab() {
   const [f, setF] = useState<BrandForm>({ custom_domain: '', brand_name: '', brand_link: '', logo_url: '', favicon_url: '', primary_color: '', secondary_color: '' })
   const [msg, setMsg] = useState('')

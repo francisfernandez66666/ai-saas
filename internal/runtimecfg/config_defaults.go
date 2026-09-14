@@ -1,6 +1,6 @@
 // 默认配置定义与平台级键清单（D2a 文件拆分 2026-09-12，自 system_config_service.go 迁出，不改行为）
 // 本文件只放"数据表"（默认值/退役键/平台级键），运行时读写逻辑留在 system_config_service.go。
-package service
+package runtimecfg
 
 import (
 	"ai-scrm/internal/model"

@@ -1,8 +1,8 @@
 // Package realtime WebSocket 实时推送中枢（P1-2，2026-08-29）
 //
 // 设计：仅推送"该客户有新消息"通知信号，前端收到即触发已有拉取（保留轮询作兜底），
-// 最小化对既有可用对话链路的侵入。多实例下每实例独立 hub（推送仅本实例连接者收到，
-// 跨实例覆盖由既有 Redis 锁/合并队列保证最终一致——实时性为体验增强，非强一致依赖）。
+// 最小化对既有可用对话链路的侵入。多实例下本地 hub 命中即投，并通过 Redis 广播旁路
+// 让其它实例补齐连接；Redis 未启用时自动退化为单机语义（轮询仍是最终兜底）。
 package realtime
 
 import (
@@ -129,26 +129,32 @@ func (h *Hub) StartSweeper() {
 	}()
 }
 
-// Publish 向租户内相关订阅者推送：所有顾问端 + 指定客户端连接
-// 顾问端可见本租户全部客户消息（RQ 隔离语义一致）；客户端仅收到自身 customerID 的推送
-func (h *Hub) Publish(ev RealtimeEvent, payload []byte) {
+// deliver 按租户/客户路由把已序列化 payload 投递给本实例连接。
+func (h *Hub) deliver(tenantID, customerID uint, data []byte) {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for cl := range h.clients {
-		if cl.TenantID != ev.TenantID {
+		if cl.TenantID != tenantID {
 			continue
 		}
 		hit := cl.UserID != 0 // 顾问端全收
-		if !hit && cl.CustomerID == ev.CustomerID && ev.CustomerID != 0 {
+		if !hit && cl.CustomerID == customerID && customerID != 0 {
 			hit = true // 该客户端连接
 		}
 		if hit {
 			select {
-			case cl.send <- payload:
+			case cl.send <- data:
 			default: // 发送缓冲满则丢弃（轮询兜底保证最终到达）
 			}
 		}
 	}
+}
+
+// Publish 向租户内相关订阅者推送：所有顾问端 + 指定客户端连接
+// 顾问端可见本租户全部客户消息（RQ 隔离语义一致）；客户端仅收到自身 customerID 的推送
+func (h *Hub) Publish(ev RealtimeEvent, payload []byte) {
+	h.deliver(ev.TenantID, ev.CustomerID, payload)
+	h.broadcast(ev.TenantID, ev.CustomerID, payload)
 }
 
 // ============================================================
@@ -178,33 +184,12 @@ type RealtimeMessage struct {
 // PublishWithContent 向租户内相关订阅者推送消息内容（P1-1）
 // 与 Publish 类似，但 payload 包含完整消息体，前端收到即更新本地状态
 func (h *Hub) PublishWithContent(ev RealtimeMessage) {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	// P2-70 修复：先筛选命中订阅者，命中后才序列化一次、全部复用同一份 data——
-	// 原实现每个命中订阅者都 jsonMarshal 一次（N 订阅者=N 次重复序列化）。
-	var data []byte
-	for cl := range h.clients {
-		if cl.TenantID != ev.TenantID {
-			continue
-		}
-		hit := cl.UserID != 0 // 顾问端全收
-		if !hit && cl.CustomerID == ev.CustomerID && ev.CustomerID != 0 {
-			hit = true // 该客户端连接
-		}
-		if hit {
-			if data == nil {
-				d, err := jsonMarshal(ev)
-				if err != nil {
-					return
-				}
-				data = d
-			}
-			select {
-			case cl.send <- data:
-			default: // 发送缓冲满则丢弃（轮询兜底保证最终到达）
-			}
-		}
+	data, err := jsonMarshal(ev)
+	if err != nil {
+		return
 	}
+	h.deliver(ev.TenantID, ev.CustomerID, data)
+	h.broadcast(ev.TenantID, ev.CustomerID, data)
 }
 
 // PublishTyping 向租户内相关订阅者推送"正在输入"状态（P1-1）

@@ -1,7 +1,12 @@
 // 订单生命周期（D2a 文件拆分 2026-09-12）：下单、到账幂等发放、迟到到账复活、渠道确认。
-package service
+package billing
+
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/notify"
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
 	"fmt"
 	"log"
@@ -14,6 +19,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// GenerateOrderNo 生成全局唯一支付订单号。
 func GenerateOrderNo() string {
 	b := make([]byte, 4)
 	rand.Read(b)
@@ -65,7 +71,7 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 	switch payMode {
 	case "static_qr":
 		order.Channel = "manual"
-		qrContent = DefaultSystemConfigService.GetString("static_qr_image", "")
+		qrContent = runtimecfg.DefaultSystemConfigService.GetString("static_qr_image", "")
 	case "sdk":
 		// 真实支付网关：向 PSP 下单，把返回的支付 URL 作为收银台凭证
 		prov, err := selectProvider()
@@ -87,7 +93,7 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 
 	// P2-2 RLS热路径接入：订单创建放事务内激活租户隔离（billing_orders 属租户表）
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		if r := SetTenantRLS(tx, tenantID); r.Error != nil {
+		if r := db.SetTenantRLS(tx, tenantID); r.Error != nil {
 			return r.Error
 		}
 		// R11 修复(2026-09-11)：升级抵扣计算（ActivePaidSubscription）是无锁读——并发下两单
@@ -184,7 +190,7 @@ func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, err
 		}
 		return &o, false, nil
 	}
-	IncPaymentPaid() // P1-2：支付成功计数（成功率分母）
+	metrics.IncPaymentPaid() // P1-2：支付成功计数（成功率分母）
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
@@ -220,9 +226,9 @@ func ReopenClosedOrderPaid(orderID uint, channel string) (*model.BillingOrder, b
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
 	}
-	IncPaymentPaid()
+	metrics.IncPaymentPaid()
 	log.Printf("[Billing][WARN] 订单%s 超时关闭后迟到到账，已自动恢复 paid 并补发权益 channel=%s", o.OrderNo, channel)
-	NotifyGroup(fmt.Sprintf("【迟到到账】订单 %s（%d分）超时关闭后收到 %s 渠道到账，已自动恢复发放，请财务复核", o.OrderNo, o.AmountCents, channel))
+	notify.NotifyGroup(fmt.Sprintf("【迟到到账】订单 %s（%d分）超时关闭后收到 %s 渠道到账，已自动恢复发放，请财务复核", o.OrderNo, o.AmountCents, channel))
 	return &o, true, nil
 }
 

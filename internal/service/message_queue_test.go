@@ -2,6 +2,7 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"testing"
 	"time"
 
@@ -121,9 +122,9 @@ func TestSweepIdleQueuesRecentlyActive(t *testing.T) {
 
 // TestGetProcessingLockTimeout 测试 processing 锁超时配置
 func TestGetProcessingLockTimeout(t *testing.T) {
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{}}
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{}, nil)
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
 	timeout := getProcessingLockTimeout(1)
 	if timeout != 600*time.Second {

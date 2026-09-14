@@ -5,8 +5,10 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/logx"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/redisclient"
+	"ai-scrm/internal/runtimecfg"
 	"fmt"
 	"log"
 	"strconv"
@@ -68,7 +70,7 @@ type CustomerQueue struct {
 // 上调到 600s 后，自愈仅在 goroutine 真正死掉（如连接断开但 sleep 未结束）时触发，
 // 触发后清空残留消息是安全回收（死 goroutine 不会再处理它们），避免重复/乱序回复。
 func getProcessingLockTimeout(tenantID uint) time.Duration {
-	sec := DefaultSystemConfigService.GetIntForTenant(tenantID, "processing_lock_timeout", 600)
+	sec := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "processing_lock_timeout", 600)
 	return time.Duration(sec) * time.Second
 }
 
@@ -90,6 +92,16 @@ type MessageQueueService struct {
 
 // DefaultMessageQueueService 全局实例
 var DefaultMessageQueueService = NewMessageQueueService()
+
+// init 将队列观测口径注册给 metrics 包，保持 metrics -> service 零反向依赖。
+func init() {
+	metrics.SetQueueDepthProvider(func() int {
+		if DefaultMessageQueueService == nil {
+			return 0
+		}
+		return DefaultMessageQueueService.ActiveQueueCount()
+	})
+}
 
 // ActiveQueueCount 当前 processing 中的队列数（/status 观测用，商业化 M4）
 func (s *MessageQueueService) ActiveQueueCount() int {
@@ -546,7 +558,7 @@ func (s *MessageQueueService) absorbRemotePending(k string, q *CustomerQueue) {
 func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedContent string, mergeWaitDuration time.Duration) {
 	// 修复：合并窗口从25秒合并窗口，fallback值同步更新
 	// 用户明确要求：客户连发消息时，30秒滑动窗口合并，最多3条
-	mergeWindow := time.Duration(DefaultSystemConfigService.GetIntForTenant(tidFromKey(k), "merge_window_seconds", 25)) * time.Second
+	mergeWindow := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(tidFromKey(k), "merge_window_seconds", 25)) * time.Second
 	maxMerge := config.GlobalConfig.ReplySpeed.MaxMergeMessages
 
 	// 记录合并等待起始时间，用于计算延迟偏移
@@ -653,6 +665,7 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 // P1-19 修复(2026-09-09)：新增 epoch 参数做代际 fencing——自愈清锁后原处理者若只是慢（600s+ 后返回），
 // 不可能持有当前代际号，其 SetReply 会被丢弃，杜绝旧处理者覆盖新批次状态/释放新处理者的 Redis 锁。
 // signature: SetReply(tenantID, customerID, epoch, reply)
+// SetReply 写入客户合并队列的生成结果并唤醒等待请求。
 func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uint64, reply string) {
 	k := queueKey(tenantID, customerID)
 	q := s.getQueue(k)

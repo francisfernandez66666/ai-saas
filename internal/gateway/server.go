@@ -12,6 +12,8 @@
 // （2026-09-03 计费统一：ConsumeAIQuota 已降级为统计旁路恒 true，不再作为拦截闸。）
 package gateway
 
+import "ai-scrm/internal/billing"
+
 import (
 	"crypto/hmac"
 	"crypto/sha256"
@@ -165,9 +167,9 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 
 	// 1. 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计计数），
 	//    真正的 fail-closed 闸是下方 CheckTokenAvailability（三桶前置检查）+ SinkRecordUsage（批量扣减）
-	service.ConsumeAIQuota(tenantID)
+	billing.ConsumeAIQuota(tenantID)
 	// 1b. Token 三桶前置检查（防零余额仍消耗厂商额度）：与本地 chat_reply 同口径
-	if !service.CheckTokenAvailability(tenantID) {
+	if !billing.CheckTokenAvailability(tenantID) {
 		c.JSON(http.StatusForbidden, gin.H{
 			"error": gin.H{"message": "AI 额度余额不足，请充值或升级套餐"},
 			"code":  "token_insufficient",
@@ -187,10 +189,10 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	}
 
 	// 3. 计量落账 + 三桶扣减（与本地同链路，但此处为唯一计量方）
-	service.RecordUsage(tenantID, 0, 0, stage, provider, modelName,
+	billing.RecordUsage(tenantID, 0, 0, stage, provider, modelName,
 		usage.PromptTokens, usage.CompletionTokens, time.Since(start).Milliseconds())
 	// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库
-	service.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
+	billing.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
 
 	// 4. 素材采集（脱敏对话异步回流，供数据飞轮；未配置 Collector.URL 自动跳过）
 	go s.collectMaterial(tenantID, stage, req.Messages, reply)
@@ -256,8 +258,8 @@ func (s *Server) handleEmbeddings(c *gin.Context) {
 	// P1-35 修复(2026-09-09)：向量化也消耗配额，必须过三桶前置闸——
 	// 否则零余额租户对话被拦但 embedding 照调厂商，绕过计费。
 	// 与 handleChatCompletions 同口径：不足返回 HTTP 429 + token_insufficient。
-	service.ConsumeAIQuota(tenantID)
-	if !service.CheckTokenAvailability(tenantID) {
+	billing.ConsumeAIQuota(tenantID)
+	if !billing.CheckTokenAvailability(tenantID) {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error": gin.H{"message": "AI 额度余额不足，请充值或升级套餐"},
 			"code":  "token_insufficient",
@@ -272,9 +274,9 @@ func (s *Server) handleEmbeddings(c *gin.Context) {
 		totalTok += len([]rune(t)) / 2 // 粗略估算 token（P2-18 可换 tiktoken 精确口径）
 		data = append(data, gin.H{"object": "embedding", "index": i, "embedding": vec})
 	}
-	service.RecordUsage(tenantID, 0, 0, "embedding", "embedding", req.Model, totalTok, 0, 0)
+	billing.RecordUsage(tenantID, 0, 0, "embedding", "embedding", req.Model, totalTok, 0, 0)
 	// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库
-	service.SinkRecordUsage(tenantID, int64(totalTok))
+	billing.SinkRecordUsage(tenantID, int64(totalTok))
 
 	// 响应头回显估算口径（P1-35：token 估算透明化，避免客户端误以为精确计费）
 	c.Header("X-Token-Estimate", fmt.Sprintf("rough:%s_proxy:%d", "len/2", totalTok))

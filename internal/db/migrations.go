@@ -187,6 +187,7 @@ func MigrateDownFrom(gdb *gorm.DB, fsys fs.FS, steps int) error {
 	return nil
 }
 
+// containsStr 判断字符串切片是否包含目标值。
 func containsStr(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

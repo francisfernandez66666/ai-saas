@@ -6,21 +6,25 @@ import { AUTH } from '../../lib/api'
 import type { CellProps, FlowEdge, FlowNode, TableRowData } from '../../types'
 import type { Cfg } from './shared'
 
+/** 生成流程画布节点样式。 */
 const nodeStyle = (c: string): React.CSSProperties => ({ minWidth: 120, padding: '10px 14px', borderRadius: 10, color: '#fff', textAlign: 'center', fontSize: 13, fontWeight: 600, background: c })
 const ROUTE_OPTS = [{ label: 'ai', value: 'ai' }, { label: 'human', value: 'human' }, { label: 'fish', value: 'fish' }, { label: 'pending_human', value: 'pending_human' }]
 
+/** 解析流程配置中的 JSON 数组。 */
 function parseJsonArray(raw: unknown): any[] {
   if (Array.isArray(raw)) return raw
   if (typeof raw !== 'string' || !raw.trim()) return []
   try { const v = JSON.parse(raw); return Array.isArray(v) ? v : [] } catch { return [] }
 }
 
+/** 生成流程节点中文展示标签。 */
 function flowNodeLabel(row: CrudRow, id: unknown) {
   const nodes = parseJsonArray(row.nodes_json) as FlowNode[]
   const node = nodes.find((n) => String(n.id) === String(id))
   return node?.name || node?.id || String(id || '-')
 }
 
+/** 根据流程实例状态计算进度条比例。 */
 function progressFor(row: CrudRow) {
   const nodes = parseJsonArray(row.nodes_json) as FlowNode[]
   const executed = parseJsonArray(row.executed_nodes) as string[]
@@ -29,6 +33,7 @@ function progressFor(row: CrudRow) {
   return Math.min(100, Math.round((done / total) * 100))
 }
 
+/** 把流程状态映射为展示主题色。 */
 function statusTheme(status: unknown) {
   if (status === 'completed' || status === 'paid' || status === 1) return 'success'
   if (status === 'failed' || status === 'closed' || status === 'archived') return 'danger'
@@ -36,6 +41,7 @@ function statusTheme(status: unknown) {
   return 'primary'
 }
 
+/** 流程引擎 Tab：查看流程定义、节点和实例状态。 */
 export function FlowEngineTab({ configs }: { configs: Cfg[] }) {
   const [defs, setDefs] = useState<CrudRow[]>([])
   const [instances, setInstances] = useState<CrudRow[]>([])

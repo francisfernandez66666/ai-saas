@@ -2,6 +2,7 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"log"
 	"time"
 
@@ -14,8 +15,8 @@ import (
 // 保留天数可用 system_configs 覆盖：mq_audit_retention_days / mq_inbox_retention_days。
 // 条件 DELETE 幂等，多实例由调用方 Redis 选主兜底。
 func CleanupMQTables() int {
-	auditDays := DefaultSystemConfigService.GetInt("mq_audit_retention_days", 30)
-	inboxDays := DefaultSystemConfigService.GetInt("mq_inbox_retention_days", 90)
+	auditDays := runtimecfg.DefaultSystemConfigService.GetInt("mq_audit_retention_days", 30)
+	inboxDays := runtimecfg.DefaultSystemConfigService.GetInt("mq_inbox_retention_days", 90)
 
 	total := 0
 

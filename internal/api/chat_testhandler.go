@@ -1,6 +1,8 @@
 // 对话测试API：免登录测试入口与 mock 对话 handler。
 package api
 
+import "ai-scrm/internal/pii"
+
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
 // 含会话竞态保护、四层分流(硬边界/到店快速通道/简单消息/合并队列)、延迟清零、留资检测与OneID合并。
 
@@ -15,6 +17,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"context"
@@ -114,7 +117,7 @@ func ChatTest(c *gin.Context) {
 	// 第一层：硬边界拦截（0延迟，不走AI，不进队列）
 	if service.IsOffTopicForTenant(tenantID, req.Content) {
 		reply := service.GetOffTopicReplyForTenant(tenantID, req.Content)
-		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
+		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, pii.MaskPhoneInText(req.Content), pii.MaskPhoneInText(reply))
 		// 查找或创建活跃会话
 		var conv model.Conversation
 		if err := db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
@@ -227,7 +230,7 @@ func ChatTest(c *gin.Context) {
 		if phoneMatchTest != "" {
 			// ====== 分支B：已留资线索（硬编码） ======
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 消息含手机号%s，走已留资硬编码路径",
-				customer.ID, service.MaskPhone(phoneMatchTest))
+				customer.ID, pii.MaskPhone(phoneMatchTest))
 
 			// 0. OneID合并：手机号匹配到老客户时，迁移所有数据
 			mergedTargetIDTest := chatflow.MergeCustomerByPhone(&customer, phoneMatchTest)
@@ -289,7 +292,7 @@ func ChatTest(c *gin.Context) {
 				}
 			}
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
-				customer.ID, service.MaskPhone(phoneMatchTest), customer.AssignedUserID)
+				customer.ID, pii.MaskPhone(phoneMatchTest), customer.AssignedUserID)
 			// P3：到店分支留资事件上行（ChatTest 路径）
 			if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
@@ -307,7 +310,7 @@ func ChatTest(c *gin.Context) {
 				UserID:         customer.AssignedUserID,
 				Type:           "ai_triggered",
 				Method:         "store",
-				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", service.MaskPhone(phoneMatchTest), service.MaskPhoneInText(req.Content)),
+				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", pii.MaskPhone(phoneMatchTest), pii.MaskPhoneInText(req.Content)),
 				Result:         "lead_captured",
 			}
 			db.RQ(c).Create(&followUp)
@@ -316,7 +319,7 @@ func ChatTest(c *gin.Context) {
 
 			// 3. 通知顾问
 			log.Printf("[通知顾问-测试接口] 顾问%d 有新的已留资到店线索：客户%d，手机号%s",
-				customer.AssignedUserID, customer.ID, service.MaskPhone(phoneMatchTest))
+				customer.AssignedUserID, customer.ID, pii.MaskPhone(phoneMatchTest))
 
 			// 4. 标记待人工接管，留1轮引导式反问（下一条AI回复时抛）
 			// 顺序：先发确认语→客户继续聊→AI再抛反问句
@@ -457,7 +460,7 @@ skipStoreVisitFastTest:
 		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
 		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
 		// 修复问题2：instant模式下简单消息跳过延迟直接回复
-		replyDelayMode := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+		replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 		if replyDelayMode != "instant" {
 			// 修复：简单消息不能秒回，加20-45秒随机延迟
 			simpleDelay := service.GetSimpleReplyDelay()
@@ -612,9 +615,9 @@ skipStoreVisitFastTest:
 	_ = attribution.MarkHookedBeforeMessage(tenantID, conversation.ID, testCustomerMsgID)
 
 	// ---- 人工接管模式：顾问超时未回则AI回复，已回则跳过AI ----
-	aiTimeout := service.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
+	aiTimeout := runtimecfg.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
 	aiTimeoutDur := time.Duration(aiTimeout) * time.Second
-	aiAutoReply := service.DefaultSystemConfigService.GetBool("assigned_lead_ai_auto_reply", true)
+	aiAutoReply := runtimecfg.DefaultSystemConfigService.GetBool("assigned_lead_ai_auto_reply", true)
 
 	if conversation.Mode == "human" && conversation.IsHumanLocked {
 		// IsAiReplyEnabled=false → 单人模式，仅顾问回复
@@ -785,7 +788,7 @@ skipStoreVisitFastTest:
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
-	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
+	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, pii.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 
 	// 胡搅蛮缠：总非车话题>10且最近未恢复→回复速度降到3分钟一次
@@ -817,7 +820,7 @@ skipStoreVisitFastTest:
 
 	log.Printf("[ChatTest] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
 	// 修复问题2：instant模式跳过CancellableSleep，秒回无延迟
-	replyDelayMode := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 	if replyDelayMode == "instant" {
 		log.Printf("[ChatTest] 客户%d instant模式，跳过延迟直接回复", customer.ID)
 	} else {
@@ -920,8 +923,8 @@ skipStoreVisitFastTest:
 		},
 		"urgency_level":      strategyOutput.UrgencyLevel,
 		"intent_delta":       strategyOutput.IntentDelta,
-		"is_ai_mode":         !config.GlobalConfig.AI.MockMode && !service.DefaultSystemConfigService.GetBool("mock_mode", false) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)), // P2-25 修复：真实AI=!全局Mock && !系统Mock && 有Key，与 chat_reply.go:84-86 判定对齐
-		"merged_customer_id": testLeadResult,                                                                                                                                                                                                        // OneID合并：>0表示前端需切换customer_id
+		"is_ai_mode":         !config.GlobalConfig.AI.MockMode && !runtimecfg.DefaultSystemConfigService.GetBool("mock_mode", false) && (ai.DefaultClient.APIKey != "" || (ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled)), // P2-25 修复：真实AI=!全局Mock && !系统Mock && 有Key，与 chat_reply.go:84-86 判定对齐
+		"merged_customer_id": testLeadResult,                                                                                                                                                                                                           // OneID合并：>0表示前端需切换customer_id
 	})
 }
 

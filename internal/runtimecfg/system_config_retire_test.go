@@ -5,7 +5,7 @@
 //  1. DefaultConfigs 不再包含任何已停用键（新装环境不会写入死配置）；
 //  2. retiredConfigKeys 清单与 DefaultConfigs 无交集（不误删仍在用的键）；
 //  3. 仍有意义的回复速度键（合并窗口/简单延迟/到店两段式/处理锁超时/延迟模式）必须保留。
-package service
+package runtimecfg
 
 import (
 	"testing"

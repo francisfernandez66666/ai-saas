@@ -5,21 +5,37 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { getToken, verifySession } from './lib/api'
+/** 导航落地页懒加载入口。 */
 const Index = lazy(() => import('./pages/Index'))
+/** 登录页懒加载入口。 */
 const Login = lazy(() => import('./pages/Login'))
+/** 注册页懒加载入口。 */
 const Register = lazy(() => import('./pages/Register'))
+/** 用户协议页懒加载入口。 */
 const UserAgreement = lazy(() => import('./pages/UserAgreement'))
+/** 隐私政策页懒加载入口。 */
 const PrivacyPolicy = lazy(() => import('./pages/PrivacyPolicy'))
+/** 后台管理页懒加载入口。 */
 const Admin = lazy(() => import('./pages/Admin'))
+/** 平台超管页懒加载入口。 */
 const SuperAdmin = lazy(() => import('./pages/SuperAdmin'))
+/** 顾问工作台懒加载入口。 */
 const Advisor = lazy(() => import('./pages/Advisor'))
+/** 客户端对话页懒加载入口。 */
 const Client = lazy(() => import('./pages/Client'))
+/** 收银台页面懒加载入口。 */
 const Billing = lazy(() => import('./pages/Billing'))
+/** 组织架构页面懒加载入口。 */
 const Org = lazy(() => import('./pages/Org'))
+/** 定价页懒加载入口。 */
 const Pricing = lazy(() => import('./pages/Pricing'))
+/** 移动端工作台首页懒加载入口。 */
 const AppHome = lazy(() => import('./pages/AppHome'))
+/** 移动端邀请页懒加载入口。 */
 const AppReferral = lazy(() => import('./pages/AppReferral'))
+/** 移动端设置页懒加载入口。 */
 const AppSettings = lazy(() => import('./pages/AppSettings'))
+/** 移动端共享布局懒加载入口。 */
 const AppLayout = lazy(() => import('./pages/AppLayout'))
 
 // ============================================================
@@ -131,6 +147,7 @@ export default function App() {
   )
 }
 
+/** 路由懒加载占位组件，避免大页面切换时白屏。 */
 function RouteLoading() {
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa' }}>

@@ -39,12 +39,15 @@ type wxPlainMessage struct {
 	ExternalUserID string `xml:"ExternalUserID"` // 客服/外部联系人事件里的外部号
 }
 
+// init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wecomAppAdapter{}) }
 
 type wecomAppAdapter struct{}
 
+// Type 返回企微自建应用通道适配器类型。
 func (wecomAppAdapter) Type() string { return model.ChannelTypeWecomApp }
 
+// newCrypt 构造微信消息加解密器。
 func (wecomAppAdapter) newCrypt(cred *Credential) (*wxcrypt.Crypt, error) {
 	return wxcrypt.New(cred.Token, cred.Encoding, cred.ReceiveID())
 }
@@ -86,6 +89,7 @@ func (wecomAppAdapter) DecryptInbound(cred *Credential, timestamp, nonce, msgSig
 	}, nil
 }
 
+// VerifyURLEcho 校验回调签名并回显 URL。
 func (wecomAppAdapter) VerifyURLEcho(cred *Credential, msgSignature, timestamp, nonce, echostr string) (string, error) {
 	c, err := wxcrypt.New(cred.Token, cred.Encoding, cred.ReceiveID())
 	if err != nil {

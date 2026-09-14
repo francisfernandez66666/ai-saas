@@ -1,9 +1,9 @@
 // 平台级健康监控：返回结构化探针（DB/合并队列深度/24h严重事件/goroutine），含阈值分级与告警态，供超管哨兵使用。
 package api
 
-import (
-	"ai-scrm/internal/service"
+import "ai-scrm/internal/metrics"
 
+import (
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,8 +19,9 @@ SuperMonitorHealth 平台级健康探测详情（P1-4，2026-08-29）
 
 阈值分级与告警态用于快速定位系统瓶颈。
 */
+// SuperMonitorHealth 供平台超管查看服务健康快照。
 func SuperMonitorHealth(c *gin.Context) {
 	// 调用 service 层计算平台健康快照（聚合多维度指标）
-	snap := service.ComputeHealth()
+	snap := metrics.ComputeHealth()
 	respOK(c, snap)
 }

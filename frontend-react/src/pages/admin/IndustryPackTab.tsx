@@ -58,6 +58,7 @@ type PackEffectRow = PackTemplateStat & {
   lead_delta?: number
 }
 
+/** 把部门树扁平化为级联选择器可用的 options。 */
 function flattenDepts(nodes: DeptNode[]): { label: string; value: number }[] {
   const out: { label: string; value: number }[] = []
   const walk = (list: DeptNode[]) => {
@@ -70,18 +71,22 @@ function flattenDepts(nodes: DeptNode[]): { label: string; value: number }[] {
   return out
 }
 
+/** 生成行业包展示标签，包含包名、版本和层级。 */
 function packLabel(p: Pack) {
   return `${p.name} ${p.version}（${p.code}）`
 }
 
+/** 把行业包发布状态转换为中文标签。 */
 function statusLabel(level: string) {
   return level === 'industry' ? '行业包' : level === 'enterprise' ? '企业包' : level === 'department' ? '部门包' : level || '包'
 }
 
+/** 把比例值格式化为百分比字符串。 */
 function formatPercent(v: number) {
   return `${(Number(v || 0) * 100).toFixed(1)}%`
 }
 
+/** 拆分语义化版本号数字段。 */
 function parseVersionParts(v: string): number[] {
   return String(v || '').split('.').map((x) => {
     const n = Number(x)
@@ -89,6 +94,7 @@ function parseVersionParts(v: string): number[] {
   })
 }
 
+/** 比较两个行业包版本号大小。 */
 function compareVersion(a: string, b: string): number {
   const pa = parseVersionParts(a)
   const pb = parseVersionParts(b)

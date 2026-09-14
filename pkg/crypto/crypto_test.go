@@ -22,6 +22,7 @@ func setKey(t *testing.T, v string) {
 	})
 }
 
+// TestEncryptDecryptRoundTrip 覆盖 EncryptDecryptRoundTrip 相关行为与边界。
 func TestEncryptDecryptRoundTrip(t *testing.T) {
 	setKey(t, testKey)
 	secret := "wecom_corp_secret_@@中文123"
@@ -44,6 +45,7 @@ func TestEncryptDecryptRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncryptNonceUnique 覆盖 EncryptNonceUnique 相关行为与边界。
 func TestEncryptNonceUnique(t *testing.T) {
 	setKey(t, testKey)
 	a, _ := Encrypt("same-plain")
@@ -53,6 +55,7 @@ func TestEncryptNonceUnique(t *testing.T) {
 	}
 }
 
+// TestEncryptEmpty 覆盖 EncryptEmpty 相关行为与边界。
 func TestEncryptEmpty(t *testing.T) {
 	setKey(t, testKey)
 	if got, err := Encrypt(""); err != nil || got != "" {
@@ -63,6 +66,7 @@ func TestEncryptEmpty(t *testing.T) {
 	}
 }
 
+// TestKeyNotConfiguredFailClosed 覆盖 KeyNotConfiguredFailClosed 相关行为与边界。
 func TestKeyNotConfiguredFailClosed(t *testing.T) {
 	setKey(t, "")
 	if _, err := Encrypt("x"); err == nil {
@@ -74,6 +78,7 @@ func TestKeyNotConfiguredFailClosed(t *testing.T) {
 	}
 }
 
+// TestKeyRotationYieldsDecryptError 覆盖 KeyRotationYieldsDecryptError 相关行为与边界。
 func TestKeyRotationYieldsDecryptError(t *testing.T) {
 	setKey(t, testKey)
 	ct, _ := Encrypt("to-be-lost")
@@ -84,6 +89,7 @@ func TestKeyRotationYieldsDecryptError(t *testing.T) {
 	}
 }
 
+// TestDecryptLegacyPlainPassthrough 覆盖 DecryptLegacyPlainPassthrough 相关行为与边界。
 func TestDecryptLegacyPlainPassthrough(t *testing.T) {
 	setKey(t, testKey)
 	// 非 gcm1: 前缀视为历史明文，原样返回（不报错，供平滑迁移）
@@ -92,6 +98,7 @@ func TestDecryptLegacyPlainPassthrough(t *testing.T) {
 	}
 }
 
+// TestTamperedCiphertextRejected 覆盖 TamperedCiphertextRejected 相关行为与边界。
 func TestTamperedCiphertextRejected(t *testing.T) {
 	setKey(t, testKey)
 	ct, _ := Encrypt("integrity-check")
@@ -103,6 +110,7 @@ func TestTamperedCiphertextRejected(t *testing.T) {
 	}
 }
 
+// TestMaskSecret 覆盖 MaskSecret 相关行为与边界。
 func TestMaskSecret(t *testing.T) {
 	cases := map[string]string{
 		"":                 "",

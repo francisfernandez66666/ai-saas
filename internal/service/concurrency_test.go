@@ -21,6 +21,7 @@ type mockTenantBilling struct {
 	mu            sync.Mutex
 }
 
+// deduct 模拟扣减余额。
 func (m *mockTenantBilling) deduct(tokens int) (fromFree, fromMonthly, fromBalance int) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -68,6 +69,7 @@ func (m *mockTenantBilling) deduct(tokens int) (fromFree, fromMonthly, fromBalan
 	return
 }
 
+// TestThreeBucketDeductionOrder 覆盖 ThreeBucketDeductionOrder 相关行为与边界。
 func TestThreeBucketDeductionOrder(t *testing.T) {
 	// 三桶都有余额，扣 50 token
 	// free=30 → 扣30, rem=20 → monthly=100 → 扣20, rem=0 → balance 不扣
@@ -82,6 +84,7 @@ func TestThreeBucketDeductionOrder(t *testing.T) {
 	}
 }
 
+// TestThreeBucketFreeExhaustedFallsToMonthly 覆盖 ThreeBucketFreeExhaustedFallsToMonthly 相关行为与边界。
 func TestThreeBucketFreeExhaustedFallsToMonthly(t *testing.T) {
 	// free 耗尽，扣减应走 monthly → balance
 	b := &mockTenantBilling{freeBalance: 0, monthlyQuota: 100, monthlyUsed: 0, tokenBalance: 200}
@@ -91,6 +94,7 @@ func TestThreeBucketFreeExhaustedFallsToMonthly(t *testing.T) {
 	}
 }
 
+// TestThreeBucketMonthlyExhaustedFallsToBalance 覆盖 ThreeBucketMonthlyExhaustedFallsToBalance 相关行为与边界。
 func TestThreeBucketMonthlyExhaustedFallsToBalance(t *testing.T) {
 	// free + monthly 都耗尽，走 balance
 	b := &mockTenantBilling{freeBalance: 0, monthlyQuota: 100, monthlyUsed: 100, tokenBalance: 200}
@@ -100,6 +104,7 @@ func TestThreeBucketMonthlyExhaustedFallsToBalance(t *testing.T) {
 	}
 }
 
+// TestThreeBucketAllEmptyNoNegative 覆盖 ThreeBucketAllEmptyNoNegative 相关行为与边界。
 func TestThreeBucketAllEmptyNoNegative(t *testing.T) {
 	// 三桶全空，不应产生负数
 	b := &mockTenantBilling{freeBalance: 0, monthlyQuota: 100, monthlyUsed: 100, tokenBalance: 0}
@@ -109,6 +114,7 @@ func TestThreeBucketAllEmptyNoNegative(t *testing.T) {
 	}
 }
 
+// TestThreeBucketFreeExpiredFallsToMonthly 覆盖 ThreeBucketFreeExpiredFallsToMonthly 相关行为与边界。
 func TestThreeBucketFreeExpiredFallsToMonthly(t *testing.T) {
 	// free 有余额但已过期，应跳过 free
 	past := time.Now().Add(-time.Hour)
@@ -166,6 +172,7 @@ type mockEpochQueue struct {
 	processing bool
 }
 
+// bool 提供当前包的辅助逻辑。
 func (q *mockEpochQueue) setReply(reply string, epoch uint64) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -177,6 +184,7 @@ func (q *mockEpochQueue) setReply(reply string, epoch uint64) bool {
 	return true
 }
 
+// TestEpochFencingStaleRejected 覆盖 EpochFencingStaleRejected 相关行为与边界。
 func TestEpochFencingStaleRejected(t *testing.T) {
 	q := &mockEpochQueue{epoch: 5}
 	// 旧 epoch 写入应被拒绝
@@ -195,6 +203,7 @@ func TestEpochFencingStaleRejected(t *testing.T) {
 	}
 }
 
+// TestEpochFencingIncrement 覆盖 EpochFencingIncrement 相关行为与边界。
 func TestEpochFencingIncrement(t *testing.T) {
 	q := &mockEpochQueue{epoch: 1}
 	// epoch 1 成功
@@ -317,6 +326,7 @@ type mockRefundable struct {
 	refundCount int
 }
 
+// bool 提供当前包的辅助逻辑。
 func (m *mockRefundable) deduct(amount int) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -329,6 +339,7 @@ func (m *mockRefundable) deduct(amount int) bool {
 	return false
 }
 
+// bool 提供当前包的辅助逻辑。
 func (m *mockRefundable) refund(amount int) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -342,6 +353,7 @@ func (m *mockRefundable) refund(amount int) bool {
 	return false
 }
 
+// TestRefundVsDeductRace 覆盖 RefundVsDeductRace 相关行为与边界。
 func TestRefundVsDeductRace(t *testing.T) {
 	// 并发扣减+退款，余额不应为负
 	m := &mockRefundable{balance: 100}

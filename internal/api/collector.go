@@ -45,6 +45,7 @@ POST /api/v1/collector
 参数：请求体 JSON 格式 {"events": [...]}
 返回：{"accepted": 已接受数, "total": 总请求数}
 */
+// CollectorReceive 接收数据飞轮批量上报并完成脱敏入库。
 func CollectorReceive(c *gin.Context) {
 	// fail-closed 设计：未配置 Key 时拒绝所有请求
 	key := config.GlobalConfig.Collector.Key

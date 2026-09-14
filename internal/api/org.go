@@ -32,6 +32,7 @@ OrgManageRequired 组织管理入口守卫中间件，控制对组织架构管�
 仅允许 tenant_admin、dept_admin 和 super_admin 角色访问，其他角色返回403。
 设计决策：采用 fail-closed 策略，未明确授权的角色一律拒绝访问
 */
+// OrgManageRequired 要求当前用户具备组织管理权限。
 func OrgManageRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		role, _ := c.Get("role")
@@ -70,6 +71,7 @@ getOrgScope 从gin.Context中解析操作者的完整作用域信息。
 返回：orgScope结构体，作为租户隔离和权限控制的基石
 设计决策：部门路径(DeptPath)是物化路径，支持高效的子树查询和范围判断
 */
+// getOrgScope 解析当前用户的组织可见范围。
 func getOrgScope(c *gin.Context) orgScope {
 	s := orgScope{TenantID: db.EffectiveTenantIDFromGin(c)}
 	if v, ok := c.Get("role"); ok {
@@ -110,6 +112,7 @@ deptInScope 判断目标部门是否落在操作者的管辖范围内。
 
 返回：bool，true表示目标部门在操作者管辖范围内
 */
+// deptInScope 判断部门路径是否落在授权范围内。
 func deptInScope(s orgScope, deptPath string) bool {
 	if s.Role == model.RoleSuperAdmin || s.Role == model.RoleTenantAdmin {
 		return true
@@ -132,6 +135,7 @@ canAssignRole 判断操作者是否有权分配指定角色给其他用户。
 
 返回：bool，true表示有分配权限
 */
+// canAssignRole 判断操作者是否能把角色分配给目标用户。
 func canAssignRole(operator orgScope, targetRole string) bool {
 	switch operator.Role {
 	case model.RoleSuperAdmin:
@@ -162,6 +166,7 @@ dept_admin只能看到自己管辖的子树，tenant_admin可以看到所有部�
 参数：c - Gin请求上下文，包含操作者作用域信息
 返回：部门树结构，包含每个部门的详细信息、用户数量和子部门列表
 */
+// GetDepartmentTree 返回授权范围内的部门树。
 func GetDepartmentTree(c *gin.Context) {
 	s := getOrgScope(c)
 	var depts []model.Department
@@ -235,6 +240,7 @@ CreateDepartment 处理 POST /org/departments 请求，创建新的部门。
 返回：创建结果，成功后部门树会自动更新
 设计决策：使用事务确保部门记录和物化路径的一致性
 */
+// CreateDepartment 创建部门节点。
 func CreateDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	var req deptCreateReq
@@ -339,6 +345,7 @@ UpdateDepartment 处理 PUT /org/departments/:id 请求，更新部门信息。
 返回：更新结果，移动操作会使用事务确保数据一致性
 设计决策：移动部门时进行防环校验，防止形成循环引用
 */
+// UpdateDepartment 更新部门信息。
 func UpdateDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -440,6 +447,7 @@ DeleteDepartment 处理 DELETE /org/departments/:id 请求，删除指定部门�
 参数：c - Gin请求上下文，包含操作者作用域和部门ID
 返回：删除结果，非空部门会返回409冲突错误
 */
+// DeleteDepartment 删除部门及子部门。
 func DeleteDepartment(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -486,6 +494,7 @@ CreateUser 处理 POST /org/users 请求，在指定部门下创建新用户账�
 返回：创建结果，成功后返回新用户ID
 设计决策：dept_admin不能在自己所在部门任命另一个管理员，防止权限滥用
 */
+// CreateUser 在组织内创建成员账号。
 func CreateUser(c *gin.Context) {
 	s := getOrgScope(c)
 	var req userCreateReq
@@ -579,6 +588,7 @@ UpdateUser 处理 PUT /org/users/:id 请求，更新用户信息。
 返回：更新结果，成功后会触发组织缓存失效确保一致性
 设计决策：不能修改自己的组织信息，防止误操作自锁；平台超管账号不可在此修改
 */
+// UpdateUser 更新组织成员资料与角色。
 func UpdateUser(c *gin.Context) {
 	s := getOrgScope(c)
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -690,6 +700,7 @@ dept_admin只能看到自己管辖子树内的成员，tenant_admin可以看到�
 返回：用户列表，包含用户详细信息、部门名称和创建时间
 设计决策：JOIN查询不走RQ（裸tenant_id歧义），租户条件显式携带
 */
+// GetManagedUsers 返回当前管理者可管理的用户列表。
 func GetManagedUsers(c *gin.Context) {
 	s := getOrgScope(c)
 	type row struct {

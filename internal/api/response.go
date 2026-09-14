@@ -19,6 +19,7 @@ RespOK 统一成功响应
 
 设计说明：code=0 是前端判断成功的唯一标识，语义不可变更。
 */
+// RespOK 返回统一成功响应。
 func RespOK(c *gin.Context, msg string, data interface{}) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": msg, "data": data})
 }
@@ -36,6 +37,7 @@ RespErr 统一错误响应
 
 设计说明：HTTP 状态码与业务码解耦，支持前端按 code 分类 toast。
 */
+// RespErr 返回统一错误响应。
 func RespErr(c *gin.Context, httpStatus, code int, msg string) {
 	// P2-3 错误码全量迁移：存量 handler 的魔数（400/404/409/429/500…）在此统一推导 error_code，
 	// 使前端 toastError 能按语义码精细化提示，无需逐个 handler 迁移。

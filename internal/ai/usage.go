@@ -2,7 +2,7 @@
 package ai
 
 import (
-	"ai-scrm/internal/service"
+	"ai-scrm/internal/runtimecfg"
 )
 
 // ============================================================
@@ -33,11 +33,11 @@ type stageModelOverride struct {
 // ResolveStageModel 解析阶段模型覆盖：stage_models JSON 配置了该阶段且非空则生效
 // 返回 (provider, model, 是否覆盖)。配置缺失/脏数据一律回退全局降级链
 func ResolveStageModel(stage string) (string, string, bool) {
-	if service.DefaultSystemConfigService == nil || stage == "" {
+	if runtimecfg.DefaultSystemConfigService == nil || stage == "" {
 		return "", "", false
 	}
 	var cfg map[string]stageModelOverride
-	if !service.DefaultSystemConfigService.GetJSON("stage_models", &cfg) {
+	if !runtimecfg.DefaultSystemConfigService.GetJSON("stage_models", &cfg) {
 		return "", "", false
 	}
 	o, ok := cfg[stage]

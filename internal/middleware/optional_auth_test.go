@@ -81,6 +81,7 @@ func TestOptionalJWTAuthInvalidToken(t *testing.T) {
 	}
 }
 
+// containsStr 判断字符串是否包含子串。
 func containsStr(haystack, needle string) bool {
 	return len(haystack) >= len(needle) && (func() bool {
 		for i := 0; i+len(needle) <= len(haystack); i++ {

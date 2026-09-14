@@ -1,8 +1,9 @@
 // UsageSink 实时计量单测：影子余额 seed/扣减、批量落库幂等、Invalidate 失效重读。
 // 依赖 DB：经 testutil.SetupTestDB 统一初始化（不可用则自动跳过）。
-package service
+package billing
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"sync"
 	"testing"
 
@@ -72,9 +73,9 @@ func TestSinkFlushBatch(t *testing.T) {
 	defer testutil.CleanupTenant(t, tenant)
 
 	// 关闭强制计费：SinkRecordUsage 应 no-op（token_billing_enabled=false 直接返回）
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{}}
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{}, nil)
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
 	var wg sync.WaitGroup
 	for i := 0; i < 10; i++ {
@@ -88,9 +89,7 @@ func TestSinkFlushBatch(t *testing.T) {
 	// 不 flush 也不 panic 即为通过（总闸关 = 兼容现状）
 
 	// 开引擎但灰度未强制：仅留痕不扣减
-	DefaultSystemConfigService = &SystemConfigService{
-		cache: map[string]string{"token_billing_enabled": "true"},
-	}
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{"token_billing_enabled": "true"}, nil)
 	SinkRecordUsage(tenant, 100)
 	DefaultUsageSink.flush() // 不应 panic；灰度路径 DeductTokensActual 内仅日志
 }

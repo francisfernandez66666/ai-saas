@@ -16,6 +16,7 @@ export type JsonMode = 'numberArray' | 'stringArray' | 'objectArray' | 'plain'
  * @param value 配置值原串（可能非法 JSON）
  * @returns 形态标识；非法 JSON 或非数组一律回退 'plain'
  */
+/** 判断文本应作为 JSON、Markdown 还是普通文本编辑。 */
 export function resolveJsonMode(value: string): JsonMode {
   let parsed: unknown
   try {

@@ -11,6 +11,7 @@ vi.mock('../../lib/api', () => ({
 import { AUTH } from '../../lib/api'
 const authMock = AUTH as ReturnType<typeof vi.fn>
 
+/** useCrud 测试夹具：把 hook 结果暴露给断言。 */
 function Harness({ base, onResult }: { base: string; onResult: (c: any) => void }) {
   const crud = useCrud(base, { pageSize: 10 })
   onResult(crud)

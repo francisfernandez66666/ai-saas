@@ -131,7 +131,7 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 	var profile *model.CdpProfile
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		// 事务内激活租户行级隔离（提交/回滚自动失效）
-		if r := service.SetTenantRLS(tx, tid); r.Error != nil {
+		if r := db.SetTenantRLS(tx, tid); r.Error != nil {
 			return r.Error
 		}
 

@@ -50,6 +50,7 @@ func maskByRe(re *regexp.Regexp, text string, fn func(s []byte) []byte) string {
 	return b.String()
 }
 
+// maskPhone 对日志字节流中的 11 位手机号做就地脱敏。
 func maskPhone(p []byte) []byte { // p 为 11 位号段
 	if len(p) != 11 {
 		return p
@@ -61,6 +62,7 @@ func maskPhone(p []byte) []byte { // p 为 11 位号段
 	return out
 }
 
+// maskID 对日志字节流中的 18 位证件号做就地脱敏。
 func maskID(p []byte) []byte { // p 为 18 位号段
 	if len(p) != 18 {
 		return p
@@ -72,6 +74,7 @@ func maskID(p []byte) []byte { // p 为 18 位号段
 	return out
 }
 
+// maskEmailLocal 对邮箱本地部分做脱敏，保留域名。
 func maskEmailLocal(s string) string {
 	at := strings.Index(s, "@")
 	if at <= 0 {

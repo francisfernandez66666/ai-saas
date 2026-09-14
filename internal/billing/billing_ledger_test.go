@@ -6,7 +6,7 @@
 //   - R9  受邀注册礼：与 GrantTrialBucket 同走 signup_trial 台账，同邮箱二次受邀不双发
 //   - R11 升级防并发：同一基数单不允许并存两笔 pending 升级抵扣单
 //   - R16 计量缓冲：UsageSink 超上限丢弃留痕，不无界堆积
-package service
+package billing
 
 import (
 	"fmt"

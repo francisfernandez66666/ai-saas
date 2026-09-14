@@ -12,6 +12,9 @@
 package api
 
 import (
+	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -46,9 +49,34 @@ func RegisterRoutes(r *gin.Engine) {
 
 // registerWSAndCollector WebSocket 实时推送 + 数据飞轮接收端。
 // WS 不挂 JWTAuth 组（难以附带 Authorization header），改 query 参数手动校验；各挂 IPRateLimit 防握手风暴。
+// 默认阈值保持生产安全值；容量压测可用 WS_ADVISOR_IP_RATE_LIMIT / WS_CLIENT_IP_RATE_LIMIT 临时调高，0=关闭。
 func registerWSAndCollector(r *gin.Engine, v1 *gin.RouterGroup) {
-	v1.GET("/ws/advisor", middleware.IPRateLimit("ws_advisor", 10, time.Minute), WSAdvisor)
-	v1.GET("/ws/client", middleware.IPRateLimit("ws_client", 20, time.Minute), WSClient)
+	advisorLimit := wsHandshakeLimit("WS_ADVISOR_IP_RATE_LIMIT", 10)
+	clientLimit := wsHandshakeLimit("WS_CLIENT_IP_RATE_LIMIT", 20)
+	if advisorLimit > 0 {
+		v1.GET("/ws/advisor", middleware.IPRateLimit("ws_advisor", advisorLimit, time.Minute), WSAdvisor)
+	} else {
+		v1.GET("/ws/advisor", WSAdvisor)
+	}
+	if clientLimit > 0 {
+		v1.GET("/ws/client", middleware.IPRateLimit("ws_client", clientLimit, time.Minute), WSClient)
+	} else {
+		v1.GET("/ws/client", WSClient)
+	}
 	// 数据飞轮聚合接收端（P2 collector，自有 X-Collector-Key 鉴权，独立于 JWT）
 	r.POST("/api/v1/collector", CollectorReceive)
+}
+
+// wsHandshakeLimit 读取 WS 握手限流阈值（env），非法/负值回退默认并告警。
+func wsHandshakeLimit(key string, def int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return def
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v < 0 {
+		log.Printf("[WS限流] 环境变量 %s=%q 非法，回退默认 %d", key, raw, def)
+		return def
+	}
+	return v
 }

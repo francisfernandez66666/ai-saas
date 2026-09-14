@@ -149,6 +149,7 @@ func MarkPendingHuman(tenantID, conversationID, customerID uint) error {
 	return markLatest(tenantID, conversationID, customerID, "pending_human")
 }
 
+// markLatest 回填最近一条归因记录的指定指标列。
 func markLatest(tenantID, conversationID, customerID uint, column string) error {
 	if tenantID == 0 || (conversationID == 0 && customerID == 0) {
 		return nil
@@ -322,6 +323,7 @@ func ScoreReplyAttributions(limit int) (int, error) {
 	return scored, nil
 }
 
+// templateAnchors 解析模板锚点列表并带请求级缓存。
 func templateAnchors(tenantID uint, templateID string, cache map[string][]string) []string {
 	key := fmt.Sprintf("%d:%s", tenantID, templateID)
 	if v, ok := cache[key]; ok {
@@ -338,6 +340,7 @@ func templateAnchors(tenantID uint, templateID string, cache map[string][]string
 	return anchors
 }
 
+// jsonStringArray 将 JSON 字符串数组解析为 Go 切片。
 func jsonStringArray(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -425,6 +428,7 @@ func CheckPackQualityAlerts(f AlertFilter) ([]string, error) {
 	return alerts, nil
 }
 
+// avgInt 计算整数切片的平均值。
 func avgInt(xs []int) float64 {
 	if len(xs) == 0 {
 		return 0
@@ -436,4 +440,5 @@ func avgInt(xs []int) float64 {
 	return float64(s) / float64(len(xs))
 }
 
+// avgFloat 复用整数平均值逻辑，保持调用点语义清晰。
 func avgFloat(xs []int) float64 { return avgInt(xs) }

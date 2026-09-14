@@ -23,6 +23,7 @@ const CHANNEL_TYPE_LABELS: Record<string, string> = { wecom_app: '企业微信�
 const CHANNEL_STATUS_LABELS: Record<string, string> = { active: '已启用', disabled: '已停用', unverified: '待验证' }
 const CHANNEL_STATUS_THEMES: Record<string, 'success' | 'danger' | 'warning'> = { active: 'success', disabled: 'danger', unverified: 'warning' }
 
+/** 安全解析通道 JSON 配置，异常时回退空对象。 */
 function safeParseConfig(s: string): Record<string, unknown> {
   try {
     const o = JSON.parse(s || '{}')
@@ -32,6 +33,7 @@ function safeParseConfig(s: string): Record<string, unknown> {
   }
 }
 
+/** 通道接入 Tab：维护企微/微信客服/公众号配置并查看死信。 */
 export function ChannelsTab() {
   const [channels, setChannels] = useState<ChannelView[]>([])
   const [dlq, setDlq] = useState<OutboundView[]>([])

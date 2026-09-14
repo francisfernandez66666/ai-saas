@@ -14,11 +14,13 @@ export type ClientErrorPayload = {
 const SENT_KEY = 'scrm_error_reports_sent';
 const SAMPLE_RATE = 0.1;
 
+/** 为异常生成稳定指纹，用于采样与去重。 */
 export function errorFingerprint(err: unknown): string {
   const msg = err instanceof Error ? err.message : String(err || '');
   return msg.slice(0, 160);
 }
 
+/** 读取已上报异常指纹集合，兼容 localStorage 不可用场景。 */
 function sentFingerprints(): Set<string> {
   try {
     const raw = window.sessionStorage.getItem(SENT_KEY);
@@ -29,6 +31,7 @@ function sentFingerprints(): Set<string> {
   }
 }
 
+/** 记录已上报异常指纹，避免同一错误刷屏。 */
 function rememberSent(fp: string) {
   try {
     const s = sentFingerprints();
@@ -39,6 +42,7 @@ function rememberSent(fp: string) {
   }
 }
 
+/** 按采样率、去重指纹和路由信息判断是否上报前端异常。 */
 export function shouldReportError(err: unknown, route: string, rand = Math.random): boolean {
   const fp = errorFingerprint(err);
   if (!fp || sentFingerprints().has(fp)) return false;
@@ -48,6 +52,7 @@ export function shouldReportError(err: unknown, route: string, rand = Math.rando
   return keep;
 }
 
+/** 组装 C6 前端异常上报 payload。 */
 export function buildClientErrorPayload(err: unknown, route: string, componentStack = ''): ClientErrorPayload {
   const message = err instanceof Error ? err.message : String(err || 'Unknown error');
   const rawStack = err instanceof Error && err.stack ? err.stack : componentStack;
@@ -63,6 +68,7 @@ export function buildClientErrorPayload(err: unknown, route: string, componentSt
   };
 }
 
+/** 异步上报前端异常，失败时静默吞掉避免二次噪声。 */
 export async function reportClientError(err: unknown, route: string, componentStack = ''): Promise<void> {
   if (typeof window === 'undefined') return;
   if (!shouldReportError(err, route)) return;
@@ -77,6 +83,7 @@ export async function reportClientError(err: unknown, route: string, componentSt
   }
 }
 
+/** 安装全局 error/unhandledrejection 监听器，接入异常上报。 */
 export function installGlobalErrorHandlers(): void {
   if (typeof window === 'undefined') return;
   window.addEventListener('error', (event) => {

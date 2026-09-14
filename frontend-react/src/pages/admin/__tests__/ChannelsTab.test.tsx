@@ -35,6 +35,7 @@ const deadLetter = {
   next_retry_at: null,
 }
 
+/** 构造统一 JSON API 响应，供 vitest mock fetch。 */
 function jsonResp(data: unknown) {
   return {
     ok: true,

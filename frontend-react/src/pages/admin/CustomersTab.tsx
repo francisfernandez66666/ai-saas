@@ -15,9 +15,12 @@ const STAGE_OPTS = [
 const USER_OPTS = [{ label: '未分配', value: 0 }]
 const STATUS_EDIT_OPTS = [{ label: '有效', value: 1 }, { label: '停用', value: 0 }]
 
+/** 清洗客户展示名，访客占位名统一显示为客户。 */
 function nameOf(v?: string) { return !v || v.startsWith('访客_') ? '客户' : v }
+/** 取客户名首字作为头像占位符。 */
 function initialOf(v?: string) { return !v || v.startsWith('访客_') ? '客' : (v?.[0] || '?') }
 
+/** 触发浏览器下载后台导出的 CSV 文件。 */
 async function downloadCsv(url: string, filename: string) {
   const res = await apiFetch(url)
   if (!res.ok) { MessagePlugin.error('导出失败'); return }
@@ -32,6 +35,7 @@ async function downloadCsv(url: string, filename: string) {
   MessagePlugin.success('已开始下载')
 }
 
+/** 客户列表 Tab：支持筛选、标签、阶段和 CSV 导出。 */
 export function CustomersTab() {
   const [filter, setFilter] = useState('')
   const [page, setPage] = useState(1)

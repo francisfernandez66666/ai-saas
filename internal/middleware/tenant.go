@@ -469,6 +469,8 @@ func isPlatformSuperPath(path string) bool {
 	}
 	return false
 }
+
+// TenantConsistency 校验 JWT 租户与请求租户上下文一致，防止跨租户串用。
 func TenantConsistency() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if db.DB == nil {

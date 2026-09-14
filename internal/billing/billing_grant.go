@@ -1,7 +1,12 @@
 // 权益发放与对账扫描（D2a 文件拆分 2026-09-12）：续费、对账、order_entitlement 台账、超时关闭、支付事件。
-package service
+package billing
+
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/notify"
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"context"
 	"fmt"
 	"log"
@@ -31,8 +36,8 @@ func SweepSubscriptionRenewals() int {
 		}
 	}
 	days := 7
-	if DefaultSystemConfigService != nil {
-		if v := DefaultSystemConfigService.GetInt("renewal_window_days", 7); v > 0 {
+	if runtimecfg.DefaultSystemConfigService != nil {
+		if v := runtimecfg.DefaultSystemConfigService.GetInt("renewal_window_days", 7); v > 0 {
 			days = v
 		}
 	}
@@ -68,7 +73,7 @@ func SweepSubscriptionRenewals() int {
 			log.Printf("[Billing] 续费订单生成失败 tenant=%d pkg=%s: %v", t.ID, pkg.Code, err)
 			continue
 		}
-		NotifyGroup(fmt.Sprintf("【续费提醒】租户「%s」付费订阅将于 %s 到期，已生成续费订单（%s）",
+		notify.NotifyGroup(fmt.Sprintf("【续费提醒】租户「%s」付费订阅将于 %s 到期，已生成续费订单（%s）",
 			t.Name, t.ExpiredAt.Format("2006-01-02"), pkg.Name))
 		n++
 	}
@@ -199,8 +204,8 @@ func PublishPaymentEvent(order *model.BillingOrder) {
 // 返回本次关闭的订单数。
 func SweepExpiredOrders() int64 {
 	minutes := 15
-	if DefaultSystemConfigService != nil {
-		if v := DefaultSystemConfigService.GetInt("order_timeout_minutes", 15); v > 0 {
+	if runtimecfg.DefaultSystemConfigService != nil {
+		if v := runtimecfg.DefaultSystemConfigService.GetInt("order_timeout_minutes", 15); v > 0 {
 			minutes = v
 		}
 	}
@@ -213,7 +218,7 @@ func SweepExpiredOrders() int64 {
 		return 0
 	}
 	if res.RowsAffected > 0 {
-		IncPaymentFailed() // P1-2：超时关闭计为支付失败（成功率分母）
+		metrics.IncPaymentFailed() // P1-2：超时关闭计为支付失败（成功率分母）
 		log.Printf("[Billing] 订单超时关闭 %d 笔(超过%d分钟未付)", res.RowsAffected, minutes)
 	}
 	return res.RowsAffected

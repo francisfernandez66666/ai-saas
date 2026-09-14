@@ -20,10 +20,12 @@ import (
 	"ai-scrm/pkg/wxcrypt"
 )
 
+// init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wecomKfAdapter{}) }
 
 type wecomKfAdapter struct{}
 
+// Type 返回微信客服通道适配器类型。
 func (wecomKfAdapter) Type() string { return model.ChannelTypeWecomKf }
 
 // DecryptInbound 与 wecom_app 共用信封（msg_signature + 加密 XML）。事件类走 IsEvent。
@@ -62,6 +64,7 @@ func (a wecomKfAdapter) DecryptInbound(cred *Credential, ts, nonce, sig string, 
 	}, nil
 }
 
+// VerifyURLEcho 校验回调签名并回显 URL。
 func (a wecomKfAdapter) VerifyURLEcho(cred *Credential, msgSig, ts, nonce, echo string) (string, error) {
 	c, err := wxcrypt.New(cred.Token, cred.Encoding, cred.ReceiveID())
 	if err != nil {

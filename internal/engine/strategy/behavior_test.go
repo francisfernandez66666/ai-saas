@@ -3,11 +3,11 @@
 package strategy
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"testing"
 
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 )
 
@@ -53,8 +53,8 @@ func TestSoftmaxAnchorSelectionBehavior(t *testing.T) {
 	if config.GlobalConfig == nil {
 		config.GlobalConfig = &config.Config{Strategy: config.StrategyConfig{Tau: 1.0}}
 	}
-	if service.DefaultSystemConfigService == nil {
-		service.DefaultSystemConfigService = &service.SystemConfigService{}
+	if runtimecfg.DefaultSystemConfigService == nil {
+		runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(nil, nil)
 	}
 	scores := [AnchorCount]float64{1.0, 2.0, 3.0, 10.0, 0.5, 0, 0}
 	_, bestAnchor, _ := Step2_SoftmaxAnchor(scores)
@@ -63,12 +63,13 @@ func TestSoftmaxAnchorSelectionBehavior(t *testing.T) {
 	}
 }
 
+// TestSoftmaxAnchorEqualScoresBehavior 覆盖 SoftmaxAnchorEqualScoresBehavior 相关行为与边界。
 func TestSoftmaxAnchorEqualScoresBehavior(t *testing.T) {
 	if config.GlobalConfig == nil {
 		config.GlobalConfig = &config.Config{Strategy: config.StrategyConfig{Tau: 1.0}}
 	}
-	if service.DefaultSystemConfigService == nil {
-		service.DefaultSystemConfigService = &service.SystemConfigService{}
+	if runtimecfg.DefaultSystemConfigService == nil {
+		runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(nil, nil)
 	}
 	scores := [AnchorCount]float64{1.0, 1.0, 1.0, 0, 0, 0, 0}
 	_, bestAnchor, confidence := Step2_SoftmaxAnchor(scores)
@@ -90,6 +91,7 @@ func TestAnchorAggressivenessValuesBehavior(t *testing.T) {
 	}
 }
 
+// TestStageAnchorCeilingConsistencyBehavior 覆盖 StageAnchorCeilingConsistencyBehavior 相关行为与边界。
 func TestStageAnchorCeilingConsistencyBehavior(t *testing.T) {
 	for i := 1; i < len(StageAnchorCeiling); i++ {
 		if StageAnchorCeiling[i] < StageAnchorCeiling[i-1] {
@@ -203,6 +205,7 @@ func TestSoftDowngradeBehavior(t *testing.T) {
 
 // ---- G-8-9: CalcAnchorScoresPromoteLocked ----
 
+// TestCalcAnchorScoresPromoteLocked 覆盖 CalcAnchorScoresPromoteLocked 相关行为与边界。
 func TestCalcAnchorScoresPromoteLocked(t *testing.T) {
 	scores := [AnchorCount]float64{1, 2, 3, 4, 5, 6, 7}
 	locked := CalcAnchorScoresPromoteLocked(scores)

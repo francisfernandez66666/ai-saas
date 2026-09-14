@@ -29,13 +29,16 @@ const DELIVERY_STATUS: Record<string, { label: string; theme: 'primary' | 'succe
   dead: { label: '死信', theme: 'danger' },
 }
 
+/** 解析 Webhook 事件字符串为数组。 */
 function eventList(v?: string): string[] {
   return (v || '').split(',').map((x) => x.trim()).filter(Boolean)
 }
+/** 格式化 Webhook 时间字段。 */
 function fmtTime(v?: string | null): string {
   return v ? new Date(v).toLocaleString('zh-CN', { hour12: false }) : '-'
 }
 
+/** 出站 Webhook Tab：管理订阅和查看投递记录。 */
 export function WebhookTab() {
   const [rows, setRows] = useState<WebhookRow[]>([])
   const [loading, setLoading] = useState(false)

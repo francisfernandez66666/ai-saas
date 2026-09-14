@@ -1,6 +1,8 @@
 // 对话核心API（客户侧）：C端访客欢迎、留资与会话入口。
 package api
 
+import "ai-scrm/internal/pii"
+
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
 // 含会话竞态保护、三层分流(硬边界/到店快速通道/简单消息)、合并队列、延迟清零、留资检测与OneID合并。
 
@@ -11,7 +13,6 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
-	"ai-scrm/internal/service"
 	"ai-scrm/pkg/utils"
 	"fmt"
 	"log"
@@ -230,7 +231,7 @@ func CreateGuest(c *gin.Context) {
 		return
 	}
 
-	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, service.MaskName(customer.Name), customer.AssignedUserID)
+	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, pii.MaskName(customer.Name), customer.AssignedUserID)
 
 	// 缺口4修复（2026-08-22）：guest_created 事件上行（激活 CDP idm_guest 标签）
 	// 此前 IngestConsumer 支持该事件但全仓无发布点，访客身份标签是死代码
@@ -280,6 +281,7 @@ func CreateGuest(c *gin.Context) {
 //  3. 路由侧另挂 IPRateLimit（main.go 注册处）
 //
 // ============================================================
+// ClearDelay 清除访客端模拟输入延迟状态。
 func ClearDelay(c *gin.Context) {
 	var req struct {
 		CustomerID uint `json:"customer_id" binding:"required"`

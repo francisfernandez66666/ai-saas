@@ -2,11 +2,13 @@
 // 放在 api 层（非 llm）：BLOCK 需要触发"转人工"（写会话态），属编排职责，红线 llm 层不碰 DB 会话。
 package api
 
+import "ai-scrm/internal/metrics"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"log"
 
 	"ai-scrm/internal/contentsafety"
-	"ai-scrm/internal/service"
 )
 
 // GateAction 闸门对一条 AI 回复的处置结论
@@ -25,7 +27,7 @@ func ContentsafetyGate(reply string, convID uint) (action GateAction, out string
 	if reply == "" {
 		return GatePass, reply
 	}
-	cfg := service.DefaultSystemConfigService
+	cfg := runtimecfg.DefaultSystemConfigService
 	if !cfg.GetBoolForTenant(0, "contentsafety_enabled", true) {
 		return GatePass, reply
 	}
@@ -34,14 +36,14 @@ func ContentsafetyGate(reply string, convID uint) (action GateAction, out string
 	if !res.Hit {
 		return GatePass, reply
 	}
-	service.IncContentSafetyHit()
+	metrics.IncContentSafetyHit()
 	log.Printf("[内容安全] 会话%d 命中 level=%s words=%v mode=%s", convID, res.Level, res.Words, mode)
 	if mode != "enforce" {
 		return GatePass, reply // shadow：只观察不改写
 	}
 	switch res.Level {
 	case contentsafety.LevelBlock:
-		service.IncContentSafetyBlock()
+		metrics.IncContentSafetyBlock()
 		return GateBlock, ""
 	default:
 		return GateRewrite, res.Cleaned

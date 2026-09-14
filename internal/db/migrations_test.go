@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
+// newTestDB 提供当前包的辅助逻辑。
 func newTestDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	if DB == nil {
@@ -40,6 +41,7 @@ func newTestDB(t *testing.T) *gorm.DB {
 	return DB
 }
 
+// TestMigrateUpFromAppliesAndSkips 覆盖 MigrateUpFromAppliesAndSkips 相关行为与边界。
 func TestMigrateUpFromAppliesAndSkips(t *testing.T) {
 	gdb := newTestDB(t)
 	const tag = "migrateunit"
@@ -61,6 +63,7 @@ func TestMigrateUpFromAppliesAndSkips(t *testing.T) {
 	gdb.Exec("DROP TABLE IF EXISTS migrateunit_t2")
 }
 
+// TestMigrateUpFromFailFastNotRecorded 覆盖 MigrateUpFromFailFastNotRecorded 相关行为与边界。
 func TestMigrateUpFromFailFastNotRecorded(t *testing.T) {
 	gdb := newTestDB(t)
 	badFS := fstest.MapFS{
@@ -76,6 +79,7 @@ func TestMigrateUpFromFailFastNotRecorded(t *testing.T) {
 	}
 }
 
+// TestMigrationsIncludeKbEmbeddingVector 覆盖 MigrationsIncludeKbEmbeddingVector 相关行为与边界。
 func TestMigrationsIncludeKbEmbeddingVector(t *testing.T) {
 	const name = "008_kb_embedding_vector.up.sql"
 	content, err := fs.ReadFile(migrations.FS, name)
@@ -90,6 +94,7 @@ func TestMigrationsIncludeKbEmbeddingVector(t *testing.T) {
 	}
 }
 
+// countVersion 统计迁移版本记录数量。
 func countVersion(gdb *gorm.DB, v string) int64 {
 	var n int64
 	gdb.Table("schema_migrations").Where("version = ?", v).Count(&n)

@@ -1,6 +1,8 @@
 // 顾问工作台API：客户管理、数据统计、试驾单、对话接管与策略话术推荐。
 package api
 
+import "ai-scrm/internal/pii"
+
 // 顾问工作台API（销售端）：客户管理、工作台数据统计、跟进提醒、试驾单、对话接管、AI回复触发与策略话术推荐。
 // 写操作均经四级组织数据范围门禁(canOperateCustomer/customerInDataScope)防越权。
 
@@ -90,6 +92,7 @@ type strategyRecommendRequest struct {
 // GET /api/v1/advisor/stats?user_id=X
 // 返回销售的核心指标：跟进中/已到店/已试驾/已报价等
 // ============================================================
+// GetAdvisorStats 返回顾问工作台核心统计。
 func GetAdvisorStats(c *gin.Context) {
 	// user_id参数：指定顾问ID，只统计分配给该顾问的客户
 	userIDStr := c.Query("user_id")
@@ -172,6 +175,7 @@ func GetAdvisorStats(c *gin.Context) {
 // POST /api/v1/advisor/chat/toggle-ai-reply
 // 场景：顾问忙碌时关闭AI回复，空闲或下班时打开AI接住客户
 // ============================================================
+// ToggleAiReply 切换顾问会话的 AI 自动回复开关。
 func ToggleAiReply(c *gin.Context) {
 	var req struct {
 		ConversationID uint  `json:"conversation_id" binding:"required"`
@@ -640,6 +644,7 @@ func GetAdvisorCustomers(c *gin.Context) {
 // GET /api/v1/advisor/customer/:id
 // 包含客户基本信息、标签列表、画像数据、最近会话
 // ============================================================
+// GetAdvisorCustomerDetail 返回顾问视角的客户详情。
 func GetAdvisorCustomerDetail(c *gin.Context) {
 	id := c.Param("id")
 
@@ -714,6 +719,7 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 // PUT /api/v1/advisor/customer/:id/tags
 // 覆盖更新客户标签（传入完整标签列表）
 // ============================================================
+// EditCustomerTags 编辑客户标签。
 func EditCustomerTags(c *gin.Context) {
 	id := c.Param("id")
 
@@ -752,6 +758,7 @@ func EditCustomerTags(c *gin.Context) {
 // PUT /api/v1/advisor/customer/:id/info
 // 更新客户基本信息（姓名、手机号、兴趣车型等）
 // ============================================================
+// EditCustomerInfo 编辑客户资料。
 func EditCustomerInfo(c *gin.Context) {
 	id := c.Param("id")
 
@@ -922,6 +929,7 @@ func UpdateCustomerStage(c *gin.Context) {
 // POST /api/v1/advisor/customer/:id/followup
 // 创建一条跟进记录，并设置下次跟进时间
 // ============================================================
+// CreateFollowup 创建客户跟进记录。
 func CreateFollowup(c *gin.Context) {
 	id := c.Param("id")
 	customerID, _ := strconv.Atoi(id)
@@ -980,6 +988,7 @@ func CreateFollowup(c *gin.Context) {
 // GET /api/v1/advisor/followups
 // 返回待跟进列表，支持按日期筛选
 // ============================================================
+// GetFollowups 返回客户跟进列表。
 func GetFollowups(c *gin.Context) {
 	userID, _ := strconv.Atoi(c.Query("user_id"))
 	dateStr := c.Query("date") // 格式：2006-01-02，默认今天
@@ -1048,6 +1057,7 @@ func GetFollowups(c *gin.Context) {
 // POST /api/v1/advisor/chat/takeover
 // 将会话从AI模式切换到人工模式
 // ============================================================
+// AdvisorTakeover 顾问接管人工对话。
 func AdvisorTakeover(c *gin.Context) {
 	var req takeoverRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1094,6 +1104,7 @@ func AdvisorTakeover(c *gin.Context) {
 // 顾问发送消息（人工回复）
 // POST /api/v1/advisor/chat/send
 // ============================================================
+// AdvisorSendMessage 以顾问身份发送人工消息。
 func AdvisorSendMessage(c *gin.Context) {
 	var req advisorSendMsgRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -1164,7 +1175,7 @@ func AdvisorSendMessage(c *gin.Context) {
 	// 脱敏：手机号掩码后入库；评分/审核走超管面板
 	go func(msgID uint, convID, custID, uid uint, content string, tid uint) {
 		defer func() { _ = recover() }()
-		masked := service.MaskPhoneInText(content)
+		masked := pii.MaskPhoneInText(content)
 		db.DB.Create(&model.KbFeedbackMaterial{
 			TenantID: tid, Conversation: convID, MessageID: msgID,
 			Source: "human", Content: masked,
@@ -1179,6 +1190,7 @@ func AdvisorSendMessage(c *gin.Context) {
 // POST /api/v1/advisor/chat/ai-reply
 // 场景：人工接管后AI被暂停，顾问想用AI辅助回复时手动触发
 // ============================================================
+// AdvisorTriggerAIReply 手动触发一次 AI 回复建议。
 func AdvisorTriggerAIReply(c *gin.Context) {
 	var req struct {
 		ConversationID uint   `json:"conversation_id" binding:"required"`
@@ -1285,6 +1297,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 // GET /api/v1/advisor/strategy/recommend?customer_id=X&conversation_id=X
 // 根据客户画像和会话状态，推荐当前最合适的话术
 // ============================================================
+// GetStrategyRecommend 返回客户当前策略推荐动作。
 func GetStrategyRecommend(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Query("customer_id"))
 	conversationID, _ := strconv.Atoi(c.Query("conversation_id"))
@@ -1399,6 +1412,7 @@ func GetStrategyRecommend(c *gin.Context) {
 // 聊天历史查询（客户端和销售端共用）
 // GET /api/v1/chat/history?customer_id=X&conversation_id=X&limit=50
 // ============================================================
+// GetChatHistory 返回顾问可见的聊天记录。
 func GetChatHistory(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Query("customer_id"))
 	conversationID, _ := strconv.Atoi(c.Query("conversation_id"))
@@ -1475,6 +1489,7 @@ func GetChatHistory(c *gin.Context) {
 // GET /api/v1/advisor/list
 // 返回所有role=sales的用户列表(id, real_name, username)
 // ============================================================
+// GetAdvisorList 返回可分配顾问列表。
 func GetAdvisorList(c *gin.Context) {
 	var users []model.User
 	// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。

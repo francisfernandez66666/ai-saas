@@ -1,7 +1,8 @@
 // Package service 业务服务层测试：AI 用量配额扣减（原子预留/并发超额/灰度放行），经 testutil 连真库。
-package service
+package billing
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -13,11 +14,11 @@ import (
 
 // TestEstimateCostMicro 成本估算纯函数（P2-1：usage_service 计量单测）
 // 验证：硅基流动档默认单价 8000 微元/千token × markup 1.5；智谱档 15000。
-// 纯函数，无需 DB：本地构造 SystemConfigService 空缓存（走默认值分支）。
+// 纯函数，无需 DB：本地构造 runtimecfg.SystemConfigService 空缓存（走默认值分支）。
 func TestEstimateCostMicro(t *testing.T) {
 	// 本地构造空缓存服务，GetInt/GetFloat 走默认值（不触库）
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{}}
-	defer func() { DefaultSystemConfigService = nil }()
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{}, nil)
+	defer func() { runtimecfg.DefaultSystemConfigService = nil }()
 
 	cases := []struct {
 		provider    string
@@ -43,7 +44,7 @@ func TestConsumeAIQuotaNonEnforced(t *testing.T) {
 		t.Skip("short mode: 跳过 DB 依赖测试")
 	}
 	testutil.SetupTestDB(t)
-	InitSystemConfigService() // 填充 DefaultSystemConfigService，供 ConsumeAIQuota 读取（正常启动链在 main 完成）
+	runtimecfg.InitSystemConfigService() // 填充 runtimecfg.DefaultSystemConfigService，供 ConsumeAIQuota 读取（正常启动链在 main 完成）
 
 	tenant := testutil.CreateTenant(t)
 	defer testutil.CleanupTenant(t, tenant)

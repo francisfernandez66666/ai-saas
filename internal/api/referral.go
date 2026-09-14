@@ -1,6 +1,8 @@
 // 邀请推广API：邀请码/链接/二维码与邀请记录查询。
 package api
 
+import "ai-scrm/internal/billing"
+
 // ============================================================
 // 邀请推广 API（M-R，2026-08-25）
 //
@@ -20,7 +22,6 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 	qrcode "github.com/skip2/go-qrcode"
@@ -49,7 +50,7 @@ func GetReferralInfo(c *gin.Context) {
 		return
 	}
 	// 查询邀请信息（含邀请码、邀请人数、奖励统计）
-	info, err := service.GetReferralInfo(tenantID)
+	info, err := billing.GetReferralInfo(tenantID)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
@@ -71,7 +72,7 @@ func GetReferralQRCode(c *gin.Context) {
 		return
 	}
 	// 确保邀请码存在（自动生成或返回已有）
-	code, err := service.EnsureInviteCode(tenantID)
+	code, err := billing.EnsureInviteCode(tenantID)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "邀请码生成失败")
 		return

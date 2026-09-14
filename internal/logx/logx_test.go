@@ -6,6 +6,7 @@ import (
 	"testing"
 )
 
+// TestMaskPhone 覆盖 MaskPhone 相关行为与边界。
 func TestMaskPhone(t *testing.T) {
 	got := Mask("客户手机 13812345678 请回电")
 	if strings.Contains(got, "13812345678") {
@@ -16,6 +17,7 @@ func TestMaskPhone(t *testing.T) {
 	}
 }
 
+// TestMaskAdjacentPhones 覆盖 MaskAdjacentPhones 相关行为与边界。
 func TestMaskAdjacentPhones(t *testing.T) {
 	got := Mask("13811112222,13933334444")
 	if strings.Contains(got, "13811112222") || strings.Contains(got, "13933334444") {
@@ -23,6 +25,7 @@ func TestMaskAdjacentPhones(t *testing.T) {
 	}
 }
 
+// TestMaskIDCard 覆盖 MaskIDCard 相关行为与边界。
 func TestMaskIDCard(t *testing.T) {
 	got := Mask("身份证 11010119900307123X 备案")
 	if strings.Contains(got, "11010119900307123X") {
@@ -33,6 +36,7 @@ func TestMaskIDCard(t *testing.T) {
 	}
 }
 
+// TestMaskEmail 覆盖 MaskEmail 相关行为与边界。
 func TestMaskEmail(t *testing.T) {
 	got := Mask("邮箱 zhangsan@example.com 已注册")
 	if strings.Contains(got, "zhangsan@") {
@@ -43,6 +47,7 @@ func TestMaskEmail(t *testing.T) {
 	}
 }
 
+// TestMaskIdempotent 覆盖 MaskIdempotent 相关行为与边界。
 func TestMaskIdempotent(t *testing.T) {
 	once := Mask("手机 13812345678")
 	twice := Mask(once)
@@ -51,6 +56,7 @@ func TestMaskIdempotent(t *testing.T) {
 	}
 }
 
+// TestNoFalsePositive 覆盖 NoFalsePositive 相关行为与边界。
 func TestNoFalsePositive(t *testing.T) {
 	// 订单号/时间戳/版本号等非手机号数字不应被吞
 	in := "订单 2026091212345678 端口9090 版本v1.2.3"
@@ -64,6 +70,7 @@ func TestNoFalsePositive(t *testing.T) {
 	}
 }
 
+// TestSafeTruncate 覆盖 SafeTruncate 相关行为与边界。
 func TestSafeTruncate(t *testing.T) {
 	long := strings.Repeat("字", 50)
 	got := Safe(long, 20)
@@ -75,6 +82,7 @@ func TestSafeTruncate(t *testing.T) {
 	}
 }
 
+// TestSafeMasksPhone 覆盖 SafeMasksPhone 相关行为与边界。
 func TestSafeMasksPhone(t *testing.T) {
 	// 截断后仍含手机片段也要掩码
 	got := Safe("我的电话是13812345678请尽快联系我谢谢", 40)
@@ -83,6 +91,7 @@ func TestSafeMasksPhone(t *testing.T) {
 	}
 }
 
+// TestGormLoggerMasksSQL 覆盖 GormLoggerMasksSQL 相关行为与边界。
 func TestGormLoggerMasksSQL(t *testing.T) {
 	// 脱敏 logger 接口满足编译即验证结构；行为经 Mask 已覆盖
 	if NewGormLogger(nil) == nil {

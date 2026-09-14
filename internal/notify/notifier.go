@@ -1,7 +1,10 @@
 // 通知触达：重置码/验证码邮件通道（log/SMTP）+ 企微/钉钉群机器人推送。
-package service
+package notify
+
+import "ai-scrm/internal/pii"
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"bytes"
 	"crypto/tls"
 	"encoding/base64"
@@ -24,6 +27,11 @@ func maskEmail(email string) string {
 		return "***"
 	}
 	return email[:1] + "***" + email[at:]
+}
+
+// MaskEmailForLog 服务端日志专用邮箱脱敏：保留首字符和域名，避免完整地址落日志。
+func MaskEmailForLog(email string) string {
+	return maskEmail(email)
 }
 
 // ============================================================
@@ -54,14 +62,14 @@ type LogSender struct{}
 // 且同文件 SendRaw 又明文打印 body——一处过度脱敏致不可用、一处明文泄露。
 // 现统一：log 通道明码 + [DEBUG-WATERMARK 仅log通道] 标记；smtp 通道走真实邮件不受影响。
 func (LogSender) SendResetCode(to string, code string) error {
-	log.Printf("[重置码][DEBUG-WATERMARK 仅log通道] 账号=%s 验证码=%s (10分钟内有效,一次性,生产请配置SMTP)", MaskEmail(MaskPhoneInText(to)), code)
+	log.Printf("[重置码][DEBUG-WATERMARK 仅log通道] 账号=%s 验证码=%s (10分钟内有效,一次性,生产请配置SMTP)", pii.MaskEmail(pii.MaskPhoneInText(to)), code)
 	return nil
 }
 
 // SendRaw 实现：打日志
 func (LogSender) SendRaw(to []string, subject, body string) error {
 	// body 为外发邮件内容（可能含验证码），仅 log 通道开发态可见；此处脱敏收件人
-	log.Printf("[邮件-log通道] to=%s subject=%s body=%s", MaskEmail(MaskPhoneInText(strings.Join(to, ","))), subject, strings.ReplaceAll(body, "\n", " | "))
+	log.Printf("[邮件-log通道] to=%s subject=%s body=%s", pii.MaskEmail(pii.MaskPhoneInText(strings.Join(to, ","))), subject, strings.ReplaceAll(body, "\n", " | "))
 	return nil
 }
 
@@ -182,8 +190,8 @@ func base64Std(s string) string {
 // DefaultResetSender 当前生效的发送通道（按 reset_code_channel 配置解析）
 func DefaultResetSender() ResetCodeSender {
 	channel := "log"
-	if DefaultSystemConfigService != nil {
-		channel = DefaultSystemConfigService.GetString("reset_code_channel", "log")
+	if runtimecfg.DefaultSystemConfigService != nil {
+		channel = runtimecfg.DefaultSystemConfigService.GetString("reset_code_channel", "log")
 	}
 	switch channel {
 	case "smtp":
@@ -216,10 +224,10 @@ type wecomMarkdown struct {
 
 // NotifyWecom 推送文本到企微群（webhook 未配置时静默跳过；失败仅告警不阻断业务）
 func NotifyWecom(content string) {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return
 	}
-	url := DefaultSystemConfigService.GetString("wecom_webhook_url", "")
+	url := runtimecfg.DefaultSystemConfigService.GetString("wecom_webhook_url", "")
 	if url == "" {
 		return // 未配置=功能关闭，不打扰主链路
 	}
@@ -253,10 +261,10 @@ type dingtalkMarkdown struct {
 
 // NotifyDingtalk 推送文本到钉钉群（M4 双通道补齐；URL 未配置静默跳过）
 func NotifyDingtalk(content string) {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return
 	}
-	url := DefaultSystemConfigService.GetString("dingtalk_webhook_url", "")
+	url := runtimecfg.DefaultSystemConfigService.GetString("dingtalk_webhook_url", "")
 	if url == "" {
 		return
 	}
@@ -303,5 +311,5 @@ var emailRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2
 
 // MaskEmailAddr 文本级邮箱脱敏：仅替换其中邮箱子串，保留手机/中文等其它内容
 func MaskEmailAddr(s string) string {
-	return emailRe.ReplaceAllStringFunc(s, MaskEmail)
+	return emailRe.ReplaceAllStringFunc(s, pii.MaskEmail)
 }

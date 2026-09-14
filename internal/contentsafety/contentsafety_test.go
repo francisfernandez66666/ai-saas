@@ -27,6 +27,7 @@ func withWordFile(t *testing.T, content string) {
 	})
 }
 
+// TestCheckBlock 覆盖 CheckBlock 相关行为与边界。
 func TestCheckBlock(t *testing.T) {
 	withWordFile(t, "BLOCK:洗钱\nMASK:全球第一\n# 注释\n\n")
 	r := Check("这跟洗钱有关系吗")
@@ -35,6 +36,7 @@ func TestCheckBlock(t *testing.T) {
 	}
 }
 
+// TestCheckMaskRewrite 覆盖 CheckMaskRewrite 相关行为与边界。
 func TestCheckMaskRewrite(t *testing.T) {
 	withWordFile(t, "MASK:全球第一\n")
 	r := Check("我们是全球第一的车企")
@@ -49,6 +51,7 @@ func TestCheckMaskRewrite(t *testing.T) {
 	}
 }
 
+// TestBlockShortCircuits 覆盖 BlockShortCircuits 相关行为与边界。
 func TestBlockShortCircuits(t *testing.T) {
 	withWordFile(t, "MASK:全球第一\nBLOCK:洗钱\n")
 	r := Check("全球第一且洗钱")
@@ -57,6 +60,7 @@ func TestBlockShortCircuits(t *testing.T) {
 	}
 }
 
+// TestNoHitPassthrough 覆盖 NoHitPassthrough 相关行为与边界。
 func TestNoHitPassthrough(t *testing.T) {
 	withWordFile(t, "BLOCK:洗钱\n")
 	r := Check("你好，我想了解你们的越野车")
@@ -68,6 +72,7 @@ func TestNoHitPassthrough(t *testing.T) {
 	}
 }
 
+// TestEmptyText 覆盖 EmptyText 相关行为与边界。
 func TestEmptyText(t *testing.T) {
 	withWordFile(t, "BLOCK:洗钱\n")
 	if r := Check(""); r.Hit {
@@ -80,10 +85,12 @@ type fakeReviewer struct {
 	err       error
 }
 
+// Review 返回 fake 内容审核结果。
 func (f fakeReviewer) Review(string) (bool, string, error) {
 	return f.violation, "test", f.err
 }
 
+// TestReviewerMarksBlock 覆盖 ReviewerMarksBlock 相关行为与边界。
 func TestReviewerMarksBlock(t *testing.T) {
 	withWordFile(t, "BLOCK:洗钱\n")
 	SetReviewer(fakeReviewer{violation: true})
@@ -93,6 +100,7 @@ func TestReviewerMarksBlock(t *testing.T) {
 	}
 }
 
+// TestReviewerFailOpen 覆盖 ReviewerFailOpen 相关行为与边界。
 func TestReviewerFailOpen(t *testing.T) {
 	withWordFile(t, "BLOCK:洗钱\n")
 	SetReviewer(fakeReviewer{err: errors.New("网络抖动")})

@@ -1,6 +1,10 @@
 // 对话核心API（主链路）：消息接收、四层分流、合并队列与AI回复生成。
 package api
 
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/pii"
+
 // 对话核心API：C端客户与B端销售共用的交互入口，链路为 客户发消息→策略中心7步推理→AI生成回复。
 // 含会话竞态保护、三层分流(硬边界/到店快速通道/简单消息)、合并队列、延迟清零、留资检测与OneID合并。
 
@@ -14,6 +18,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
 	"context"
@@ -302,7 +307,7 @@ func Chat(c *gin.Context) {
 	// 在入口用原始消息检测，不依赖合并后的内容
 	if service.IsOffTopicForTenant(tenantID, req.Content) {
 		reply := service.GetOffTopicReplyForTenant(tenantID, req.Content)
-		log.Printf("[硬边界][trace=%s] 客户%d 拦截无关话题(入队前): %q → %q", trace, customer.ID, service.MaskPhoneInText(req.Content), service.MaskPhoneInText(reply))
+		log.Printf("[硬边界][trace=%s] 客户%d 拦截无关话题(入队前): %q → %q", trace, customer.ID, pii.MaskPhoneInText(req.Content), pii.MaskPhoneInText(reply))
 		// 保存AI拦截回复消息到DB
 		offTopicMsg := model.Message{
 			ConversationID: conversation.ID,
@@ -360,7 +365,7 @@ func Chat(c *gin.Context) {
 			// 3. 通知顾问
 			// 4. 硬编码确认回复（不走AI）
 			log.Printf("[到店倾向-已留资线索] 客户%d 消息含手机号%s，走已留资硬编码路径",
-				customer.ID, service.MaskPhone(phoneMatch))
+				customer.ID, pii.MaskPhone(phoneMatch))
 
 			// 0. OneID合并：手机号匹配到老客户时，迁移所有数据
 			mergedTargetID := chatflow.MergeCustomerByPhone(&customer, phoneMatch)
@@ -424,7 +429,7 @@ func Chat(c *gin.Context) {
 				}
 			}
 			log.Printf("[到店倾向-已留资线索][留资检测] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
-				customer.ID, service.MaskPhone(phoneMatch), customer.AssignedUserID)
+				customer.ID, pii.MaskPhone(phoneMatch), customer.AssignedUserID)
 
 			// P3：到店分支留资事件上行（与 DetectLeadCapture 主路径埋点对齐）
 			// P0-2：携带 channel/device 信息供 CDP 打环境维标签
@@ -452,7 +457,7 @@ func Chat(c *gin.Context) {
 				UserID:         customer.AssignedUserID, // 归属顾问
 				Type:           "ai_triggered",          // AI触发生成
 				Method:         "store",                 // 到店渠道
-				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(req.Content)),
+				Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(req.Content)),
 				Result:         "lead_captured", // 已留资线索
 			}
 			db.RQ(c).Create(&followUp)
@@ -461,7 +466,7 @@ func Chat(c *gin.Context) {
 
 			// 3. 通知顾问（当前简化为日志，后续可接WebSocket/邮件/飞书）
 			log.Printf("[通知顾问] 顾问%d 有新的已留资到店线索：客户%d，手机号%s",
-				customer.AssignedUserID, customer.ID, service.MaskPhone(phoneMatch))
+				customer.AssignedUserID, customer.ID, pii.MaskPhone(phoneMatch))
 
 			// 4. 标记待人工接管，但AI先发一条引导式反问
 			// 硬编码：留资后第一条回复是固定引导句，不走AI
@@ -558,7 +563,7 @@ func Chat(c *gin.Context) {
 				log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(首次)，重试一次: %v", cid, err)
 				if err2 := db.DB.WithContext(db.WithTenant(context.Background(), tid)).Create(&secondMsg).Error; err2 != nil {
 					log.Printf("[到店倾向-告警] 客户%d 第二段追问落库失败(重试后放弃): %v", cid, err2)
-					service.IncStoreVisitSecondFail()
+					metrics.IncStoreVisitSecondFail()
 					return
 				}
 			}
@@ -585,7 +590,7 @@ skipStoreVisitFast:
 		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
 		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
 		// 修复问题2：instant模式下简单消息跳过延迟直接回复
-		replyDelayModeSimple := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+		replyDelayModeSimple := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 		if replyDelayModeSimple != "instant" {
 			// 修复（2026-09-08）：原修复把两行代码以字面量 \n 卷进 // 注释，
 			// if 块恒空 → 简单消息秒回，simple_msg_delay(默认8秒) 配置项失效。
@@ -709,7 +714,7 @@ skipStoreVisitFast:
 			aiTimedOut := conversation.PendingHandoff &&
 				conversation.LastHumanReplyAt != nil &&
 				time.Since(*conversation.LastHumanReplyAt) >=
-					time.Duration(service.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300))*time.Second
+					time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300))*time.Second
 			if aiTimedOut {
 				conversation.IsAiReplyEnabled = true
 				conversation.IsHumanLocked = false
@@ -889,7 +894,7 @@ skipStoreVisitFast:
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	// 放在SetReply之前，确保所有请求（主请求+合并等待请求）都经过延迟后再返回
 	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
-	log.Printf("[Chat] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, service.MaskPhoneInText(mergedContent))
+	log.Printf("[Chat] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, pii.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 
 	// 胡搅蛮缠：总非车话题>10且最近未恢复→回复速度降到3分钟一次
@@ -919,7 +924,7 @@ skipStoreVisitFast:
 
 	log.Printf("[Chat] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
 	// 修复问题2：instant模式跳过CancellableSleep，秒回无延迟
-	replyDelayMode := service.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 	if replyDelayMode == "instant" {
 		log.Printf("[Chat] 客户%d instant模式，跳过延迟直接回复", customer.ID)
 	} else {

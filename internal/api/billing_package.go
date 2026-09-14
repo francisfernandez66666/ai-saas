@@ -1,13 +1,15 @@
 // AI商业包API：定价/订阅/我的包及超管包管理接口。
 package api
 
+import "ai-scrm/internal/billing"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"net/http"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -74,7 +76,7 @@ func SubscribePackage(c *gin.Context) {
 				conflict = true
 				return nil // 已领过：事务空提交，不发放
 			}
-			return service.GrantPackage(tx, tid, &pkg)
+			return billing.GrantPackage(tx, tid, &pkg)
 		})
 		if err != nil {
 			RespErr(c, http.StatusInternalServerError, 500, "发放失败："+err.Error())
@@ -90,13 +92,13 @@ func SubscribePackage(c *gin.Context) {
 	}
 
 	// paid/increment：创建订单进收银台流程
-	order, err := service.CreateOrderForPackage(tid, &pkg)
+	order, err := billing.CreateOrderForPackage(tid, &pkg)
 	if err != nil {
 		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return
 	}
 	writeOrderAudit(c, tid, "order_create", order)
-	RespOK(c, "订单已创建，请完成支付", gin.H{"order": order, "pay_mode": service.GetPayMode()})
+	RespOK(c, "订单已创建，请完成支付", gin.H{"order": order, "pay_mode": billing.GetPayMode()})
 }
 
 // MyPackage GET /api/v1/billing/my-package —— 当前包+剩余额度（顶栏展示）
@@ -111,10 +113,10 @@ func MyPackage(c *gin.Context) {
 		return
 	}
 
-	used, maxMonthly, balance, _ := service.GetTenantQuotaView(tid)
+	used, maxMonthly, balance, _ := billing.GetTenantQuotaView(tid)
 	enforced := true
-	if service.DefaultSystemConfigService != nil {
-		enforced = service.DefaultSystemConfigService.GetBool("billing_enforced", false)
+	if runtimecfg.DefaultSystemConfigService != nil {
+		enforced = runtimecfg.DefaultSystemConfigService.GetBool("billing_enforced", false)
 	}
 	RespOK(c, "", gin.H{
 		"tenant_name":      t.Name,
@@ -124,9 +126,9 @@ func MyPackage(c *gin.Context) {
 		"used_ai_calls":    used,
 		"ai_call_balance":  balance, // 三桶之一：增量包买断余额（次，不随月重置，用完即停）
 		"billing_enforced": enforced,
-		"pay_mode":         service.GetPayMode(),
+		"pay_mode":         billing.GetPayMode(),
 		// P1.5 Token三桶展示（2026-08-26）：月额度桶(monthly_token_*) / 买断余额桶(token_balance) / 赠送桶(free_token_*)
-		"token_billing_enabled": service.TokenBillingEnabled(),
+		"token_billing_enabled": billing.TokenBillingEnabled(),
 		"monthly_token_quota":   t.MonthlyTokenQuota,
 		"monthly_token_used":    t.MonthlyTokenUsed,
 		"token_balance":         t.TokenBalance,
@@ -161,6 +163,7 @@ func SuperPackageList(c *gin.Context) {
 }
 
 // SuperPackageCreate POST /api/v1/super/packages
+// SuperPackageCreate 创建平台商业包。
 func SuperPackageCreate(c *gin.Context) {
 	var req pkgUpsertReq
 	if err := c.ShouldBindJSON(&req); err != nil || !validPkgTypes[req.PType] {

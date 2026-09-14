@@ -33,6 +33,7 @@ SuperMaterialList 处理 GET /api/v1/super/materials 请求，返回素材池分
 参数：c - Gin请求上下文，通过query参数传递筛选条件和分页信息
 返回：分页后的素材列表，包含total、page、page_size等分页元数据
 */
+// SuperMaterialList 查看知识库盲点素材。
 func SuperMaterialList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))

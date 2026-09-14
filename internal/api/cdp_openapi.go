@@ -32,6 +32,7 @@ maskSensitiveFields 对字符串进行脱敏处理，主要针对手机号等敏
 参数：s - 需要脱敏的字符串
 返回：脱敏后的字符串
 */
+// maskSensitiveFields 对 CDP 响应中的敏感字段做掩码。
 func maskSensitiveFields(s string) string {
 	return phoneMaskRe.ReplaceAllStringFunc(s, func(p string) string {
 		if len(p) != 11 {
@@ -48,6 +49,7 @@ GetCDPProfile 处理 GET /api/v1/cdp/profiles/:one_id 请求，返回360°用户
 返回：脱敏后的用户画像数据，若用户不存在或不属于当前租户则返回404
 设计决策：统一返回404而非区分"不存在"与"他租户"，防止租户枚举攻击
 */
+// GetCDPProfile 返回 CDP 客户画像。
 func GetCDPProfile(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	oneID := c.Param("one_id")
@@ -79,6 +81,7 @@ GetCDPSegment 处理 GET /api/v1/cdp/segments?tag=beh_lead_captured 请求，执
 返回：匹配的OneID列表，结果数量上限为1000条以保护系统性能
 设计决策：OneID是内部标识（c:{id}），非敏感信息，可直接返回
 */
+// GetCDPSegment 返回 CDP 人群分群结果。
 func GetCDPSegment(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	tagCode := c.Query("tag")
@@ -109,6 +112,7 @@ ListCDPTagDefs 处理 GET /api/v1/cdp/tag-defs 请求，查询标签字典。
 参数：c - Gin请求上下文，自动获取当前租户ID
 返回：标签定义列表，包含所有可用的标签分类和代码
 */
+// ListCDPTagDefs 返回 CDP 标签定义列表。
 func ListCDPTagDefs(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	defs, err := cdp.ListTagDefinitions(tenantID)

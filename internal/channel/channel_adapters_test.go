@@ -42,6 +42,7 @@ func mockServer(t *testing.T) *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
+// TestWecomKfSendText 覆盖 WecomKfSendText 相关行为与边界。
 func TestWecomKfSendText(t *testing.T) {
 	srv := mockServer(t)
 	defer srv.Close()
@@ -52,6 +53,7 @@ func TestWecomKfSendText(t *testing.T) {
 	}
 }
 
+// TestWechatMPSendText 覆盖 WechatMPSendText 相关行为与边界。
 func TestWechatMPSendText(t *testing.T) {
 	srv := mockServer(t)
 	defer srv.Close()
@@ -62,6 +64,7 @@ func TestWechatMPSendText(t *testing.T) {
 	}
 }
 
+// TestWechatMPInboundDecrypt 覆盖 WechatMPInboundDecrypt 相关行为与边界。
 func TestWechatMPInboundDecrypt(t *testing.T) {
 	// 安全模式：构造加密信封，走适配器 DecryptInbound 应还原出 openid 与正文
 	appid := "wx_mp_receive"
@@ -87,6 +90,7 @@ func TestWechatMPInboundDecrypt(t *testing.T) {
 	}
 }
 
+// TestBuildJSConfig 覆盖 BuildJSConfig 相关行为与边界。
 func TestBuildJSConfig(t *testing.T) {
 	srv := mockServer(t)
 	defer srv.Close()
@@ -104,6 +108,7 @@ func TestBuildJSConfig(t *testing.T) {
 	}
 }
 
+// TestAdapterRegistryTypes 覆盖 AdapterRegistryTypes 相关行为与边界。
 func TestAdapterRegistryTypes(t *testing.T) {
 	for _, typ := range []string{model.ChannelTypeWecomApp, model.ChannelTypeWecomKf, model.ChannelTypeWechatMP} {
 		if _, ok := registry[typ]; !ok {

@@ -4,7 +4,7 @@
 //   - 同包续订不抵扣（走原顺延语义）
 //   - 无生效订阅 = 全新购买全价
 //   - 旧单被升级抵扣后不可再退（防「退旧单+白拿新包」双重回收）
-package service
+package billing
 
 import (
 	"fmt"

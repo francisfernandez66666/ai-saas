@@ -1,6 +1,10 @@
 // Package chatflow 聊天流模块：延迟取消/留资检测与 OneID 合并/会话状态维护/业务驱动消费
 package chatflow
 
+import "ai-scrm/internal/notify"
+
+import "ai-scrm/internal/pii"
+
 import (
 	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/cdp"
@@ -131,7 +135,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			}
 		}
 		log.Printf("[留资检测] 客户%d留资成功: phone=%s, stage=%v, assigned=%v",
-			customer.ID, service.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"])
+			customer.ID, pii.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"])
 		// D6：出站事件 webhook 扇出（旁路，不阻塞）。载荷只带 customer_id/阶段，不外发手机号明文（商户可凭 OpenAPI Key 取详情）
 		webhook.Emit(customer.TenantID, model.WebhookEventLeadCaptured, map[string]interface{}{
 			"customer_id": customer.ID,
@@ -161,7 +165,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 			UserID:     customer.AssignedUserID, // 归属顾问
 			Type:       "ai_triggered",          // AI触发生成
 			Method:     "store",                 // 到店渠道
-			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(customerInput)),
+			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
 			Result:     "lead_captured", // 已留资线索
 		}
 		db.DB.Create(&leadFollowUp)
@@ -170,7 +174,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	} else {
 		// 已有线索，更新内容（按客户ID合并，不新建）
 		db.DB.Model(&existingFollowUp).Updates(map[string]interface{}{
-			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", service.MaskPhone(phoneMatch), service.MaskPhoneInText(customerInput)),
+			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
 			"user_id": customer.AssignedUserID, // 更新归属顾问
 		})
 		log.Printf("[留资检测-线索合并] 客户%d 已有线索(FollowUp ID=%d)，更新内容，不新建",
@@ -183,7 +187,7 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 
 	// 商业化批次一顺手做（2026-08-23）：留资成功 → 企微群机器人推送
 	// SCRM 最高价值触达：销售群实时收到"新留资线索"通知（手机号脱敏）
-	service.NotifyLeadCaptured(customer.Name, maskPhone(phoneMatch), customer.InterestProduct)
+	notify.NotifyLeadCaptured(customer.Name, maskPhone(phoneMatch), customer.InterestProduct)
 
 	// Phase C（2026-08-22）：业务结果回流 → 推进流程主干（编排层消费 flow_result）
 	// 注意：不直接 import flow 包（会形成 chatflow→flow→strategy→llm→chatflow 环），
@@ -455,6 +459,7 @@ func persistMergedIdentities(tid uint, survivor, guest *model.Customer) error {
 // 摘要内容：客户画像字段 + 最近消息中提取的关键信息
 // 不注入完整对话历史（会偏移），只注入核心需求/兴趣/关注点
 // ============================================================
+// BuildCustomerContextSummary 组装客户上下文摘要，供 AI 生成回复与顾问查看。
 func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) string {
 	var sb strings.Builder
 
@@ -469,7 +474,7 @@ func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) 
 		sb.WriteString(fmt.Sprintf("· 客户姓名：%s\n", customerKnownName))
 	}
 	if customer.Phone != "" {
-		sb.WriteString(fmt.Sprintf("· 手机号：%s\n", service.MaskPhone(customer.Phone)))
+		sb.WriteString(fmt.Sprintf("· 手机号：%s\n", pii.MaskPhone(customer.Phone)))
 	}
 	if customer.InterestProduct != "" {
 		sb.WriteString(fmt.Sprintf("· 兴趣产品：%s\n", customer.InterestProduct))
@@ -576,6 +581,7 @@ func BuildCustomerContextSummary(customer *model.Customer, conversationID uint) 
 // 修复问题5：模型触及盲点后的不确定信号词检测 + 兜底话术
 // 返回：空字符串=未检测到盲点，非空=兜底回复话术
 // ============================================================
+// DetectKnowledgeBlindspot 识别 AI 回复中的知识盲区提示。
 func DetectKnowledgeBlindspot(aiReply string, userInput string) string {
 	// AI回复中的不确定信号词（模型在知识不足时的典型回复模式）
 	blindspotSignals := []string{
@@ -611,6 +617,7 @@ func DetectKnowledgeBlindspot(aiReply string, userInput string) string {
 // 修复问题4b：相似问题超过阈值后，关闭反问引导式语句
 // 判断逻辑：客户最近消息和之前消息中关键词重叠度>50%算相似
 // ============================================================
+// CountSimilarQuestions 统计客户相似问题出现次数，用于重复咨询判断。
 func CountSimilarQuestions(customerID uint, currentInput string) int {
 	var recentMsgs []model.Message
 	db.DB.Where("customer_id = ? AND sender_type = ?", customerID, "customer").
@@ -656,6 +663,7 @@ func CountSimilarQuestions(customerID uint, currentInput string) int {
 // ============================================================
 // ExtractKeywords 提取中文关键词（简单实现：去停用词+分字组词）
 // ============================================================
+// ExtractKeywords 从文本中提取关键词。
 func ExtractKeywords(text string) []string {
 	// 简单停用词列表
 	stopWords := map[string]bool{
@@ -692,6 +700,7 @@ func ExtractKeywords(text string) []string {
 // 修复问题6：非车话题重复3次后改语气
 // 判断逻辑：客户最近多条消息都被IsOffTopic判定为非车话题
 // ============================================================
+// CountOffTopicRepeats 统计客户重复离题次数。
 func CountOffTopicRepeats(customerID uint) int {
 	var recentMsgs []model.Message
 	db.DB.Where("customer_id = ? AND sender_type = ?", customerID, "customer").

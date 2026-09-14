@@ -21,10 +21,12 @@ import (
 	"ai-scrm/pkg/wxcrypt"
 )
 
+// init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wechatMPAdapter{}) }
 
 type wechatMPAdapter struct{}
 
+// Type 返回微信公众号通道适配器类型。
 func (wechatMPAdapter) Type() string { return model.ChannelTypeWechatMP }
 
 // mpPlainMessage 公众号明文消息（openid 承载于 FromUserName）
@@ -68,6 +70,7 @@ func (wechatMPAdapter) DecryptInbound(cred *Credential, ts, nonce, msgSig string
 	}, nil
 }
 
+// VerifyURLEcho 校验回调签名并回显 URL。
 func (wechatMPAdapter) VerifyURLEcho(cred *Credential, msgSig, ts, nonce, echo string) (string, error) {
 	// 明文模式：msgSig 为空 → 直接回显 echo（配置层未加密时的兼容通道）
 	if msgSig == "" {
@@ -159,6 +162,8 @@ func FetchCorpJSAPITicket(ctx context.Context, cred *Credential) (string, error)
 // SignJSConfig 计算 wx.config 的 corp 级签名：
 //
 //	sha1("jsapi_ticket="+ticket+"&noncestr="+nonce+"&timestamp="+ts+"&url="+url)
+//
+// SignJSConfig 生成公众号 JS-SDK 配置签名。
 func SignJSConfig(ticket, nonce, ts, targetURL string) string {
 	sum := sha1.Sum([]byte(fmt.Sprintf("jsapi_ticket=%s&noncestr=%s&timestamp=%s&url=%s", ticket, nonce, ts, targetURL)))
 	return hex.EncodeToString(sum[:])

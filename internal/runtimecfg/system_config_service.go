@@ -1,5 +1,5 @@
 // 系统配置中心：CRUD + 内存热加载、租户覆盖层、平台级键隔离。
-package service
+package runtimecfg
 
 import (
 	"ai-scrm/internal/db"
@@ -191,6 +191,7 @@ func (s *SystemConfigService) GetAll() []model.SystemConfig {
 
 // GetByCategory 按分类获取配置列表
 // category: reply_speed / strategy / mental_stage / ai_chain
+// GetByCategory 按分类返回当前生效的系统配置项。
 func (s *SystemConfigService) GetByCategory(category string) []model.SystemConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

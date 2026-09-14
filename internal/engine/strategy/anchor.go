@@ -4,7 +4,7 @@ package strategy
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"ai-scrm/pkg/utils"
 	"log"
@@ -44,8 +44,8 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 	var anchorWeights [AnchorCount]AnchorWeight
 	var weightsFromConfig []AnchorWeight
 	// P2-52 修复：单例未初始化（冷路径/单测）时回退默认权重，防 nil panic
-	if service.DefaultSystemConfigService != nil {
-		service.DefaultSystemConfigService.GetJSON("anchor_weights", &weightsFromConfig)
+	if runtimecfg.DefaultSystemConfigService != nil {
+		runtimecfg.DefaultSystemConfigService.GetJSON("anchor_weights", &weightsFromConfig)
 	}
 	if len(weightsFromConfig) != AnchorCount {
 		weightsFromConfig = DefaultAnchorWeights[:]
@@ -72,8 +72,8 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 	// 修复：首轮规则从硬编码→后台可调
 	// first_round_nothrow_bonus：首轮不抛锚加分（默认5.0）
 	// first_round_compare_penalty：首轮对比锚及以上减分（默认-3.0）
-	firstRoundNoThrowBonus := service.SafeCfgFloat("first_round_nothrow_bonus", 5.0)
-	firstRoundComparePenalty := service.SafeCfgFloat("first_round_compare_penalty", -3.0)
+	firstRoundNoThrowBonus := runtimecfg.SafeCfgFloat("first_round_nothrow_bonus", 5.0)
+	firstRoundComparePenalty := runtimecfg.SafeCfgFloat("first_round_compare_penalty", -3.0)
 
 	// 对每个锚类型计算加权分数
 	for a := 0; a < AnchorCount; a++ {
@@ -226,7 +226,7 @@ func Step2_SoftmaxAnchor(scores [AnchorCount]float64) (probs [AnchorCount]float6
 
 	// 调用softmax函数
 	// 修复：从SystemConfigService读取tau，后台调参即时生效
-	tau := service.SafeCfgFloat("tau", config.GlobalConfig.Strategy.Tau)
+	tau := runtimecfg.SafeCfgFloat("tau", config.GlobalConfig.Strategy.Tau)
 	probSlice := utils.Softmax(scoreSlice, tau)
 
 	// 转回数组
@@ -262,13 +262,13 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 
 	// 判据1：接钩率低（低于阈值θ_hookrate_low）
 	// 修复：从SystemConfigService读取，后台调参即时生效
-	hookRateLow := state.Attempts >= 2 && state.HookRate < service.SafeCfgFloat("theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
+	hookRateLow := state.Attempts >= 2 && state.HookRate < runtimecfg.SafeCfgFloat("theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
 	if hookRateLow {
 		needDowngrade = true
 	}
 
 	// 判据2：沉默时长超过阈值
-	silentLong := state.SilentDuration > service.SafeCfgInt("theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
+	silentLong := state.SilentDuration > runtimecfg.SafeCfgInt("theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
 	if silentLong {
 		needDowngrade = true
 	}
@@ -333,7 +333,7 @@ func Step2_5_StageCeiling(selectedAnchor int, currentStage int) (finalAnchor int
 
 	// 获取当前阶段允许的aggressiveness上限
 	// 修复：从SystemConfigService读取阶段锁天花板，后台调参即时生效
-	stageCeilingSlice := service.SafeCfgIntSlice("stage_anchor_ceiling", StageAnchorCeiling[:])
+	stageCeilingSlice := runtimecfg.SafeCfgIntSlice("stage_anchor_ceiling", StageAnchorCeiling[:])
 	// 边界保护：stage超出范围时，用最宽松的上限（不限制）
 	if currentStage < 0 || currentStage >= len(stageCeilingSlice) {
 		return finalAnchor, false // 不降级

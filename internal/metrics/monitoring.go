@@ -1,5 +1,7 @@
-// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
-package service
+// Package metrics 承载健康探测、阈值告警与 Prometheus 指标渲染。
+package metrics
+
+import "ai-scrm/internal/notify"
 
 // ============================================================
 // 监控与阈值告警（P1-4，2026-08-29）
@@ -11,6 +13,7 @@ package service
 // ============================================================
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"runtime"
 	"strconv"
 	"sync"
@@ -83,10 +86,10 @@ func intCheck(name string, value, warn, crit int64, desc string) HealthCheck {
 // monitorCfgInt 读系统配置阈值，缺省回退 def
 // 支持通过 system_configs 表动态调整监控阈值，无需重启
 func monitorCfgInt(key string, def int64) int64 {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return def
 	}
-	return int64(DefaultSystemConfigService.GetInt(key, int(def)))
+	return int64(runtimecfg.DefaultSystemConfigService.GetInt(key, int(def)))
 }
 
 // ComputeHealth 执行一次完整健康探测
@@ -118,8 +121,8 @@ func ComputeHealth() HealthSnapshot {
 
 	// 2. 合并队列积压深度
 	queueDepth := int64(0)
-	if DefaultMessageQueueService != nil {
-		queueDepth = int64(DefaultMessageQueueService.ActiveQueueCount())
+	if queueDepthFunc != nil {
+		queueDepth = int64(queueDepthFunc())
 	}
 	snap.Checks = append(snap.Checks, intCheck("merge_queue_depth", queueDepth,
 		monitorCfgInt("monitor_queue_warn", 50), monitorCfgInt("monitor_queue_crit", 200),
@@ -179,6 +182,6 @@ func MaybeAlert(snap HealthSnapshot) {
 	}
 	msg := "## ⚠️ AI-SCRM 健康告警\n" + lines + "> 时间：" + time.Now().Format("2006-01-02 15:04:05")
 	// 双通道：企微优先，钉钉兜底（notifier 内部未配置静默跳过）
-	NotifyWecom(msg)
-	NotifyDingtalk(msg)
+	notify.NotifyWecom(msg)
+	notify.NotifyDingtalk(msg)
 }

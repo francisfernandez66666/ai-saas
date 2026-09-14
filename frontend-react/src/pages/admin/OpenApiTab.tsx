@@ -6,6 +6,7 @@ import type { CellProps, TableRowData } from '../../types'
 
 const PERM_LABELS: Record<string, string> = { 'customer.read': '客户读取', 'cdp.read': '画像读取', 'chat.read': '会话读取', 'all': '全部权限' }
 
+/** OpenAPI Key Tab：管理租户 API Key 的创建、禁用和删除。 */
 export function OpenApiTab() {
   const [keys, setKeys] = useState<TableRowData[]>([])
   const [showCreate, setShowCreate] = useState(false)

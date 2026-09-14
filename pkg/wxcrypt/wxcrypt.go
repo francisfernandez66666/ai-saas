@@ -179,11 +179,13 @@ func (c *Crypt) EncryptReply(timestamp, nonce, toUser, plainMsgXML string) (stri
 // PKCS7（块大小 32，微信规范）
 // ============================================================
 
+// pkcs7Pad 按 PKCS7 规则补齐密文分组长度。
 func pkcs7Pad(data []byte, block int) []byte {
 	pad := block - len(data)%block
 	return append(data, bytes.Repeat([]byte{byte(pad)}, pad)...)
 }
 
+// pkcs7Unpad 移除 PKCS7 填充并校验填充字节。
 func pkcs7Unpad(data []byte, block int) ([]byte, error) {
 	n := len(data)
 	if n == 0 || n%block != 0 {

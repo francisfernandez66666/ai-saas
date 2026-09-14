@@ -30,12 +30,13 @@ type Route struct {
 }
 
 type Schema struct {
-	GeneratedBy string                 `json:"generated_by"`
-	Version     int                    `json:"version"`
-	Meta        map[string]any         `json:"meta"`
-	Routes      []Route                `json:"routes"`
+	GeneratedBy string         `json:"generated_by"`
+	Version     int            `json:"version"`
+	Meta        map[string]any `json:"meta"`
+	Routes      []Route        `json:"routes"`
 }
 
+// main 启动当前命令入口。
 func main() {
 	out := flag.String("out", "api.schema.json", "输出文件，- 表示 stdout")
 	check := flag.Bool("check", false, "与已有文件做字节级 diff，不一致则退出码 1")
@@ -66,6 +67,7 @@ func main() {
 	}
 }
 
+// buildContent 按指定格式生成 apidump 输出文本。
 func buildContent(format string) (string, error) {
 	routes, err := collectRoutes()
 	if err != nil {
@@ -100,6 +102,7 @@ func buildContent(format string) (string, error) {
 	return buf.String(), nil
 }
 
+// collectRoutes 构建路由树并收集 API 清单。
 func collectRoutes() ([]Route, error) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
@@ -132,6 +135,7 @@ func collectRoutes() ([]Route, error) {
 
 var funcSuffixRe = regexp.MustCompile(`-fm$`)
 
+// funcName 从 Gin 函数指针文本中解析 handler 名称。
 func funcName(raw string) string {
 	name := funcSuffixRe.ReplaceAllString(raw, "")
 	name = strings.TrimPrefix(name, "ai-scrm/")
@@ -148,6 +152,7 @@ func funcName(raw string) string {
 	return last
 }
 
+// groupOf 根据 API 路径推断路由分组。
 func groupOf(path string) string {
 	switch {
 	case strings.HasPrefix(path, "/openapi/"):
@@ -166,6 +171,7 @@ func groupOf(path string) string {
 	}
 }
 
+// authOf 根据路由位置推断鉴权要求。
 func authOf(path string) []string {
 	var out []string
 	add := func(name string) {
@@ -204,6 +210,7 @@ func authOf(path string) []string {
 	return out
 }
 
+// scanResponseAnnotations 扫描源码中的 apidump 响应类型注解。
 func scanResponseAnnotations() map[string]string {
 	res := map[string]string{}
 	fset := token.NewFileSet()

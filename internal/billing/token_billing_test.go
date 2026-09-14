@@ -1,7 +1,8 @@
 // Package service Token 三桶扣减引擎单元测试（P2-1 自动化测试，2026-08-30）
-package service
+package billing
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"testing"
 	"time"
 
@@ -39,53 +40,53 @@ func TestDeductResultZero(t *testing.T) {
 // TestTokenBillingEnabled 测试 Token 计费总闸
 func TestTokenBillingEnabled(t *testing.T) {
 	// 未初始化时应返回 false
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = nil
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = nil
 	if TokenBillingEnabled() {
 		t.Error("未初始化时应返回 false")
 	}
 
 	// 初始化后按配置返回
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{"token_billing_enabled": "true"}}
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{"token_billing_enabled": "true"}, nil)
 	if !TokenBillingEnabled() {
 		t.Error("配置为 true 时应返回 true")
 	}
 
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{"token_billing_enabled": "false"}}
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{"token_billing_enabled": "false"}, nil)
 	if TokenBillingEnabled() {
 		t.Error("配置为 false 时应返回 false")
 	}
 
-	DefaultSystemConfigService = old
+	runtimecfg.DefaultSystemConfigService = old
 }
 
 // TestBillingEnforced 测试计费强制开关
 func TestBillingEnforced(t *testing.T) {
-	old := DefaultSystemConfigService
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
 	// 未启用 token 引擎时，billing_enforced 应被忽略
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{
 		"token_billing_enabled": "false",
 		"billing_enforced":      "true",
-	}}
+	}, nil)
 	if billingEnforced() {
 		t.Error("token_billing_enabled=false 时 billing_enforced 应被忽略")
 	}
 
 	// 启用 token 引擎后，billing_enforced 跟随配置
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{
 		"token_billing_enabled": "true",
 		"billing_enforced":      "true",
-	}}
+	}, nil)
 	if !billingEnforced() {
 		t.Error("双开关均启用时应返回 true")
 	}
 
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{
 		"token_billing_enabled": "true",
 		"billing_enforced":      "false",
-	}}
+	}, nil)
 	if billingEnforced() {
 		t.Error("billing_enforced=false 时应返回 false")
 	}
@@ -94,12 +95,12 @@ func TestBillingEnforced(t *testing.T) {
 // TestCheckTokenAvailability 测试三桶可用性检查
 func TestCheckTokenAvailability(t *testing.T) {
 	// 未启用时恒放行
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = nil
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = nil
 	if !CheckTokenAvailability(1) {
 		t.Error("未启用时应恒放行")
 	}
-	DefaultSystemConfigService = old
+	runtimecfg.DefaultSystemConfigService = old
 }
 
 // TestMinInt64 测试 minInt64 辅助函数
@@ -147,12 +148,12 @@ func TestFreeTokenExpiry(t *testing.T) {
 // TestDeductTokensActualNoEnforced 测试灰度模式下不扣减
 func TestDeductTokensActualNoEnforced(t *testing.T) {
 	// 未启用时应为 no-op（P1-17：函数增加 error 返回值，此处断言为 nil）
-	old := DefaultSystemConfigService
-	DefaultSystemConfigService = nil
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = nil
 	if err := DeductTokensActual(1, 100); err != nil {
 		t.Fatalf("no-op 路径不应返回错误: %v", err)
 	}
-	DefaultSystemConfigService = old
+	runtimecfg.DefaultSystemConfigService = old
 }
 
 // TestGrantTrialBucketNoTx 测试 GrantTrialBucket nil tx

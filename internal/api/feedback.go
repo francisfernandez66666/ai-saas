@@ -1,6 +1,12 @@
 // 用户反馈API：登录用户提交反馈、超管列表与标记处理。
 package api
 
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/notify"
+
+import "ai-scrm/internal/pii"
+
 // 用户反馈API（商业化第二批M2）：登录用户提交反馈(20条/天限流)、超管分页列表与标记处理。
 // 支持脱敏上下文采集(掩码手机号不出库)，新反馈推企微群催办。
 
@@ -15,7 +21,6 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -48,6 +53,7 @@ CreateFeedback 处理 POST /api/v1/feedback 请求，允许登录用户提交反
 参数：c - Gin请求上下文，包含用户认证信息
 返回：反馈提交结果，成功后返回反馈对象
 */
+// CreateFeedback 提交用户反馈并触发催办通知。
 func CreateFeedback(c *gin.Context) {
 	var req feedbackReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -91,7 +97,7 @@ func CreateFeedback(c *gin.Context) {
 		return
 	}
 
-	service.NotifyWecom(fmt.Sprintf("【用户反馈】%s：%s「%s」",
+	notify.NotifyWecom(fmt.Sprintf("【用户反馈】%s：%s「%s」",
 		username, targetTypeLabel(req.TargetType), truncateRunes(req.Content, 60)))
 	RespOK(c, "反馈已提交，感谢你的意见", fb)
 }
@@ -102,6 +108,7 @@ SuperFeedbackList 处理 GET /api/v1/super/feedbacks?status=&page= 请求，返�
 参数：c - Gin请求上下文，通过query参数传递筛选条件和分页信息
 返回：分页后的反馈列表，包含租户名称、用户名等关联信息
 */
+// SuperFeedbackList 平台超管查看用户反馈列表。
 func SuperFeedbackList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -148,6 +155,7 @@ SuperResolveFeedback 处理 POST /api/v1/super/feedbacks/resolve 请求，标记
 参数：c - Gin请求上下文，包含请求体{id, note}
 返回：处理结果，成功后记录审计日志
 */
+// SuperResolveFeedback 平台超管处理并关闭用户反馈。
 func SuperResolveFeedback(c *gin.Context) {
 	var req struct {
 		ID   uint   `json:"id" binding:"required"`
@@ -181,6 +189,7 @@ buildFeedbackContext 构建反馈上下文信息，用于辅助问题定位和�
 参数：messageID - 关联的消息ID，为0时返回空字符串
 返回：JSON格式的上下文信息字符串，包含AI回复摘要、客户掩码手机和旅程阶段
 */
+// buildFeedbackContext 组装反馈上下文并递归脱敏 PII。
 func buildFeedbackContext(messageID uint) string {
 	if messageID == 0 {
 		return ""
@@ -203,7 +212,7 @@ func buildFeedbackContext(messageID uint) string {
 	}
 	ctx := map[string]string{"ai_reply_excerpt": truncateRunes(row.Content, 120)}
 	if row.CustName != "" || row.CustPhone != "" {
-		phone := service.MaskPhone(row.CustPhone)
+		phone := pii.MaskPhone(row.CustPhone)
 		ctx["customer_masked"] = row.CustName + "/" + phone
 		ctx["journey_stage"] = row.JourneyStage
 	}
@@ -338,7 +347,7 @@ func CreateFeedbackRating(c *gin.Context) {
 	// 数据流：MQ(user_event) → CDP.IngestConsumer → beh_complained 标签 → 策略中心驱动作战
 	// 业务价值：投诉行为是高价值信号，策略中心可据此调整话术/触发人工介入/标记客户风险
 	if req.Rating <= 2 && req.Comment != "" {
-		service.IncComplaint() // G-15：投诉计数+1（Prometheus 指标 ai_scrm_complaint_total）
+		metrics.IncComplaint() // G-15：投诉计数+1（Prometheus 指标 ai_scrm_complaint_total）
 		mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tid,
 			fmt.Sprintf("c:%d", req.CustomerID), "complaint",
 			mq.UserEvent{

@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { getToken } from '../../lib/api'
 import type { TableRowData } from '../../types'
 
+/** 用量看板 Tab：展示 Token、请求和成本趋势。 */
 export function UsageTab() {
   const [data, setData] = useState<TableRowData | null>(null)
   useEffect(() => {

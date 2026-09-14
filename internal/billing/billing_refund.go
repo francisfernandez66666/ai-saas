@@ -1,5 +1,9 @@
 // 退款与发票（D2a 文件拆分 2026-09-12）：按比例退款回收、增量份额计算、发票申请。
-package service
+package billing
+
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/notify"
 
 import (
 	"fmt"
@@ -133,7 +137,7 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 		return nil, false, err
 	}
 	if flow {
-		IncPaymentFailed() // 退款计为支付失败（成功率分母）
+		metrics.IncPaymentFailed() // 退款计为支付失败（成功率分母）
 		log.Printf("[Billing] 退款受理 order=%d refund=%d分 tokens回收=%d", orderID, refundInfo.refund, refundInfo.tokens)
 		// D6：出站事件 webhook 扇出（order.refunded），旁路不阻塞
 		var rtid uint
@@ -157,7 +161,7 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 				status = "psp_pending"
 				log.Printf("[Billing][ERROR] 订单%d(%s) PSP 出款失败: %v（账面已回收，需人工出款核销）",
 					orderID, o2.OrderNo, rerr)
-				NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，PSP 出款异常(%v)，权益已回收但资金未出，请财务人工处理",
+				notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，PSP 出款异常(%v)，权益已回收但资金未出，请财务人工处理",
 					o2.OrderNo, refundInfo.refund, rerr))
 			}
 			db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).Update("refund_psp_status", status)

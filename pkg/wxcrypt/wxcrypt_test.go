@@ -17,6 +17,7 @@ const (
 	testCorpID = "wx5823bf98d6194e39"
 )
 
+// newCrypt 构造测试用微信消息加解密器。
 func newCrypt(t *testing.T) *Crypt {
 	t.Helper()
 	c, err := New(testToken, testAESKey, testCorpID)
@@ -26,12 +27,14 @@ func newCrypt(t *testing.T) *Crypt {
 	return c
 }
 
+// TestNewRejectsBadKey 覆盖 NewRejectsBadKey 相关行为与边界。
 func TestNewRejectsBadKey(t *testing.T) {
 	if _, err := New(testToken, "tooshort", testCorpID); err != ErrAESKey {
 		t.Fatalf("非 43 位 key 应报 ErrAESKey, got %v", err)
 	}
 }
 
+// TestRoundTrip 覆盖 RoundTrip 相关行为与边界。
 func TestRoundTrip(t *testing.T) {
 	c := newCrypt(t)
 	msg := "<xml><Content><![CDATA[你好，我想了解你们的越野车]]></Content></xml>"
@@ -51,6 +54,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEncryptNonceRandom 覆盖 EncryptNonceRandom 相关行为与边界。
 func TestEncryptNonceRandom(t *testing.T) {
 	c := newCrypt(t)
 	a, _ := c.Encrypt("same")
@@ -60,6 +64,7 @@ func TestEncryptNonceRandom(t *testing.T) {
 	}
 }
 
+// TestSignatureMatchesManual 覆盖 SignatureMatchesManual 相关行为与边界。
 func TestSignatureMatchesManual(t *testing.T) {
 	c := newCrypt(t)
 	enc, _ := c.Encrypt("hello")
@@ -75,6 +80,7 @@ func TestSignatureMatchesManual(t *testing.T) {
 	}
 }
 
+// TestVerifySignature 覆盖 VerifySignature 相关行为与边界。
 func TestVerifySignature(t *testing.T) {
 	c := newCrypt(t)
 	enc, _ := c.Encrypt("msg")
@@ -87,6 +93,7 @@ func TestVerifySignature(t *testing.T) {
 	}
 }
 
+// TestTamperedCiphertextFails 覆盖 TamperedCiphertextFails 相关行为与边界。
 func TestTamperedCiphertextFails(t *testing.T) {
 	c := newCrypt(t)
 	enc, _ := c.Encrypt("integrity matters here")
@@ -100,6 +107,7 @@ func TestTamperedCiphertextFails(t *testing.T) {
 	}
 }
 
+// TestReceiveIDMismatch 覆盖 ReceiveIDMismatch 相关行为与边界。
 func TestReceiveIDMismatch(t *testing.T) {
 	// 用 corpid A 加密，用 corpid B 的上下文解密应检出 receive_id 不符
 	c1, _ := New(testToken, testAESKey, "corpAAA")
@@ -110,6 +118,7 @@ func TestReceiveIDMismatch(t *testing.T) {
 	}
 }
 
+// TestURLParamFlow 覆盖 URLParamFlow 相关行为与边界。
 func TestURLParamFlow(t *testing.T) {
 	c := newCrypt(t)
 	echo, _ := c.Encrypt("echo-plain-16chars!")
@@ -123,6 +132,7 @@ func TestURLParamFlow(t *testing.T) {
 	}
 }
 
+// TestEncryptReplyEnvelope 覆盖 EncryptReplyEnvelope 相关行为与边界。
 func TestEncryptReplyEnvelope(t *testing.T) {
 	c := newCrypt(t)
 	xml, err := c.EncryptReply("1409659589", "nonce9", "user_openid_123", "<xml><Content>hi</Content></xml>")
@@ -136,6 +146,7 @@ func TestEncryptReplyEnvelope(t *testing.T) {
 	}
 }
 
+// TestPKCS7Edges 覆盖 PKCS7Edges 相关行为与边界。
 func TestPKCS7Edges(t *testing.T) {
 	// 明文长度恰为 32 倍数时仍须补一整块（pad=32）
 	c := newCrypt(t)

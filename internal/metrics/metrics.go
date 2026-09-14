@@ -1,5 +1,5 @@
-// Package service 提供 SCRM 业务服务层实现（计费/消息/配置/脱敏/监控/向量等）。
-package service
+// Package metrics 承载零依赖 Prometheus 文本指标采集与渲染。
+package metrics
 
 // ============================================================
 // Prometheus 指标暴露（P2 监控闭环，2026-08-29 / P1-2 扩充 2026-08-30）
@@ -11,6 +11,8 @@ package service
 // ============================================================
 
 import (
+	"ai-scrm/internal/db"
+	"ai-scrm/internal/model"
 	"fmt"
 	"runtime"
 	"sort"
@@ -19,10 +21,13 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"ai-scrm/internal/db"
-	"ai-scrm/internal/model"
 )
+
+// queueDepthFunc 合并队列活跃数提供者（由 service 注册，避免 metrics -> service 反向依赖）。
+var queueDepthFunc func() int
+
+// SetQueueDepthProvider 注册消息队列活跃深度回调（启动时由 service 调用一次）。
+func SetQueueDepthProvider(fn func() int) { queueDepthFunc = fn }
 
 // ---- 基础计数 ----
 // httpTotal HTTP 总请求数（atomic，免锁），由中间件IncRequest递增
@@ -128,6 +133,7 @@ var (
 	packAlertTotal        sync.Map
 )
 
+// incPackCounter 原子累加包维度 Prometheus 计数器。
 func incPackCounter(m *sync.Map, pack, template string) {
 	key := packMetricKey{Pack: pack, Template: template}
 	if p, ok := m.Load(key); ok {
@@ -148,6 +154,7 @@ func IncPackLeadCaptured(pack string) { incPackCounter(&packLeadCapturedTotal, p
 // IncPackAlert 包质量告警计数 +1
 func IncPackAlert(pack string) { incPackCounter(&packAlertTotal, pack, "") }
 
+// promEscape 转义 Prometheus label 中的特殊字符。
 func promEscape(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `"`, `\"`)
@@ -155,6 +162,7 @@ func promEscape(s string) string {
 	return s
 }
 
+// renderPackCounter 将包维度计数器渲染为 Prometheus 文本格式。
 func renderPackCounter(b *[]byte, name, help string, m *sync.Map, withTemplate bool) {
 	type entry struct {
 		key   packMetricKey
@@ -228,6 +236,15 @@ func RecordRequestLatency(d time.Duration) {
 // RenderPrometheus 生成 Prometheus exposition 格式文本
 // 手写Prometheus文本格式（零外部依赖），/metrics 端点返回
 // 包含：运行时gauge + HTTP请求计数/延迟直方图 + AI成功率 + DB连接数 + 支付成功率 + 到期租户数 + 磁盘水位
+// queueDepth 安全读取合并队列活跃会话数（未注册时返回 0，不阻断指标输出）。
+func queueDepth() int {
+	if queueDepthFunc == nil {
+		return 0
+	}
+	return queueDepthFunc()
+}
+
+// RenderPrometheus 汇总运行时、DB、队列与业务指标并生成 /metrics 文本。
 func RenderPrometheus() string {
 	snap := ComputeHealth()
 	var crit24h int64
@@ -254,7 +271,7 @@ func RenderPrometheus() string {
 
 	b = append(b, "# HELP ai_scrm_merge_queue_active message merge queue active sessions\n"...)
 	b = append(b, "# TYPE ai_scrm_merge_queue_active gauge\n"...)
-	b = append(b, fmt.Sprintf("ai_scrm_merge_queue_active %d\n", DefaultMessageQueueService.ActiveQueueCount())...)
+	b = append(b, fmt.Sprintf("ai_scrm_merge_queue_active %d\n", queueDepth())...)
 
 	b = append(b, "# HELP ai_scrm_critical_24h critical audit events in last 24h\n"...)
 	b = append(b, "# TYPE ai_scrm_critical_24h gauge\n"...)

@@ -82,6 +82,7 @@ func PrivacyDeletionRequest(c *gin.Context) {
 }
 
 // AdminListDeletionRequests GET /admin/privacy/deletion-requests?status=&page=&page_size=
+// AdminListDeletionRequests 列出租户 PIPL 删除请求。
 func AdminListDeletionRequests(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	size, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))

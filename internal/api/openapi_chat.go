@@ -1,6 +1,8 @@
 // OpenAPI 对话端点：对外渠道嵌入的 chat/completions 兼容接口。
 package api
 
+import "ai-scrm/internal/pii"
+
 // ============================================================
 // OpenAPI 对话端点（商业化 M4 渠道嵌入，2026-08-29）
 //
@@ -56,6 +58,7 @@ func detectPhone(input string) string {
 }
 
 // OpenAPIChatCompletions POST /openapi/v1/chat/completions
+// OpenAPIChatCompletions 通过 API Key 发起对话。
 func OpenAPIChatCompletions(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 	trace := middleware.GetTraceID(c) // P1-3：全链路 trace
@@ -400,7 +403,7 @@ func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone str
 		customer.AssignedUserID = v
 	}
 	log.Printf("[OpenAPI] 客户%d 留资成功 channel 线索: phone=%s stage=lead_captured assigned=%d",
-		customer.ID, service.MaskPhone(phone), customer.AssignedUserID)
+		customer.ID, pii.MaskPhone(phone), customer.AssignedUserID)
 }
 
 // persistOpenAPIAIMessage 持久化 AI 回复并刷新会话

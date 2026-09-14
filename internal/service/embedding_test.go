@@ -2,6 +2,7 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"encoding/json"
 	"testing"
 
@@ -13,6 +14,7 @@ type fakeEmbeddingClient struct {
 	vec []float32
 }
 
+// Embed 提供当前包的辅助逻辑。
 func (c fakeEmbeddingClient) Embed(string) []float32 {
 	return c.vec
 }
@@ -66,13 +68,13 @@ func TestToVectorLiteral(t *testing.T) {
 
 // TestKbVectorSearchEnabled 验证 D3 热开关缺省为 true，显式 false 时关闭向量请求。
 func TestKbVectorSearchEnabled(t *testing.T) {
-	old := DefaultSystemConfigService
-	defer func() { DefaultSystemConfigService = old }()
+	old := runtimecfg.DefaultSystemConfigService
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
 
 	if !kbVectorSearchEnabled() {
 		t.Fatal("未初始化配置中心时应默认启用向量检索")
 	}
-	DefaultSystemConfigService = &SystemConfigService{cache: map[string]string{"kb_vector_search": "false"}}
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{"kb_vector_search": "false"}, nil)
 	if kbVectorSearchEnabled() {
 		t.Fatal("kb_vector_search=false 时应关闭向量检索")
 	}

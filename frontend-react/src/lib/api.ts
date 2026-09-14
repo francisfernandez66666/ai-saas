@@ -22,6 +22,7 @@ const ERR_MSG: Record<string, string> = {
  * @param json - 后端返回的 JSON 响应体
  * @returns 是否业务失败（code !== 0 表示失败）
  */
+/** 按后端 code/message 弹出错误提示，返回是否已处理。 */
 export function toastError(json: any): boolean {
   if (!json || json.code === 0 || json.code === undefined) return false
   const code = json.error_code as string
@@ -34,6 +35,7 @@ export function toastError(json: any): boolean {
  * 读取当前登录 token，缺失返回空串
  * @returns 登录 token 字符串
  */
+/** 读取本地保存的登录 token。 */
 export function getToken(): string {
   return localStorage.getItem(TOKEN_KEY) || ''
 }
@@ -42,6 +44,7 @@ export function getToken(): string {
  * 写入登录 token 到 localStorage
  * @param t - 登录 token
  */
+/** 保存登录 token 到本地存储。 */
 export function setToken(t: string) {
   localStorage.setItem(TOKEN_KEY, t)
 }
@@ -49,6 +52,7 @@ export function setToken(t: string) {
 /**
  * 清除登录 token（退出登录时调用）
  */
+/** 清理本地登录 token。 */
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
   invalidateSession() // P1-50：清会话缓存，防登出后残留旧 me 身份
@@ -62,6 +66,7 @@ export const VISITOR_KEY = 'scrm_visitor_key'
  * 原来 Admin/SuperAdmin/Advisor 直接 localStorage.clear() 连 C 端 visitor_key 一起清，
  * 导致访客身份丢失。改为白名单清除：只删登录相关键，保留访客身份。
  */
+/** 退出登录并跳转到角色对应的登录入口。 */
 export function logoutAndRedirect() {
   clearToken()
   // 按需清理其它登录态相关键（如有），绝不碰 visitor_key
@@ -73,6 +78,7 @@ export function logoutAndRedirect() {
  * 401 统一处理：登录态失效（token 过期/被踢）时清掉本地 token 并跳登录页
  * 注意：已在登录/注册页时不重复跳转
  */
+/** 统一处理 401：清 token 并跳回登录页。 */
 function handleUnauthorized() {
   clearToken()
   // 避免重复跳转（已在登录/注册页时不跳）
@@ -88,6 +94,7 @@ function handleUnauthorized() {
  * @param opts - fetch 配置项
  * @returns 原始 Response 对象
  */
+/** 带 token 和租户上下文发起 fetch，保留原始 Response 供上层处理。 */
 export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -128,6 +135,7 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
  * @param opts - fetch 配置项
  * @returns 包含 Response 和解析后 JSON 的对象
  */
+/** 发起 JSON API 请求并返回 data；错误码会转成前端异常。 */
 export async function apiJSON<T = any>(
   url: string,
   opts: RequestInit = {},
@@ -144,6 +152,7 @@ export async function apiJSON<T = any>(
  * - 其他角色 → /advisor（顾问工作台）
  * @param role - 用户角色标识
  */
+/** 按用户角色跳转到对应工作台，避免登录后落在错误页面。 */
 export function redirectByRole(role: string) {
   if (role === 'super_admin') location.href = '/super'
   else if (role === 'tenant_admin' || role === 'admin') location.href = '/admin'
@@ -157,6 +166,7 @@ export function redirectByRole(role: string) {
  * @param opts - 请求配置（method/body/headers）
  * @returns 后端返回的 JSON 响应体（已调用 toastError 处理业务错误）
  */
+/** 调用需要鉴权的后台接口，并复用统一错误和登录态处理。 */
 export async function AUTH<T = any>(
   url: string,
   opts: { method?: string; body?: any; headers?: Record<string, string> } = {},
@@ -197,6 +207,7 @@ const ME_CACHE_TTL = 60 // 秒
  * - must_change_password 为 true → 返回 null（调用方跳改密页）
  * @returns 权威身份，未登录/失效/需改密返回 null
  */
+/** 校验本地会话是否有效，并返回当前登录用户资料。 */
 export async function verifySession(): Promise<MeInfo | null> {
   const tk = getToken()
   if (!tk) return null

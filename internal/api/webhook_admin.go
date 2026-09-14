@@ -30,6 +30,7 @@ func maskWebhook(w *model.TenantWebhook) gin.H {
 }
 
 // ListWebhooks GET /admin/webhooks
+// ListWebhooks 分页列出租户出站 Webhook。
 func ListWebhooks(c *gin.Context) {
 	var rows []model.TenantWebhook
 	db.RQ(c).Scopes(db.T(c)).Order("id DESC").Find(&rows)
@@ -41,6 +42,7 @@ func ListWebhooks(c *gin.Context) {
 }
 
 // CreateWebhook POST /admin/webhooks {name,url,secret,events[]}
+// CreateWebhook 创建租户出站 Webhook 并加密保存密钥。
 func CreateWebhook(c *gin.Context) {
 	tid := whTenantID(c)
 	var req struct {
@@ -76,6 +78,7 @@ func CreateWebhook(c *gin.Context) {
 }
 
 // UpdateWebhook PUT /admin/webhooks/:id {name?,url?,secret?,events[],active?}
+// UpdateWebhook 更新租户出站 Webhook 配置。
 func UpdateWebhook(c *gin.Context) {
 	id := whID(c)
 	var w model.TenantWebhook
@@ -129,6 +132,7 @@ func UpdateWebhook(c *gin.Context) {
 }
 
 // DeleteWebhook DELETE /admin/webhooks/:id
+// DeleteWebhook 删除租户出站 Webhook 及其投递记录。
 func DeleteWebhook(c *gin.Context) {
 	id := whID(c)
 	var w model.TenantWebhook
@@ -171,11 +175,13 @@ func ListWebhookDeliveries(c *gin.Context) {
 }
 
 // --- helpers ---
+// whID 从路径参数解析 Webhook ID。
 func whID(c *gin.Context) uint {
 	id, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	return uint(id)
 }
 
+// whTenantID 从登录态解析当前租户 ID。
 func whTenantID(c *gin.Context) uint {
 	return db.EffectiveTenantIDFromGin(c)
 }

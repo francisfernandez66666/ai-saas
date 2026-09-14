@@ -1,6 +1,12 @@
 // Package llm LLM 调用唯一入口：构建 Prompt、多模型降级路由（智谱GLM→硅基流动）、计量与兜底
 package llm
 
+import "ai-scrm/internal/billing"
+
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/pii"
+
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
@@ -8,6 +14,7 @@ import (
 	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"log"
@@ -96,11 +103,11 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	// 网关模式：计费权已上收 AI 网关（网关侧做 fail-closed 计量），本地跳过自身计量避免重复扣减
 	gatewayMode := ai.DefaultGatewayClient != nil && tenantID != 0
 	if !gatewayMode {
-		service.ConsumeAIQuota(tenantID) // 统计旁路：恒放行，仅累计计数
+		billing.ConsumeAIQuota(tenantID) // 统计旁路：恒放行，仅累计计数
 
 		// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
 		// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
-		if !service.CheckTokenAvailability(tenantID) {
+		if !billing.CheckTokenAvailability(tenantID) {
 			log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
 			return ai.BuildFallbackReply(strategyOutput, canPromote)
 		}
@@ -111,7 +118,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	// 修复：AI_MOCK_MODE 环境变量应作为模拟模式的权威信号。
 	// 原有 GetBool("mock_mode", env) 会被种子写死的系统配置 false 覆盖，导致 env 失效、
 	// 开发环境实际走真实 LLM 调用（慢且可能无 key 报错）。改为 env 或 系统配置任一为真即模拟。
-	if config.GlobalConfig.AI.MockMode || service.SafeCfgBool("mock_mode", false) {
+	if config.GlobalConfig.AI.MockMode || runtimecfg.SafeCfgBool("mock_mode", false) {
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 
@@ -134,9 +141,9 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	//    达到阈值后：关闭反问，专注解答+适当介绍ROX品牌/车型/能力
 	// 4b. 客户重复性问题超过3次，关闭反问引导式语句，直接走解决陈述
 	// 6. 非车话题重复3次及以上后，改语气，关闭引导式反问，认真说回聊到车上
-	guidedDialogMaxRounds := service.SafeCfgInt("guided_dialog_max_rounds", 5)
-	repeatQuestionMaxTimes := service.SafeCfgInt("repeat_question_max_times", 3)
-	offtopicRepeatMaxTimes := service.SafeCfgInt("offtopic_repeat_max_times", 3)
+	guidedDialogMaxRounds := runtimecfg.SafeCfgInt("guided_dialog_max_rounds", 5)
+	repeatQuestionMaxTimes := runtimecfg.SafeCfgInt("repeat_question_max_times", 3)
+	offtopicRepeatMaxTimes := runtimecfg.SafeCfgInt("offtopic_repeat_max_times", 3)
 
 	// 检测对话轮数（客户发了多少条消息）
 	// P2-61 修复：原全历史 Find 进内存；dialogRoundCount 仅用于引导式对话阈值判断，
@@ -192,7 +199,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	// 对话历史轮数由 system_configs 的 chat_history_rounds 控制（DB 默认 3 轮）
 	// =0 时改用核心内容摘要注入 system prompt，避免模型记忆偏移
 	// 核心摘要提取：用户需求、看过哪些车、在开什么车、关注点等
-	chatHistoryRounds := service.SafeCfgInt("chat_history_rounds", 3)
+	chatHistoryRounds := runtimecfg.SafeCfgInt("chat_history_rounds", 3)
 	var historyMessages []ai.ChatMessage
 	if chatHistoryRounds > 0 {
 		// 如果配置了>0轮，仍用传统对话历史注入
@@ -232,24 +239,24 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 
 	// 5. 调用AI（走多模型路由，自动降级；stage_models 可为 reply 阶段覆盖专属模型）
 	// 修复：从SystemConfigService读取temperature，后台调参即时生效
-	aiTemp := service.SafeCfgFloat("ai_temperature", ai.DefaultClient.Temperature)
+	aiTemp := runtimecfg.SafeCfgFloat("ai_temperature", ai.DefaultClient.Temperature)
 	callStart := time.Now()
 	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", tenantID, messages, aiTemp)
 	if err != nil {
-		service.IncAIFailure() // P1-2：全模型失败计为 AI 失败（成功率分母）
+		metrics.IncAIFailure() // P1-2：全模型失败计为 AI 失败（成功率分母）
 		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
-	service.IncAISuccess() // P1-2：真模型成功返回计为 AI 成功
+	metrics.IncAISuccess() // P1-2：真模型成功返回计为 AI 成功
 	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
 	// 网关模式下计费权在网关，本地不再重复落账/扣减
 	if !gatewayMode {
-		service.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
+		billing.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
 			usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
 		// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
 		// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库，
 		// 消除并发下扣减顺序不保证的竞态（每租户每 flush 周期单事务扣减）
-		service.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
+		billing.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
 	}
 
 	// 数据飞轮：脱敏对话素材回流（P3，供行业包自动迭代）；未配置 Collector.URL 自动丢弃
@@ -274,7 +281,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	if chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0 {
 		stripped := chatflow.StripGuidedQuestions(reply)
 		if stripped != reply {
-			log.Printf("[留资硬拦截] 客户%d 已留资，AI回复含反问句，已剥离: %q → %q", customer.ID, service.MaskPhoneInText(reply), service.MaskPhoneInText(stripped))
+			log.Printf("[留资硬拦截] 客户%d 已留资，AI回复含反问句，已剥离: %q → %q", customer.ID, pii.MaskPhoneInText(reply), pii.MaskPhoneInText(stripped))
 			reply = stripped
 		}
 	}
@@ -286,7 +293,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 		if closeGuided {
 			stripped := chatflow.StripGuidedQuestions(reply)
 			if stripped != reply {
-				log.Printf("[引导关闭硬拦截] 客户%d 触发反问关闭条件，已剥离: %q → %q", customer.ID, service.MaskPhoneInText(reply), service.MaskPhoneInText(stripped))
+				log.Printf("[引导关闭硬拦截] 客户%d 触发反问关闭条件，已剥离: %q → %q", customer.ID, pii.MaskPhoneInText(reply), pii.MaskPhoneInText(stripped))
 				reply = stripped
 			}
 		}
@@ -330,7 +337,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 		oldReply := reply
 		reply = chatflow.StripAllQuestions(reply)
 		if reply != oldReply {
-			log.Printf("[引导关闭-全面剥离] 客户%d 引导已关闭，全面剥离反问句: %q → %q", customer.ID, service.MaskPhoneInText(oldReply), service.MaskPhoneInText(reply))
+			log.Printf("[引导关闭-全面剥离] 客户%d 引导已关闭，全面剥离反问句: %q → %q", customer.ID, pii.MaskPhoneInText(oldReply), pii.MaskPhoneInText(reply))
 		}
 	}
 
@@ -339,7 +346,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	// 检测AI回复中是否包含不确定/兜圈子的信号词，触发后用盲点兜底话术替换
 	// 兜底话术：关闭引导式提问，直接回"好的，稍等，这个问题我查一下"
 	// 如果客户继续提问相关问题："不好意思我现在忙，要不您到店来体验下？"
-	if service.SafeCfgBool("knowledge_blindspot_fallback_enabled", true) {
+	if runtimecfg.SafeCfgBool("knowledge_blindspot_fallback_enabled", true) {
 		blindspotReply := chatflow.DetectKnowledgeBlindspot(reply, userInput)
 		if blindspotReply != "" {
 			log.Printf("[知识库盲点兜底] 客户提问触及盲点，原始AI回复含不确定信号，替换为兜底话术")
@@ -426,6 +433,6 @@ func sanitizeAddress(reply string) string {
 		r = append(r[:60], '…')
 	}
 	log.Printf("[人设][WARN] AI回复含「您」已兜底替换: %q", string(r))
-	service.IncAddressPolite()
+	metrics.IncAddressPolite()
 	return clean
 }

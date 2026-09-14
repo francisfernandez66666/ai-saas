@@ -14,6 +14,7 @@ import {
   type Option,
 } from './EntityCrud'
 
+/** 知识库品牌维护 Tab。 */
 function BrandTab() {
   return <EntityCrud
     base="/api/v1/admin/knowledge/brands"
@@ -60,6 +61,7 @@ const BRAND_ALL_FIELDS: FieldSpec[] = [
   { key: 'description', label: '描述' },
 ]
 
+/** 知识库车型维护 Tab。 */
 function ModelTab({ brandOptions }: { brandOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/knowledge/models"
@@ -110,6 +112,7 @@ const MODEL_ALL_FIELDS: FieldSpec[] = [
   { key: 'sort', label: '排序', type: 'number' },
 ]
 
+/** 知识库车型参数维护 Tab。 */
 function SpecTab({ modelOptions }: { modelOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/knowledge/specs"
@@ -159,6 +162,7 @@ const SPEC_ALL_FIELDS: FieldSpec[] = [
   { key: 'sort', label: '排序', type: 'number' },
 ]
 
+/** 知识库竞品对比维护 Tab。 */
 function CompareTab({ modelOptions }: { modelOptions: Option[] }) {
   return <EntityCrud
     base="/api/v1/admin/knowledge/compares"
@@ -207,6 +211,7 @@ function CompareTab({ modelOptions }: { modelOptions: Option[] }) {
   />
 }
 
+/** 知识库片段维护与向量化状态 Tab。 */
 function FragmentTab() {
   return <EntityCrud
     base="/api/v1/admin/knowledge/fragments"

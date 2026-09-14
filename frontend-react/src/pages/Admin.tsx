@@ -186,6 +186,7 @@ export default function Admin() {
   )
 }
 
+/** 后台 Tab 内容分发器，根据当前菜单渲染对应管理面板。 */
 function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[] }) {
   if (tab === 'dashboard') return <DashboardTab />
   if (tab === 'customers') return <CustomersTab />
@@ -209,6 +210,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   return <Placeholder name={tab} />
 }
 
+/** 未拆分 Tab 的占位面板，提示后续维护入口。 */
 function Placeholder({ name }: { name: string }) {
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">

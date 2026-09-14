@@ -9,6 +9,7 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"encoding/json"
 	"strings"
@@ -34,10 +35,10 @@ const (
 // industryKeywordList 解析行业关键词列表（JSON 数组）
 // 优先级：租户覆盖 → 系统默认(tenant_id=0) → fallback（代码内置）
 func industryKeywordList(tenantID uint, key string, fallback []string) []string {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return fallback
 	}
-	list := industryListFrom(DefaultSystemConfigService.GetStringForTenant(tenantID, key, ""))
+	list := industryListFrom(runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, key, ""))
 	if len(list) > 0 {
 		return list
 	}
@@ -120,18 +121,18 @@ var defaultPriceRepliesNoLead = []string{
 
 // IndustrySalespersonForTenant 租户级销售顾问人设（行业包可配置；空=空串由调用方回退内置）
 func IndustrySalespersonForTenant(tenantID uint) string {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return ""
 	}
-	return DefaultSystemConfigService.GetStringForTenant(tenantID, IndustrySalesperson, "")
+	return runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, IndustrySalesperson, "")
 }
 
 // IndustryDomainConstraintForTenant 租户级领域约束句子（Prompt 内"只聊X"指令；空=空串由调用方回退内置）
 func IndustryDomainConstraintForTenant(tenantID uint) string {
-	if DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return ""
 	}
-	return DefaultSystemConfigService.GetStringForTenant(tenantID, IndustryDomainConstraint, "")
+	return runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, IndustryDomainConstraint, "")
 }
 
 // IsOffTopicForTenant 租户级无关话题判定：白名单优先放行，黑名单拦截

@@ -2,11 +2,12 @@
 // 原则：不落原始 PII；message/stack 过手机号掩码；context 只存 route/UA/采样窗口等定位信息。
 package api
 
+import "ai-scrm/internal/pii"
+
 import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -27,18 +28,19 @@ type clientErrorReq struct {
 }
 
 // ClientErrorReport POST /api/v1/client-errors
+// ClientErrorReport 接收前端异常采样并脱敏入库。
 func ClientErrorReport(c *gin.Context) {
 	var req clientErrorReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")
 		return
 	}
-	req.Message = strings.TrimSpace(service.MaskPhoneInText(truncateRunes(req.Message, 500)))
+	req.Message = strings.TrimSpace(pii.MaskPhoneInText(truncateRunes(req.Message, 500)))
 	if req.Message == "" {
 		RespErr(c, http.StatusBadRequest, 400, "message 不能为空")
 		return
 	}
-	req.Stack = strings.TrimSpace(service.MaskPhoneInText(truncateRunes(req.Stack, 4000)))
+	req.Stack = strings.TrimSpace(pii.MaskPhoneInText(truncateRunes(req.Stack, 4000)))
 	req.Route = strings.TrimSpace(req.Route)
 	req.UserAgent = truncateRunes(req.UserAgent, 300)
 	req.Page = truncateRunes(req.Page, 500)

@@ -1,11 +1,11 @@
 // 用量与计量查询API：租户/平台级 Token 用量与成本看板。
 package api
 
+import "ai-scrm/internal/billing"
+
 import (
 	"net/http"
 	"strconv"
-
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -27,9 +27,9 @@ func AdminUsageSummary(c *gin.Context) {
 	tid := tenantIDOf(c)
 
 	// 按天聚合Token用量和成本
-	days7, _ := service.UsageSummaryByDay(tid, days)
+	days7, _ := billing.UsageSummaryByDay(tid, days)
 	// 按AI阶段（如意图识别、多轮对话等）分布统计
-	stages, _ := service.UsageStageDistribution(tid, days)
+	stages, _ := billing.UsageStageDistribution(tid, days)
 
 	// 汇总计算总用量
 	var totalTokens, totalCost, totalCalls int64
@@ -58,7 +58,7 @@ func SuperUsageCost(c *gin.Context) {
 	days := parseDays(c)
 
 	// 按模型维度查询全平台用量数据
-	rows, err := service.UsageCostByModel(days)
+	rows, err := billing.UsageCostByModel(days)
 	if err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return

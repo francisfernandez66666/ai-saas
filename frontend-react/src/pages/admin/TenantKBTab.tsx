@@ -10,10 +10,12 @@ import type { Cfg } from './shared'
 const MAX_FILE_BYTES = 2 * 1024 * 1024
 const ACCEPT_EXT = ['json', 'md', 'markdown', 'txt']
 
+/** 读取文件名扩展名，用于上传类型判断。 */
 function extOf(name: string) {
   return name.split('.').pop()?.toLowerCase() || ''
 }
 
+/** 根据片段向量化状态渲染标签。 */
 function vectorTag(row: TableRowData) {
   const ready = row.vectorized === true || String(row.embedding_json || '').length > 0
   return <Tag theme={ready ? 'success' : 'warning'}>{ready ? '已向量化' : '待向量化'}</Tag>

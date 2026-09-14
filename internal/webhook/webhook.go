@@ -144,6 +144,7 @@ func ProcessDue() (delivered, retried, dead int) {
 	return
 }
 
+// markDead 将投递记录标记为死信并写入失败原因。
 func markDead(d *model.WebhookDelivery, reason string) {
 	db.DB.Model(d).Updates(map[string]interface{}{
 		"status": model.WebhookDeliveryDead, "last_error": truncate(reason, 280),
@@ -199,6 +200,7 @@ func SendTestPing(url, secret string) (int, error) {
 	return deliver(wh, "webhook.test", payload)
 }
 
+// nextBackoff 按重试次数计算指数退避间隔。
 func nextBackoff(attempts int) time.Duration {
 	// 指数退避：5s,10s,20s,40s,80s（封顶）
 	d := time.Duration(1<<uint(attempts)) * 5 * time.Second
@@ -208,6 +210,7 @@ func nextBackoff(attempts int) time.Duration {
 	return d
 }
 
+// truncate 按 rune 安全截断字符串到 n 个字符。
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s

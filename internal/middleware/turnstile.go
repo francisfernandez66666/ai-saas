@@ -2,14 +2,13 @@
 package middleware
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"encoding/json"
 	"log"
 	"net/http"
 	"net/url"
 	"strings"
 	"time"
-
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -51,7 +50,7 @@ func TurnstileGuard() gin.HandlerFunc {
 			abortTurnstile(c, "缺少人机验证令牌")
 			return
 		}
-		secret := service.DefaultSystemConfigService.GetString("turnstile_secret_key", "")
+		secret := runtimecfg.DefaultSystemConfigService.GetString("turnstile_secret_key", "")
 		if secret == "" {
 			log.Printf("[Turnstile] 已启用但未配置密钥，视为关闭")
 			c.Next()
@@ -80,10 +79,10 @@ func TurnstileGuard() gin.HandlerFunc {
 
 // turnstileEnabled 开关判定（enabled 且 secret 已配置才生效）
 func turnstileEnabled() bool {
-	if service.DefaultSystemConfigService == nil {
+	if runtimecfg.DefaultSystemConfigService == nil {
 		return false
 	}
-	return service.DefaultSystemConfigService.GetBool("turnstile_enabled", false)
+	return runtimecfg.DefaultSystemConfigService.GetBool("turnstile_enabled", false)
 }
 
 // GetTurnstileSiteKey 站点键读取（带 60s 进程内缓存；公开信息无敏感面）
@@ -91,7 +90,7 @@ func GetTurnstileSiteKey() (enabled bool, siteKey string) {
 	if !turnstileEnabled() {
 		return false, ""
 	}
-	siteKey = service.DefaultSystemConfigService.GetString("turnstile_site_key", "")
+	siteKey = runtimecfg.DefaultSystemConfigService.GetString("turnstile_site_key", "")
 	return siteKey != "", siteKey
 }
 

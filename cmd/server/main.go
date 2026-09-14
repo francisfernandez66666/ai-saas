@@ -1,6 +1,12 @@
 // 程序入口包：负责服务启动编排（配置→DB→各模块→路由→监听）与全部 HTTP 路由挂载
 package main
 
+import "ai-scrm/internal/billing"
+
+import "ai-scrm/internal/metrics"
+
+import "ai-scrm/internal/notify"
+
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
@@ -21,6 +27,7 @@ import (
 	"ai-scrm/internal/privacy"
 	"ai-scrm/internal/realtime"
 	"ai-scrm/internal/redisclient"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
 	"ai-scrm/internal/webhook"
@@ -96,7 +103,7 @@ func main() {
 	// 2.6 初始化消息中心（SAAS_PLAN §2.5）：MQ_TYPE=log 降级 / kafka 真实总线
 	mq.Init(cfg.MQ)
 	defer mq.Close()
-	mq.SetOnPublishSuccess(service.IncKafkaPublish) // G-15：Kafka 发布计数
+	mq.SetOnPublishSuccess(metrics.IncKafkaPublish) // G-15：Kafka 发布计数
 
 	// 3. 设置Gin模式
 	gin.SetMode(cfg.Server.Mode)
@@ -132,10 +139,10 @@ func main() {
 	cache.InitKnowledgeCache()
 
 	// 6.5 初始化系统配置服务（从DB加载可调参数到内存，支持热加载）
-	service.InitSystemConfigService()
+	runtimecfg.InitSystemConfigService()
 
 	// 6.6 实时计量批量落库（P1 计费统一 2026-09-03：三桶扣减收敛到 UsageSink 批量落库）
-	service.InitUsageSink()
+	billing.InitUsageSink()
 
 	// 7. 初始化AI客户端
 	ai.InitClient()
@@ -175,15 +182,15 @@ func main() {
 	}
 
 	// D9 包质量归因旁路：指标/群告警由组合根注入，归因包不直接依赖 service。
-	attribution.OnReplyRecorded = service.IncPackReply
-	attribution.OnLeadCaptured = func(packCode string) { service.IncPackLeadCaptured(packCode) }
+	attribution.OnReplyRecorded = metrics.IncPackReply
+	attribution.OnLeadCaptured = func(packCode string) { metrics.IncPackLeadCaptured(packCode) }
 	attribution.ReplyScoreFunc = func(content string, anchors, forbidden []string) (int, []string) {
 		res := service.ScoreReplyOffline(content, anchors, forbidden)
 		return int(res.Score*20 + 0.5), res.Reasons
 	}
 	attribution.PackAlertFunc = func(packCode, message string) {
-		service.IncPackAlert(packCode)
-		service.NotifyGroup(message)
+		metrics.IncPackAlert(packCode)
+		notify.NotifyGroup(message)
 	}
 
 	// 7.5 内嵌 AI 网关（P0-1）：仅在"本进程即网关"模式启动（GatewayListen 非空 且 非网关客户端）。
@@ -201,13 +208,14 @@ func main() {
 
 	// P2 RLS：多租户行级隔离（受 RLS_ENABLED 控制；默认关闭=应用层 db.T 保证，零行为变更）
 	// 开启后业务事务内 SET LOCAL app.current_tenant 即被 DB 强制收敛（双保险）
-	service.EnableRLS()
+	db.EnableRLS()
 
 	// P2 collector：启动数据飞轮批量上报（COLLECTOR_URL 空则空转，零外部请求）
 	service.StartCollector()
 
 	// P2-70：启动 WebSocket hub 僵尸连接清扫（30s 一轮，180s 无活动移除）
 	realtime.DefaultHub.StartSweeper()
+	realtime.StartRedisBroadcast(realtime.DefaultHub)
 
 	// P2-1：启动租户解析缓存周期清扫（30s 一轮，清理过期正/负缓存条目）
 	middleware.StartTenantCacheSweeper()
@@ -259,9 +267,9 @@ func main() {
 		// （ResetAllTenantsMonthlyUsageIfDue/ExpireCheck/SweepExpiredOrders）无锁，
 		// 多实例同时启动会各自重复执行一轮全表巡检。统一走与周期巡检相同的选主。
 		run := func() {
-			service.ResetAllTenantsMonthlyUsageIfDue()
-			service.ExpireCheck()
-			service.SweepExpiredOrders() // 启动即扫一次僵尸单
+			billing.ResetAllTenantsMonthlyUsageIfDue()
+			billing.ExpireCheck()
+			billing.SweepExpiredOrders() // 启动即扫一次僵尸单
 		}
 		if redisclient.IsEnabled() {
 			if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
@@ -275,8 +283,8 @@ func main() {
 		for range ticker.C {
 			safeRun("usage:reset+expire", func() {
 				runWithLock := func() {
-					service.ResetAllTenantsMonthlyUsageIfDue()
-					service.ExpireCheck()
+					billing.ResetAllTenantsMonthlyUsageIfDue()
+					billing.ExpireCheck()
 				}
 				if redisclient.IsEnabled() {
 					if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
@@ -299,7 +307,7 @@ func main() {
 		for range ticker.C {
 			// K8修复(2026-08-26)：上报成功才推进 lastID，失败保留以重试，避免增量审计数据漏传
 			var ok bool
-			safeRun("flywheel:report", func() { ok = service.ReportAuditIncrement(lastID) })
+			safeRun("flywheel:report", func() { ok = billing.ReportAuditIncrement(lastID) })
 			if ok {
 				db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
 			}
@@ -317,11 +325,11 @@ func main() {
 			safeRun("billing:sweep", func() {
 				if redisclient.IsEnabled() {
 					if h := redisclient.TryLock("lock:billing:sweep", 4*time.Minute); h != nil {
-						service.SweepExpiredOrders()
+						billing.SweepExpiredOrders()
 						h.Unlock()
 					}
 				} else {
-					service.SweepExpiredOrders()
+					billing.SweepExpiredOrders()
 				}
 			})
 		}
@@ -376,8 +384,8 @@ func main() {
 						fn()
 					}
 				}
-				runRecon("billing:renew", service.SweepSubscriptionRenewals)
-				runRecon("billing:reconcile", service.ReconcileBilling)
+				runRecon("billing:renew", billing.SweepSubscriptionRenewals)
+				runRecon("billing:reconcile", billing.ReconcileBilling)
 			})
 		}
 	}()
@@ -485,16 +493,16 @@ func main() {
 	// 8.85 包质量归因小时任务（D9，2026-09-13）：评分补洞 → 物化小时快照 → 低分告警；多实例 Redis 选主。
 	go func() {
 		packCfgBool := func(key string, def bool) bool {
-			if service.DefaultSystemConfigService == nil {
+			if runtimecfg.DefaultSystemConfigService == nil {
 				return def
 			}
-			return service.DefaultSystemConfigService.GetBool(key, def)
+			return runtimecfg.DefaultSystemConfigService.GetBool(key, def)
 		}
 		packCfgInt := func(key string, def int) int {
-			if service.DefaultSystemConfigService == nil {
+			if runtimecfg.DefaultSystemConfigService == nil {
 				return def
 			}
-			return service.DefaultSystemConfigService.GetInt(key, def)
+			return runtimecfg.DefaultSystemConfigService.GetInt(key, def)
 		}
 		runPackQuality := func() {
 			if _, err := attribution.ScoreReplyAttributions(500); err != nil {
@@ -621,7 +629,7 @@ func main() {
 			log.Printf("[优雅停机] HTTP 关闭异常: %v", err)
 		}
 		log.Println("[优雅停机] 执行计量最终 flush...")
-		service.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账
+		billing.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账
 		log.Println("[优雅停机] 关闭 MQ 消费者...")
 		mq.Close()
 		log.Println("[优雅停机] 关闭数据库连接池...")
@@ -651,8 +659,8 @@ func registerRoutes(r *gin.Engine) {
 	// ---- Status Page（商业化 M4，免鉴权无敏感信息，借鉴翻译助手三期§3.6）----
 	r.GET("/status", func(c *gin.Context) {
 		// P1-4 健康探测：结构化探针 + 阈值告警（crit 越界经企微/钉钉主动通知，带冷却）
-		snap := service.ComputeHealth()
-		service.MaybeAlert(snap)
+		snap := metrics.ComputeHealth()
+		metrics.MaybeAlert(snap)
 		status := "ok"
 		if snap.HasCrit {
 			status = "crit"
@@ -704,7 +712,7 @@ func registerRoutes(r *gin.Engine) {
 		log.Println("[FE] 未找到 frontend-react/dist，跳过 SPA 托管（请先 cd frontend-react && npm run build）")
 	}
 
-	// ---- Prometheus 指标端点（P2 监控闭环，零依赖；文本格式由 service.RenderPrometheus 生成）----
+	// ---- Prometheus 指标端点（P2 监控闭环，零依赖；文本格式由 metrics.RenderPrometheus 生成）----
 	// P1-18 修复(2026-09-09)：原 /metrics 注册与指标中间件都在 dist 分支内——前端未构建时
 	// 监控整体消失。上移为全局无条件注册。
 	// 2026-09-09 鉴权加固：配置 METRICS_TOKEN 时须携带 Authorization: Bearer <token>；
@@ -725,14 +733,14 @@ func registerRoutes(r *gin.Engine) {
 			}
 		}
 		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
-		c.String(200, service.RenderPrometheus())
+		c.String(200, metrics.RenderPrometheus())
 	})
 	// 请求计数 + 延迟直方图（P1-2/P1-18：P99 来源）中间件——全局挂载（覆盖 /health /status /metrics 之外全部入口）
 	r.Use(func(c *gin.Context) {
 		start := time.Now()
-		service.IncRequest()
+		metrics.IncRequest()
 		c.Next()
-		service.RecordRequestLatency(time.Since(start))
+		metrics.RecordRequestLatency(time.Since(start))
 	})
 
 	// ---- 业务路由树（D2a 拆分至 internal/api/routes*.go，按作用域分文件）----

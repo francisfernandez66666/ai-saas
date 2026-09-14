@@ -16,7 +16,7 @@
 //	token_billing_enabled=false        —— 完全不启用（no-op，兼容现状）
 //	token_billing_enabled=true 且 billing_enforced=false —— 仅落账留痕不扣费（灰度）
 //	token_billing_enabled=true 且 billing_enforced=true  —— 真正扣减三桶
-package service
+package billing
 
 import (
 	"log"

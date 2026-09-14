@@ -4,6 +4,7 @@ package llm
 
 import "testing"
 
+// TestSanitizeAddress 覆盖 SanitizeAddress 相关行为与边界。
 func TestSanitizeAddress(t *testing.T) {
 	cases := []struct {
 		name string

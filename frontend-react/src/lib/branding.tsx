@@ -35,6 +35,7 @@ const Ctx = createContext<Brand>(DEFAULT)
  * 消费品牌上下文：各页面用它读取当前租户白标（名称/Logo/主题色等）
  * @returns 当前租户的 Brand 配置对象
  */
+/** 读取当前品牌配置，供页面统一替换名称、Logo 与主题色。 */
 export function useBrand() {
   return useContext(Ctx)
 }
@@ -50,6 +51,7 @@ export function useBrand() {
  * 5. 注入自定义 CSS/JS（SaaS 白标定制）
  * @param children - 子组件
  */
+/** 品牌配置 Provider：启动时加载白标配置并向子树注入。 */
 export function BrandingProvider({ children }: { children: React.ReactNode }) {
   const [b, setB] = useState<Brand>(DEFAULT)
 

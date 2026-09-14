@@ -4,6 +4,7 @@ import { Button, Table, Tag } from 'tdesign-react'
 import { getToken } from '../../lib/api'
 import type { CellProps, TableRowData } from '../../types'
 
+/** 审计日志 Tab：展示租户内关键操作记录。 */
 export function AuditTab() {
   const [rows, setRows] = useState<TableRowData[]>([])
   const [action, setAction] = useState('')

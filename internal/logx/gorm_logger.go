@@ -20,18 +20,22 @@ func NewGormLogger(inner logger.Interface) logger.Interface {
 	return &redactLogger{inner: inner}
 }
 
+// LogMode 返回按日志级别包装后的脱敏 logger。
 func (l *redactLogger) LogMode(level logger.LogLevel) logger.Interface {
 	return &redactLogger{inner: l.inner.LogMode(level)}
 }
 
+// Info 输出 GORM 信息日志。
 func (l *redactLogger) Info(ctx context.Context, format string, args ...interface{}) {
 	l.inner.Info(ctx, Mask(format), args...)
 }
 
+// Warn 输出 GORM 告警日志。
 func (l *redactLogger) Warn(ctx context.Context, format string, args ...interface{}) {
 	l.inner.Warn(ctx, Mask(format), args...)
 }
 
+// Error 输出错误日志或返回错误描述，并对敏感号段做脱敏。
 func (l *redactLogger) Error(ctx context.Context, format string, args ...interface{}) {
 	l.inner.Error(ctx, Mask(format), args...)
 }

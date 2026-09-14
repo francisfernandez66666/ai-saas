@@ -1,7 +1,12 @@
 // OpenAPI只读开放接口：对外只读数据开放与鉴权调用。
 package api
 
+import "ai-scrm/internal/billing"
+
+import "ai-scrm/internal/pii"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"net/http"
 	"strconv"
 
@@ -10,7 +15,6 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
-	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -33,13 +37,13 @@ import (
 // openAPIBalance 开放响应附带的余额可见性（M4，借鉴四期 §一.4）
 // 出参：月配额余量/增量余额/计费灰度态——客户侧可自助对账，无需工单询问
 func openAPIBalance(c *gin.Context) gin.H {
-	used, maxMonthly, balance, err := service.GetTenantQuotaView(middleware.EffectiveTenantID(c))
+	used, maxMonthly, balance, err := billing.GetTenantQuotaView(middleware.EffectiveTenantID(c))
 	if err != nil {
 		return nil
 	}
 	enforced := true
-	if service.DefaultSystemConfigService != nil {
-		enforced = service.DefaultSystemConfigService.GetBool("billing_enforced", false)
+	if runtimecfg.DefaultSystemConfigService != nil {
+		enforced = runtimecfg.DefaultSystemConfigService.GetBool("billing_enforced", false)
 	}
 	return gin.H{
 		"quota_remaining":  maxMonthly - used, // 三桶之月配额桶剩余（次），客户侧自助对账
@@ -49,6 +53,7 @@ func openAPIBalance(c *gin.Context) gin.H {
 }
 
 // OpenAPICustomers GET /openapi/v1/customers?page=&page_size=&keyword=&mask=
+// OpenAPICustomers 通过 API Key 返回客户列表。
 func OpenAPICustomers(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
@@ -91,9 +96,9 @@ func OpenAPICustomers(c *gin.Context) {
 	for _, cu := range customers {
 		p := cu.Phone
 		// P2-23 修复：原仅 len==11 才脱敏——非 11 位手机号（座机/区号/境外）明文直出。
-		// 统一走 service.MaskPhone（正则口径，任何长度都掩中间段）。
+		// 统一走 pii.MaskPhone（正则口径，任何长度都掩中间段）。
 		if mask && p != "" {
-			p = service.MaskPhone(p)
+			p = pii.MaskPhone(p)
 		}
 		list = append(list, item{
 			ID: cu.ID, Name: cu.Name, Phone: p,
@@ -109,6 +114,7 @@ func OpenAPICustomers(c *gin.Context) {
 }
 
 // OpenAPICustomerConversations GET /openapi/v1/customers/:id/conversations
+// OpenAPICustomerConversations 通过 API Key 返回客户会话。
 func OpenAPICustomerConversations(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 64)
 	if err != nil || id == 0 {
@@ -205,6 +211,7 @@ var validPerms = map[string]bool{
 }
 
 // AdminCreateAPIKey POST /api/v1/admin/apikeys
+// AdminCreateAPIKey 创建租户 API Key。
 func AdminCreateAPIKey(c *gin.Context) {
 	var req struct {
 		Name  string   `json:"name" binding:"required"`
@@ -267,6 +274,7 @@ func AdminListAPIKeys(c *gin.Context) {
 }
 
 // AdminToggleAPIKey POST /api/v1/admin/apikeys/:id/disable | enable
+// AdminDisableAPIKey 禁用租户 API Key。
 func AdminDisableAPIKey(c *gin.Context) { toggleAPIKey(c, false) }
 
 // AdminEnableAPIKey POST /api/v1/admin/apikeys/:id/enable 启用Key
@@ -296,6 +304,7 @@ func toggleAPIKey(c *gin.Context, active bool) {
 }
 
 // AdminDeleteAPIKey DELETE /api/v1/admin/apikeys/:id
+// AdminDeleteAPIKey 删除租户 API Key。
 func AdminDeleteAPIKey(c *gin.Context) {
 	// P2-28 修复：非数字 id 直打 PG 22P02。统一 PathUintID
 	id, ok := PathUintID(c)

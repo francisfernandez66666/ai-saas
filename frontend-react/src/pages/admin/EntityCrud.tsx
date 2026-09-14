@@ -39,6 +39,7 @@ export type EntityCrudProps = {
   headerExtra?: React.ReactNode
 }
 
+/** 解析 JSON 数组字段，失败时返回兜底列表。 */
 export function parseJsonArray(value: unknown, fallback: string[] = []): string[] {
   if (Array.isArray(value)) return value.map((x) => String(x))
   if (typeof value !== 'string' || !value.trim()) return fallback
@@ -50,21 +51,25 @@ export function parseJsonArray(value: unknown, fallback: string[] = []): string[
   }
 }
 
+/** 把数组或 JSON 字符串统一转换为字符串数组。 */
 export function toArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((x) => String(x)).filter(Boolean)
   return String(value || '').split(/[,，]/).map((x) => x.trim()).filter(Boolean)
 }
 
+/** 把布尔/数字表单值转换为后端期望的 0/1。 */
 export function boolToInt(v: unknown): number {
   if (typeof v === 'boolean') return v ? 1 : 0
   return ['true', '1', 'yes', '是'].includes(String(v).toLowerCase()) ? 1 : 0
 }
 
+/** 把启用/停用状态渲染为彩色标签。 */
 export function statusTag(row: CrudRow) {
   const active = Number(row.status) === 1 || row.status === true || row.status === 'active'
   return <Tag theme={active ? 'success' : 'default'}>{active ? '启用' : '停用'}</Tag>
 }
 
+/** 根据字段定义把表格行转换为表单初始值。 */
 export function defaultRowToForm(fields: FieldSpec[], row: CrudRow): Record<string, any> {
   const form: Record<string, any> = {}
   fields.forEach((f) => {
@@ -82,6 +87,7 @@ export function defaultRowToForm(fields: FieldSpec[], row: CrudRow): Record<stri
   return form
 }
 
+/** 按字段定义把表单值组装为 API 请求体。 */
 export function buildBody(fields: FieldSpec[], form: Record<string, any>) {
   const body: Record<string, any> = {}
   fields.forEach((f) => {
@@ -98,6 +104,7 @@ export function buildBody(fields: FieldSpec[], form: Record<string, any>) {
   return body
 }
 
+/** 校验必填字段，返回第一条可展示错误。 */
 export function validateRequired(fields: FieldSpec[], form: Record<string, any>) {
   for (const f of fields) {
     const v = form[f.key]
@@ -112,6 +119,7 @@ export function validateRequired(fields: FieldSpec[], form: Record<string, any>)
   return ''
 }
 
+/** 根据字段类型渲染通用表单控件。 */
 function FieldControl({ field, value, onChange }: { field: FieldSpec; value: any; onChange: (v: any) => void }) {
   if (field.type === 'textarea') return <Textarea value={value} onChange={(v) => onChange(v)} placeholder={field.placeholder} />
   if (field.type === 'number') return <InputNumber value={Number(value || 0)} onChange={(v) => onChange(v)} style={{ width: '100%' }} />
@@ -121,6 +129,7 @@ function FieldControl({ field, value, onChange }: { field: FieldSpec; value: any
   return <Input value={value ?? ''} onChange={(v) => onChange(v)} placeholder={field.placeholder} />
 }
 
+/** 通用实体 CRUD 页面组件：配置字段后可复用列表、表单和接口调用。 */
 export function EntityCrud({
   base,
   title,

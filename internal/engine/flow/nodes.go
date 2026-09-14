@@ -247,6 +247,7 @@ func getFirstNextNode(node model.FlowNode) string {
 // 节点的NextNodes按顺序存储，条件在config的conditions字段
 // 简化实现：NextNodes的顺序对应条件顺序
 // conditions: ["ai", "human", "fish"]
+// findNextNodeByCondition 根据条件选择下一个流程节点。
 func findNextNodeByCondition(node model.FlowNode, routeResult string) string {
 	// 从config中获取条件列表
 	conditions := []string{}

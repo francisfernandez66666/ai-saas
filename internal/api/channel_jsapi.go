@@ -13,6 +13,7 @@ import (
 )
 
 // ChannelWecomJSConfig GET /channel/wecom/jsconfig?url=&corpid=
+// ChannelWecomJSConfig 返回企微侧边栏 JS-SDK 配置。
 func ChannelWecomJSConfig(c *gin.Context) {
 	target := c.Query("url")
 	corpid := c.Query("corpid")

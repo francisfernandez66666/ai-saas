@@ -2,6 +2,7 @@
 package service
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"context"
 	"log"
 	"strconv"
@@ -231,8 +232,8 @@ func ResolveRecallScope(tenantID uint, selfChain []uint) *RecallScope {
 			scope.Distances[d] = i // 首次出现即最近距离
 		}
 	}
-	if DefaultSystemConfigService == nil ||
-		!DefaultSystemConfigService.GetBool("kb_cross_dept_fallback", true) {
+	if runtimecfg.DefaultSystemConfigService == nil ||
+		!runtimecfg.DefaultSystemConfigService.GetBool("kb_cross_dept_fallback", true) {
 		return scope // 策略关：无④层
 	}
 	var binds []model.DeptPackBinding

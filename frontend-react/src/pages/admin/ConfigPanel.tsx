@@ -3,6 +3,7 @@ import { Button, Input, InputNumber, Switch, Tag, Textarea } from 'tdesign-react
 import { resolveJsonMode } from '../../lib/jsonMode'
 import type { Cfg } from './shared'
 
+/** JSON 配置编辑器，提供格式校验与错误提示。 */
 function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChange: (v: string) => void }) {
   const mode = resolveJsonMode(value)
   let parsed: Array<number | string> | null = null
@@ -48,6 +49,7 @@ function JsonEditor({ cfg, value, onChange }: { cfg: Cfg; value: string; onChang
   return <Textarea value={value} onChange={(v) => onChange(v)} autosize={{ minRows: 2, maxRows: 6 }} />
 }
 
+/** AI 链路配置面板：维护模型、阈值与降级参数。 */
 function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void }) {
   const priority = cfgs.find((c) => c.key === 'model_priority')
   const mock = cfgs.find((c) => c.key === 'mock_mode')
@@ -98,6 +100,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
   )
 }
 
+/** 系统配置面板组：按分类渲染可编辑配置项。 */
 export function ConfigPanels({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void }) {
   if (cfgs[0]?.category === 'ai_chain') {
     return <AIChainPanel cfgs={cfgs} edits={edits} setEdits={setEdits} />

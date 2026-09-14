@@ -1,6 +1,8 @@
 // 邮箱验证码接口：注册发码/换绑发码/换绑完成（防枚举、防薅、Turnstile 前置）
 package api
 
+import "ai-scrm/internal/notify"
+
 import (
 	"net/http"
 	"strings"
@@ -174,6 +176,6 @@ func ChangeEmail(c *gin.Context) {
 		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}
-	writeAuditSimple(c, tid, "email_change", "user:"+username+"→"+service.MaskEmailAddr(newEmail))
-	RespOK(c, "邮箱绑定成功："+service.MaskEmailAddr(newEmail), nil)
+	writeAuditSimple(c, tid, "email_change", "user:"+username+"→"+notify.MaskEmailAddr(newEmail))
+	RespOK(c, "邮箱绑定成功："+notify.MaskEmailAddr(newEmail), nil)
 }

@@ -1,7 +1,12 @@
 // 租户入驻与套餐：SaaS 注册闭环、子域名占用检查、套餐公开查询、行业兜底、注册防薅护栏
 package api
 
+import "ai-scrm/internal/billing"
+
+import "ai-scrm/internal/pii"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"fmt"
 	"log"
 	"net/http"
@@ -101,7 +106,7 @@ func TenantSignup(c *gin.Context) {
 	// 生产态(邮箱验证开)：唯一邮箱即身份锚，同邮箱注册提交限流 register_email_daily_limit；
 	//   IP 仅写入审计供事后风控，不做硬拦截——避免同 NAT 多企业误伤（用户定稿语义）
 	// 内测态(邮箱验证关)：无身份锚可用 → 保留原 IP 双闸兜底
-	svc := service.DefaultSystemConfigService
+	svc := runtimecfg.DefaultSystemConfigService
 	if service.EmailVerifyEnabled() && req.AdminEmail != "" {
 		daily := svc.GetInt("register_email_daily_limit", 3)
 		var cnt int64
@@ -120,7 +125,7 @@ func TenantSignup(c *gin.Context) {
 				Count(&cnt)
 		}
 		if cnt >= int64(daily) {
-			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", service.MaskEmail(req.AdminEmail), daily)
+			log.Printf("[防薅v2] 邮箱=%s 今日注册尝试已达上限(%d)", pii.MaskEmail(req.AdminEmail), daily)
 			RespErr(c, http.StatusTooManyRequests, 429, "该邮箱今日注册尝试已达上限，请明日再试或联系我们")
 			return
 		}
@@ -216,7 +221,7 @@ func TenantSignup(c *gin.Context) {
 	}
 
 	// M-R 邀请推广（2026-08-25）：新租户邀请码（8位，冲突概率≈1/31^8）
-	if code, err := service.GenerateInviteCode(); err == nil {
+	if code, err := billing.GenerateInviteCode(); err == nil {
 		ten.InviteCode = code
 	}
 	refCode := strings.TrimSpace(strings.ToUpper(req.Ref))
@@ -227,12 +232,12 @@ func TenantSignup(c *gin.Context) {
 			return err
 		}
 		// M-R 邀请推广：首绑邀请关系 + 邀请人侧奖励
-		service.ApplyReferralBinding(tx, &ten, refCode, req.AdminEmail)
+		billing.ApplyReferralBinding(tx, &ten, refCode, req.AdminEmail)
 		// P1.5 注册赠送免费桶 —— 双发修复(2026-08-26 UAT发现)：
 		// 带 ref 时 ApplyReferralBinding 的新客侧发放即注册礼，两条路径叠加曾致60万。
 		// 现互斥：仅无 ref 走 GrantTrialBucket；有 ref 的同额由邀请路径承担。
 		if refCode == "" {
-			service.GrantTrialBucket(tx, ten.ID, req.AdminEmail)
+			billing.GrantTrialBucket(tx, ten.ID, req.AdminEmail)
 		}
 		// 根部门
 		root := model.Department{TenantID: ten.ID, Name: "销售部", Depth: 1, Status: 1}
@@ -324,6 +329,7 @@ func TenantSignup(c *gin.Context) {
 }
 
 // CheckTenantCode GET /api/v1/tenant/check-code?code=xxx
+// CheckTenantCode 校验企业码是否可用于注册或登录。
 func CheckTenantCode(c *gin.Context) {
 	code := strings.ToLower(strings.TrimSpace(c.Query("code")))
 	if !tenantCodeRe.MatchString(code) {

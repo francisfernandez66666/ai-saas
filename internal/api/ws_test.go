@@ -9,6 +9,7 @@ import (
 	"golang.org/x/net/websocket"
 )
 
+// TestWSHandshakeOriginRules 覆盖 WSHandshakeOriginRules 相关行为与边界。
 func TestWSHandshakeOriginRules(t *testing.T) {
 	cases := []struct {
 		name   string // 用例名

@@ -34,6 +34,7 @@ GetOverview 获取统计概览
   - code: 0 表示成功
   - data: StatsOverview 结构体
 */
+// GetOverview 返回运营总览指标。
 func GetOverview(c *gin.Context) {
 	// 总客户数（有效客户：status=1）
 	var totalCustomers int64

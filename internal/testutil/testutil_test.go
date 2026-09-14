@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestCreateTenantReuseSameID 覆盖 CreateTenantReuseSameID 相关行为与边界。
 func TestCreateTenantReuseSameID(t *testing.T) {
 	SetupTestDB(t)
 	a := CreateTenant(t)
@@ -17,6 +18,7 @@ func TestCreateTenantReuseSameID(t *testing.T) {
 	CleanupTenant(t, a)
 }
 
+// TestCreateTenantCodeSuffixedAndScoped 覆盖 CreateTenantCodeSuffixedAndScoped 相关行为与边界。
 func TestCreateTenantCodeSuffixedAndScoped(t *testing.T) {
 	SetupTestDB(t)
 	a := CreateTenantCode(t, "iso_a")

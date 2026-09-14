@@ -2,6 +2,7 @@
 package configcenter
 
 import (
+	"ai-scrm/internal/runtimecfg"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -10,7 +11,6 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
-	"ai-scrm/internal/service"
 
 	"gorm.io/gorm"
 )
@@ -112,8 +112,8 @@ func Upgrade(tenantID uint, items map[string]string) (int, error) {
 		n++
 	}
 	// P1-38：指针判空——测试环境/未初始化时跳过 Reload（生产 main 启动必然初始化）
-	if service.DefaultSystemConfigService != nil {
-		service.DefaultSystemConfigService.Reload()
+	if runtimecfg.DefaultSystemConfigService != nil {
+		runtimecfg.DefaultSystemConfigService.Reload()
 	}
 	publish(tenantID, "upgrade", "params", n)
 	log.Printf("[ConfigCenter] 租户%d Upgrade：%d 项覆盖已生效", tenantID, n)
@@ -149,8 +149,8 @@ func Rollback(tenantID uint, keys []string) (int, error) {
 	if res.Error != nil {
 		return 0, res.Error
 	}
-	if service.DefaultSystemConfigService != nil {
-		service.DefaultSystemConfigService.Reload()
+	if runtimecfg.DefaultSystemConfigService != nil {
+		runtimecfg.DefaultSystemConfigService.Reload()
 	}
 	publish(tenantID, "rollback", "params", int(res.RowsAffected))
 	log.Printf("[ConfigCenter] 租户%d Rollback：清除 %d 项覆盖", tenantID, res.RowsAffected)
@@ -180,7 +180,7 @@ func BroadcastReload(tenantID uint) {
 // 注册于包加载期，早于 main 的 StartCfgEventConsumer，确保事件抵达即有钩子
 func init() {
 	RegisterHotReloadHook(func(tenantID uint, action string, scope string) {
-		service.DefaultSystemConfigService.Reload()
+		runtimecfg.DefaultSystemConfigService.Reload()
 		log.Printf("[ConfigCenter] 配置热重载钩子执行：tenant=%d action=%s scope=%s", tenantID, action, scope)
 	})
 }

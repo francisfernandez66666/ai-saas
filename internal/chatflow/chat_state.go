@@ -4,7 +4,7 @@ package chatflow
 import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"log"
 	"time"
@@ -23,7 +23,7 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 	if conversation.PendingHandoff && conversation.HandoffNotifiedAt != nil {
 		since := time.Since(*conversation.HandoffNotifiedAt)
 		// 修复：从SystemConfigService读取超时时间，后台调参即时生效
-		timeout := time.Duration(service.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 		if since > timeout {
 			log.Printf("[对话] 软接管超时，AI完全接管会话: %d", conversation.ID)
 			conversation.PendingHandoff = false
@@ -42,14 +42,14 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 		// 还没有人工回复过，检查最后消息时间
 		if conversation.LastMessageAt != nil {
 			since := time.Since(*conversation.LastMessageAt)
-			timeout := time.Duration(service.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+			timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 			return since > timeout
 		}
 		return false
 	}
 
 	since := time.Since(*conversation.LastHumanReplyAt)
-	timeout := time.Duration(service.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+	timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 	return since > timeout
 }
 
@@ -85,7 +85,7 @@ func UpdateConversationState(
 	// 高意向持续轮数
 	intentScore := customer.IntentScore + strategyOutput.IntentDelta
 	// 修复：从SystemConfigService读取L3阈值，后台调参即时生效
-	thetaL3Intent := service.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
+	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
 	if intentScore >= thetaL3Intent {
 		state.HighIntentRounds++
 	} else {
@@ -94,10 +94,10 @@ func UpdateConversationState(
 
 	// 心智阶段推进——严格逐级递进，禁止跳跃
 	// 修复：从SystemConfigService读取心智阶段参数，后台调参即时生效
-	stageStepEnabled := service.DefaultSystemConfigService.GetBool("stage_step_enabled", true)
-	stageMaxIncrement := service.DefaultSystemConfigService.GetInt("stage_max_increment", 1)
-	hookRateStage1Threshold := service.DefaultSystemConfigService.GetFloat("hook_rate_stage1_threshold", 0.3)
-	forceStage0Attempts := service.DefaultSystemConfigService.GetInt("force_stage0_attempts", 1)
+	stageStepEnabled := runtimecfg.DefaultSystemConfigService.GetBool("stage_step_enabled", true)
+	stageMaxIncrement := runtimecfg.DefaultSystemConfigService.GetInt("stage_max_increment", 1)
+	hookRateStage1Threshold := runtimecfg.DefaultSystemConfigService.GetFloat("hook_rate_stage1_threshold", 0.3)
+	forceStage0Attempts := runtimecfg.DefaultSystemConfigService.GetInt("force_stage0_attempts", 1)
 	// 修复"平A开大"根因之二：旧代码用IntentScore直接算阶段，一轮对话后
 	// intentScore从0.4涨到0.5+，直接从stage=0跳到stage=2甚至3，
 	// 导致阶段锁的天花板很高（ceiling=3或4），对比锚完全合法。

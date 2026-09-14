@@ -7,7 +7,10 @@
 // 红线不破：生成经 flow→strategy→llm；本包不直连 llm。人工接管态 AI 不出声（转人工无感知）。
 package channel
 
+import "ai-scrm/internal/metrics"
+
 import (
+	"ai-scrm/internal/runtimecfg"
 	"context"
 	"log"
 	"time"
@@ -144,6 +147,7 @@ func ensureConversation(tenantID, customerID uint, externalID, chType string) (*
 	return &nc, nil
 }
 
+// channelTag 为通道日志生成稳定标签。
 func channelTag(chType string) string {
 	switch chType {
 	case model.ChannelTypeWechatMP:
@@ -157,7 +161,7 @@ func channelTag(chType string) string {
 
 // gateReply 内容安全处置（对齐 C1 平台热开关）：shadow 只计数，enforce MASK 改写 / BLOCK 退场语。
 func gateReply(reply string, tenantID, convID uint) string {
-	cfg := service.DefaultSystemConfigService
+	cfg := runtimecfg.DefaultSystemConfigService
 	if !cfg.GetBoolForTenant(0, "contentsafety_enabled", true) {
 		return reply
 	}
@@ -166,13 +170,13 @@ func gateReply(reply string, tenantID, convID uint) string {
 	if !res.Hit {
 		return reply
 	}
-	service.IncContentSafetyHit()
+	metrics.IncContentSafetyHit()
 	log.Printf("[通道][内容安全] 会话%d 命中 level=%s mode=%s", convID, res.Level, mode)
 	if mode != "enforce" {
 		return reply
 	}
 	if res.Level == contentsafety.LevelBlock {
-		service.IncContentSafetyBlock()
+		metrics.IncContentSafetyBlock()
 		return "这个我帮你确认下，稍等一下我回你"
 	}
 	return res.Cleaned

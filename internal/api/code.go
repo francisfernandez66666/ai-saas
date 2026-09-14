@@ -112,6 +112,7 @@ RespFail 业务错误响应
   - HTTP 状态码随错误性质返回，业务 code 与之解耦
   - 前端通过 error_code 字段进行精细化提示
 */
+// RespFail 按业务错误码返回失败响应。
 func RespFail(c *gin.Context, httpStatus int, code RespCode, msg string) {
 	c.JSON(httpStatus, schema.Response{
 		Code:       int(code),
@@ -128,6 +129,7 @@ respOK 成功响应（内部使用）
 P1-14 修复(2026-09-09)：原实现是 `RespErr(c, 200, 0, "ok")`，data 参数从未使用——
 唯一调用方 /super/monitor/health 的健康快照被整体丢弃，探针拿到空壳响应。
 */
+// respOK 返回内部统一成功响应。
 func respOK(c *gin.Context, data any) {
 	c.JSON(http.StatusOK, schema.Response{
 		Code:       int(CodeOK),
@@ -148,6 +150,7 @@ respFailStatus 业务错误响应（携带准确 HTTP 状态码）
   - code: 业务错误码
   - msg: 错误描述信息
 */
+// respFailStatus 按业务错误码选择 HTTP 状态并返回失败响应。
 func respFailStatus(c *gin.Context, httpStatus int, code RespCode, msg string) {
 	RespErr(c, httpStatus, int(code), msg)
 }

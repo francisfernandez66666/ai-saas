@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// seedCustomerWithChat 构造测试种子数据。
 func seedCustomerWithChat(t *testing.T, tid uint) (uint, []uint) {
 	t.Helper()
 	cu := model.Customer{
@@ -34,6 +35,7 @@ func seedCustomerWithChat(t *testing.T, tid uint) (uint, []uint) {
 	return cu.ID, ids
 }
 
+// TestDeletionEnqueueIdempotentAndAnonymize 覆盖 DeletionEnqueueIdempotentAndAnonymize 相关行为与边界。
 func TestDeletionEnqueueIdempotentAndAnonymize(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)
@@ -112,6 +114,7 @@ func TestDeletionEnqueueIdempotentAndAnonymize(t *testing.T) {
 	}
 }
 
+// TestProcessExpiredOnlyDue 覆盖 ProcessExpiredOnlyDue 相关行为与边界。
 func TestProcessExpiredOnlyDue(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)

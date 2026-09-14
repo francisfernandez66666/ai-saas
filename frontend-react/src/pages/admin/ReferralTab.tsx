@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { getToken } from '../../lib/api'
 import type { TableRowData } from '../../types'
 
+/** 邀请推广 Tab：展示邀请码、奖励规则和推荐记录。 */
 export function ReferralTab() {
   const [info, setInfo] = useState<TableRowData | null>(null)
   const [qr, setQr] = useState('')

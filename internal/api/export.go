@@ -3,6 +3,8 @@
 // PII 遵循现有掩码规则（手机号列掩码、正文内手机/邮箱掩码）——导出用于经营分析而非联系方式倒卖。
 package api
 
+import "ai-scrm/internal/pii"
+
 import (
 	"encoding/csv"
 	"net/http"
@@ -13,12 +15,12 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 )
 
 // exportRowCap 单次导出行数上限（防大租户一次性拖爆内存/带宽）；可经 ?limit= 调低，不可调高于硬顶。
 const exportRowCap = 50000
 
+// exportLimit 计算本次导出的行数上限。
 func exportLimit(c *gin.Context) int {
 	n := exportRowCap
 	if v, err := strconv.Atoi(c.Query("limit")); err == nil && v > 0 && v < n {
@@ -27,6 +29,7 @@ func exportLimit(c *gin.Context) int {
 	return n
 }
 
+// csvWriter 创建带 UTF-8 BOM 的流式 CSV 写入器。
 func csvWriter(c *gin.Context, filename string) *csv.Writer {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
@@ -62,7 +65,7 @@ func AdminExportCustomers(c *gin.Context) {
 		rec := []string{
 			strconv.FormatUint(uint64(cu.ID), 10),
 			cu.Name,
-			service.MaskPhone(cu.Phone), // PII 掩码
+			pii.MaskPhone(cu.Phone), // PII 掩码
 			cu.WechatID,
 			cu.City,
 			cu.CustomerType,
@@ -116,7 +119,7 @@ func AdminExportConversations(c *gin.Context) {
 			strconv.FormatUint(uint64(m.ID), 10),
 			strconv.FormatUint(uint64(m.ConversationID), 10),
 			m.SenderType,
-			service.MaskPhoneInText(m.Content), // 正文内手机号掩码
+			pii.MaskPhoneInText(m.Content), // 正文内手机号掩码
 			m.MessageType,
 			m.RouteResult,
 			strconv.FormatFloat(m.IntentScore, 'f', 2, 64),
