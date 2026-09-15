@@ -157,10 +157,15 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	// 修复问题3：按客户ID合并线索——先查是否已有lead_captured类型的线索，有则更新不新建
 	// P2-27 修复：FollowUp content 统一脱敏（手机号+原文内嵌号码），库内不落明文
 	var existingFollowUp model.FollowUp
-	result := db.DB.Where("customer_id = ? AND result = ?", customer.ID, "lead_captured").First(&existingFollowUp)
+	// P1-5 修复(2026-09-15)：既有记录查询补租户条件——原仅靠 customer_id 全局唯一
+	// 兜底，属脆弱不变量（同文件 437 行已有正确示范）。
+	result := db.DB.Where("customer_id = ? AND tenant_id = ? AND result = ?", customer.ID, customer.TenantID, "lead_captured").First(&existingFollowUp)
 	if result.Error != nil {
 		// 没有已有线索，创建新的
 		leadFollowUp := model.FollowUp{
+			TenantID: customer.TenantID, // P1-5 修复(2026-09-15)：C7 红线再命中——db.DB 无请求 ctx，
+			// 盖章回调取到 0 → 留资线索落 tenant_id=0（租户侧 RQ 查询看不见 + 平台视图混入）。
+			// 后台/回调路径必须显式传租户，与 billing/privacy/webhook 域同款纪律。
 			CustomerID: customer.ID,
 			UserID:     customer.AssignedUserID, // 归属顾问
 			Type:       "ai_triggered",          // AI触发生成

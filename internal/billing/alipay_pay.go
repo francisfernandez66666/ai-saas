@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -212,4 +213,77 @@ func VerifyAlipayNotify(pub *rsa.PublicKey, params map[string]string) (outTradeN
 		return "", "", errors.New("支付宝通知验签失败（报文被篡改或公钥不匹配）")
 	}
 	return params["out_trade_no"], params["trade_status"], nil
+}
+
+// alipayYuanToCents 支付宝金额协议（元，字符串）→ 分（整数）。
+// 拒绝 float 解析误差：按 "." 拆分整数/小数部分，小数 >2 位且非全零即报错。
+// 修复根因（P0-1 复核批 2026-09-15）：金额核对必须分毫精确，float64 转换在边界值可差 1 分。
+func alipayYuanToCents(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, errors.New("金额字段为空")
+	}
+	neg := strings.HasPrefix(s, "-")
+	s = strings.TrimPrefix(s, "-")
+	parts := strings.Split(s, ".")
+	if len(parts) > 2 {
+		return 0, fmt.Errorf("金额格式非法: %q", s)
+	}
+	intPart := parts[0]
+	if intPart == "" {
+		intPart = "0"
+	}
+	yuan, err := strconv.ParseInt(intPart, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("金额整数部分非法: %q", s)
+	}
+	cents := int64(0)
+	if len(parts) == 2 {
+		dec := parts[1]
+		if len(dec) > 2 {
+			if strings.Trim(dec[2:], "0") != "" {
+				return 0, fmt.Errorf("金额精度超过分: %q", s)
+			}
+			dec = dec[:2]
+		}
+		for len(dec) < 2 {
+			dec += "0"
+		}
+		c, err := strconv.ParseInt(dec, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("金额小数部分非法: %q", s)
+		}
+		cents = c
+	}
+	v := yuan*100 + cents
+	if neg {
+		v = -v
+	}
+	return v, nil
+}
+
+// ValidateAlipayNotifyParams 验签通过后的业务参数核对（P0-1 复核批，2026-09-15）。
+// 根因：支付宝平台公钥是全网共用的签名主体——只验签不核 app_id/金额，攻击者可用
+// 自己的支付宝 app 对受害者订单号（out_trade_no 仅商户内唯一）付 ¥0.01，把真签名
+// 通知转发到受害平台公开回调端点即按订单面额全额发货（跨 app 套现）。
+// 官方《异步通知对接规范》强制要求：app_id、total_amount、seller_id 三项必核。
+// expectedSellerID 为空表示未配置（pay_alipay_seller_id 可选），跳过该项。
+func ValidateAlipayNotifyParams(params map[string]string, expectedAppID, expectedSellerID string, orderAmountCents int64) error {
+	if expectedAppID == "" {
+		return errors.New("pay_alipay_app_id 未配置，无法核对通知归属")
+	}
+	if params["app_id"] != expectedAppID {
+		return fmt.Errorf("通知 app_id(%s) 与本商户应用(%s)不一致", params["app_id"], expectedAppID)
+	}
+	if expectedSellerID != "" && params["seller_id"] != "" && params["seller_id"] != expectedSellerID {
+		return fmt.Errorf("通知 seller_id(%s) 与配置商户(%s)不一致", params["seller_id"], expectedSellerID)
+	}
+	got, err := alipayYuanToCents(params["total_amount"])
+	if err != nil {
+		return fmt.Errorf("total_amount 解析失败: %w", err)
+	}
+	if got != orderAmountCents {
+		return fmt.Errorf("通知金额(%d分)与订单金额(%d分)不一致", got, orderAmountCents)
+	}
+	return nil
 }

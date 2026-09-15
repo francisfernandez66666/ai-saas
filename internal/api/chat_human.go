@@ -72,7 +72,7 @@ func assertConversationScope(c *gin.Context, conversation *model.Conversation) e
 func HumanReply(c *gin.Context) {
 	var req struct {
 		ConversationID uint   `json:"conversation_id" binding:"required"`
-		Content        string `json:"content" binding:"required"`
+		Content        string `json:"content" binding:"required,max=4000"` // P2：长度上限
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")

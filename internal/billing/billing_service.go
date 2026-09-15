@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"sort"
@@ -253,16 +254,26 @@ var (
 )
 
 // WebhookNonceSeen nonce 是否已被消费（true=重放）。Redis 优先跨实例去重。
+// P1-3 修复(2026-09-15)：原实现用 TryLock（把 Redis 故障 err 抹成 nil）——
+// TryLockE 文档明确要求"调用方禁止把故障当没抢到"，故障期全部回调被误判重放(409)，
+// wechat/alipay/gateway 三条到账线停摆：资金可用性不应把去重做成 Redis 单点。
+// 改为 TryLockE 区分三态：拿到锁=首次；锁被占=重放；Redis 故障=降级内存轨（单实例语义，
+// 多实例窗口内可能放过一次跨实例重放，但重放第二发仍被"条件 UPDATE 流转权"幂等兜死，
+// 不会二次发货——fail-open 去重 + fail-closed 发货，方向正确）。
 func WebhookNonceSeen(nonce string) bool {
 	if nonce == "" {
 		return true
 	}
 	if redisclient.IsEnabled() {
 		// TryLock(SETNX+TTL)：抢不到即已见过；故意不 Unlock，留到 TTL 自然过期
-		if h := redisclient.TryLock("billing:webhook:nonce:"+nonce, 10*time.Minute); h == nil {
+		h, err := redisclient.TryLockE("billing:webhook:nonce:"+nonce, 10*time.Minute)
+		if err != nil {
+			log.Printf("[Billing][WARN] nonce 去重 Redis 故障，降级内存轨（到账不停摆，发货仍幂等）: %v", err)
+		} else if h != nil {
+			return false
+		} else {
 			return true
 		}
-		return false
 	}
 	webhookNonceMu.Lock()
 	defer webhookNonceMu.Unlock()

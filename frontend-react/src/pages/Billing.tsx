@@ -7,7 +7,7 @@ import { useState, useEffect } from 'react'
 import { Dialog, Button, Input, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { ConfirmDialog } from '../lib/ui'
-import { getToken } from '../lib/api'
+import { getToken, apiFetch } from '../lib/api'
 import type { TableRowData } from '../types'
 
 // 当前租户套餐用量类型（收银台顶部展示）
@@ -19,8 +19,16 @@ type Pkg = { id: number; p_type: string; name: string; price_cents: number; desc
 // 前端旧版不渲染收款码（static_qr 模式下用户根本看不到码）
 type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string; refund_amount_cents?: number; refunded_at?: string }
 
-// 收银台接口鉴权头
+// 收银台接口鉴权头（保留给个别需要手拼 header 的调用点）
 const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
+// P2 修复(2026-09-15)：收银台原全量裸 fetch——401 不跳登录/403 不触发改密拦截、
+// 超管代管不带 X-Tenant-ID、无超时。统一换 apiFetch 包装：Authorization 由 apiFetch
+// 注入（这里把调用点自带的 Authorization 摘掉避免重复），其余 opts 原样透传。
+async function BFETCH(url: string, opts: RequestInit & { headers?: Record<string, string> } = {}): Promise<Response> {
+  const h = { ...(opts.headers || {}) }
+  delete h.Authorization
+  return apiFetch(url, { ...opts, headers: h })
+}
 // 支付渠道中文映射
 const CH = { mock: '模拟', manual: '静态码人工', wechat: '微信', alipay: '支付宝' }
 
@@ -63,13 +71,13 @@ export default function Billing() {
 
   /** 加载当前套餐用量 */
   async function loadQuota() {
-    const r = await fetch('/api/v1/billing/my-package', AUTH())
+    const r = await BFETCH('/api/v1/billing/my-package', AUTH())
     const j = await r.json()
     if (j.code === 0) { setQuota(j.data); setPayMode(j.data.pay_mode) }
   }
   /** 加载商业包列表（过滤免费包） */
   async function loadPkgs() {
-    const r = await fetch('/api/v1/packages')
+    const r = await BFETCH('/api/v1/packages')
     const j = await r.json()
     setPkgs((j.data || []).filter((p: Pkg) => p.p_type !== 'free'))
   }
@@ -77,7 +85,7 @@ export default function Billing() {
   async function loadOrders() {
     if (!isAdmin) return
     try {
-      const r = await fetch('/api/v1/billing/orders?limit=50', AUTH())
+      const r = await BFETCH('/api/v1/billing/orders?limit=50', AUTH())
       const j = await r.json()
       if (j.code === 0) setOrders(j.data || [])
     } catch { /* 取数失败静默 */ }
@@ -99,7 +107,7 @@ export default function Billing() {
     if (!modal || !cur || payMode !== 'sdk') return
     const t = setInterval(async () => {
       try {
-        const r = await fetch(`/api/v1/billing/orders/${cur.id}`, AUTH())
+        const r = await BFETCH(`/api/v1/billing/orders/${cur.id}`, AUTH())
         const j = await r.json()
         if (j.code === 0 && j.data?.status === 'paid') {
           MessagePlugin.success('支付已到账')
@@ -115,7 +123,7 @@ export default function Billing() {
    * 试用包直接发放，付费包创建订单后打开支付弹窗
    */
   async function subscribe(id: number) {
-    const r = await fetch('/api/v1/billing/subscribe', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ package_id: id }) })
+    const r = await BFETCH('/api/v1/billing/subscribe', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ package_id: id }) })
     const j = await r.json()
     if (j.code !== 0) { MessagePlugin.error(j.message || '订阅失败'); return }
     if (j.data.granted) { MessagePlugin.success('试用包已发放'); loadAll(); return }
@@ -128,7 +136,7 @@ export default function Billing() {
   /** 模拟支付（测试环境）：调用 /api/v1/billing/orders/mock-pay 接口 */
   async function mockPay() {
     if (!cur) return
-    const r = await fetch('/api/v1/billing/orders/mock-pay', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: cur.id }) })
+    const r = await BFETCH('/api/v1/billing/orders/mock-pay', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: cur.id }) })
     const j = await r.json()
     setMsg(j.message || '')
     if (j.code === 0) setTimeout(() => { setModal(false); loadOrders(); loadQuota() }, 900)
@@ -136,7 +144,7 @@ export default function Billing() {
   /** 人工确认已付款：调用 /api/v1/billing/manual-confirm 接口 */
   async function manualConfirm() {
     if (!cur) return
-    const r = await fetch('/api/v1/billing/manual-confirm', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: cur.id }) })
+    const r = await BFETCH('/api/v1/billing/manual-confirm', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: cur.id }) })
     const j = await r.json()
     setMsg(j.message || '')
   }
@@ -144,7 +152,7 @@ export default function Billing() {
   async function submitInvoice() {
     if (!invOrder) return
     if (!invForm.title.trim()) { MessagePlugin.warning('请填写发票抬头'); return }
-    const r = await fetch(`/api/v1/billing/orders/${invOrder.id}/invoice`, { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify(invForm) })
+    const r = await BFETCH(`/api/v1/billing/orders/${invOrder.id}/invoice`, { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify(invForm) })
     const j = await r.json()
     if (j.code === 0) { MessagePlugin.success('发票申请已提交，开具后将发送至邮箱'); setInvOpen(false); loadOrders() }
     else MessagePlugin.error(j.message || '发票申请失败')
@@ -214,7 +222,7 @@ export default function Billing() {
                   setConfirmTitle('申请退款')
                   setConfirmMsg(payMode === 'mock' ? '确认申请退款？退款将按比例计算并即时到账。' : '确认提交退款申请？平台审核后按比例退款（已消耗部分不可退）。')
                   setConfirmFn(async () => {
-                    const r = await fetch(`/api/v1/billing/orders/${o.id}/refund`, { ...AUTH(), method: 'POST' })
+                    const r = await BFETCH(`/api/v1/billing/orders/${o.id}/refund`, { ...AUTH(), method: 'POST' })
                     const j = await r.json()
                     if (j.code === 0) { MessagePlugin.success(j.message || '退款已提交'); loadOrders() } else MessagePlugin.error(j.message || '退款失败')
                   })

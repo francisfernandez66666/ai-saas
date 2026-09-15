@@ -1484,6 +1484,26 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/admin/tag-weights/:id/disable",
+      "group": "admin",
+      "handler": "DisableTagWeight",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/tag-weights/:id/enable",
+      "group": "admin",
+      "handler": "EnableTagWeight",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/admin/tags",
       "group": "admin",
       "handler": "CreateTag",

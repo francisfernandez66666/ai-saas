@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Button, Layout, Menu, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, setToken, logoutAndRedirect, authHeaders, getImpersonateTenant, setImpersonateTenant } from '../lib/api'
+import { getToken, setToken, logoutAndRedirect, authHeaders, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
 import { AuditTab } from './admin/AuditTab'
 import { BrandingTab } from './admin/BrandingTab'
 import { ChannelsTab } from './admin/ChannelsTab'
@@ -123,8 +123,10 @@ export default function Admin() {
   // 恢复全部配置为默认值（不可撤销，二次确认）
   async function resetAll() {
     if (!(await confirmDialog('确定恢复所有配置为默认值？此操作不可撤销。'))) return
-    await fetch('/api/v1/admin/config/reset', { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } })
-    MessagePlugin.success('已恢复默认'); loadAll()
+    // P2 修复(2026-09-15)：旧版不看响应码——401/500 也 toast"已恢复默认"误导超管。改走 apiFetch 并判 code。
+    const j = await (await apiFetch('/api/v1/admin/config/reset', { method: 'POST' })).json().catch(() => null)
+    if (j?.code === 0) { MessagePlugin.success('已恢复默认'); loadAll() }
+    else MessagePlugin.error(j?.message || '恢复失败')
   }
   // 延迟参数一键归零并切「秒回」模式（仅影响 ZERO_DELAY_KEYS 命中的键，便于调试）
   async function zeroDelayAll() {
@@ -135,8 +137,10 @@ export default function Admin() {
     e['reply_delay_mode'] = 'instant'
     setEditsState(e)
     const updates = all.map((c) => ({ key: c.key, value: String(e[c.key] ?? c.value) }))
-    await fetch('/api/v1/admin/config', { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() }, body: JSON.stringify(updates) })
-    MessagePlugin.success('延迟已归零'); loadAll()
+    // P2-9 修复(2026-09-15)：同 resetAll——不判响应码恒报成功；且改 apiFetch 统一鉴权/租户头。
+    const j = await (await apiFetch('/api/v1/admin/config', { method: 'PUT', body: JSON.stringify(updates) })).json().catch(() => null)
+    if (j?.code === 0) { MessagePlugin.success('延迟已归零'); loadAll() }
+    else MessagePlugin.error(j?.message || '归零失败')
   }
 
   if (!logged) {

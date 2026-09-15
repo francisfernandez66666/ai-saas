@@ -90,7 +90,7 @@ func CreateFeedback(c *gin.Context) {
 		Status:     "open",
 	}
 	if req.WithContext {
-		fb.Context = buildFeedbackContext(req.RefID)
+		fb.Context = buildFeedbackContext(req.RefID, tid) // P0-5：租户边界
 	}
 	if err := db.DB.Create(&fb).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "提交失败")
@@ -190,8 +190,12 @@ buildFeedbackContext 构建反馈上下文信息，用于辅助问题定位和�
 返回：JSON格式的上下文信息字符串，包含AI回复摘要、客户掩码手机和旅程阶段
 */
 // buildFeedbackContext 组装反馈上下文并递归脱敏 PII。
-func buildFeedbackContext(messageID uint) string {
-	if messageID == 0 {
+// P0-5 复核批(2026-09-15)：加 tenantID 租户边界——原实现按全局 message_id 裸查
+// （messages.id 全局自增可枚举），任意登录用户 with_context=true + 遍历 ref_id 即可
+// 回显他租户消息摘要/客户姓名/掩码手机/旅程阶段，属跨租户 IDOR。脱敏了格式、
+// 没脱租户边界，本批收口：消息与客户都必须命中本租户。
+func buildFeedbackContext(messageID, tenantID uint) string {
+	if messageID == 0 || tenantID == 0 {
 		return ""
 	}
 	// 2026-09-09：原实现 2 次查询（先查 message 再查 customer）→ 改 1 次 JOIN 一次取回，
@@ -204,8 +208,8 @@ func buildFeedbackContext(messageID uint) string {
 	}
 	err := db.DB.Table("messages").
 		Select("messages.content, customers.name AS cust_name, customers.phone AS cust_phone, customers.journey_stage").
-		Joins("LEFT JOIN customers ON customers.id = messages.customer_id").
-		Where("messages.id = ?", messageID).
+		Joins("LEFT JOIN customers ON customers.id = messages.customer_id AND customers.tenant_id = ?", tenantID).
+		Where("messages.id = ? AND messages.tenant_id = ?", messageID, tenantID).
 		Scan(&row).Error
 	if err != nil || row.Content == "" {
 		return ""

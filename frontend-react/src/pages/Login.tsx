@@ -64,7 +64,7 @@ export default function Login() {
     const urlParams = new URLSearchParams(location.search)
     const rawRedirect = urlParams.get('redirect')
     const redirectPath =
-      rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//')
+      rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') && !rawRedirect.startsWith('/\\') // P2 修复(2026-09-15)：浏览器把 /\evil.com 也按协议相对解析→可外跳站外，一并挡掉
         ? rawRedirect
         : ''
     if (redirectPath) {

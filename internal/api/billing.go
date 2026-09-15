@@ -105,7 +105,7 @@ func ListBillingOrders(c *gin.Context) {
 		Select("id, order_no, package_id, amount_cents, original_amount_cents, period, channel, status," +
 			"manual_confirm, paid_at, created_at, refunded_at, refund_amount_cents, refund_psp_status," +
 			"expire_at, invoice_requested, invoice_status, invoice_no, invoice_title," +
-			"upgrade_offset_cents, upgrade_base_order_id").
+			"upgrade_offset_cents, upgrade_base_order_id, qr_content, refund_requested").
 		Order("id DESC").Limit(limit).Find(&orders).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return
@@ -494,8 +494,14 @@ func billingWebhookAlipay(c *gin.Context) {
 	for k := range c.Request.PostForm {
 		params[k] = c.Request.PostForm.Get(k)
 	}
-	// 防重放：notify_id 为支付宝通知唯一标识
-	if params["notify_id"] != "" && billing.WebhookNonceSeen(params["notify_id"]) {
+	// 防重放：notify_id 为支付宝通知唯一标识。
+	// P0-1 复核批(2026-09-15)：原实现 notify_id 为空时跳过防重放（纵深缺口）——
+	// 支付宝规范通知恒有该字段，缺失即非规范报文，直接拒绝。
+	if params["notify_id"] == "" {
+		RespErr(c, http.StatusBadRequest, 400, "通知缺少 notify_id")
+		return
+	}
+	if billing.WebhookNonceSeen(params["notify_id"]) {
 		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（notify_id 已消费）")
 		return
 	}
@@ -520,6 +526,23 @@ func billingWebhookAlipay(c *gin.Context) {
 	}
 	if tradeStatus != "TRADE_SUCCESS" && tradeStatus != "TRADE_FINISHED" {
 		RespOK(c, "非成功状态，忽略", gin.H{"trade_status": tradeStatus})
+		return
+	}
+	// P0-1 复核批(2026-09-15)：验签≠验归属——支付宝平台公钥全网共用，只验签时攻击者可
+	// 用自己的 app 对受害者订单号付 ¥0.01 再转推真签名通知，按订单面额全额发货（跨 app 套现）。
+	// 官方规范强制三项核对：app_id / total_amount / seller_id（金额按订单实付分毫比对）。
+	var payOrder model.BillingOrder
+	if err := db.DB.Where("order_no = ?", orderNo).First(&payOrder).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	if verr := billing.ValidateAlipayNotifyParams(params,
+		getPayConf("pay_alipay_app_id", "PAY_ALIPAY_APP_ID"),
+		getPayConf("pay_alipay_seller_id", "PAY_ALIPAY_SELLER_ID"),
+		int64(payOrder.AmountCents)); verr != nil {
+		log.Printf("[Billing][ERROR] 支付宝回调参数核对失败 order=%s: %v", orderNo, verr)
+		notify.NotifyGroup(fmt.Sprintf("【支付安全】支付宝回调参数核对被拒：订单 %s（%v），疑似跨商户伪造到账，请核查", orderNo, verr))
+		RespErr(c, http.StatusForbidden, 403, verr.Error())
 		return
 	}
 	order, flowed, cerr := billing.ConfirmOrderByChannel(orderNo, "alipay")

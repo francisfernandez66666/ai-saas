@@ -483,7 +483,9 @@ afterAnchorSelection:
 // carModelRegistry 车型注册表（按 Sort/ID 升序，1 起始索引对应 code=1）
 // 由 LoadData 从 car_models 表动态装载，替代原先硬编码的"越野SUV-X*"映射，
 // 使不同行业包（车型体系不同）不再被写死字符串绑死。
-var carModelRegistry []string
+// P2-5 修复(2026-09-15)：裸切片定时刷新整体重赋值 vs 请求 goroutine 并发读 = data race
+// （同文件 templates/features 已用 atomic.Pointer，此处漏网）。改为原子指针交换整包快照。
+var carModelRegistry atomic.Pointer[[]string]
 
 // refreshCarModelRegistry 从 car_models 装载车型注册表（code=i 对应 registry[i-1]）
 // 泛行业化（P2.2）：同步注入 model 包的兴趣产品编码器，行业包注册表即编码字典
@@ -497,7 +499,7 @@ func refreshCarModelRegistry() {
 	for i := range models {
 		regs = append(regs, models[i].Name)
 	}
-	carModelRegistry = regs
+	carModelRegistry.Store(&regs)
 	// 注入编码器：注册表内产品 code=i+1，未命中归 99（其他产品）
 	model.RegisterModelCodeResolver(func(product string) float64 {
 		for i, name := range regs {
@@ -520,8 +522,12 @@ func modelFromTVector(tVector [32]float64) string {
 	if modelCode == 99 {
 		return "其他车型"
 	}
-	if modelCode > 0 && modelCode-1 < len(carModelRegistry) && carModelRegistry[modelCode-1] != "" {
-		return carModelRegistry[modelCode-1]
+	registry := carModelRegistry.Load()
+	if registry == nil {
+		return ""
+	}
+	if modelCode > 0 && modelCode-1 < len(*registry) && (*registry)[modelCode-1] != "" {
+		return (*registry)[modelCode-1]
 	}
 	return ""
 }

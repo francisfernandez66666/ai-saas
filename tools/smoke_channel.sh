@@ -219,5 +219,42 @@ CTX=$(curl -s "$B/api/v1/channel/wecom/context?corpid=ww_chan_smoke&external_use
 CXID=$(echo "$CTX" | python3 -c "import sys,json;d=json.load(sys.stdin)['data'];print('y' if int(d['customer_id'])>0 else 'n')" 2>/dev/null)
 check "侧边栏客户上下文可取" "y" "$CXID"
 
+# ---- 九、2026-09-15 复核批修复护栏（P0-4 侧边栏隔离 / P1-7 停用租户闸）----
+echo "---- 九、复核批修复护栏 ----"
+CHTEN=$($PSQL "SELECT tenant_id FROM channels WHERE id=$CID" | tr -d '[:space:]')
+# P0-4：jsconfig/context 按 corpid 全局找通道——修复前任意登录用户知道 corpid 即可读他司
+# 客户画像/消息；现必须核对"调用者租户 == 通道归属租户"。造一个他租户 admin 做负向断言。
+XTEN=$($PSQL "INSERT INTO tenants (name,code,status,created_at,updated_at) VALUES ('chan-cross-smoke','chan_cross_smoke','active',NOW(),NOW()) RETURNING id" | head -1 | tr -d '[:space:]')
+XUSR="chanx_admin_${RANDOM}"
+$PSQL "INSERT INTO tenant_users (username,password_hash,role,tenant_id,status,created_at,updated_at) SELECT '$XUSR',password_hash,'tenant_admin',$XTEN,1,NOW(),NOW() FROM tenant_users WHERE username='admin' LIMIT 1" >/dev/null 2>&1
+XTK=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"username\":\"$XUSR\",\"password\":\"admin123\"}" | jsonget "['data']['token']")
+XCTX=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/context?corpid=ww_chan_smoke&external_userid=wm_smoke_user_1" \
+  -H "Authorization: Bearer $XTK" -H "X-Tenant-ID: $XTEN")
+check "他租户取侧边栏上下文→403(P0-4)" 403 "$XCTX"
+XJS=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/jsconfig?url=https%3A%2F%2Fexample.com&corpid=ww_chan_smoke" \
+  -H "Authorization: Bearer $XTK" -H "X-Tenant-ID: $XTEN")
+check "他租户取侧边栏jsconfig→403(P0-4)" 403 "$XJS"
+$PSQL "DELETE FROM tenant_users WHERE username='$XUSR'; DELETE FROM tenants WHERE id=$XTEN" >/dev/null 2>&1
+
+# P1-7：回调路径 skip 了租户解析——修复前 suspended 租户通道照常"入站→AI→出站"烧被封禁户用量。
+# 停用后回调须"回 success 止损微信重推但不落库不触发 AI"；30s 进程缓存过期后才生效。
+INBOUND_BEFORE=$($PSQL "SELECT count(*) FROM channel_inbound_msgs WHERE channel_id=$CID" | tr -d '[:space:]')
+$PSQL "UPDATE tenants SET status='suspended' WHERE id=$CHTEN" >/dev/null 2>&1
+sleep 31
+GC3=$(curl -s "$MOCK/__gen_callback?token=tk_smoke_001&aeskey=jWmYm7qr5nMoAUwZRjGtBxmz3KA1tkAj3ykkR6q2B2C&corpid=ww_chan_smoke&content=%E5%81%9C%E7%94%A8%E6%80%81%E6%B5%8B%E8%AF%95%E6%B6%88%E6%81%AF&from=wm_smoke_user_3")
+BODY3=$(echo "$GC3" | python3 -c "import sys,json;print(json.load(sys.stdin)['body'])" 2>/dev/null)
+SIG3=$(echo "$GC3" | python3 -c "import sys,json;print(json.load(sys.stdin)['msg_signature'])" 2>/dev/null)
+TS3=$(echo "$GC3" | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])" 2>/dev/null)
+NC3=$(echo "$GC3" | python3 -c "import sys,json;print(json.load(sys.stdin)['nonce'])" 2>/dev/null)
+BF3="$(mktemp /tmp/chan_body.XXXXXX)"
+printf '%s' "$BODY3" > "$BF3"
+REPL3=$(curl -s -X POST "$B/api/v1/channel/callback/$CID?msg_signature=$SIG3&timestamp=$TS3&nonce=$NC3" \
+  -H "Content-Type: application/xml" --data-binary "@$BF3"; rm -f "$BF3")
+check "停用租户回调仍回success止损重推" "success" "$REPL3"
+INBOUND_AFTER=$($PSQL "SELECT count(*) FROM channel_inbound_msgs WHERE channel_id=$CID" | tr -d '[:space:]')
+check "停用租户入站不落库不烧AI(P1-7)" y "$([ "$INBOUND_BEFORE" = "$INBOUND_AFTER" ] && echo y || echo n)"
+$PSQL "UPDATE tenants SET status='active' WHERE id=$CHTEN" >/dev/null 2>&1
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

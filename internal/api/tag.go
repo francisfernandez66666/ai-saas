@@ -597,6 +597,39 @@ func UpdateTagWeight(c *gin.Context) {
 	RespOK(c, "更新成功", mapping)
 }
 
+// EnableTagWeight 启用标签权重映射
+// P1-12 修复(2026-09-15)：前端 EntityCrud 通用启停用按钮固定调 POST /:id/enable|disable
+// （TagWeightTab 未关 hasStatusToggle 默认），后端只有 CRUD 四路由 → 恒 404，
+// 且 UpdateTagWeight 的 status 分支 `req.Status != 0` 使"停用(0)"根本写不进去。补齐成对路由。
+func EnableTagWeight(c *gin.Context) {
+	id := c.Param("id")
+
+	var mapping model.TagWeightMapping
+	if err := db.RQ(c).Scopes(db.T(c)).First(&mapping, id).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "映射不存在")
+		return
+	}
+	db.RQ(c).Model(&model.TagWeightMapping{}).Where("id = ?", mapping.ID).Update("status", 1)
+	mapping.Status = 1
+	cache.DefaultTagCache.Reload()
+	RespOK(c, "启用成功", mapping)
+}
+
+// DisableTagWeight 停用标签权重映射（软删状态列存在但此前无端点可达）
+func DisableTagWeight(c *gin.Context) {
+	id := c.Param("id")
+
+	var mapping model.TagWeightMapping
+	if err := db.RQ(c).Scopes(db.T(c)).First(&mapping, id).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "映射不存在")
+		return
+	}
+	db.RQ(c).Model(&model.TagWeightMapping{}).Where("id = ?", mapping.ID).Update("status", 0)
+	mapping.Status = 0
+	cache.DefaultTagCache.Reload()
+	RespOK(c, "停用成功", mapping)
+}
+
 // ============================================================
 // 客户端API - 客户标签相关
 // ============================================================
@@ -642,6 +675,12 @@ func AddTagsToCustomer(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
+	// P2-13 修复(2026-09-15)：此路由在 JWTAuth 组（非 AdminRequired），旧版只过租户闸——
+	// sales 可给同事名下客户打标，与 advisor 端 EditCustomerTags 的四级数据范围口径分裂。补齐同门禁（范围外视为不存在）。
+	if !customerInDataScope(c, customer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
 
 	// 根据tag_ids查标签名称（按租户可见范围）
 	var tagNames []string
@@ -670,6 +709,11 @@ func RemoveCustomerTag(c *gin.Context) {
 	// 校验客户存在且属于当前租户（防跨租户删标）
 	var customer model.Customer
 	if err := db.RQ(c).First(&customer, customerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	// P2-13 修复(2026-09-15)：同 AddTagsToCustomer，删标也过四级数据范围门禁
+	if !customerInDataScope(c, customer.AssignedUserID) {
 		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}

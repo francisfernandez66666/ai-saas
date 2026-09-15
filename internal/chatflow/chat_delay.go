@@ -14,12 +14,17 @@ import (
 // 所以用channel取消机制替代DB scheduled_at更新
 // ============================================================
 
-// conversationMu 客户级会话创建互斥锁表（包级单例，跨请求共享）
+// conversationMu 客户级会话创建互斥锁（包级单例，跨请求共享）
 // 修复 C4：原实现每次调用 new 一个 sync.Map，锁完全不生效，导致并发同客户请求
-// 各自创建重复会话/重复 FlowStateMachine 行。改为包级 sync.Map，同一客户共享一把锁。
+// 各自创建重复会话/重复 FlowStateMachine 行。改为包级共享锁。
 // D8 修复(2026-09-14)：进程内锁仅约束单实例——多实例下两节点可各建一个 active 会话，
 // 调用侧（chat_main.ensureActiveConversation）叠加 Redis 短锁裁决。
-var conversationMu sync.Map // key: customerID(uint), value: *sync.Mutex
+// P2-3 修复(2026-09-15)：原"每客户一把 Mutex 的 sync.Map"只增不删（删除与等待者
+// 存在双锁竞态，无法安全回收），长尾客户下无界泄漏。此锁仅护"建会话去重"秒级临界区，
+// 改 128 分段锁：同客户仍互斥、跨段并行度足够、内存有界。
+const convMuShards = 128
+
+var conversationMu [convMuShards]sync.Mutex
 
 // D11 修复(2026-09-14)：改为"每客户一组等待通道"，用互斥锁保护，替换原
 // customerID→单个 chan 的 sync.Map。旧实现同客户并发 CancellableSleep 互相覆盖：
@@ -116,6 +121,5 @@ func CancelDelay(customerID uint) {
 // GetConversationMutex 获取客户级别的会话创建互斥锁
 // 同一客户共享一把锁，不同客户互不阻塞
 func GetConversationMutex(customerID uint) *sync.Mutex {
-	mu, _ := conversationMu.LoadOrStore(customerID, &sync.Mutex{})
-	return mu.(*sync.Mutex)
+	return &conversationMu[customerID%convMuShards]
 }

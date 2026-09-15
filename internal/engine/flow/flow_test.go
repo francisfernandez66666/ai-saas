@@ -116,3 +116,24 @@ func TestExecutePureNodes(t *testing.T) {
 		t.Errorf("end 应 completed+空Next, got %+v", endRes)
 	}
 }
+
+// TestFindNextNodeByConditionDirtyConfigNoPanic P2-6 复核批（2026-09-15）回归：
+// 行业包 conditions 混入非字符串（数字/null/bool）时，旧裸断言 c.(string) 会在
+// 消费协程直接 panic 崩掉流程引擎；修复后跳过脏项且匹配语义保持。
+func TestFindNextNodeByConditionDirtyConfigNoPanic(t *testing.T) {
+	node := model.FlowNode{
+		Config: map[string]interface{}{
+			"conditions": []interface{}{"yes", 123, nil, true, "no"},
+		},
+		NextNodes: []string{"node_yes", "node_no"},
+	}
+	if got := findNextNodeByCondition(node, "yes"); got != "node_yes" {
+		t.Fatalf("脏配置下正常匹配应命中 node_yes，得 %q", got)
+	}
+	if got := findNextNodeByCondition(node, "no"); got != "node_no" {
+		t.Fatalf("脏配置下正常匹配应命中 node_no，得 %q", got)
+	}
+	if got := findNextNodeByCondition(node, "unknown"); got != "node_yes" {
+		t.Fatalf("未匹配应回落第一个后继，得 %q", got)
+	}
+}

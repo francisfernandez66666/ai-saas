@@ -86,6 +86,22 @@ var rlsTenantTables = []string{
 	"car_models",            // 车型表（汽车行业）
 	"model_specs",           // 车型配置表（汽车行业）
 	"competitor_compares",   // 竞品对比表（汽车行业）
+
+	// P1-8 补全(2026-09-15 复核批)：通道/隐私/归因/审计域静默漏保护表——
+	// 旧清单只覆盖到 2026-09-11 前的表，其后新增的租户表全部没进（见反向 diff 说明）。
+	// 注意：system_configs 按设计不入清单（平台表，tenant_id=0 系统层+租户覆盖双层，
+	// 激活 RLS 会切断租户读系统层默认值的休眠旁路，AGENTS"平台级配置"语义依赖）。
+	"tenant_users",         // 租户用户表（密码哈希/token_version 所在）
+	"channels",             // 通道接入表（AES-GCM 凭据密文）
+	"channel_identities",   // 渠道身份映射表（OneID 桥）
+	"channel_inbound_msgs", // 通道入站幂等表（消息原文摘要）
+	"channel_outbound",     // 通道出站队列/死信表（消息正文）
+	"tenant_webhooks",      // 出站 webhook 配置表（含密文 secret）
+	"webhook_deliveries",   // webhook 投递记录表（事件载荷快照）
+	"deletion_requests",    // PIPL 删除权请求表（主体标识）
+	"messages_archive",     // messages 冷数据归档表（迁移011，含原文）
+	"reply_attributions",   // D9 回复归因表（意向/会话回溯）
+	"pack_stats",           // D9 包效果统计表
 }
 
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
@@ -117,6 +133,43 @@ func EnableRLS() {
 	}
 	if len(missing) > 0 {
 		log.Fatalf("[RLS] 清单含不存在的表（%v），请修正 rlsTenantTables 与模型迁移保持一致；禁止带病启用 RLS", missing)
+	}
+
+	// P1-8 修复(2026-09-15)①：SUPERUSER/BYPASSRLS 检测——PG 对超级用户与 BYPASSRLS 角色
+	// **无条件旁路 RLS**，FORCE ROW LEVEL SECURITY 也管不住。默认 docker-compose 的
+	// POSTGRES_USER 即 SUPERUSER——旧实现在这种部署形态下 RLS_ENABLED=true 给出的
+	// "DB 级第二道闸"是虚设的（GAP/AGENTS 把它当已成立兜底，需纠偏）。
+	var isSuper, bypass bool
+	if err := DB.Raw("SELECT COALESCE(rolsuper,false) FROM pg_roles WHERE rolname = current_user").Scan(&isSuper).Error; err == nil {
+		DB.Raw("SELECT COALESCE(rolbypassrls,false) FROM pg_roles WHERE rolname = current_user").Scan(&bypass)
+	}
+	if isSuper || bypass {
+		log.Printf("[RLS][WARN] 当前连接角色是 SUPERUSER/BYPASSRLS——PostgreSQL 无条件旁路行级安全，FORCE ROW LEVEL SECURITY 不生效！")
+		log.Printf("[RLS][WARN] RLS_ENABLED=true 的\"DB 级兜底\"在本部署形态下形同虚设。生产须为应用建 NOSUPERUSER NOBYPASSRLS 角色（见 DEPLOY_CHECKLIST）")
+	}
+
+	// P1-8 修复(2026-09-15)②：反向 diff——旧校验只查"清单⊆库"（表名拼错即 Fatal），
+	// 但防不住"库里有含 tenant_id 的新表没进清单"（新表静默漏保护，正是 P1-5 想防的漂移，
+	// 方向修反了）。列信息全库比对，缺失即 WARN 点名（不 Fatal：豁免表如 system_configs
+	// 属设计内排除，交给清单注释与人工裁决）。
+	var unlisted []string
+	DB.Raw(`SELECT DISTINCT c.table_name FROM information_schema.columns c
+		JOIN information_schema.tables t ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+		WHERE c.column_name = 'tenant_id' AND c.table_schema = current_schema()
+		  AND t.table_type = 'BASE TABLE'
+		ORDER BY c.table_name`).Scan(&unlisted)
+	set := make(map[string]bool, len(rlsTenantTables))
+	for _, t := range rlsTenantTables {
+		set[t] = true
+	}
+	var leaked []string
+	for _, t := range unlisted {
+		if !set[t] {
+			leaked = append(leaked, t)
+		}
+	}
+	if len(leaked) > 0 {
+		log.Printf("[RLS][WARN] 下列含 tenant_id 的表未在 rlsTenantTables 清单（RLS 激活后不受 DB 收敛，需确认属\"平台表/设计内豁免\"还是漏网）：%v", leaked)
 	}
 
 	failed := 0

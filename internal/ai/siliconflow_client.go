@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"math"
@@ -232,7 +233,8 @@ func (c *SiliconFlowClient) callAPI(ctx context.Context, messages []ChatMessage,
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	// P2 修复(2026-09-15)：ReadAll 限长 4MB——异常/恶意上游回包不再无界吃内存
+	body, err := ioutil.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
 		return "", Usage{}, fmt.Errorf("读取响应失败: %v", err)
 	}

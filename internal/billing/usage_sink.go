@@ -19,12 +19,14 @@
 package billing
 
 import (
+	"fmt"
 	"log"
 	"sync"
 	"time"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/notify"
 )
 
 // usageSinkRecord 单条待落库计量。
@@ -254,7 +256,11 @@ func (s *UsageSink) flush() {
 		failRetry = next
 	}
 	if len(failRetry) > 0 {
-		log.Printf("[UsageSink] 重试仍失败的租户计账将靠下一周期 flush 自愈: %v", failRetry)
+		// P2-14 修复(2026-09-15)：口径诚实化——原注释"下周期 flush 自愈"名不副实：
+		// 下一 flush 只处理新缓冲，本批扣减额度就此放弃（影子 seed 只防继续超发，不追回已漏计）。
+		// 属计费漏账，必须留痕并催办人工对账，不能再拿"自愈"话术糊过去。
+		log.Printf("[UsageSink][ERROR] 3 次重投仍失败，本批扣减已放弃（漏账待人工对账）: %v", failRetry)
+		notify.NotifyGroup(fmt.Sprintf("【计费告警】UsageSink %d 个租户连续扣减失败已放弃本批（影子已失效防继续超发），请按 usage_ledger 与桶余额人工对账: %v", len(failRetry), failRetry))
 		for tid := range failRetry {
 			s.mu.Lock()
 			delete(s.shadowOk, tid) // 失败即失效影子，下轮 Record 从 DB 重新 seed（避免假阴性持续）

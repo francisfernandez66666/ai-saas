@@ -105,7 +105,12 @@ func failClosedOnMissingTenant(c *gin.Context) bool {
 			})
 			return true
 		}
+		return false
 	}
+	// P2-15 加固(2026-09-15)：无 role 键=内部/白名单调用（后台任务等），保留放行但留痕——
+	// 该口子是"给未来的裸奔口"，出现即须可审计；新代码走到这里都应在挂中间件后复测。
+	log.Printf("[tenant-ctx][WARN] failClosedOnMissingTenant 命中无 role 键请求: %s %s（内部调用放行，若来自外部路由说明中间件缺失）",
+		c.Request.Method, c.Request.URL.Path)
 	return false
 }
 

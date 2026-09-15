@@ -2,17 +2,38 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"ai-scrm/internal/channel"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/webhook"
 	"ai-scrm/pkg/crypto"
 )
 
 // ---- channel_admin 局部小助手（避免依赖不存在的通用工具）----
+
+// validateChannelMockBaseURL P2-12 修复(2026-09-15)：config_json.mock_base_url 是"把
+// 收发生效流量指到任意主机"的后门（租户 admin 可借服务端探内网），与 webhook 回调
+// 同口径过 SSRF 白名单——release 下禁内网/环回，debug 保留本地 mockwx 联调链路。
+func validateChannelMockBaseURL(cfgJSON string) error {
+	if strings.TrimSpace(cfgJSON) == "" {
+		return nil
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal([]byte(cfgJSON), &m); err != nil {
+		return nil // JSON 形态错误交由下层报，这里不重复裁决
+	}
+	base, _ := m["mock_base_url"].(string)
+	if strings.TrimSpace(base) == "" {
+		return nil
+	}
+	return webhook.ValidateCallbackURL(base)
+}
 
 func chanID(c *gin.Context) uint {
 	n, _ := strconv.ParseUint(c.Param("id"), 10, 64)
@@ -137,6 +158,10 @@ func CreateChannel(c *gin.Context) {
 		return
 	}
 	cfg := injectAgentID(req.ConfigJSON, req.AgentID)
+	if verr := validateChannelMockBaseURL(cfg); verr != nil {
+		RespErr(c, http.StatusBadRequest, 400, "通道配置不可用："+verr.Error())
+		return
+	}
 	ch, err := channel.Create(channel.CreateInput{
 		TenantID: tenantIDOf(c), Type: req.Type, Name: req.Name, CorpID: req.CorpID, AppID: req.AppID,
 		Secret: req.Secret, Token: req.Token, Encoding: req.Encoding, DepartmentID: req.DepartmentID, ConfigJSON: cfg,
@@ -163,6 +188,10 @@ func UpdateChannel(c *gin.Context) {
 	}
 	id := chanID(c)
 	cfg := injectAgentID(req.ConfigJSON, req.AgentID)
+	if verr := validateChannelMockBaseURL(cfg); verr != nil {
+		RespErr(c, http.StatusBadRequest, 400, "通道配置不可用："+verr.Error())
+		return
+	}
 	_, err := channel.Update(tenantIDOf(c), id, channel.UpdateInput{
 		Name: req.Name, CorpID: req.CorpID, AppID: req.AppID, Secret: req.Secret, Token: req.Token,
 		Encoding: req.Encoding, Status: "", ConfigJSON: strPtrIfNotEmpty(cfg),

@@ -139,11 +139,14 @@ WT_ID=$($PSQL "INSERT INTO tenants (name,code,status,created_at,updated_at) VALU
 # trap 扩展：恢复微信/支付宝测试密钥配置 + 级联回收一次性租户
 WT_ORIG_V3=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_wechat_apiv3_key'" | tr -d '[:space:]')
 WT_ORIG_PUB=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_alipay_public_key'" | tr -d '[:space:]')
+# P0-1 复核批(2026-09-15)：alipay 回调新增 app_id 归属必核（未配置=403 fail-closed），测试资产同步配置
+WT_ORIG_AAPP=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_alipay_app_id'" | tr -d '[:space:]')
 trap '
   [ -n "$ORIG_PAYMODE" ] && $PSQL "UPDATE system_configs SET value='"'"'$ORIG_PAYMODE'"'"' WHERE tenant_id=0 AND key='"'"'pay_mode'"'"'" >/dev/null 2>&1
   if [ -n "$ORIG_GKEY" ]; then $PSQL "UPDATE system_configs SET value='"'"'$ORIG_GKEY'"'"' WHERE tenant_id=0 AND key='"'"'pay_gateway_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_gateway_key'"'"'" >/dev/null 2>&1; fi
   if [ -n "$WT_ORIG_V3" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_V3'"'"' WHERE tenant_id=0 AND key='"'"'pay_wechat_apiv3_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_wechat_apiv3_key'"'"'" >/dev/null 2>&1; fi
   if [ -n "$WT_ORIG_PUB" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_PUB'"'"' WHERE tenant_id=0 AND key='"'"'pay_alipay_public_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_alipay_public_key'"'"'" >/dev/null 2>&1; fi
+  if [ -n "$WT_ORIG_AAPP" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_AAPP'"'"' WHERE tenant_id=0 AND key='"'"'pay_alipay_app_id'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_alipay_app_id'"'"'" >/dev/null 2>&1; fi
   [ -n "$WT_ID" ] && $PSQL "DELETE FROM reward_claims WHERE tenant_id=$WT_ID OR ref_id IN (SELECT id FROM billing_orders WHERE tenant_id=$WT_ID); DELETE FROM billing_orders WHERE tenant_id=$WT_ID; DELETE FROM tenants WHERE id=$WT_ID" >/dev/null 2>&1
   rm -rf "$WORK" >/dev/null 2>&1
   echo "  [trap] 已恢复 pay_mode/pay_gateway_key/微信支付宝密钥 + 回收一次性租户"
@@ -210,7 +213,7 @@ P="$WORK/" node "$WORK/gen.js"
 # 12.2 平台公钥入系统配置（PEM 全文 JSON 编码，热加载后 webhook 验签用）
 ALI_PUB_JSON=$(python3 -c "import json;print(json.dumps(open('$WORK/ali_pub.pem').read()))")
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
-  -d "[{\"category\":\"billing\",\"key\":\"pay_alipay_public_key\",\"value\":$ALI_PUB_JSON}]" >/dev/null
+  -d "[{\"category\":\"billing\",\"key\":\"pay_alipay_public_key\",\"value\":$ALI_PUB_JSON},{\"category\":\"billing\",\"key\":\"pay_alipay_app_id\",\"value\":\"2021smoke\"}]" >/dev/null
 sleep 1
 # 12.3 form 通知 RSA2 签名（排除 sign/sign_type/空值，字典序拼串——与 VerifyAlipayNotify 对齐）并回调
 ALI_NO="BO${WTAG}A1"

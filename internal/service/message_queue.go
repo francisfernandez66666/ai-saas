@@ -45,17 +45,23 @@ type PendingMessage struct {
 
 // CustomerQueue 单客户消息队列
 type CustomerQueue struct {
-	mu                  sync.Mutex
-	cond                *sync.Cond
-	pending             []PendingMessage        // 待合并消息
-	processed           int                     // 已处理的消息数（积压队列的偏移）
-	processing          bool                    // 是否正在处理中
-	lastReply           string                  // 最近一次生成的回复（用于后续请求直接取）
-	lastReplyAt         time.Time               // 最近回复时间（判断是否是本次合并的回复）
-	mergeCount          int                     // 当前合并批次已合并几条
-	simpleProcessing    bool                    // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
-	deadlineExpired     bool                    // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
-	currentBatch        uint64                  // 当前批次ID，每次新批次递增，防止跨批次消息混合
+	mu               sync.Mutex
+	cond             *sync.Cond
+	pending          []PendingMessage // 待合并消息
+	processed        int              // 已处理的消息数（积压队列的偏移）
+	processing       bool             // 是否正在处理中
+	lastReply        string           // 最近一次生成的回复（用于后续请求直接取）
+	lastReplyAt      time.Time        // 最近回复时间（判断是否是本次合并的回复）
+	mergeCount       int              // 当前合并批次已合并几条
+	simpleProcessing bool             // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
+	deadlineExpired  bool             // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
+	currentBatch     uint64           // 当前批次ID，每次新批次递增，防止跨批次消息混合
+	// batchClosed P0-7 修复(2026-09-15)：批次"关账"标志。waitForMerge 收集完本批消息后
+	// 置 true——此后 AI 生成+延迟期间（10-135s，正是客户等回复补发消息的高发窗口）到达的
+	// 消息不再标进已封账批次（旧行为：等待者拿到不含自己内容的旧回复，消息以旧 BatchID
+	// 滞留 pending 成孤儿，仅靠 600s 超时自愈"清除残留"或直接随空闲清扫蒸发）。
+	// 关账后的新消息走既有积压接管路径，作为下一批第一个被处理。
+	batchClosed         bool
 	epoch               uint64                  // P1-19：处理代际号，每次处理者接管递增；SetReply 校验代际防旧处理者践踏新批次
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
 	redisLock           *redisclient.LockHandle // 跨实例分布式锁句柄（Redis模式处理者持有）
@@ -330,6 +336,7 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	// 如果没在处理中，本请求拿处理权
 	if !q.processing {
 		q.processing = true
+		q.batchClosed = false              // P0-7：新批次开账
 		q.currentBatch++                   // 新批次，递增batchID
 		q.epoch++                          // P1-19：代际递增，本批次持代返回给调用方做 SetReply 校验
 		q.processingStartedAt = time.Now() // 记录处理开始时间，用于超时检测
@@ -358,7 +365,10 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	}
 
 	// 已经在处理中了，检查是否还能合并进当前批次
-	if q.mergeCount < config.GlobalConfig.ReplySpeed.MaxMergeMessages {
+	// P0-7 修复(2026-09-15)：加 !q.batchClosed——批次已关账（waitForMerge 收集完毕，
+	// AI 生成/延迟期间）时不再标进旧批次走"等旧回复"路径（旧回复不含本条内容，
+	// 消息会以旧 BatchID 滞留成孤儿），落到下方积压接管路径作为下一批处理。
+	if q.mergeCount < config.GlobalConfig.ReplySpeed.MaxMergeMessages && !q.batchClosed {
 		q.mergeCount++
 		if msgIdx >= 0 {
 			q.pending[msgIdx].BatchID = q.currentBatch // 标记消息所属批次
@@ -386,8 +396,9 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 
 	// 当前批次完成了，本消息成为下一批的第一个
 	q.processing = true
-	q.currentBatch++ // 新批次
-	q.epoch++        // P1-19：积压接管同样递增代际
+	q.batchClosed = false // P0-7：积压接管即新批次开账
+	q.currentBatch++      // 新批次
+	q.epoch++             // P1-19：积压接管同样递增代际
 	q.processingStartedAt = time.Now()
 	q.mergeCount = 0
 	q.lastReply = ""
@@ -658,6 +669,8 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 		}
 	}
 	q.pending = remaining
+	// P0-7 修复(2026-09-15)：批次关账——本批收集到此为止，后续到达的消息改投下一批
+	q.batchClosed = true
 	q.mu.Unlock()
 
 	// 用换行连接多条消息（AI能看出来是连发的）

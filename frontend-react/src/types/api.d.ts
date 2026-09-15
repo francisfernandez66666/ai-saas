@@ -156,6 +156,8 @@ export interface ApiRoutes {
   "POST /api/v1/admin/tag-rules/:id/disable": unknown
   "POST /api/v1/admin/tag-rules/:id/enable": unknown
   "POST /api/v1/admin/tag-weights": unknown
+  "POST /api/v1/admin/tag-weights/:id/disable": unknown
+  "POST /api/v1/admin/tag-weights/:id/enable": unknown
   "POST /api/v1/admin/tags": unknown
   "POST /api/v1/admin/tags/:id/disable": unknown
   "POST /api/v1/admin/tags/:id/enable": unknown

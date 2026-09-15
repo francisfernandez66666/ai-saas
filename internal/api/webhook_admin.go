@@ -55,6 +55,11 @@ func CreateWebhook(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误："+err.Error())
 		return
 	}
+	// P2-SSRF 修复(2026-09-15)：创建即校验（release 下禁内网/环回靶点）
+	if verr := webhook.ValidateCallbackURL(req.URL); verr != nil {
+		RespErr(c, http.StatusBadRequest, 400, "回调地址不可用: "+verr.Error())
+		return
+	}
 	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
 		RespErr(c, http.StatusBadRequest, 400, "url 必须 http(s):// 开头")
 		return
@@ -104,6 +109,11 @@ func UpdateWebhook(c *gin.Context) {
 	if req.URL != nil {
 		if !strings.HasPrefix(*req.URL, "http://") && !strings.HasPrefix(*req.URL, "https://") {
 			RespErr(c, http.StatusBadRequest, 400, "url 必须 http(s):// 开头")
+			return
+		}
+		// P2-SSRF 修复(2026-09-15)：改地址同样过白名单（与创建同口径）
+		if verr := webhook.ValidateCallbackURL(*req.URL); verr != nil {
+			RespErr(c, http.StatusBadRequest, 400, "回调地址不可用: "+verr.Error())
 			return
 		}
 		up["url"] = *req.URL

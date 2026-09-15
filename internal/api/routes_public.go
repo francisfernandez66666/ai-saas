@@ -25,8 +25,12 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 	}
 
 	// 邮箱换绑（登录态）：向新邮箱发码 → 校验完成绑定
-	v1.POST("/auth/email/code", middleware.JWTAuth(), SendBindEmailCode)
-	v1.POST("/auth/email/change", middleware.JWTAuth(), middleware.OrgResolve(), ChangeEmail)
+	// P0-6 复核批(2026-09-15)：本组路由注册在 v1.Use(MustChangePasswordGuard) 之前
+	// （gin 按注册时点快照中间件，后挂不生效），旧实现只过 JWTAuth 不核 token_version——
+	// 凭证套装被盗后受害者改密，攻击者旧 token 仍可换绑自己邮箱再走 reset 完成账号接管，
+	// B4"改密即驱逐"在此被反转。补 TokenRevocationCheck 硬核对。
+	v1.POST("/auth/email/code", middleware.JWTAuth(), middleware.TokenRevocationCheck(), SendBindEmailCode)
+	v1.POST("/auth/email/change", middleware.JWTAuth(), middleware.OrgResolve(), middleware.TokenRevocationCheck(), ChangeEmail)
 
 	// 租户入驻与套餐（免登录公开）
 	v1.POST("/tenant/signup", middleware.IPRateLimit("tenant_signup", 15, 10*time.Minute), TenantSignup)

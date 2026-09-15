@@ -9,7 +9,7 @@ vi.mock('tdesign-react', () => ({
 }))
 
 import { MessagePlugin } from 'tdesign-react'
-import { clearToken, getToken, redirectByRole, setToken, toastError } from '../api'
+import { AUTH, clearToken, getToken, redirectByRole, setToken, toastError } from '../api'
 
 const warningMock = MessagePlugin.warning as ReturnType<typeof vi.fn>
 
@@ -86,5 +86,43 @@ describe('业务错误码文案', () => {
     const j = toastError({ code: 0 } as any)
     expect(j).toBe(false)
     expect(warningMock).not.toHaveBeenCalled()
+  })
+})
+
+// P1-13 复核批（2026-09-15）：请求层默认 30s 超时——后端挂死时不再让按钮永久 pending；
+// timeoutMs:0 显式关闭（聊天等长任务保留通道）。
+describe('apiFetch 超时闸门', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('挂死请求 30s 后被掐断并返回错误信封（AUTH 不 reject，调用方走 else 分支）', async () => {
+    vi.useFakeTimers()
+    const fakeFetch = vi.fn(
+      (_u: string, opts: any) =>
+        new Promise((_res, reject) => {
+          opts?.signal?.addEventListener('abort', () => reject(new Error('AbortError')))
+        }),
+    )
+    vi.stubGlobal('fetch', fakeFetch)
+    const p = AUTH('/api/v1/hang')
+    await vi.advanceTimersByTimeAsync(30_000)
+    const j: any = await p
+    expect(fakeFetch).toHaveBeenCalledTimes(1)
+    expect(j.code).toBe(-1)
+    expect(String(j.message)).toContain('网络')
+  })
+
+  it('timeoutMs=0 不装定时器：长任务永不被本地超时误掐', async () => {
+    vi.useFakeTimers()
+    let aborted = false
+    vi.stubGlobal('fetch', vi.fn((_u: string, opts: any) => {
+      opts?.signal?.addEventListener('abort', () => { aborted = true })
+      return new Promise(() => {})
+    }))
+    void AUTH('/api/v1/long-chat', { timeoutMs: 0 })
+    await vi.advanceTimersByTimeAsync(120_000)
+    expect(aborted).toBe(false)
   })
 })

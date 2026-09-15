@@ -19,9 +19,13 @@ type InboundMessage struct {
 	MsgType     string // text/image/voice/event...
 	Content     string // 文本正文（事件类为空）
 	MsgID       string // D4 修复(2026-09-14)：渠道侧消息 ID，入站幂等去重锚（回调重推/轮询重拉共用）
-	IsEvent     bool   // 是否订阅/系统事件（change_contact/follow 等，走 CDP 摄入非对话）
-	EventKey    string // 事件类型键
-	ReceiveID   string // 校验用 corpid/appid（解密 receive_id）
+	// EnvelopeID P1-7 修复(2026-09-15)：原始加密信封（密文+时间戳+nonce 的整段回调 body）
+	// 摘要，作 MsgID 为空（老协议）时的去重兜底锚——字节级相同才判重放，
+	// 客户连发同文案两条的信封必然不同（nonce/时间戳不同），不会误杀。
+	EnvelopeID string
+	IsEvent    bool   // 是否订阅/系统事件（change_contact/follow 等，走 CDP 摄入非对话）
+	EventKey   string // 事件类型键
+	ReceiveID  string // 校验用 corpid/appid（解密 receive_id）
 }
 
 // SendResult 出站发送结果

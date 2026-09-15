@@ -18,6 +18,37 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// executeRefundPayout 对真实渠道订单发起 PSP 出款并落 refund_psp_status（P1-2，2026-09-15）。
+// 从 MarkOrderRefunded 抽出，供对账器在"账面 refunded 但出款意图未落库"的崩溃窗口补呼。
+// 幂等依赖 PSP 侧按 out_refund_no=订单号 去重（微信 V3/支付宝同退款单号重复请求返回原单）。
+func executeRefundPayout(o *model.BillingOrder, refundCents int64) {
+	if o == nil || refundCents <= 0 {
+		return
+	}
+	// P0-1 渠道分发修复(2026-09-15)：原实现固定 loadGatewayProvider 出款——
+	// wechat/alipay 渠道订单退款会被打到通用网关端点（协议不对，必败误标 psp_pending）。
+	// 现按订单 channel 装配对应适配器出款。
+	if o.Channel == "" || o.Channel == "mock" || o.Channel == "manual" {
+		return // 模拟/人工渠道无资金动作
+	}
+	status := "psp_ok"
+	prov, perr := providerForChannel(o.Channel)
+	if perr != nil {
+		status = "psp_pending"
+		log.Printf("[Billing][ERROR] 订单%d(%s) 退款出款适配器装配失败: %v（账面已回收，需人工出款核销）",
+			o.ID, o.OrderNo, perr)
+		notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，出款通道未就绪(%v)，权益已回收但资金未出，请财务人工处理",
+			o.OrderNo, refundCents, perr))
+	} else if rerr := prov.Refund(o, int(refundCents)); rerr != nil {
+		status = "psp_pending"
+		log.Printf("[Billing][ERROR] 订单%d(%s) PSP 出款失败: %v（账面已回收，需人工出款核销）",
+			o.ID, o.OrderNo, rerr)
+		notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，PSP 出款异常(%v)，权益已回收但资金未出，请财务人工处理",
+			o.OrderNo, refundCents, rerr))
+	}
+	db.DB.Model(&model.BillingOrder{}).Where("id = ?", o.ID).Update("refund_psp_status", status)
+}
+
 // refundClawback 退款需同步回收的权益（关闭「付费→退款→白嫖」口子）
 type refundClawback struct {
 	tokens    int64      // increment：回收②永久余额份额
@@ -158,29 +189,12 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 		}
 		// R8 修复(2026-09-11)：真实渠道订单联动 PSP 出款——此前退款只回收权益，
 		// 账面 refunded 与客户实际收到退款完全脱钩。出款失败不吞：订单标 psp_pending
-		// + 群告警，账面与资金状态显式分离，财务可据此人工出款后核销。
+		// + 群告警，账面与资金状态显式分离，财务可据此人工出款核销。
+		// P1-2 改造(2026-09-15)：出款动作抽成 executeRefundPayout——对账器需要在
+		// "事务提交后、出款落库前崩溃"的窗口里补呼（refunded 且 psp_status 为空）。
 		var o2 model.BillingOrder
-		if db.DB.First(&o2, orderID).Error == nil && refundInfo.refund > 0 &&
-			o2.Channel != "" && o2.Channel != "mock" && o2.Channel != "manual" {
-			// P0-1 渠道分发修复(2026-09-15)：原实现固定 loadGatewayProvider 出款——
-			// wechat/alipay 渠道订单退款会被打到通用网关端点（协议不对，必败误标 psp_pending）。
-			// 现按订单 channel 装配对应适配器出款。
-			status := "psp_ok"
-			prov, perr := providerForChannel(o2.Channel)
-			if perr != nil {
-				status = "psp_pending"
-				log.Printf("[Billing][ERROR] 订单%d(%s) 退款出款适配器装配失败: %v（账面已回收，需人工出款核销）",
-					orderID, o2.OrderNo, perr)
-				notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，出款通道未就绪(%v)，权益已回收但资金未出，请财务人工处理",
-					o2.OrderNo, refundInfo.refund, perr))
-			} else if rerr := prov.Refund(&o2, int(refundInfo.refund)); rerr != nil {
-				status = "psp_pending"
-				log.Printf("[Billing][ERROR] 订单%d(%s) PSP 出款失败: %v（账面已回收，需人工出款核销）",
-					orderID, o2.OrderNo, rerr)
-				notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，PSP 出款异常(%v)，权益已回收但资金未出，请财务人工处理",
-					o2.OrderNo, refundInfo.refund, rerr))
-			}
-			db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).Update("refund_psp_status", status)
+		if db.DB.First(&o2, orderID).Error == nil && refundInfo.refund > 0 {
+			executeRefundPayout(&o2, refundInfo.refund)
 		}
 	}
 	var o model.BillingOrder
@@ -198,9 +212,13 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 	}
 	// 2026-09-09 换包升级防双重：该订单已被另一单作为升级抵扣基数（UpgradeBaseOrderID 指向它），
 	// 其剩余价值已在升级时折算进新包金额——若再退款等于"退了旧的钱还白拿新包"，拒绝。
+	// P1-4 修复(2026-09-15)：口径从 status='paid' 扩到 IN ('paid','pending')——
+	// 升级单 U 尚在 pending（用户未扫码/回调未到）时退掉基数单 X，随后 U 迟到到账被
+	// Reopen 复活按"已消失的抵扣净值"发货：同一份剩余价值退钱+抵款两次兑现。
+	// pending 是 15 分钟自然态，拒退让财务稍后再操作，比双花可控。
 	var usedAsBase int64
 	tx.Model(&model.BillingOrder{}).
-		Where("upgrade_base_order_id = ? AND status = 'paid'", o.ID).Count(&usedAsBase)
+		Where("upgrade_base_order_id = ? AND status IN ('paid','pending')", o.ID).Count(&usedAsBase)
 	if usedAsBase > 0 {
 		return nil, 0, ErrRefundNoRemaining
 	}

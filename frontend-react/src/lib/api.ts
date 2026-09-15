@@ -125,8 +125,14 @@ function isPlatformPath(url: string): boolean {
   return false
 }
 
+// P1-13 修复(2026-09-15)：默认无超时的 fetch 在后端挂死（网关抖动/AI 长阻塞）时
+// 会让按钮永远转圈、loading 态永不复位。统一加 30s 超时；
+// 长任务（如聊天等待合并窗口）可传 timeoutMs:0 关闭，或调大。
+export type ApiRequestInit = RequestInit & { timeoutMs?: number }
+const DEFAULT_TIMEOUT_MS = 30000
+
 /** 带 token 和租户上下文发起 fetch，保留原始 Response 供上层处理。 */
-export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
+export async function apiFetch(url: string, opts: ApiRequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...(opts.headers as Record<string, string>),
@@ -136,7 +142,20 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
   // E4：超管代管租户上下文——仅对**租户作用域**路径注入 X-Tenant-ID，平台路径(/super/*、/auth/me)不带
   const imp = getImpersonateTenant()
   if (imp && localStorage.getItem('role') === 'super_admin' && !isPlatformPath(url)) headers['X-Tenant-ID'] = imp
-  const res = await fetch(url, { ...opts, headers })
+  const { timeoutMs, ...fetchOpts } = opts
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let signal = fetchOpts.signal
+  if (!signal && timeoutMs !== 0) {
+    const ctrl = new AbortController()
+    signal = ctrl.signal
+    timer = setTimeout(() => ctrl.abort(), timeoutMs || DEFAULT_TIMEOUT_MS)
+  }
+  let res: Response
+  try {
+    res = await fetch(url, { ...fetchOpts, signal, headers })
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
   if (res.status === 401) {
     handleUnauthorized()
   } else if (res.status === 403) {
@@ -172,7 +191,7 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
 /** 发起 JSON API 请求并返回 data；错误码会转成前端异常。 */
 export async function apiJSON<T = any>(
   url: string,
-  opts: RequestInit = {},
+  opts: ApiRequestInit = {},
 ): Promise<{ res: Response; json: T }> {
   const res = await apiFetch(url, opts)
   const json = (await res.json().catch(() => null)) as T
@@ -203,7 +222,7 @@ export function redirectByRole(role: string) {
 /** 调用需要鉴权的后台接口，并复用统一错误和登录态处理。 */
 export async function AUTH<T = any>(
   url: string,
-  opts: { method?: string; body?: any; headers?: Record<string, string> } = {},
+  opts: { method?: string; body?: any; headers?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<T> {
   // E6 修复(2026-09-14)：网络异常/超时不再让 AUTH reject——旧行为下调用方
   // `const j = await AUTH(...); j.code` 直接踩 unhandled rejection → 白屏。
@@ -214,6 +233,7 @@ export async function AUTH<T = any>(
       method: opts.method || 'GET',
       headers: opts.headers,
       body: opts.body ? JSON.stringify(opts.body) : undefined,
+      timeoutMs: opts.timeoutMs, // P1-13：长任务可显式放宽/关闭超时
     })
     json = r.json
   } catch {

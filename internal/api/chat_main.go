@@ -511,7 +511,13 @@ func Chat(c *gin.Context) {
 			conversation.GuidedDisabled = false
 			now := time.Now()
 			conversation.HandoffNotifiedAt = &now
-			db.RQ(c).Save(&conversation)
+			// P1-9 修复(2026-09-15)：到店快速通道同样只写本分支推进的 4 列，勿整行 Save
+			db.RQ(c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]interface{}{
+				"pending_handoff":         true,
+				"guided_remaining_rounds": 0,
+				"guided_disabled":         false,
+				"handoff_notified_at":     now,
+			})
 
 			// 5. 固定引导式反问（硬编码，不走AI避免延迟）
 			// 已留资客户第一条回复浓缩成固定引导句，不再发"我先帮你约上时间"式确认语
@@ -870,7 +876,24 @@ skipStoreVisitFast:
 	conversation.LastAnchorType = strategyOutput.FinalAnchor
 	conversation.Emotion = strategy.DetectEmotion(mergedContent)
 
-	db.RQ(c).Save(&conversation)
+	// P1-9 修复(2026-09-15)：整行 Save → 字段级 Updates。
+	// 本请求是 30-135s 的"伪事务"，期间顾问可 HumanReply/转接（定向改 mode/is_human_locked/
+	// pending_handoff）、llm 内部定向扣减 guided_remaining_rounds、OneID 合并把
+	// conversation.customer_id 迁到存活客户——旧 Save 用请求开头加载的 stale 结构体
+	// 整行盖回：接管状态被 AI 覆写、引导轮数扣减回滚、会话弹回废弃 guest。
+	// 只写本请求负责推进的列（不含 mode/customer_id/guided_*）。
+	db.RQ(c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]interface{}{
+		"attempts":           conversation.Attempts,
+		"hook_count":         conversation.HookCount,
+		"last_tid":           conversation.LastTid,
+		"last_anchor_type":   conversation.LastAnchorType,
+		"emotion":            conversation.Emotion,
+		"high_intent_rounds": conversation.HighIntentRounds,
+		"silent_duration":    conversation.SilentDuration,
+		"current_stage":      conversation.CurrentStage,
+		"state_json":         conversation.StateJSON,
+		"last_message_at":    conversation.LastMessageAt,
+	})
 
 	// 10. 更新客户画像（意向分反哺）
 	newIntent := tVector[0] + strategyOutput.IntentDelta
@@ -886,7 +909,12 @@ skipStoreVisitFast:
 	newTVector := customer.GetTVector()
 	newTVector[0] = newIntent // 更新意向分
 	customer.SaveTVector(newTVector)
-	db.RQ(c).Save(&customer)
+	// P1-9 修复(2026-09-15)：同上，客户整行 Save 会盖回期间被留资合并/顾问编辑改掉的
+	// journey_stage/assigned_user_id 等列，只写本请求推进的两个画像字段。
+	db.RQ(c).Model(&model.Customer{}).Where("id = ?", customer.ID).Updates(map[string]interface{}{
+		"intent_score": customer.IntentScore,
+		"t_vector":     customer.TVectorJSON,
+	})
 
 	// D9：AI 回复落包/模板/意向变化快照，供包效果归因。
 	if aiMsg.ID > 0 {

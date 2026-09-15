@@ -1,5 +1,5 @@
 // F1 通用 CRUD 状态层与表格冒烟测试。
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useCrud } from '../../hooks/useCrud'
 
@@ -43,3 +43,22 @@ describe('useCrud', () => {
     expect(authMock.mock.calls[1]).toEqual(['/api/v1/admin/demo', { method: 'POST', body: { name: '新增' } }])
   })
 })
+
+  // P1-13 复核批（2026-09-15）：快速并发 load 时"迟到旧响应必须作废"——
+  // 旧实现无代际守卫，慢的先回会把快的结果覆盖回旧数据（列表与筛选条件错位）。
+  it('迟到的旧请求响应不覆盖新结果（代数守卫）', async () => {
+    let releaseOld: (v: any) => void
+    const oldPending = new Promise<any>((r) => { releaseOld = r })
+    authMock.mockImplementationOnce(() => oldPending)
+    authMock.mockImplementationOnce(async () => ({ code: 0, data: [{ id: 99 }] }))
+    let captured: any
+    render(<Harness base="/api/v1/admin/demo" onResult={(c) => { captured = c }} />)
+    await waitFor(() => expect(authMock).toHaveBeenCalledTimes(1))
+    act(() => { void captured.reload() }) // 第二个请求发出（旧请求仍在途）
+    await waitFor(() => expect(authMock).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('1'))
+    releaseOld!({ code: 0, data: [{ id: 1 }, { id: 2 }, { id: 3 }] }) // 旧请求迟到返回 3 行
+    await new Promise((r) => setTimeout(r, 20))
+    expect(screen.getByTestId('rows').textContent).toBe('1') // 必须仍为新结果
+    expect(captured.loading).toBe(false)
+  })

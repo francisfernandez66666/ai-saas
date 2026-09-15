@@ -169,6 +169,12 @@ func WSAdvisor(c *gin.Context) {
 	// 在过期前持续收本租户全部客户实时消息。现补 DB 实时状态与角色/部门解析（复用 service.LoadOrgContext，
 	// 与 OrgResolve 中间件同源），并在 HandshakeTimeout 的 wsServer 内校验。
 	if claims.UserID > 0 {
+		// P0-6 复核批(2026-09-15)：B4 吊销核对补齐——WS 握手此前只 ParseToken+状态核对，
+		// 不核 token_version：改密/换绑被吊销的旧 token 仍能建连持续收租户实时消息。
+		if middleware.TokenRevoked(claims.UserID, claims.TV) {
+			respFailStatus(c, http.StatusUnauthorized, CodeUnauthorized, "账号凭据已更新，请重新连接")
+			return
+		}
 		oc := service.LoadOrgContext(claims.UserID)
 		if oc == nil || oc.Status != 1 {
 			respFailStatus(c, http.StatusForbidden, CodeForbidden, "账号不存在或已禁用")

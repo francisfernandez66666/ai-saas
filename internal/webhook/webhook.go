@@ -153,6 +153,10 @@ func markDead(d *model.WebhookDelivery, reason string) {
 
 // deliver 发送单次回调：签名头 + body，返回 HTTP 状态码与网络错误。
 func deliver(wh *model.TenantWebhook, event, payload string) (int, error) {
+	// P2-SSRF 修复(2026-09-15)：投递前复核 URL（历史行可能在白名单规则前写入）
+	if verr := ValidateCallbackURL(wh.URL); verr != nil {
+		return 0, verr
+	}
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	req, err := http.NewRequest(http.MethodPost, wh.URL, strings.NewReader(payload))
 	if err != nil {

@@ -43,7 +43,13 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	in.ChannelID = ch.ID
 	in.TenantID = ch.TenantID
 
-	done, skip := claimInbound(ch, in.MsgID)
+	// P1-7 修复(2026-09-15)：MsgID 为空时退用信封摘要作去重锚——旧实现直接放行不抢占，
+	// 抓包重放同一份有效报文可无限触发入站落库+重复 AI 出站（无重发成本）。
+	dedupID := in.MsgID
+	if dedupID == "" {
+		dedupID = in.EnvelopeID
+	}
+	done, skip := claimInbound(ch, dedupID)
 	defer func() { done(err) }()
 	if skip {
 		return nil // 重放/在途/死信：直接 ack，不再二次处理

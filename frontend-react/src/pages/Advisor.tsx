@@ -64,6 +64,10 @@ export default function Advisor() {
   const chatRef = useRef<HTMLDivElement>(null)
   // P2-84 修复：已展示消息 ID 集合——轮询从"全量替换"改"只追加新消息"（对齐 Client 已修语义）
   const localIds = useRef<Set<string>>(new Set())
+  // P1-13 修复(2026-09-15)：openDetail/loadChat/loadRecommend 均为"发请求→等响应→落状态"，
+  // 快速切换客户时旧请求后到会覆盖新详情（detail/msgs/rec 与 detailId 错位）。
+  // 用 ref 记录"当前应展示的客户"，落状态前核对，错位的响应直接丢弃。
+  const detailIdRef = useRef<number | null>(null)
 
   // 加载工作台统计：今日线索/意向客户等汇总数字
   const loadStats = async () => { const j = await AUTH(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
@@ -98,15 +102,26 @@ export default function Advisor() {
 
   // 打开客户详情：加载客户信息、会话与试驾记录，定位当前会话并同步AI回复开关
   async function openDetail(id: number) {
+    detailIdRef.current = id
     setDetailId(id)
     const j = await AUTH(API + '/customer/' + id)
-    if (j.code === 0 && j.data) { setDetail(j.data); const conv = (j.data.conversations && j.data.conversations[0]); setConvId(conv ? conv.id : null); setAiOn(conv ? conv.is_ai_reply_enabled !== false : true) }
-    loadChat(id); loadTestDrives(id); loadRecommend(id)
+    // P1-13 修复(2026-09-15)：切客户后的迟到响应不得回写详情
+    if (detailIdRef.current !== id) return
+    let convIdNow: number | null = null
+    if (j.code === 0 && j.data) {
+      setDetail(j.data)
+      const conv = (j.data.conversations && j.data.conversations[0])
+      convIdNow = conv ? conv.id : null
+      setConvId(convIdNow)
+      setAiOn(conv ? conv.is_ai_reply_enabled !== false : true)
+    }
+    loadChat(id); loadTestDrives(id); loadRecommend(id, convIdNow)
   }
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
   // P2-84 修复：打开详情时重置 ID 集合并全量替换；WS/轮询增量时只追加新消息
   async function loadChat(id: number) {
     const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50')
+    if (detailIdRef.current !== id) return // P1-13 修复(2026-09-15)：丢弃错位响应
     if (j.code === 0) {
       const arr = j.data || []
       localIds.current = new Set(arr.map((m: Msg) => String(m.id)))
@@ -132,7 +147,17 @@ export default function Advisor() {
   // 加载全部标签（用于客户标签编辑弹窗的选项）
   // 2026-09-08 修复：原调 /api/v1/admin/tags 被 AdminRequired 拦（sales/user 403）→ 弹窗选项恒空。
   // 后端已开放 advisor 组只读路由 /api/v1/advisor/tags（无 AdminRequired，PQ 租户+预置可见）。
-  async function loadAllTags() { const j = await AUTH('/api/v1/advisor/tags'); if (j.code === 0) setAllTags((j.data?.list) || j.data || []) }
+  // P0-10 修复(2026-09-15 复核批)：该路由复用 GetTagList，data.list 是 **Tag 对象数组**
+  // （json: name/code/status…），旧实现按 string[] 直渲染对象 → React error #31 整页崩溃；
+  // 勾选保存也会把对象塞进 tags:[]string 请求体 400。统一归一为标签名字符串。
+  async function loadAllTags() {
+    const j = await AUTH('/api/v1/advisor/tags')
+    if (j.code !== 0) return
+    const raw = (j.data?.list) || j.data || []
+    setAllTags(Array.isArray(raw)
+      ? raw.map((t: unknown) => (typeof t === 'string' ? t : (t as { name?: string })?.name || '')).filter(Boolean)
+      : [])
+  }
   // 保存客户标签：提交勾选标签到 /customer/:id/tags 后刷新详情
   async function saveTags() {
     if (!detailId) return
@@ -140,9 +165,12 @@ export default function Advisor() {
     if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
   }
   // E2：拉取策略推荐（进详情即拉，失败静默不打扰顾问）
-  const loadRecommend = async (id: number) => {
+  // P1-13 修复(2026-09-15)：原实现读闭包里的 convId——openDetail 刚 setConvId 尚未生效，
+  // 拿到的是**上一个客户**的会话 ID（推荐串台）。改由调用方显式传入本次会话 ID。
+  const loadRecommend = async (id: number, cid: number | null) => {
     setRec(null)
-    const j = await AUTH(`${API}/strategy/recommend?customer_id=${id}&conversation_id=${convId || ''}`)
+    const j = await AUTH(`${API}/strategy/recommend?customer_id=${id}&conversation_id=${cid || ''}`)
+    if (detailIdRef.current !== id) return // 迟到的错位响应丢弃
     if (j?.code === 0) setRec(j.data)
   }
   // E2：新建跟进提醒（method=phone/wechat/store/email，next_follow_at 留空=仅记录不提醒）
@@ -280,7 +308,7 @@ export default function Advisor() {
         <div style={{ position: 'fixed', inset: 0, background: '#f5f7fa', zIndex: 20, maxWidth: 480, margin: '0 auto' }}>
           <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             {/* G-20：aria-label 标注返回按钮，辅助技术可识别导航操作 */}
-            <button onClick={() => setDetailId(null)} aria-label="返回客户列表" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 16 }}>←</button>
+            <button onClick={() => (detailIdRef.current = null, setDetailId(null))} aria-label="返回客户列表" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 16 }}>←</button>
             <span style={{ fontWeight: 600 }}>{H(c?.name)}</span>
             {/* G-20：aria-label 标注编辑按钮，辅助技术可识别操作意图 */}
             <button onClick={() => setEditOpen(true)} aria-label="编辑客户资料" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 13 }}>编辑</button>
@@ -380,7 +408,7 @@ export default function Advisor() {
 
       {/* G-20：底部导航栏 aria-label 标注导航用途，aria-current 标记当前激活页签 */}
       <nav aria-label="顾问工作台导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
-        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
+        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); (detailIdRef.current = null, setDetailId(null)) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
       </nav>
 
       <Dialog header="编辑客户资料" visible={editOpen} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} confirmBtn="保存">

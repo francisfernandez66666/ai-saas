@@ -250,3 +250,56 @@ func TestCalcHumanlikeDelayMock(t *testing.T) {
 		t.Fatalf("模拟模式延迟应为 0，实际 %v", d)
 	}
 }
+
+// TestP07BatchClosedNoOrphans P0-7 复核批（2026-09-15）回归锁定：
+// 合并窗口关账后（AI 生成/延迟期间，processing 未释放）到达的消息，
+// 旧实现会被标进已封账批次并等待"不含自己内容"的旧回复——成为永远丢回复的孤儿，
+// 残留至 600s 超时被清（连兜底回复都没有）。修复引入 batchClosed 关账标志后，
+// 此类消息必须走积压接管、成为下一批处理者（shouldProcess=true 且只含自己的内容）。
+func TestP07BatchClosedNoOrphans(t *testing.T) {
+	oldCfg := config.GlobalConfig
+	config.GlobalConfig = &config.Config{ReplySpeed: config.ReplySpeedConfig{MaxMergeMessages: 5, MergeWindowSeconds: 1}}
+	defer func() { config.GlobalConfig = oldCfg }()
+	oldRC := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{"merge_window_seconds": "1"}, nil)
+	defer func() { runtimecfg.DefaultSystemConfigService = oldRC }()
+
+	svc := NewMessageQueueService()
+	tid, cid := uint(7), uint(9407)
+
+	type qres struct {
+		merged  string
+		process bool
+		reply   string
+		epoch   uint64
+	}
+	chA := make(chan qres, 1)
+	go func() {
+		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第一条内容")
+		chA <- qres{m, p, r, e}
+	}()
+	a := <-chA // ~1s 合并窗口到期返回：此时批次已关账、processing 仍被 A 持有（模拟 AI 生成中）
+	if !a.process || a.merged != "第一条内容" {
+		t.Fatalf("前置条件破坏：A 应为批1处理者，得 process=%v merged=%q", a.process, a.merged)
+	}
+
+	chB := make(chan qres, 1)
+	go func() {
+		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第二条内容")
+		chB <- qres{m, p, r, e}
+	}()
+	time.Sleep(200 * time.Millisecond) // 确保 B 已在关账批次之后入队（旧行为下此刻 B 已挂死等旧回复）
+
+	svc.SetReply(tid, cid, a.epoch, "对第一条的回复") // A 交卷唤醒
+	b := <-chB
+	if !b.process {
+		t.Fatalf("P0-7 回归：关账后到达的消息成孤儿（shouldProcess=false，只能拿旧回复 %q）", b.reply)
+	}
+	if b.merged != "第二条内容" {
+		t.Fatalf("接管批应只含自身内容，得 %q", b.merged)
+	}
+	if b.epoch == a.epoch {
+		t.Fatal("新批次必须携带新一代际（SetReply fencing 依据）")
+	}
+	svc.SetReply(tid, cid, b.epoch, "对第二条的回复") // 交还 B 批，状态归零
+}

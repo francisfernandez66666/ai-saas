@@ -3,12 +3,18 @@ package middleware
 
 import (
 	"ai-scrm/config"
+	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+
+	"ai-scrm/internal/db"
 )
 
 // ============================================================
@@ -144,13 +150,77 @@ func OptionalJWTAuth() gin.HandlerFunc {
 			parts := strings.SplitN(authHeader, " ", 2)
 			if len(parts) == 2 && parts[0] == "Bearer" {
 				if claims, err := ParseToken(parts[1]); err == nil {
-					c.Set("user_id", claims.UserID)
-					c.Set("username", claims.Username)
-					c.Set("role", claims.Role)
-					c.Set("tenant_id", claims.TenantID)
+					// P0-6 复核批(2026-09-15)：B4 吊销核对补齐——OptionalJWTAuth 此前
+					// 解析成功即注入身份，改密/换绑后被吊销的旧 token 在整个 JWT exp
+					// 窗口内仍能经 /chat/history、/client-errors 等路径读租户数据。
+					// 核对不过（已吊销/查不到/DB 故障）一律降级为匿名上下文：请求仍放行，
+					// 由调用方 visitor_key 兜底——「有则注入」的语义不变，但注入的是可信身份。
+					if revoked := TokenRevoked(claims.UserID, claims.TV); !revoked {
+						c.Set("user_id", claims.UserID)
+						c.Set("username", claims.Username)
+						c.Set("role", claims.Role)
+						c.Set("tenant_id", claims.TenantID)
+					}
 				}
 				// 坏 token 不拒绝：匿名路径（visitor_key）仍由调用方校验，避免误伤 C 端
 			}
+		}
+		c.Next()
+	}
+}
+
+// tokenRevoked 核对库内 token_version 是否已高于 token 快照（true=已吊销/不可信）。
+// P0-6 复核批(2026-09-15)：与 MustChangePasswordGuard 同口径（row.TV > claims.TV 即失效），
+// fail-closed——查不到用户或 DB 故障按不可信处理（调用方决定 401 还是降级匿名）。
+// uid==0（平台系统层身份）无 tenant_users 行，恒不吊销（与 guard 的 uid==0 跳过一致）。
+func TokenRevoked(uid, claimsTV uint) bool {
+	if uid == 0 {
+		return false
+	}
+	if db.DB == nil {
+		// DB 未初始化（单元测试/启动早期）无从核对——返回"未吊销"：
+		// DB 挂时一切租户数据路径本就 500，此处 fail-open 不产生额外暴露窗口，
+		// 且避免 nil *gorm.DB 裸查询 panic 把 401/降级变成 500。
+		log.Printf("[auth][WARN] TokenRevoked: DB 未初始化，跳过吊销核对")
+		return false
+	}
+	var row struct {
+		TokenVersion uint
+	}
+	err := db.DB.Table("tenant_users").
+		Select("COALESCE(token_version,0) AS token_version").
+		Where("id = ?", uid).Scan(&row).Error
+	if err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return true
+		}
+		return true // DB 故障 fail-closed：宁可误拒旧会话，不给吊销留窗口
+	}
+	return row.TokenVersion > claimsTV
+}
+
+// TokenRevocationCheck B4 吊销硬核对中间件（P0-6 复核批，2026-09-15）。
+// 供挂在 v1.Use 主链之外的旁挂路由（/auth/email/* 等在 Use 之前注册、拿不到
+// MustChangePasswordGuard 的链）——旧 token 被吊销后不得再换绑邮箱/发验证码，
+// 否则"改密驱逐攻击者"可被旧 token 反转为账号接管。须挂在 JWTAuth 之后。
+func TokenRevocationCheck() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		claimsTV := uint(0)
+		if v, ok := c.Get("token_tv"); ok {
+			claimsTV = toUint(v)
+		}
+		uidV, _ := c.Get("user_id")
+		uid := toUint(uidV)
+		if uid == 0 {
+			c.Next()
+			return
+		}
+		if TokenRevoked(uid, claimsTV) {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code": 401, "error_code": "token_revoked",
+				"message": "账号凭据已更新，请重新登录", "data": nil,
+			})
+			return
 		}
 		c.Next()
 	}

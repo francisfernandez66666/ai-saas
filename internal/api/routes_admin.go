@@ -102,6 +102,9 @@ func registerAdmin(v1 *gin.RouterGroup) {
 			adminTagWeights.POST("", CreateTagWeight)
 			adminTagWeights.PUT("/:id", UpdateTagWeight)
 			adminTagWeights.DELETE("/:id", DeleteTagWeight)
+			// P1-12 修复(2026-09-15)：补齐前端 EntityCrud 通用启停用路由（此前恒 404）
+			adminTagWeights.POST("/:id/enable", EnableTagWeight)
+			adminTagWeights.POST("/:id/disable", DisableTagWeight)
 		}
 
 		// 知识库管理

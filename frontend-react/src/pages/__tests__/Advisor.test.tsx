@@ -30,7 +30,7 @@ describe('Advisor 通道侧边栏', () => {
       if (url.includes('/advisor/stats')) return { code: 0, data: [] }
       if (url.includes('/advisor/customers')) return { code: 0, data: { list: [{ id: 12, name: '渠道客户', journey_stage: 'lead_captured', updated_at: new Date().toISOString() }] } }
       if (url.includes('/advisor/customer/12')) return { code: 0, data: { customer: { id: 12, name: '渠道客户', phone: '13800001111', journey_stage: 'lead_captured', interest_model: 'Model X', budget: 30, remark: '', status: 1 }, tags: [{ id: 1, tag_name: '高意向' }], conversations: [] } }
-      if (url.includes('/advisor/tags')) return { code: 0, data: { list: ['高意向'] } }
+      if (url.includes('/advisor/tags')) return { code: 0, data: { list: [{ id: 1, name: '高意向', code: 'high_intent', status: 1 }] } } // P0-10：后端 GetTagList 返回 Tag 对象数组
       if (url.includes('/chat/history')) return { code: 0, data: [] }
       if (url.includes('/test-drives')) return { code: 0, data: [] }
       return { code: 0, data: null }

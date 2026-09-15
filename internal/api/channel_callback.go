@@ -3,16 +3,61 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"ai-scrm/internal/channel"
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 )
+
+// channelTenantUsable P1-7 修复(2026-09-15)：回调路径的租户状态闸。
+// 旧实现回调只按 :id 取通道、skip 了租户解析——suspended/cancelled 租户的通道照常
+// "入站→AI→出站"，烧的是已封禁租户的用量（webhook 投递域同款问题见注释）。
+// 30s 进程缓存扛微信重推风暴；状态未知（查库失败）放行——可用性优先，
+// 资金面不受此路径影响（AI 计量仍走三桶 fail-closed）。
+var channelTenantGate = struct {
+	sync.Mutex
+	cache map[uint]struct {
+		ok bool
+		at time.Time
+	}
+}{cache: map[uint]struct {
+	ok bool
+	at time.Time
+}{}}
+
+func channelTenantUsable(tenantID uint) bool {
+	channelTenantGate.Lock()
+	defer channelTenantGate.Unlock()
+	if e, has := channelTenantGate.cache[tenantID]; has && time.Since(e.at) < 30*time.Second {
+		return e.ok
+	}
+	ok := true
+	var kt model.Tenant
+	if err := db.DB.Select("id, status, cancel_at").First(&kt, tenantID).Error; err == nil {
+		if kt.Status == "suspended" || kt.Status == "cancelled" || kt.Status == "expired" || kt.Status == "review" {
+			ok = false
+		}
+		if kt.CancelAt != nil && time.Now().After(*kt.CancelAt) {
+			ok = false // 注销生效时刻已过
+		}
+	}
+	// 查不到/查库失败：放行（可用性优先；AI 计量侧三桶 fail-closed 兜底）
+	channelTenantGate.cache[tenantID] = struct {
+		ok bool
+		at time.Time
+	}{ok, time.Now()}
+	return ok
+}
 
 // loadChannelForCallback 按路径 :id 取通道 + 解密凭据（不校验租户 JWT，靠后续签名验证）。
 func loadChannelForCallback(c *gin.Context) (*model.Channel, *channel.Credential, bool) {
@@ -26,6 +71,14 @@ func loadChannelForCallback(c *gin.Context) (*model.Channel, *channel.Credential
 	if err != nil {
 		log.Printf("[通道回调] channel=%d 凭据解密失败(密钥轮换?): %v", ch.ID, err)
 		c.String(http.StatusOK, "success") // 不暴露内部错误给渠道
+		return nil, nil, false
+	}
+	// P1-7 修复(2026-09-15)：租户状态闸——回调 skip 了 TenantResolver（匿名端点），
+	// 旧行为下 suspended/过期租户的通道照常 入站→AI→出站，烧已封禁账号的用量。
+	// 静默回 success 止重推（封禁租户的消息不配进对话链路）。
+	if !channelTenantUsable(ch.TenantID) {
+		log.Printf("[通道回调] channel=%d 归属租户%d已停用，消息丢弃", ch.ID, ch.TenantID)
+		c.String(http.StatusOK, "success")
 		return nil, nil, false
 	}
 	return ch, cred, true
@@ -90,6 +143,12 @@ func ChannelCallbackReceive(c *gin.Context) {
 		log.Printf("[通道回调] channel=%d 验签/解密失败: %v", ch.ID, err)
 		c.String(http.StatusForbidden, "success") // 回 success 止重推，但 403 标记
 		return
+	}
+	// P1-7 修复(2026-09-15)：记录原始信封摘要——MsgID 为空的老协议报文以此为去重锚，
+	// 杜绝"抓一份有效报文无限重放 → 重复入站 + 重复 AI 出站"。
+	if in != nil && in.MsgID == "" {
+		sum := sha256.Sum256(body)
+		in.EnvelopeID = "env:" + hex.EncodeToString(sum[:])
 	}
 	if err := channel.ProcessInbound(ch, in); err != nil {
 		log.Printf("[通道回调] channel=%d 入站处理失败: %v", ch.ID, err)

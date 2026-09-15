@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/redisclient"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================================
@@ -87,7 +88,12 @@ func grantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package, replace bool) 
 	case model.PackageTypePaid:
 		// 包月包：expired_at 顺延 + 月配额设定为包含量
 		var t model.Tenant
-		if err := tx.Select("id, expired_at").Where("id = ?", tenantID).First(&t).Error; err != nil {
+		// P0-2 复核批(2026-09-15)：行锁读改写——发放是全项目唯一没锁租户行的三桶写者
+		// （扣减 token_billing.go、退款 billing_refund.go 均 FOR UPDATE）。两笔不同订单
+		// 并发回调时都基于旧 expired_at 计算再绝对值写回 → 后写覆盖先写，客户付 60 天
+		// 只到账 30 天；monthly_token_quota 同样被旧周期值盖回。与退款侧同锁口径串行化。
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id, expired_at").Where("id = ?", tenantID).First(&t).Error; err != nil {
 			return err
 		}
 		base := time.Now()

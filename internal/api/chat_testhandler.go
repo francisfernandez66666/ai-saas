@@ -79,7 +79,7 @@ func ChatTest(c *gin.Context) {
 
 	var req struct {
 		CustomerID uint   `json:"customer_id"`                // 客户ID，默认用1号模拟客户
-		Content    string `json:"content" binding:"required"` // 客户说的话
+		Content    string `json:"content" binding:"required,max=4000"` // 客户说的话（P2：长度上限）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
@@ -159,8 +159,12 @@ func ChatTest(c *gin.Context) {
 		if tagErr == nil && len(autoTags) > 0 {
 			log.Printf("[测试接口-硬边界] 客户%d自动打标: %v", customer.ID, autoTags)
 		}
-		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复，epoch=0 不做代际拦截）
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, 0, reply)
+		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复）。
+		// P0-9 修复(2026-09-15)：与 chat_main 的 D5 修复同口径携带当前代际——旧实现
+		// epoch=0 绕过硬卫（SetReply 的 `epoch != 0 &&` fencing 判断），在途批次生成
+		// 期间被离题话术提前释放处理锁 → 新批与仍在跑 AI 的旧处理者并行 = 双回复双计费。
+		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID,
+			service.DefaultMessageQueueService.CurrentEpoch(tenantID, customer.ID), reply)
 		RespOK(c, "success", gin.H{
 			"conversation_id":    conv.ID,
 			"ai_reply":           reply,
@@ -655,7 +659,10 @@ skipStoreVisitFastTest:
 				}
 				now := time.Now()
 				conversation.LastMessageAt = &now
-				db.RQ(c).Save(&conversation)
+				// P1-9 修复(2026-09-15)：本分支只推进 last_message_at，整行 Save 会盖回
+				// 等待期间顾问侧的接管状态变更，改定向更新。
+				db.RQ(c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).
+					Update("last_message_at", now)
 				db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
 				// P1-1 实时推送：人工接管态客户消息（顾问端即时感知，列表/详情即时更新）
 				var lockedCustMsg model.Message
@@ -674,6 +681,12 @@ skipStoreVisitFastTest:
 						CustomerMsgID:     testCustomerMsgID,
 					},
 				})
+				// P0-8 修复(2026-09-15)：本请求已经由 EnqueueAndWait 拿到处理权
+				// （processing 锁 + Redis 锁由 watchdog 持续续期），早退必须归还——
+				// 旧实现直接 return，该客户队列卡死至 600s 超时自愈，且人工态下每条
+				// "顾问刚回过"的消息都会再触发，队列近乎永久瘫痪（chat_main 把 human
+				// 判断放在入队前天然无此问题，双入口手工同构的漏同步点）。
+				service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, "")
 				return
 			}
 		}
@@ -685,7 +698,10 @@ skipStoreVisitFastTest:
 					customer.ID, conversation.ID, int(sinceLastReply.Seconds()))
 				now := time.Now()
 				conversation.LastMessageAt = &now
-				db.RQ(c).Save(&conversation)
+				// P1-9 修复(2026-09-15)：本分支只推进 last_message_at，整行 Save 会盖回
+				// 等待期间顾问侧的接管状态变更，改定向更新。
+				db.RQ(c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).
+					Update("last_message_at", now)
 				db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conversation.ID)
 				// P1-1 实时推送：顾问刚回复过、跳过AI时的客户消息，顾问端即时感知
 				var skipCustMsg model.Message
@@ -705,6 +721,8 @@ skipStoreVisitFastTest:
 						CustomerMsgID:     testCustomerMsgID,
 					},
 				})
+				// P0-8 修复(2026-09-15)：同上，处理权早退必须归还队列锁（携带本请求代际）
+				service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, "")
 				return
 			}
 		}
@@ -862,7 +880,20 @@ skipStoreVisitFastTest:
 
 	updatedState := chatflow.UpdateConversationState(&conversation, &strategyOutput, &customer, mergedContent)
 	conversation.SaveState(updatedState)
-	db.RQ(c).Save(&conversation)
+	// P1-9 修复(2026-09-15)：与 chat_main 同口径——30-135s 长请求末尾整行 Save 会盖回
+	// 期间顾问接管/llm 引导轮数/OneID 迁移的定向更新，改字段级 Updates 只写本请求推进列。
+	db.RQ(c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]interface{}{
+		"attempts":           conversation.Attempts,
+		"hook_count":         conversation.HookCount,
+		"last_tid":           conversation.LastTid,
+		"last_anchor_type":   conversation.LastAnchorType,
+		"emotion":            conversation.Emotion,
+		"high_intent_rounds": conversation.HighIntentRounds,
+		"silent_duration":    conversation.SilentDuration,
+		"current_stage":      conversation.CurrentStage,
+		"state_json":         conversation.StateJSON,
+		"last_message_at":    conversation.LastMessageAt,
+	})
 
 	// ---- 更新客户画像（意向分反哺） ----
 	newIntent := tVector[0] + strategyOutput.IntentDelta
@@ -876,7 +907,11 @@ skipStoreVisitFastTest:
 	newTVector := customer.GetTVector()
 	newTVector[0] = newIntent
 	customer.SaveTVector(newTVector)
-	db.RQ(c).Save(&customer)
+	// P1-9 修复(2026-09-15)：只写意向分与 T 向量两列（同 chat_main）
+	db.RQ(c).Model(&model.Customer{}).Where("id = ?", customer.ID).Updates(map[string]interface{}{
+		"intent_score": customer.IntentScore,
+		"t_vector":     customer.TVectorJSON,
+	})
 
 	// D9：测试链路也写入包/模板/意向变化归因快照。
 	_ = attribution.RecordReply(attribution.RecordReplyInput{

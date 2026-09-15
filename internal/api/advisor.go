@@ -76,9 +76,13 @@ type takeoverRequest struct {
 }
 
 // advisorSendMsgRequest 顾问发送消息请求
+// P1-11 修复(2026-09-15)：conversation_id 从 required 改为可选并新增 customer_id——
+// F10 手工建的客户/新客没有会话，前端 convId 恒 null → 固定 400，"顾问主动触达
+// 新客户"整条链路断。缺会话时后端按 customer_id 找/建活跃会话（人工模式）。
 type advisorSendMsgRequest struct {
-	ConversationID uint   `json:"conversation_id" binding:"required"` // 会话ID
-	Content        string `json:"content" binding:"required"`         // 消息内容
+	ConversationID uint   `json:"conversation_id"` // 会话ID（新客可为0，回落 customer_id）
+	CustomerID     uint   `json:"customer_id"`     // 客户ID（conversation_id 为 0 时必填）
+	Content        string `json:"content" binding:"required,max=4000"` // 消息内容（P2：长度上限同 ChatRequest）
 }
 
 // strategyRecommendRequest 策略话术推荐请求
@@ -1113,9 +1117,38 @@ func AdvisorSendMessage(c *gin.Context) {
 	}
 
 	var conversation model.Conversation
-	if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
-		RespErr(c, http.StatusNotFound, 404, "会话不存在")
-		return
+	if req.ConversationID > 0 {
+		if err := db.RQ(c).First(&conversation, req.ConversationID).Error; err != nil {
+			RespErr(c, http.StatusNotFound, 404, "会话不存在")
+			return
+		}
+	} else {
+		// P1-11 修复(2026-09-15)：无会话客户（F10 手工建客/新客）按 customer_id 找活跃会话，
+		// 没有则以人工模式创建一个——权限仍走下方 conversation.CustomerID 归属校验，不旁路。
+		if req.CustomerID == 0 {
+			RespErr(c, http.StatusBadRequest, 400, "conversation_id 与 customer_id 至少给一个")
+			return
+		}
+		var cust model.Customer
+		if err := db.RQ(c).First(&cust, req.CustomerID).Error; err != nil {
+			RespErr(c, http.StatusNotFound, 404, "客户不存在")
+			return
+		}
+		if err := db.RQ(c).Where("customer_id = ? AND status = 'active'", cust.ID).
+			Order("id DESC").First(&conversation).Error; err != nil {
+			conversation = model.Conversation{
+				CustomerID:     cust.ID,
+				AssignedUserID: cust.AssignedUserID,
+				Status:         "active",
+				Mode:           "human",
+				Channel:        "web",
+			}
+			if cerr := db.RQ(c).Create(&conversation).Error; cerr != nil {
+				RespErr(c, http.StatusInternalServerError, 500, "会话创建失败")
+				return
+			}
+			log.Printf("[顾问发消息-P1-11] 客户%d 无活跃会话，新建会话%d（人工模式）", cust.ID, conversation.ID)
+		}
 	}
 
 	// 修复（越权）：非管理员顾问只能给自己分配到的客户发消息

@@ -12,6 +12,19 @@ import (
 	"ai-scrm/internal/model"
 )
 
+// checkChannelTenantOwnership P0-4 复核批(2026-09-15)：FindActiveByCallback 按 corpid
+// **全局**查通道（回调端点语义），侧边栏接口若直接信任 ch.TenantID，等于 corpid 成了
+// 跨租户读键——任意登录用户拿他司 corpid+external_userid 即可读他司客户画像与聊天原文。
+// 鉴态侧边栏接口必须核对 通道归属租户 == 调用者租户。
+func checkChannelTenantOwnership(c *gin.Context, ch *model.Channel) bool {
+	tid := db.EffectiveTenantIDFromGin(c)
+	if tid == 0 || ch.TenantID != tid {
+		RespErr(c, http.StatusForbidden, 403, "通道不属于当前租户")
+		return false
+	}
+	return true
+}
+
 // ChannelWecomJSConfig GET /channel/wecom/jsconfig?url=&corpid=
 // ChannelWecomJSConfig 返回企微侧边栏 JS-SDK 配置。
 func ChannelWecomJSConfig(c *gin.Context) {
@@ -24,6 +37,9 @@ func ChannelWecomJSConfig(c *gin.Context) {
 	ch, err := channel.FindActiveByCallback(model.ChannelTypeWecomApp, corpid)
 	if err != nil {
 		RespErr(c, http.StatusNotFound, 404, "通道不存在或未启用")
+		return
+	}
+	if !checkChannelTenantOwnership(c, ch) {
 		return
 	}
 	cred, err := channel.DecryptCredential(ch)
@@ -51,6 +67,11 @@ func ChannelWecomContext(c *gin.Context) {
 	ch, err := channel.FindActiveByCallback(model.ChannelTypeWecomApp, corpid)
 	if err != nil {
 		RespErr(c, http.StatusNotFound, 404, "通道不存在或未启用")
+		return
+	}
+	// P0-4 复核批(2026-09-15)：原实现按 ch.TenantID（通道归属方）过滤客户/消息——
+	// 调用者租户与通道归属不一致时即跨租户读他司客户画像+最近20条聊天原文。
+	if !checkChannelTenantOwnership(c, ch) {
 		return
 	}
 	var ident model.ChannelIdentity

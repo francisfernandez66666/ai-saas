@@ -136,7 +136,7 @@ type CustomerListRequest struct {
 type ChatRequest struct {
 	CustomerID     uint   `json:"customer_id" binding:"required"` // 客户ID
 	ConversationID uint   `json:"conversation_id"`                // 会话ID（新会话为空）
-	Content        string `json:"content" binding:"required"`     // 消息内容
+	Content        string `json:"content" binding:"required,max=4000"` // 消息内容（P2：绑定层长度上限，挡超长报文打爆 prompt/DB）
 	SenderType     string `json:"sender_type"`                    // 发送方，默认customer
 	Channel        string `json:"channel"`                        // 渠道标识：web/app/openapi（P0-2 CDP标签）
 	Device         string `json:"device"`                         // 设备类型：mobile/desktop（P0-2 CDP标签）

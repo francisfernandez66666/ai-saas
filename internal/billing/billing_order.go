@@ -8,6 +8,7 @@ import "ai-scrm/internal/notify"
 import (
 	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"log"
 	"time"
@@ -169,6 +170,16 @@ func ActivePaidSubscription(tenantID uint) (*model.BillingOrder, *model.Package,
 }
 
 // MarkOrderPaid 幂等标记订单到账：pending→paid 条件更新
+// paymentDataJSON P2 修复(2026-09-15)：payment_data 用 json.Marshal 生成——
+// 旧 fmt.Sprintf 手拼 JSON，channel 含引号/反斜杠即产出非法 JSON，下游解析踩坑。
+func paymentDataJSON(fields map[string]interface{}) string {
+	buf, err := json.Marshal(fields)
+	if err != nil {
+		return "{}"
+	}
+	return string(buf)
+}
+
 // 返回 (订单, 是否本次实际流转)。false=已被处理过（重复 confirm/mock-pay），调用方不得二次发放
 func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, error) {
 	now := time.Now()
@@ -177,7 +188,7 @@ func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, err
 		Updates(map[string]interface{}{
 			"status":       "paid",
 			"paid_at":      now,
-			"payment_data": fmt.Sprintf(`{"channel":"%s","confirmed_at":"%s"}`, channel, now.Format(time.RFC3339)),
+			"payment_data": paymentDataJSON(map[string]interface{}{"channel": channel, "confirmed_at": now.Format(time.RFC3339)}),
 		})
 	if res.Error != nil {
 		return nil, false, res.Error
@@ -214,7 +225,7 @@ func ReopenClosedOrderPaid(orderID uint, channel string) (*model.BillingOrder, b
 		Updates(map[string]interface{}{
 			"status":       "paid",
 			"paid_at":      now,
-			"payment_data": fmt.Sprintf(`{"channel":"%s","late_payment_reopen":true,"confirmed_at":"%s"}`, channel, now.Format(time.RFC3339)),
+			"payment_data": paymentDataJSON(map[string]interface{}{"channel": channel, "late_payment_reopen": true, "confirmed_at": now.Format(time.RFC3339)}),
 		})
 	if res.Error != nil {
 		return nil, false, res.Error
@@ -225,6 +236,19 @@ func ReopenClosedOrderPaid(orderID uint, channel string) (*model.BillingOrder, b
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
+	}
+	// P1-4 修复(2026-09-15)：升级抵扣单迟到到账特判——U 以 X 为基数折价下单，U closed 后
+	// X 可退款（usedAsBase 不再命中 pending/closed），此时 U 复活 = 按"已消失的抵扣净值"
+	// 发货（少付钱多拿货）。真钱已收不能吞单，放行发放但强提醒财务按差值人工追补/退款。
+	if o.UpgradeBaseOrderID > 0 {
+		var baseStatus string
+		db.DB.Model(&model.BillingOrder{}).Where("id = ?", o.UpgradeBaseOrderID).
+			Select("status").Scan(&baseStatus)
+		if baseStatus == "refunded" {
+			log.Printf("[Billing][ERROR] 升级单%d 的抵扣基数单%d 已退款，本单迟到到账复活=抵扣净值双花风险", orderID, o.UpgradeBaseOrderID)
+			notify.NotifyGroup(fmt.Sprintf("【资金告警】升级订单 %s 迟到到账复活，但其抵扣基数单 #%d 已退款——旧包剩余价值可能退钱+抵款两次兑现，请财务按抵扣金额(%d分)人工核正",
+				o.OrderNo, o.UpgradeBaseOrderID, o.UpgradeOffsetCents))
+		}
 	}
 	metrics.IncPaymentPaid()
 	log.Printf("[Billing][WARN] 订单%s 超时关闭后迟到到账，已自动恢复 paid 并补发权益 channel=%s", o.OrderNo, channel)
@@ -242,8 +266,11 @@ func ConfirmOrderByChannel(orderNo, channel string) (*model.BillingOrder, bool, 
 	}
 	// L3 修复(2026-09-11)：webhook 路径参数 :channel 与订单实际渠道互验——
 	// 此前任何验签通过的回调打到 /webhook/任意渠道 都能给别渠道订单发货（渠道混淆）。
-	// manual 作为人工确认别名放行。
-	if channel != "" && channel != "manual" && o.Channel != "" && o.Channel != channel {
+	// P2-11 修复(2026-09-15)：去掉 "manual" 别名放行——本函数只有回调路径调用
+	// （人工确认走 confirmAndGrant→MarkOrderPaid，不经此处），留着等于给任何带
+	// channel="manual" 的回调开跨渠道发货口子。人工渠道单本身 channel 就是 "manual"，
+	// 正常等值比较即可覆盖。
+	if channel != "" && o.Channel != "" && o.Channel != channel {
 		return nil, false, fmt.Errorf("回调渠道(%s)与订单渠道(%s)不一致", channel, o.Channel)
 	}
 	order, flowed, err := MarkOrderPaid(o.ID, channel)

@@ -385,5 +385,33 @@ CE_FILTER=$(curl -s "$B/api/v1/super/feedbacks?target_type=client_error&page_siz
   | jsonget "['data']['list'][0]['target_type']")
 check "超管按 client_error 筛选" client_error "$CE_FILTER"
 
+echo "---- 十九、2026-09-15 复核批修复护栏（P1-12/P2-13/B4旁路）----"
+# P1-12：tag-weights 启停用路由——前端 EntityCrud 通用按钮此前恒 404，现必须可达且真实翻转 status
+TWTAG=$(curl -s "$B/api/v1/admin/tags?page_size=1" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | jsonget "['data']['list'][0]['id']")
+TWM=$(curl -s -X POST "$B/api/v1/admin/tag-weights" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d "{\"tag_id\":${TWTAG:-1},\"t_vector_index\":1,\"weight_delta\":0.05,\"direction\":\"up\"}")
+TWMID=$(echo "$TWM" | jsonget "['data']['id']")
+TWDIS=$(curl -s -X POST "$B/api/v1/admin/tag-weights/${TWMID:-0}/disable" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "tag-weights disable 路由可达且status=0" 0 "$(echo "$TWDIS" | jsonget "['data']['status']")"
+TWEN=$(curl -s -X POST "$B/api/v1/admin/tag-weights/${TWMID:-0}/enable" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "tag-weights enable 路由可达且status=1" 1 "$(echo "$TWEN" | jsonget "['data']['status']")"
+curl -s -o /dev/null -X DELETE "$B/api/v1/admin/tag-weights/${TWMID:-0}" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
+# P2-13：sales1 给"别人名下"客户打标必须 404（四级数据范围，与 advisor 端同口径；此前只过租户闸）
+S1ID=$($PSQL "SELECT id FROM tenant_users WHERE username='sales1' LIMIT 1" | tr -d '[:space:]')
+OTHCID=$($PSQL "SELECT id FROM customers WHERE tenant_id=1 AND COALESCE(assigned_user_id,0) NOT IN (0,${S1ID:-0}) LIMIT 1" | tr -d '[:space:]')
+S1TAG=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/customers/${OTHCID:-999999}/tags" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d "{\"tag_ids\":[${TWTAG:-1}]}")
+check "sales给他人名下客户打标→404(范围外不泄露存在性)" 404 "$S1TAG"
+# P1-12：订单列表 Select 白名单须含 qr_content/refund_requested（Billing 页徽标与收款码渲染依赖列表行字段）
+ORD_NO="BO$RANDOM$RANDOM"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('$ORD_NO',1,1,100,'once','manual','pending',NOW(),NOW())" >/dev/null 2>&1
+ORLIST=$(curl -s "$B/api/v1/billing/orders?limit=50" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "订单列表含qr_content字段" y "$(echo "$ORLIST" | grep -q '"qr_content"' && echo y || echo n)"
+check "订单列表含refund_requested字段" y "$(echo "$ORLIST" | grep -q '"refund_requested"' && echo y || echo n)"
+$PSQL "DELETE FROM billing_orders WHERE order_no='$ORD_NO'" >/dev/null 2>&1
+# P0-6：改密吊销旁路覆盖 /auth/email/code（v1.Use 主链之外的旁挂路由，此前旧 token 永活）
+CODE_AFTER=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/auth/email/code" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
+check "未吊销 sales token 打 email/code 不被误伤(非401)" n "$(echo "$CODE_AFTER" | grep -q '^401$' && echo y || echo n)"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

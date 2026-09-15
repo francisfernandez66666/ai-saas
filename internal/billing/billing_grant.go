@@ -57,8 +57,12 @@ func SweepSubscriptionRenewals() int {
 			continue
 		}
 		var pkg model.Package
-		if err := db.DB.Where("id = ? AND enabled = ? AND ptype = ?", lastOrder.PackageID, true, model.PackageTypePaid).
+		// P0-3 复核批(2026-09-15)：原裸 SQL 写 `ptype`，GORM 默认映射列名是 `p_type`
+		// （model/commercial.go PType）——列不存在每轮 42703 报错，又被无日志 continue
+		// 吞掉，整条自动续费链自合入起从未跑过。改列名 + 真异常必须留痕。
+		if err := db.DB.Where("id = ? AND enabled = ? AND p_type = ?", lastOrder.PackageID, true, model.PackageTypePaid).
 			First(&pkg).Error; err != nil {
+			log.Printf("[Billing][ERROR] 续费扫描 租户%d 包%d 读取失败: %v", t.ID, lastOrder.PackageID, err)
 			continue
 		}
 		// 去重：近 30 天已有该包续费/购买订单则跳过
@@ -118,6 +122,24 @@ func ReconcileBilling() int {
 	if n > 0 {
 		log.Printf("[Billing] 对账完成，补救发放 %d 笔", n)
 	}
+
+	// P1-2 修复(2026-09-15)：出款侧补偿扫描。MarkOrderRefunded 的事务 commit（账面
+	// refunded+权益回收）与 PSP 出款/落 refund_psp_status 跨事务——窗口内进程崩溃，
+	// 订单停在 refunded 且 refund_psp_status 为空：客户"账面上退了钱"，资金侧永不流出
+	// 且无告警（旧实现对账只管 paid 缺台账）。按 out_refund_no 幂等补呼出款。
+	var pspMissing []model.BillingOrder
+	if err := db.DB.Where("status = 'refunded' AND refund_amount_cents > 0 AND channel NOT IN ('', 'mock', 'manual')").
+		Where("(refund_psp_status IS NULL OR refund_psp_status = '')").
+		Where("updated_at < NOW() - INTERVAL '10 minutes'"). // 避让在途退款
+		Limit(100).Find(&pspMissing).Error; err == nil && len(pspMissing) > 0 {
+		for _, o := range pspMissing {
+			order := o
+			log.Printf("[Billing][对账] 订单%d(%s) 已退款但出款意图未落库，补呼 PSP", order.ID, order.OrderNo)
+			executeRefundPayout(&order, int64(order.RefundAmountCents))
+			n++
+		}
+	}
+
 	return n
 }
 

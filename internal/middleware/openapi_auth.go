@@ -86,12 +86,21 @@ func OpenAPIAuth() gin.HandlerFunc {
 		// 该租户的 sk_ Key 照常读数据、烧 AI，封禁形同虚设。与 TenantResolver 同口径
 		// fail-closed：仅 active/trial 且未过 cancel_at 生效期可访问。
 		var kt model.Tenant
-		if err := db.DB.Select("id, status, cancel_at").First(&kt, *key.TenantID).Error; err != nil {
+		if err := db.DB.Select("id, status, cancel_at, trial_end_at").First(&kt, *key.TenantID).Error; err != nil {
 			abortOpenAPI(c, http.StatusForbidden, "Key 归属租户不存在")
 			return
 		}
 		if kt.Status != "active" && kt.Status != "trial" {
 			abortOpenAPI(c, http.StatusForbidden, "Key 归属租户已停用或不可用")
+			return
+		}
+		// P1-6 修复(2026-09-15)：trial 到期核对——与 TenantResolver（tenant.go:415-424
+		// 过期 trial 402）同口径。旧实现只判 status，而过期 trial 无任何后台任务翻
+		// expired（全仓 status=expired 唯一写入点在订阅续费路径）——试用到期租户 Web 端
+		// 全拦，sk_ Key 却照常烧 AI/读数据，R6"封禁形同虚设"修了 suspended/cancelled
+		// 漏了这条。
+		if kt.Status == "trial" && kt.TrialEndAt != nil && time.Now().After(*kt.TrialEndAt) {
+			abortOpenAPI(c, http.StatusForbidden, "Key 归属租户试用已到期")
 			return
 		}
 		if kt.CancelAt != nil {

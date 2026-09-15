@@ -253,7 +253,10 @@ func findNextNodeByCondition(node model.FlowNode, routeResult string) string {
 	conditions := []string{}
 	if conds, ok := node.Config["conditions"].([]interface{}); ok {
 		for _, c := range conds {
-			conditions = append(conditions, c.(string))
+			// P2 修复(2026-09-15)：裸断言 panic 风险——行业包 conditions 混入非字符串会直接崩流程引擎
+			if cs, ok := c.(string); ok {
+				conditions = append(conditions, cs)
+			}
 		}
 	}
 

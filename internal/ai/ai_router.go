@@ -217,6 +217,25 @@ func (r *AIRouter) runChain(parent context.Context, messages []ChatMessage, temp
 	deadline := now.Add(budget)
 	baseCtx, baseCancel := context.WithTimeout(parent, budget)
 	defer baseCancel()
+
+	// P1-10 修复(2026-09-15)：先数"活候选"再分预算。旧实现 perModel=budget/len(models)
+	// 以配置链全长为分母，而冷却/不可用模型是循环内 continue 跳过的——3 模型链 2 个
+	// 冷却时唯一活模型只分到 1/3 预算，长 prompt 真调用常超此值被误判超时降级，
+	// 恰好在"备用全挂、主力苟活"的部分故障场景掐死最后一条活路。
+	coolDur := time.Duration(r.coolDownSec) * time.Second
+	activeCandidates := 0
+	for _, m := range models {
+		r.mu.RLock()
+		cooling := m.ConsecutiveFails >= 3 && !m.LastFailTime.IsZero() && now.Sub(m.LastFailTime) < coolDur
+		ok := m.Available && !cooling
+		r.mu.RUnlock()
+		if ok {
+			activeCandidates++
+		}
+	}
+	if activeCandidates <= 0 {
+		activeCandidates = len(models) // 全冷却也按全长分片，让循环内既有跳过/报错语义兜底
+	}
 	for idx, model := range models {
 		// 总预算检查：已用时间超限 → 不再尝试后续模型
 		if time.Since(now) >= budget || time.Now().After(deadline) {
@@ -252,7 +271,7 @@ func (r *AIRouter) runChain(parent context.Context, messages []ChatMessage, temp
 		// D4：单模型预算 = min(剩余总预算, 总预算/候选数)——公平分片，防止首个模型挂死吃光全链、
 		// 让后续模型没机会被尝试（原实现按"剩余预算"给首个模型满额，一个 hang 即饿死降级链）。
 		remain := time.Until(deadline)
-		perModel := budget / time.Duration(len(models))
+		perModel := budget / time.Duration(activeCandidates) // P1-10：按活候选数分片
 		if perModel <= 0 {
 			perModel = budget
 		}

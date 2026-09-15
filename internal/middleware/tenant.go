@@ -501,10 +501,19 @@ func applyTenantContext(c *gin.Context, tenant *model.Tenant) {
 //   - /api/v1/admin/config* 配置中心（平台键强制写系统层；rollback 除外——其语义是"回滚本租户覆盖层"）
 //   - /api/v1/auth/*      登录态自助（me/change-password/邮箱换绑）
 func isPlatformSuperPath(path string) bool {
-	if strings.HasPrefix(path, "/api/v1/super") || strings.HasPrefix(path, "/api/v1/auth") {
+	// P2 修复(2026-09-15)：裸前缀改"段边界"判定——原 /api/v1/auth 会连带
+	// /api/v1/authorizedXxx 之类同前缀未注册路径豁免租户头，虽现网 404 兜底，
+	// 但白名单语义必须精确：豁免只覆盖平台路由本身，不给未来撞名留口子。
+	if i := strings.IndexByte(path, '?'); i >= 0 {
+		path = path[:i] // 段边界判定前先剥查询串（测试与历史调用方可能传入带 ? 的完整 URL）
+	}
+	segPrefix := func(p string) bool {
+		return path == p || strings.HasPrefix(path, p+"/")
+	}
+	if segPrefix("/api/v1/super") || segPrefix("/api/v1/auth") {
 		return true
 	}
-	if strings.HasPrefix(path, "/api/v1/admin/config") {
+	if segPrefix("/api/v1/admin/config") {
 		// config/rollback 是租户覆盖层操作（super 需显式指定目标租户），不豁免
 		return path != "/api/v1/admin/config/rollback"
 	}

@@ -1,6 +1,6 @@
 // F1 通用 CRUD 请求状态层：列表加载/分页/增删改/行内操作统一收口。
 // 仅处理后端 RespOK 信封，业务 toast 沿用 lib/api.ts，避免各 Tab 重复样板。
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AUTH } from '../lib/api'
 
 export type CrudRow = Record<string, any>
@@ -46,11 +46,17 @@ export function useCrud(base: string, opts: UseCrudOptions = {}) {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // P1-13 修复(2026-09-15)：请求代际守卫——快速切筛选/翻页时并发多个 load，
+  // 旧请求后返回会把新结果覆盖回旧数据（列表闪烁/与筛选条件错位）。
+  // 只有"最后一次发起"的请求才允许落状态。
+  const seqRef = useRef(0)
 
   const load = useCallback(async (nextFilters = filters, nextPage = page, nextPageSize = pageSize) => {
+    const mySeq = ++seqRef.current
     setLoading(true)
     setError('')
     const j = await AUTH(buildListUrl(base, nextPage, nextPageSize, nextFilters))
+    if (mySeq !== seqRef.current) return // 已有更新请求在途/完成，本响应作废
     setLoading(false)
     if (j?.code !== 0) {
       setError(j?.message || '加载失败')

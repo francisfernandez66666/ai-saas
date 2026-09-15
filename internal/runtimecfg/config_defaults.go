@@ -145,6 +145,7 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "pay_alipay_private_key", Value: "\"\"", ValueType: "string", Description: "支付宝应用私钥PEM全文(敏感勿外泄,RSA2)", DefaultValue: "\"\"", SortOrder: 25},
 	{Category: "billing", Key: "pay_alipay_public_key", Value: "\"\"", ValueType: "string", Description: "支付宝平台公钥PEM(异步通知验签用,开放平台加签方式页下载)", DefaultValue: "\"\"", SortOrder: 26},
 	{Category: "billing", Key: "pay_alipay_notify_url", Value: "\"\"", ValueType: "string", Description: "支付宝异步通知地址(如https://域名/api/v1/billing/webhook/alipay)", DefaultValue: "\"\"", SortOrder: 27},
+	{Category: "billing", Key: "pay_alipay_seller_id", Value: "\"\"", ValueType: "string", Description: "支付宝商户seller_id(可选,配置后异步通知强制核对归属商户)", DefaultValue: "\"\"", SortOrder: 28},
 
 	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
 	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
@@ -219,6 +220,7 @@ var PlatformLevelKeys = map[string]bool{
 	"pay_alipay_private_key":           true,
 	"pay_alipay_public_key":            true,
 	"pay_alipay_notify_url":            true,
+	"pay_alipay_seller_id":             true, // P0-1复核批(2026-09-15)：回调核对商户归属(平台级)——租户可改它等于伪造全站到账核对
 	"contentsafety_enabled":            true, // C1(2026-09-12)：内容安全闸门总开关(平台级，租户不可各自关闭合规)
 	"contentsafety_mode":               true, // C1：shadow|enforce 模式(平台级统一灰度节奏)
 	"evals_pack_alert_enabled":         true, // D9(2026-09-13)：包质量低分告警开关(平台级统一触达)
