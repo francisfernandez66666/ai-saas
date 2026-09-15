@@ -13,6 +13,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/webhook"
 	"ai-scrm/pkg/utils"
 	"fmt"
 	"log"
@@ -307,4 +308,46 @@ func ClearDelay(c *gin.Context) {
 	chatflow.CancelDelay(req.CustomerID)
 
 	RespOK(c, "已清除延迟，消息将立即发出", nil)
+}
+
+// GuestRequestHuman POST /api/v1/chat/request-human
+// E3 修复(2026-09-14)：C 端"找人工"入口——旧版转人工只能等 AI 触发，客户主动求助无门。
+// 与 staff 版 TransferToHuman 分离：C 端为免登录访客，身份走 visitor_key 自证（同 ClearDelay 口径），
+// 不能复用需 JWT + 数据范围的员工端点。命中后置 mode=human + IsHumanLocked，取消待发 AI 延迟，
+// 并触发人工分配钩子（webhook.human.assigned，旁路不阻塞）。
+func GuestRequestHuman(c *gin.Context) {
+	var req struct {
+		CustomerID uint `json:"customer_id" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "参数错误")
+		return
+	}
+	var customer model.Customer
+	if err := db.RQ(c).First(&customer, req.CustomerID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
+	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+		RespErr(c, http.StatusForbidden, int(CodeForbidden), "访客身份校验失败")
+		return
+	}
+	// 定位该客户活跃会话；无活跃会话即无对话可转（提示先发起一轮对话）
+	var conv model.Conversation
+	if err := db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
+		Order("updated_at DESC").First(&conv).Error; err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "当前没有进行中的对话，请先发送一条消息")
+		return
+	}
+	conv.Mode = "human"
+	conv.IsHumanLocked = true
+	if err := db.RQ(c).Save(&conv).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "转人工失败")
+		return
+	}
+	chatflow.CancelDelay(customer.ID) // 停掉待发 AI 回复，避免"已转人工"后又冒出机器人
+	webhook.Emit(customer.TenantID, model.WebhookEventHumanAssigned, map[string]interface{}{
+		"conversation_id": conv.ID, "customer_id": customer.ID, "trigger": "customer_request",
+	})
+	RespOK(c, "已为你转接人工顾问，请稍候", gin.H{"conversation_id": conv.ID, "mode": "human"})
 }

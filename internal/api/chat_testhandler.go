@@ -762,6 +762,28 @@ skipStoreVisitFastTest:
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
 	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
+	// ---- 7.5 内容安全闸门（G8 修复，2026-09-14）----
+	// 免登录测试通道此前缺失此闸：正式对话(chat_main.go)过滤敏感词/违规内容后转人工，
+	// 但 ChatTest 直通落库+推送，同一模型输出在测试口可绕过安全闸直达用户与飞轮样本。
+	// 与主链路复用同一 ContentsafetyGate，行为完全对齐（MASK改写/BLOCK退场转人工/shadow只计数）。
+	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
+		switch action {
+		case GateRewrite:
+			aiReply = out
+		case GateBlock:
+			aiReply = SafetyHandoffReply()
+			conversation.Mode = "human"
+			conversation.IsHumanLocked = true
+			conversation.IsAiReplyEnabled = false
+			db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+				"mode":                "human",
+				"is_human_locked":     true,
+				"is_ai_reply_enabled": false,
+			})
+			log.Printf("[测试接口] 会话%d 内容安全拦截，已转人工等待顾问", conversation.ID)
+		}
+	}
+
 	// ---- 保存AI回复消息 ----
 	// 修复(2026-09-09)：AI 回复生成后立即落库 + WS 推送，放在模拟延迟之前。
 	// 原实现把落库/推送放在 CancellableSleep 之后——等待延迟(最长可达约75s)期间

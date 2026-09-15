@@ -181,9 +181,17 @@ func WSAdvisor(c *gin.Context) {
 		c.Set("dept_id", oc.DeptID)
 		c.Set("dept_path", oc.DeptPath)
 	}
-	// 升级 HTTP 连接为 WebSocket，注册客户端到 Hub
+	// B2 修复(2026-09-14)：顾问连接携带实时组织上下文注册，Hub 按数据范围投递
+	// （旧实现按租户全收，sales 的 WS 可收全租户客户消息正文，HTTP 侧 DataScope 被绕过）
 	wsServer(func(ws *websocket.Conn) {
-		cl := realtime.NewClient(claims.TenantID, claims.UserID, 0)
+		role, _ := c.Get("role")
+		roleStr, _ := role.(string)
+		if roleStr == "" {
+			roleStr = claims.Role // 无 DB 组织上下文时（如系统 token）回退 JWT 声明
+		}
+		deptPathV, _ := c.Get("dept_path")
+		deptPath, _ := deptPathV.(string)
+		cl := realtime.NewAdvisorClient(claims.TenantID, claims.UserID, roleStr, deptPath)
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
 		// 写泵：从客户端发送队列读取消息并推送到 WebSocket
@@ -219,8 +227,10 @@ func WSClient(c *gin.Context) {
 		return
 	}
 	// 校验客户身份：visitor_key 是客户身份凭证，必须匹配
+	// B9 收口(2026-09-14)：改常量时间比较（全仓 hashEqual 口径统一，防时序侧信道）
 	var cust model.Customer
-	if err := db.RQ(c).First(&cust, uint(cid)).Error; err != nil || cust.VisitorKey != vk {
+	if err := db.RQ(c).First(&cust, uint(cid)).Error; err != nil ||
+		!hashEqual(cust.VisitorKey, vk) || vk == "" {
 		respFailStatus(c, http.StatusForbidden, CodeForbidden, "客户身份校验失败")
 		return
 	}

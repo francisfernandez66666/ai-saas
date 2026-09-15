@@ -100,9 +100,11 @@ func ChangePassword(c *gin.Context) {
 		return
 	}
 	// 改密成功同时清除首登强改密标记（中间件据此放行全量接口）
+	// B4 修复(2026-09-14)：递增 token_version 吊销改密前签发的所有旧 JWT（踢掉窃持旧 token 的会话）
 	if err := db.DB.Model(&model.User{}).Where("id = ?", userID).Updates(map[string]interface{}{
 		"password_hash":        string(hashed),
 		"must_change_password": false,
+		"token_version":        gorm.Expr("COALESCE(token_version, 0) + 1"),
 	}).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
@@ -234,15 +236,22 @@ func VerifyResetCode(c *gin.Context) {
 		return
 	}
 	// P2-20 修复：单码尝试次数上限——暴力枚举 6 位码（1e6 组合）若无防爆破可无限尝试。
-	// 次数用 gorm.Expr 原子自增（防并发击穿），超限立即作废该码。
-	if rec.Attempts >= resetMaxAttempts {
+	// B6 修复(2026-09-14)：check+increment 原子化——旧实现先读内存副本判 <5 再另发 UPDATE 自增，
+	// 并发窗口内 N 个请求都基于同一旧值通过检查（注释宣称"防并发击穿"实只增量子原子）。
+	// 现用条件 UPDATE：仅当 attempts 仍在上限内才消耗一次机会，0 行=超限/已消费，随即作废该码。
+	incRes := db.DB.Model(&model.PasswordReset{}).
+		Where("id = ? AND used = ? AND attempts < ?", rec.ID, false, resetMaxAttempts).
+		Update("attempts", gorm.Expr("attempts + 1"))
+	if incRes.Error != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "校验失败")
+		return
+	}
+	if incRes.RowsAffected == 0 {
 		db.DB.Model(&model.PasswordReset{}).Where("id = ?", rec.ID).
 			Updates(map[string]interface{}{"used": true, "consumed_at": time.Now()})
 		RespErr(c, http.StatusBadRequest, 400, "验证码错误次数过多，请重新获取")
 		return
 	}
-	db.DB.Model(&model.PasswordReset{}).Where("id = ?", rec.ID).
-		Update("attempts", gorm.Expr("attempts + 1"))
 	// P2-20 修复：哈希比较改常量时间（subtle.ConstantTimeCompare）——防时序侧信道
 	// 逐位爆破哈希前缀；rec.CodeHash 与计算值等长时泄漏面收敛。
 	if !hashEqual(rec.CodeHash, hashCode(req.Code)) {
@@ -266,9 +275,12 @@ func VerifyResetCode(c *gin.Context) {
 		return
 	}
 	// 重置成功同样清除强改密标记（用户已证明账号所有权）
+	// B4：重置密码必须吊销旧 token——否则攻击者持窃得的旧 JWT 可继续操作，
+	// 即便用户已改密。递增 token_version 使重置前签发的 token 全部失效。
 	result := db.DB.Model(&model.User{}).Where("username = ?", req.Username).Updates(map[string]interface{}{
 		"password_hash":        string(hashed),
 		"must_change_password": false,
+		"token_version":        gorm.Expr("COALESCE(token_version, 0) + 1"),
 	})
 	if result.Error != nil || result.RowsAffected == 0 {
 		RespErr(c, http.StatusInternalServerError, 500, "重置失败")

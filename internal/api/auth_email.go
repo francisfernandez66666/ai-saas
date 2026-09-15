@@ -13,6 +13,8 @@ import (
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -131,14 +133,16 @@ func SendBindEmailCode(c *gin.Context) {
 	RespOK(c, "验证码已发送至新邮箱，10分钟内有效", nil)
 }
 
-// changeEmailReq 换绑邮箱确认请求体：新邮箱 + 验证码（证明能收信）
+// changeEmailReq 换绑邮箱确认请求体：新邮箱 + 验证码（证明能收信）+ 旧密码（B4 二次身份确认）
 type changeEmailReq struct {
-	NewEmail string `json:"new_email" binding:"required"`
-	Code     string `json:"code" binding:"required"`
+	NewEmail    string `json:"new_email" binding:"required"`
+	Code        string `json:"code" binding:"required"`
+	OldPassword string `json:"old_password" binding:"required"` // B4 修复(2026-09-14)：仅凭登录态+新邮箱收信码即可换绑=
+	// "偷到未过期 JWT → 换绑攻击者邮箱 → reset 发码到攻击者邮箱"的账号接管链；改密/换绑均需旧密码再证一次身份。
 }
 
-// ChangeEmail POST /api/v1/auth/email/change —— 校验验证码完成换绑（登录态）
-// 安全：验证新邮箱所有权（证明能收信）即放行；登录态本身已证身份
+// ChangeEmail POST /api/v1/auth/email/change —— 校验验证码+旧密码完成换绑（登录态）
+// 安全：新邮箱收信证明所有权；旧密码证明"当前持 token 者仍是账号本人"（防 token 窃取后换绑接管）。
 func ChangeEmail(c *gin.Context) {
 	var req changeEmailReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -148,6 +152,14 @@ func ChangeEmail(c *gin.Context) {
 	newEmail := service.NormalizeEmail(req.NewEmail)
 	uid, username, _ := middleware.CurrentUser(c)
 	tid := tenantIDOf(c)
+
+	// B4：旧密码二次确认
+	var cur model.User
+	if err := db.DB.Select("id, password_hash").First(&cur, uid).Error; err != nil ||
+		bcrypt.CompareHashAndPassword([]byte(cur.PasswordHash), []byte(req.OldPassword)) != nil {
+		RespErr(c, http.StatusForbidden, 403, "旧密码校验失败，请重新输入")
+		return
+	}
 
 	// 防薅v2 换绑撞库（2026-08-26）：新邮箱曾参与任何奖励领取 → 拒绝换绑。
 	// 奖励双唯一语义（ID主键维度+邮箱外键维度）：放行"被奖励过的邮箱"换入=二次套利入口；
@@ -171,8 +183,12 @@ func ChangeEmail(c *gin.Context) {
 		RespErr(c, http.StatusConflict, 409, "该邮箱刚被其他账号绑定，请更换")
 		return
 	}
+	// B4：换绑属凭据变更，递增 token_version 吊销换绑前签发的旧 token
 	if err := db.DB.Model(&model.User{}).Where("id = ?", uid).
-		Update("email", newEmail).Error; err != nil {
+		Updates(map[string]interface{}{
+			"email":         newEmail,
+			"token_version": gorm.Expr("COALESCE(token_version, 0) + 1"),
+		}).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
 		return
 	}

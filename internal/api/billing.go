@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -271,6 +272,106 @@ func SuperConfirmOrder(c *gin.Context) {
 	RespOK(c, msg, order)
 }
 
+// SuperRefundOrder POST /api/v1/super/billing/orders/:id/refund —— 超管执行退款（B7 双轨资金落点）
+// 租户侧 refund 在非 mock 模式仅受理申请；实际 clawback+PSP 出款必须经此端点（平台审批位）。
+func SuperRefundOrder(c *gin.Context) {
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	var order model.BillingOrder
+	if err := db.DB.First(&order, oid).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	o, flowed, err := billing.MarkOrderRefunded(order.ID)
+	if err != nil {
+		if errors.Is(err, billing.ErrRefundNoRemaining) {
+			RespErr(c, http.StatusConflict, int(CodeBizErr), err.Error())
+			return
+		}
+		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	if !flowed {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "订单当前状态不可退款或已退过")
+		return
+	}
+	tid := uint(0)
+	if o.TenantID != nil {
+		tid = *o.TenantID
+	}
+	writeOrderAudit(c, tid, "super_order_refund", o)
+	RespOK(c, "退款执行完成（权益已回收）", o)
+}
+
+// ============================================================
+// §W 发票管理（平台侧，2026-09-14）：资质未到位，走"租户申请→超管人工开具→回录发票号"极限闭环。
+// ============================================================
+
+// SuperListInvoices GET /api/v1/super/invoices?status=requested
+// 跨租户发票申请列表（默认看全部，status=requested 为待开具工作队列）。
+func SuperListInvoices(c *gin.Context) {
+	q := db.DB.Model(&model.BillingOrder{}).Where("invoice_status IS NOT NULL AND invoice_status <> ''")
+	if s := c.Query("status"); s != "" {
+		q = q.Where("invoice_status = ?", s)
+	}
+	var rows []model.BillingOrder
+	if err := q.Order("id DESC").Limit(200).Find(&rows).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
+		return
+	}
+	list := make([]gin.H, 0, len(rows))
+	for _, o := range rows {
+		list = append(list, gin.H{
+			"order_id": o.ID, "tenant_id": o.TenantID, "amount_cents": o.AmountCents,
+			"invoice_status": o.InvoiceStatus, "invoice_title": o.InvoiceTitle,
+			"invoice_tax_no": o.InvoiceTaxNo, "invoice_email": o.InvoiceEmail,
+			"invoice_no": o.InvoiceNo,
+		})
+	}
+	RespOK(c, "ok", gin.H{"list": list, "total": len(list)})
+}
+
+// SuperIssueInvoice POST /api/v1/super/invoices/:order_id/issue {invoice_no}
+// 人工开票后回录发票号：requested→issued。
+func SuperIssueInvoice(c *gin.Context) {
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		InvoiceNo string `json:"invoice_no"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.InvoiceNo) == "" {
+		RespErr(c, http.StatusBadRequest, 400, "invoice_no 必填")
+		return
+	}
+	o, err := billing.IssueInvoice(oid, strings.TrimSpace(body.InvoiceNo))
+	if err != nil {
+		RespErr(c, http.StatusBadRequest, int(CodeBizErr), err.Error())
+		return
+	}
+	writeOrderAudit(c, 0, "super_invoice_issue", o)
+	RespOK(c, "发票已开具", o)
+}
+
+// SuperVoidInvoice POST /api/v1/super/invoices/:order_id/void
+// 作废发票（开错/退票）：→voided，租户可重新申请。
+func SuperVoidInvoice(c *gin.Context) {
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	o, err := billing.VoidInvoice(oid)
+	if err != nil {
+		RespErr(c, http.StatusBadRequest, int(CodeBizErr), err.Error())
+		return
+	}
+	writeOrderAudit(c, 0, "super_invoice_void", o)
+	RespOK(c, "发票已作废", o)
+}
+
 // confirmAndGrant 确认到账统一落点：幂等改单 → 发放 → 审计 → MQ payment 事件
 // 返回 confirmed=false 表示订单早已流转（调用方提示幂等命中即可）
 // R5 修复(2026-09-11)：manual 通道遇超时关单时走"迟到到账复活"——真实银行/渠道到账
@@ -314,6 +415,8 @@ func BillingWebhook(c *gin.Context) {
 		OutTradeNo  string `json:"out_trade_no"`
 		OrderNo     string `json:"order_no"`
 		TradeStatus string `json:"trade_status"` // TRADE_SUCCESS / SUCCESS
+		Timestamp   string `json:"timestamp"`    // C6：unix 秒（参与签名，±5min 窗口）
+		Nonce       string `json:"nonce"`        // C6：随机串（防重放，Redis/内存去重）
 		Sign        string `json:"sign"`
 	}
 	if err := c.ShouldBindJSON(&cb); err != nil {
@@ -336,8 +439,28 @@ func BillingWebhook(c *gin.Context) {
 	if key == "" {
 		key = os.Getenv("PAY_GATEWAY_KEY")
 	}
-	if !billing.VerifyGatewaySign(key, orderNo, cb.TradeStatus, cb.Sign) {
+	// §W 极限收口(2026-09-14)：未配置 pay_gateway_key 时，仅"mock 渠道 + 非 release 模式"
+	// 允许固定开发密钥（本地/E2E 模拟 PSP 到账）；release 一律 503——不给任何渠道开假到账后门。
+	if key == "" {
+		if channel == "mock" && gin.Mode() != gin.ReleaseMode {
+			key = "mock-webhook-dev-key"
+		} else {
+			RespErr(c, http.StatusServiceUnavailable, 503, "支付网关密钥未配置")
+			return
+		}
+	}
+	// C6 升级(2026-09-14)：验签改 V2 口径（timestamp+nonce 参与签名）+ 时间窗 + nonce 去重。
+	// 旧口径 HMAC(order_no|status) 已删除，杜绝无限重放。
+	if !billing.WebhookTimestampFresh(cb.Timestamp) {
+		RespErr(c, http.StatusForbidden, 403, "回调时间戳超出有效窗口（±5分钟）")
+		return
+	}
+	if !billing.VerifyGatewaySignV2(key, orderNo, cb.TradeStatus, cb.Timestamp, cb.Nonce, cb.Sign) {
 		RespErr(c, http.StatusForbidden, 403, "签名校验失败")
+		return
+	}
+	if billing.WebhookNonceSeen(cb.Nonce) {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（nonce 已消费）")
 		return
 	}
 	if cb.TradeStatus != "TRADE_SUCCESS" && cb.TradeStatus != "SUCCESS" {
@@ -352,7 +475,40 @@ func BillingWebhook(c *gin.Context) {
 	RespOK(c, map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed], gin.H{"order_no": order.OrderNo, "flowed": flowed})
 }
 
-// RefundOrder POST /api/v1/billing/orders/:id/refund —— 管理员发起退款（幂等）
+// SuperMockWebhook POST /api/v1/super/billing/orders/:id/mock-webhook —— §W 测试资产：
+// 超管代发一次"网关到账回调"（内部直调 ConfirmOrderByChannel，幂等语义与真回调一致）。
+// 双重闸门：非 release 模式 + 订单渠道必须为 mock——生产环境任何情况不可用。
+func SuperMockWebhook(c *gin.Context) {
+	if gin.Mode() == gin.ReleaseMode {
+		RespErr(c, http.StatusForbidden, 403, "生产环境禁用模拟回调")
+		return
+	}
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	var order model.BillingOrder
+	if err := db.DB.First(&order, oid).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	if order.Channel != "mock" {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "仅 mock 渠道订单可模拟回调")
+		return
+	}
+	updated, flowed, err := billing.ConfirmOrderByChannel(order.OrderNo, "mock")
+	if err != nil {
+		RespErr(c, http.StatusNotFound, 404, err.Error())
+		return
+	}
+	RespOK(c, map[bool]string{true: "模拟到账成功", false: "订单此前已处理"}[flowed], gin.H{"order_no": updated.OrderNo, "flowed": flowed})
+}
+
+// RefundOrder POST /api/v1/billing/orders/:id/refund —— 退款（幂等）
+// B7 双轨(2026-09-14)：租户管理员自助退本租户订单=无平台审批的资金治理缺口。
+//   - pay_mode=mock（开发/UAT）：直接执行退款（保留既有灰度语义，与 mock-pay 放行一致）
+//   - pay_mode=static_qr/sdk（生产，真钱场景）：降级为"退款申请"（refund_requested=true + 审计），
+//     实际 clawback+出款由超管 POST /super/billing/orders/:id/refund 执行
 func RefundOrder(c *gin.Context) {
 	tid := tenantIDOf(c)
 	// 健壮性收口(2026-09-05)：ID 入口校验，非法不再触 DB
@@ -363,6 +519,26 @@ func RefundOrder(c *gin.Context) {
 	var order model.BillingOrder
 	if err := db.DB.Where("id = ? AND tenant_id = ?", oid, tid).First(&order).Error; err != nil {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	// B7：非 mock 模式 → 只受理申请，不动资金
+	if billing.GetPayMode() != "mock" {
+		if order.Status != "paid" {
+			RespErr(c, http.StatusConflict, int(CodeBizErr), "订单当前状态不可申请退款")
+			return
+		}
+		if order.RefundRequested {
+			RespOK(c, "退款申请已提交，请等待平台处理", order)
+			return
+		}
+		if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", order.ID).
+			Update("refund_requested", true).Error; err != nil {
+			RespErr(c, http.StatusInternalServerError, 500, "提交失败")
+			return
+		}
+		order.RefundRequested = true
+		writeOrderAudit(c, tid, "order_refund_request", &order)
+		RespOK(c, "退款申请已提交，平台核实后处理（通常1个工作日）", order)
 		return
 	}
 	o, flowed, err := billing.MarkOrderRefunded(order.ID)
@@ -398,7 +574,14 @@ func RequestInvoice(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
-	o, err := billing.RequestInvoice(order.ID)
+	// §W 发票极限：抬头/税号/邮箱由租户随申请提交（旧实现前端硬编码、无税号位）
+	var body struct {
+		Title string `json:"title"`
+		TaxNo string `json:"tax_no"`
+		Email string `json:"email"`
+	}
+	_ = c.ShouldBindJSON(&body)
+	o, err := billing.RequestInvoice(order.ID, strings.TrimSpace(body.Title), strings.TrimSpace(body.TaxNo), strings.TrimSpace(body.Email))
 	if err != nil {
 		RespErr(c, http.StatusBadRequest, 400, err.Error())
 		return

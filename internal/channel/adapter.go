@@ -18,6 +18,7 @@ type InboundMessage struct {
 	StaffID     string // 企微：接待成员 userid（客服/侧边栏归属）
 	MsgType     string // text/image/voice/event...
 	Content     string // 文本正文（事件类为空）
+	MsgID       string // D4 修复(2026-09-14)：渠道侧消息 ID，入站幂等去重锚（回调重推/轮询重拉共用）
 	IsEvent     bool   // 是否订阅/系统事件（change_contact/follow 等，走 CDP 摄入非对话）
 	EventKey    string // 事件类型键
 	ReceiveID   string // 校验用 corpid/appid（解密 receive_id）

@@ -63,7 +63,7 @@ type AIRouter struct {
 var Router *AIRouter
 
 // InitRouter 初始化AI路由器
-// 模型优先级：硅基流动GLM-4-9B(免费免费) → 硅基流动DeepSeek → 模板兜底
+// 模型优先级：硅基流动GLM-4-9B(免费) → 硅基流动DeepSeek → 模板兜底
 // 智谱已移除（频繁触发429限流，无法正常使用）
 func InitRouter() {
 	models := make([]*ModelState, 0)
@@ -131,18 +131,23 @@ func InitRouter() {
 // tenantID 用于网关转发时还原租户做 fail-closed 计量（0=平台内部调用）。
 // 返回：回复内容, provider, 模型名, 用量, 错误
 func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
+	// C4 修复(2026-09-14)：stage 覆盖尝试与全局降级链共享同一个总预算 deadline——
+	// 旧实现各拿一份完整预算（110s+110s≈220s），违反 D4"2min 硬顶"且可能超上游 chat ctx。
+	budget := r.totalBudget()
+	chainCtx, chainCancel := context.WithTimeout(context.Background(), budget)
+	defer chainCancel()
 	// 阶段覆盖优先：配置的专属模型先行尝试
 	if provStr, model, ok := ResolveStageModel(stage); ok {
-		sctx, scancel := context.WithTimeout(context.Background(), r.totalBudget())
-		defer scancel()
+		sctx, scancel := context.WithTimeout(chainCtx, budget)
 		reply, usage, err := r.callProvider(sctx, ModelProvider(provStr), model, messages, temperature, tenantID, stage)
+		scancel()
 		if err == nil && reply != "" {
 			log.Printf("[AI路由] 阶段[%s]使用stage_models覆盖模型: [%s] %s", stage, provStr, model)
 			return reply, provStr, model, usage, nil
 		}
-		log.Printf("[AI路由] 阶段[%s]覆盖模型调用失败(%v)，回退全局降级链", stage, err)
+		log.Printf("[AI路由] 阶段[%s]覆盖模型调用失败(%v)，回退全局降级链（共用剩余预算）", stage, err)
 	}
-	reply, provider, model, usage, err := r.GenerateTextWithUsage(messages, temperature, tenantID, stage)
+	reply, provider, model, usage, err := r.runChain(chainCtx, messages, temperature, tenantID, stage)
 	return reply, provider, model, usage, err
 }
 
@@ -177,6 +182,12 @@ func (r *AIRouter) callProvider(ctx context.Context, provider ModelProvider, mod
 // tenantID/stage 透传网关（本地直连时忽略）。
 // 返回：回复内容, provider, 使用的模型名, 用量, 错误
 func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, string, string, Usage, error) {
+	return r.runChain(context.Background(), messages, temperature, tenantID, stage)
+}
+
+// runChain 降级链核心（C4 拆分：可携带父 ctx 与调用方共享预算，
+// GenerateTextForStage 的覆盖尝试 + 整链合计不超一份 totalBudget）
+func (r *AIRouter) runChain(parent context.Context, messages []ChatMessage, temperature float64, tenantID uint, stage string) (string, string, string, Usage, error) {
 	r.mu.RLock()
 	models := make([]*ModelState, len(r.models))
 	copy(models, r.models)
@@ -194,8 +205,17 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 	// D4 强化(2026-09-12)：原预算只在"模型之间"检查，单个模型 HTTP 挂死仍会卡满其 client 超时（网关 120s）。
 	// 现整条链共享一个 ctx deadline，每个模型再按"剩余预算"派生子 ctx，真正能取消挂死的 HTTP 调用。
 	budget := r.totalBudget()
+	// C4：父 ctx 有 deadline 时收缩预算（stage 尝试消耗的时间从同一份预算扣除）
+	if dl, ok := parent.Deadline(); ok {
+		if rem := time.Until(dl); rem < budget {
+			budget = rem
+		}
+	}
+	if budget < time.Second {
+		budget = time.Second // 极端情况保底 1s，让循环内预算检查正常报错退出
+	}
 	deadline := now.Add(budget)
-	baseCtx, baseCancel := context.WithTimeout(context.Background(), budget)
+	baseCtx, baseCancel := context.WithTimeout(parent, budget)
 	defer baseCancel()
 	for idx, model := range models {
 		// 总预算检查：已用时间超限 → 不再尝试后续模型
@@ -216,7 +236,7 @@ func (r *AIRouter) GenerateTextWithUsage(messages []ChatMessage, temperature flo
 			continue
 		}
 
-		// 冷却中也尝试一次（万一恢复了呢），但如果刚失败（1分钟内）就跳过
+		// 冷却中（默认 5 分钟=coolDownSec 300s）直接跳过，等 RecoverCoolingModels 定时兜底恢复
 		if inCoolDown && model.ConsecutiveFails >= 3 {
 			log.Printf("[AI路由]   跳过[%d] [%s] %s（冷却中，连续失败%d次）",
 				idx+1, model.Provider, model.ModelName, model.ConsecutiveFails)

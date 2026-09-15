@@ -4,6 +4,7 @@
  * 依赖接口：/api/v1/org/departments/*、/api/v1/org/users
  */
 import { useState, useEffect, useMemo } from 'react'
+import { confirmDialog } from '../lib/confirm'
 import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { getToken } from '../lib/api'
@@ -128,7 +129,7 @@ export default function Org() {
    * 成功后刷新部门树
    */
   async function delDept(id: number) {
-    if (!confirm('删除该空部门？')) return
+    if (!(await confirmDialog('删除该空部门？'))) return
     const r = await fetch('/api/v1/org/departments/' + id, { method: 'DELETE', ...AUTH() })
     const j = await r.json(); MessagePlugin[j.code === 0 ? 'success' : 'error'](j.message || '删除失败'); if (j.code === 0) loadTree()
   }

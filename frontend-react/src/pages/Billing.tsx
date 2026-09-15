@@ -4,7 +4,7 @@
  * 依赖接口：/api/v1/billing/my-package、/api/v1/packages、/api/v1/billing/orders、/api/v1/billing/subscribe、/api/v1/billing/*-pay、/api/v1/billing/manual-confirm
  */
 import { useState, useEffect } from 'react'
-import { Dialog, Button, MessagePlugin } from 'tdesign-react'
+import { Dialog, Button, Input, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { ConfirmDialog } from '../lib/ui'
 import { getToken } from '../lib/api'
@@ -15,7 +15,9 @@ type Quota = { tenant_name: string; status: string; used_ai_calls: number; max_a
 // 商业包类型（收银台列表）
 type Pkg = { id: number; p_type: string; name: string; price_cents: number; description?: string; ai_calls: number; duration_days?: number }
 // 订阅订单类型（我的订单列表）
-type Order = { id: number; order_no: string; amount_cents: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string }
+// E1 修复(2026-09-14)：补 qr_content/refund_requested/invoice_status——后端一直下发，
+// 前端旧版不渲染收款码（static_qr 模式下用户根本看不到码）
+type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string }
 
 // 收银台接口鉴权头
 const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
@@ -54,6 +56,10 @@ export default function Billing() {
   const [confirmTitle, setConfirmTitle] = useState('')
   const [confirmMsg, setConfirmMsg] = useState('')
   const [confirmFn, setConfirmFn] = useState<() => void>(() => {})
+  // E9：发票申请弹窗（抬头/税号/邮箱随单提交，替代旧硬编码"AI-SCRM服务费"）
+  const [invOpen, setInvOpen] = useState(false)
+  const [invOrder, setInvOrder] = useState<Order | null>(null)
+  const [invForm, setInvForm] = useState({ title: '', tax_no: '', email: '' })
 
   /** 加载当前套餐用量 */
   async function loadQuota() {
@@ -74,7 +80,7 @@ export default function Billing() {
       const r = await fetch('/api/v1/billing/orders?limit=50', AUTH())
       const j = await r.json()
       if (j.code === 0) setOrders(j.data || [])
-    } catch {}
+    } catch { /* 取数失败静默 */ }
   }
   /** 并行加载所有数据 */
   function loadAll() { loadQuota(); loadPkgs(); loadOrders() }
@@ -87,6 +93,22 @@ export default function Billing() {
     const t = setInterval(() => { loadOrders(); loadQuota() }, 15000)
     return () => clearInterval(t)
   }, [])
+
+  // E1 修复：sdk 模式支付弹窗内 5s 轮询到账状态，paid 即自动关闭并刷新
+  useEffect(() => {
+    if (!modal || !cur || payMode !== 'sdk') return
+    const t = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/v1/billing/orders/${cur.id}`, AUTH())
+        const j = await r.json()
+        if (j.code === 0 && j.data?.status === 'paid') {
+          MessagePlugin.success('支付已到账')
+          setModal(false); loadOrders(); loadQuota()
+        }
+      } catch { /* 轮询失败静默重试 */ }
+    }, 5000)
+    return () => clearInterval(t)
+  }, [modal, cur, payMode])
 
   /**
    * 订阅商业包：调用 /api/v1/billing/subscribe 接口
@@ -117,6 +139,15 @@ export default function Billing() {
     const r = await fetch('/api/v1/billing/manual-confirm', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ order_id: cur.id }) })
     const j = await r.json()
     setMsg(j.message || '')
+  }
+  /** E9：提交发票申请（抬头必填；专票填税号；邮箱用于接收电子发票） */
+  async function submitInvoice() {
+    if (!invOrder) return
+    if (!invForm.title.trim()) { MessagePlugin.warning('请填写发票抬头'); return }
+    const r = await fetch(`/api/v1/billing/orders/${invOrder.id}/invoice`, { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify(invForm) })
+    const j = await r.json()
+    if (j.code === 0) { MessagePlugin.success('发票申请已提交，开具后将发送至邮箱'); setInvOpen(false); loadOrders() }
+    else MessagePlugin.error(j.message || '发票申请失败')
   }
 
   // 未登录时不渲染
@@ -175,23 +206,26 @@ export default function Billing() {
               <td style={td}>{o.status === 'pending' ? <button aria-label={'继续支付订单' + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
                 <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>
                 {/* G-16：退款按钮——仅已完成订单可操作，弹出 ConfirmDialog 二次确认后调用 refund 接口 */}
-                {/* 退款规则：已消费不可退，increment 按未消耗 token 份额，paid 按剩余天数比例 */}
-                <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                {/* B7 双轨：mock 即时退；static_qr/sdk 仅受理申请，超管审批后执行 */}
+                {o.refund_requested && <span style={{ ...st, background: '#feebc8', color: '#975a16' }}>退款审批中</span>}
+                {!o.refund_requested && <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
                   setConfirmTitle('申请退款')
-                  setConfirmMsg('确认申请退款？退款将按比例计算。')
+                  setConfirmMsg(payMode === 'mock' ? '确认申请退款？退款将按比例计算并即时到账。' : '确认提交退款申请？平台审核后按比例退款（已消耗部分不可退）。')
                   setConfirmFn(async () => {
                     const r = await fetch(`/api/v1/billing/orders/${o.id}/refund`, { ...AUTH(), method: 'POST' })
                     const j = await r.json()
-                    if (j.code === 0) { MessagePlugin.success('退款已提交'); loadOrders() } else MessagePlugin.error(j.message || '退款失败')
+                    if (j.code === 0) { MessagePlugin.success(j.message || '退款已提交'); loadOrders() } else MessagePlugin.error(j.message || '退款失败')
                   })
                   setConfirmOpen(true)
-                }}>退款</button>
-                {/* G-16：发票按钮——已完成订单可申请电子发票，title 固定为"AI-SCRM服务费" */}
-                <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={async () => {
-                  const r = await fetch(`/api/v1/billing/orders/${o.id}/invoice`, { ...AUTH(), method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: 'AI-SCRM服务费' }) })
-                  const j = await r.json()
-                  if (j.code === 0) { MessagePlugin.success('发票已申请') } else { MessagePlugin.error(j.message || '发票申请失败') }
-                }}>发票</button>
+                }}>退款</button>}
+                {/* E9：发票按钮——弹表单收集抬头/税号/邮箱（旧版硬编码"AI-SCRM服务费"且无税号位） */}
+                {o.invoice_status === 'issued'
+                  ? <span style={{ color: '#276749', fontSize: 12 }}>发票已开具</span>
+                  : o.invoice_status === 'requested'
+                    ? <span style={{ color: '#975a16', fontSize: 12 }}>发票开具中</span>
+                    : <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                      setInvOrder(o); setInvForm({ title: '', tax_no: '', email: localStorage.getItem('email') || '' }); setInvOpen(true)
+                    }}>发票</button>}
               </span>}</td>
             </tr>
           ))}
@@ -203,12 +237,25 @@ export default function Billing() {
       {/* 支付弹窗：展示订单信息与支付操作（仅管理员可用） */}
       <Dialog header="订单支付" visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>
         {cur && <>
-          <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{(cur.amount_cents / 100).toFixed(2)}</p>
-          <div style={{ background: '#f6f8ff', border: '1px dashed #b794f4', borderRadius: 10, padding: 18, textAlign: 'center', margin: '14px 0', fontSize: 13, wordBreak: 'break-all' }}>{/* qr_content rendered from order if available */}请于平台收款码完成支付后点击「我已付费」</div>
+          <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{(cur.amount_cents / 100).toFixed(2)}{cur.amount_cents !== cur.original_amount_cents && cur.original_amount_cents ? `（原价 ¥{(cur.original_amount_cents / 100).toFixed(2)}，升级抵扣优惠）` : ''}</p>
+          {/* E1 修复(2026-09-14)：渲染后端已下发的 qr_content 收款码——旧版只有一行提示文案，
+              static_qr 模式下用户拿不到码只能"盲付"。图片 URL/data URI 直接 <img>，其它当链接给 */}
+          <div style={{ background: '#f6f8ff', border: '1px dashed #b794f4', borderRadius: 10, padding: 18, textAlign: 'center', margin: '14px 0', fontSize: 13, wordBreak: 'break-all' }}>
+            {(() => {
+              const qr = (cur.qr_content || '').trim()
+              const isImg = qr.startsWith('data:image') || /^https?:\/\/.+/i.test(qr) && /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(qr)
+              if (!qr) return <>请于平台收款码完成支付后点击「我已付费」</>
+              if (isImg) return <img src={qr} alt="平台收款码" style={{ maxWidth: 220, maxHeight: 220, margin: '0 auto', display: 'block', borderRadius: 8 }} />
+              return <><a href={qr.startsWith('http') ? qr : undefined} target="_blank" rel="noreferrer" style={{ color: 'var(--pri)', fontWeight: 600 }}>点此打开收款页/收款码</a>
+                <div style={{ marginTop: 8, color: '#718096' }}>完成支付后点击「我已付费」，平台确认后权益即时发放</div></>
+            })()}
+          </div>
           <p style={{ fontSize: 13, minHeight: 16 }}>{msg}</p>
           <div style={{ display: 'flex', gap: 10 }}>
             <Button theme="default" variant="outline" style={{ flex: 1 }} aria-label="取消支付" onClick={() => { setModal(false); loadOrders(); loadQuota() }}>取消</Button>
-            <Button theme="warning" variant="outline" style={{ flex: 1 }} onClick={manualConfirm}>我已付费</Button>
+            {payMode === 'sdk'
+              ? <span style={{ flex: 1, textAlign: 'center', alignSelf: 'center', fontSize: 12, color: '#718096' }}>支付完成后自动到账（每 5s 轮询）</span>
+              : <Button theme="warning" variant="outline" style={{ flex: 1 }} onClick={manualConfirm}>我已付费</Button>}
             {payMode === 'mock' && <Button theme="success" style={{ flex: 1 }} onClick={mockPay}>模拟支付(测试)</Button>}
           </div>
         </>}
@@ -219,9 +266,22 @@ export default function Billing() {
         <a href="/user-agreement" aria-label="查看用户协议" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" aria-label="查看隐私政策" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 平台
       </footer>
       <ConfirmDialog open={confirmOpen} title={confirmTitle} message={confirmMsg} onConfirm={() => { setConfirmOpen(false); confirmFn() }} onCancel={() => setConfirmOpen(false)} />
+
+      {/* E9：发票申请表单弹窗（抬头/税号/邮箱 → 后端落单，超管人工开具回录发票号） */}
+      <Dialog header="申请电子发票" visible={invOpen} onClose={() => setInvOpen(false)} onConfirm={submitInvoice} confirmBtn="提交申请" cancelBtn="取消">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          <Input style={formInput} placeholder="发票抬头（公司全称/个人姓名）*" value={invForm.title} onChange={(v) => setInvForm({ ...invForm, title: v })} />
+          <Input style={formInput} placeholder="纳税人识别号（专票必填）" value={invForm.tax_no} onChange={(v) => setInvForm({ ...invForm, tax_no: v })} />
+          <Input style={formInput} placeholder="接收邮箱" value={invForm.email} onChange={(v) => setInvForm({ ...invForm, email: v })} />
+          <div style={{ fontSize: 12, color: '#718096' }}>电子发票将于 3 个工作日内开具并发送至上述邮箱</div>
+        </div>
+      </Dialog>
     </div>
   )
 }
+
+// E9 表单输入框样式
+const formInput: React.CSSProperties = { padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13 }
 
 // 表头单元格样式
 const th: React.CSSProperties = { padding: '10px 12px', textAlign: 'left', fontSize: 13 }

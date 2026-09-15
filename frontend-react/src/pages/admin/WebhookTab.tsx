@@ -1,5 +1,6 @@
 // D6/F Admin Webhook 管理 UI：订阅 CRUD、测试 ping、投递记录。
 import { useCallback, useEffect, useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { Button, Dialog, Input, MessagePlugin, Select, Switch, Table, Tag, Textarea } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
 import type { CellProps } from '../../types'
@@ -51,6 +52,7 @@ export function WebhookTab() {
   const [deliveries, setDeliveries] = useState<DeliveryRow[]>([])
   const [deliveryLoading, setDeliveryLoading] = useState(false)
 
+  // 拉取 Webhook 订阅列表（useCallback 稳定引用，供 useEffect 与刷新按钮复用）
   const load = useCallback(async () => {
     setLoading(true)
     const j = (await AUTH('/api/v1/admin/webhooks')) as ApiResp<{ list: WebhookRow[] }> | null
@@ -61,18 +63,22 @@ export function WebhookTab() {
 
   useEffect(() => { void load() }, [load])
 
+  // 打开"新增订阅"表单：默认订阅支付+留资两事件、启用
   function openCreate() {
     setEditingId(null)
     setForm({ name: '', url: '', events: ['payment.paid', 'lead.captured'], active: true, secret: '' })
   }
+  // 打开"编辑订阅"表单：回填名称/URL/事件/开关；secret 后端只存掩码故留空表示不改
   function openEdit(row: WebhookRow) {
     setEditingId(row.id)
     setForm({ name: row.name, url: row.url, events: eventList(row.events), active: row.active, secret: '' })
   }
+  // 受控更新表单某字段（form 为 null 时忽略）
   function setF<K extends keyof WebhookForm>(k: K, v: WebhookForm[K]) {
     setForm((s) => s ? { ...s, [k]: v } : s)
   }
 
+  // 提交新建/编辑：URL 协议与事件非空校验；新建且后端回吐 secret 时弹一次性明文
   async function submit() {
     if (!form) return
     if (!form.url.trim()) { MessagePlugin.warning('请填写回调 URL'); return }
@@ -93,24 +99,28 @@ export function WebhookTab() {
     load()
   }
 
+  // 测试 ping：向订阅 URL 发一条测试事件，展示对端状态码
   async function test(row: WebhookRow) {
     const j = (await AUTH(`/api/v1/admin/webhooks/${row.id}/test`, { method: 'POST' })) as ApiResp<{ ok?: boolean; status?: number; detail?: string }> | null
     if (j?.code === 0 && j.data?.ok) MessagePlugin.success(`测试成功，状态码 ${j.data.status || 200}`)
     else MessagePlugin.warning(j?.data?.detail || j?.message || `测试失败，状态码 ${j?.data?.status || '-'}`)
     load()
   }
+  // 启停订阅（active 开关）；编辑后重新启用可清零连续失败熔断计数
   async function toggle(row: WebhookRow, active: boolean) {
     const j = (await AUTH(`/api/v1/admin/webhooks/${row.id}`, { method: 'PUT', body: { active } })) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '状态更新失败')
     load()
   }
+  // 删除订阅：二次确认后 DELETE
   async function remove(row: WebhookRow) {
-    if (!confirm(`确认删除订阅「${row.name || row.url}」？`)) return
+    if (!(await confirmDialog(`确认删除订阅「${row.name || row.url}」？`))) return
     const j = (await AUTH(`/api/v1/admin/webhooks/${row.id}`, { method: 'DELETE' })) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '删除失败')
     else MessagePlugin.success('已删除')
     load()
   }
+  // 打开投递记录抽屉：拉取该订阅最近的事件投递明细（状态/次数/错误/payload）
   async function openDeliveries(row: WebhookRow) {
     setDeliveryTarget(row); setDeliveryOpen(true); setDeliveries([]); setDeliveryLoading(true)
     const j = (await AUTH(`/api/v1/admin/webhooks/${row.id}/deliveries`)) as ApiResp<{ list: DeliveryRow[] }> | null
@@ -119,6 +129,7 @@ export function WebhookTab() {
     setDeliveryLoading(false)
   }
 
+  // 订阅表格列定义（含启停开关、熔断/失败计数、操作区）
   const cols = [
     { colKey: 'name', title: '名称', width: 140, cell: (p: CellProps) => p.row.name || '-' },
     { colKey: 'url', title: '回调地址', width: 260, ellipsis: true },
@@ -143,6 +154,7 @@ export function WebhookTab() {
       </div>
     ) },
   ]
+  // 投递记录表格列定义（事件/状态标签/重试次数/错误/payload/时间）
   const deliveryCols = [
     { colKey: 'id', title: 'ID', width: 70 },
     { colKey: 'event', title: '事件', width: 130, cell: (p: CellProps) => <Tag theme="primary" variant="light">{p.row.event}</Tag> },

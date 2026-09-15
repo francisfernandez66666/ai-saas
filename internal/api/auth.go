@@ -64,7 +64,7 @@ func Login(c *gin.Context) {
 	// P1-9 修复(2026-09-09)：SELECT 加 status=1 条件——禁用账号不可登录（此前禁用用户
 	// 仍可换 JWT，且登录成功还会清空防爆破计数）。
 	var user model.User
-	userQuery := "SELECT id, username, password_hash, role, tenant_id, must_change_password FROM tenant_users WHERE username = ? AND status = 1"
+	userQuery := "SELECT id, username, password_hash, role, tenant_id, must_change_password, token_version FROM tenant_users WHERE username = ? AND status = 1"
 	args := []interface{}{req.Username}
 	if code := strings.TrimSpace(req.TenantCode); code != "" {
 		userQuery += " AND tenant_id IN (SELECT id FROM tenants WHERE code = ?)"
@@ -107,7 +107,7 @@ func Login(c *gin.Context) {
 		tenantID = *user.TenantID
 	}
 	service.ClearLoginFailures(req.Username)
-	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role, tenantID)
+	token, err := middleware.GenerateToken(user.ID, user.Username, user.Role, tenantID, user.TokenVersion)
 	if err != nil {
 		RespErr(c, 500, 500, "Token生成失败")
 		return

@@ -3,7 +3,6 @@
 // D1：业务大页路由级 lazy，首屏只加载当前页；TDesign/React 由 vite manualChunks 稳定拆包
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import { ErrorBoundary } from './components/ErrorBoundary'
 import { getToken, verifySession } from './lib/api'
 /** 导航落地页懒加载入口。 */
 const Index = lazy(() => import('./pages/Index'))
@@ -93,7 +92,6 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 // 注意：BrowserRouter 已由 main.tsx 统一提供，此处不再嵌套（避免双 Router 冲突）
 export default function App() {
   return (
-    <ErrorBoundary>
       <Suspense fallback={<RouteLoading />}>
         <Routes>
           {/* 首页：产品官网落地页，展示平台能力与 CTA */}
@@ -143,7 +141,6 @@ export default function App() {
       <Route path="*" element={<Index />} />
         </Routes>
       </Suspense>
-    </ErrorBoundary>
   )
 }
 

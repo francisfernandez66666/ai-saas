@@ -1,9 +1,10 @@
 // 后台管理页：租户管理员登录后按分类 Tab 维护配置、客户、知识库、标签、通道、审计等运营后台。
 // F1 起各业务 Tab 拆至 src/pages/admin/*，本文件保留登录、菜单和配置编辑动作。
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '../lib/confirm'
 import { Button, Layout, Menu, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, setToken, logoutAndRedirect } from '../lib/api'
+import { getToken, setToken, logoutAndRedirect, authHeaders, getImpersonateTenant, setImpersonateTenant } from '../lib/api'
 import { AuditTab } from './admin/AuditTab'
 import { BrandingTab } from './admin/BrandingTab'
 import { ChannelsTab } from './admin/ChannelsTab'
@@ -22,6 +23,7 @@ import TenantKBTab from './admin/TenantKBTab'
 import { TagSystemTab } from './admin/TagSystemTab'
 import { UsageTab } from './admin/UsageTab'
 import { WebhookTab } from './admin/WebhookTab'
+import { PrivacyTab } from './admin/PrivacyTab'
 
 const { Header, Aside, Content } = Layout
 const { MenuItem, MenuGroup } = Menu
@@ -40,8 +42,33 @@ export default function Admin() {
   const [loginErr, setLoginErr] = useState('')
   const [all, setAll] = useState<Cfg[]>([])
   const [edits, setEditsState] = useState<Record<string, string>>({})
+  // 受控编辑某个配置项的草稿值（不即时提交，存到 edits 待保存）
   const setEdits = (k: string, v: string) => setEditsState((s) => ({ ...s, [k]: v }))
+  // E4 修复(2026-09-14)：super_admin 访问租户作用域路径须显式 X-Tenant-ID（后端 tenant.go:462 强制，
+  // 否则 400），旧前端全仓不发该头 → 超管进 /admin 各 Tab 全崩。加"代管租户"选择器，选定后
+  // 统一由 apiFetch/authHeaders 注入 X-Tenant-ID；未选前只放行平台级 Tab（配置/超管后台）。
+  const role = localStorage.getItem('role') || ''
+  const isSuper = role === 'super_admin'
+  const [impTenant, setImpTenant] = useState(getImpersonateTenant())
+  const [tenants, setTenants] = useState<{ id: number; name: string; code?: string }[]>([])
+  const [impReload, setImpReload] = useState(0) // 切换租户后强制各 Tab 重挂载刷新
+  // 超管代管用：拉取平台全部租户（名称/标识）填充「代管租户」选择器；失败静默
+  async function loadTenants() {
+    try {
+      const r = await fetch('/api/v1/super/tenants', { headers: authHeaders() })
+      const j = await r.json()
+      const list: Array<{ id: number; name?: string; company_name?: string; code?: string }> = j?.data?.list || j?.data || []
+      setTenants(Array.isArray(list) ? list.map((t) => ({ id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code })) : [])
+    } catch { /* 超管列表拉取失败静默，选择器空 */ }
+  }
+  // 选定代管租户：写入全局注入键 + 本地态 + 自增 impReload 强制各 Tab 重挂载刷新
+  function pickTenant(id: string) {
+    setImpersonateTenant(id)
+    setImpTenant(id)
+    setImpReload((n) => n + 1)
+  }
 
+  // 管理员登录：带租户码换 token；命中首登强改密标记则跳登录页改密，否则进后台并加载配置
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoginErr('')
@@ -63,6 +90,7 @@ export default function Admin() {
     loadAll()
   }
 
+  // 拉取全部系统配置项，回填展示值与编辑草稿
   async function loadAll() {
     const r = await fetch('/api/v1/admin/config', { headers: { Authorization: 'Bearer ' + getToken() } })
     const j = await r.json()
@@ -74,7 +102,9 @@ export default function Admin() {
     }
   }
   useEffect(() => { if (logged) loadAll() }, [logged])
+  useEffect(() => { if (logged && isSuper) loadTenants() }, [logged])
 
+  // 保存配置：string 类型 JSON 序列化、其余原样，整表 PUT 后热加载
   async function saveAll() {
     const updates = all.map((c) => {
       const v = edits[c.key] ?? c.value
@@ -90,14 +120,16 @@ export default function Admin() {
     if (j.code === 0) { MessagePlugin.success('配置已保存并热加载'); loadAll() }
     else MessagePlugin.error('保存失败: ' + (j.message || ''))
   }
+  // 恢复全部配置为默认值（不可撤销，二次确认）
   async function resetAll() {
-    if (!confirm('确定恢复所有配置为默认值？不可撤销')) return
+    if (!(await confirmDialog('确定恢复所有配置为默认值？此操作不可撤销。'))) return
     await fetch('/api/v1/admin/config/reset', { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } })
     MessagePlugin.success('已恢复默认'); loadAll()
   }
+  // 延迟参数一键归零并切「秒回」模式（仅影响 ZERO_DELAY_KEYS 命中的键，便于调试）
   async function zeroDelayAll() {
     const targets = ZERO_DELAY_KEYS.filter((k) => all.some((c) => c.key === k))
-    if (!confirm(`仅将延迟类参数归零并切秒回模式？影响键：${targets.join('、') || '(无)'}`)) return
+    if (!(await confirmDialog(`仅将延迟类参数归零并切秒回模式？影响键：${targets.join('、') || '(无)'}`))) return
     const e = { ...edits }
     targets.forEach((k) => (e[k] = '0'))
     e['reply_delay_mode'] = 'instant'
@@ -123,11 +155,12 @@ export default function Admin() {
     )
   }
 
+  // 按分类取配置项子集
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
   const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
-  const role = localStorage.getItem('role') || ''
   const userName = localStorage.getItem('username') || ''
+  // 菜单点击：外链直接跳转，内链切当前 Tab
   const onMenuClick = (item: MenuItemDef) => {
     if (item.link) { location.href = item.link; return }
     setTab(item.k)
@@ -142,6 +175,16 @@ export default function Admin() {
           <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{role === 'super_admin' ? '平台超管' : '租户后台'}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          {/* E4：超管代管租户选择器——选定后所有租户作用域接口自动带 X-Tenant-ID */}
+          {isSuper && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+              代管租户：
+              <select value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}>
+                <option value="">（未选择·仅平台级）</option>
+                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
+              </select>
+            </span>
+          )}
           <a href="/client" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>客户对话页</a>
           <a href="/pricing" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>定价</a>
           <a href="/app" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>移动端</a>
@@ -168,7 +211,18 @@ export default function Admin() {
         </Aside>
         <Content style={{ padding: '20px 24px', minWidth: 0 }}>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-            <PanelContent tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+            {(() => {
+              const isPlatformTab = CONFIG_CATS.includes(tab) || tab === 'super_link'
+              if (isSuper && !impTenant && !isPlatformTab) {
+                return (
+                  <div style={{ background: '#fffbeb', border: '1px solid #fbbf24', borderRadius: 10, padding: '16px 20px', marginBottom: 16, color: '#92400e', fontSize: 14 }}>
+                    超级管理员访问<strong>租户作用域</strong>页面（客户/知识库/通道/用量等）需先在右上角选择"代管租户"——
+                    后端对这类路径强制校验 <code>X-Tenant-ID</code>，缺失返回 400。平台参数配置与"平台超管后台"无需选择。
+                  </div>
+                )
+              }
+              return <PanelContent key={isSuper ? 'imp' + impReload : 't'} tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+            })()}
             {!noAction && (
               <div style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 16px' }}>
                 <p style={{ fontSize: 13, color: '#6b7280' }}>修改参数后点击"保存配置"，即时生效，无需重启</p>
@@ -207,6 +261,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   if (tab === 'webhooks') return <WebhookTab />
   if (tab === 'usage') return <UsageTab />
   if (tab === 'referral') return <ReferralTab />
+  if (tab === 'privacy') return <PrivacyTab />
   return <Placeholder name={tab} />
 }
 

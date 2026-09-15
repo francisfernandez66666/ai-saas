@@ -45,15 +45,19 @@ func GetPublicBranding(c *gin.Context) {
 }
 
 // brandingUpdateReq 白标更新请求（超管 / 租户管理员共用）
+// A2 修复(2026-09-14)：全字段指针化——nil=不修改，杜绝"前端表单缺字段→零值覆盖清库"。
+// 旧实现为值类型，PUT 体不含 custom_css/secondary_color 等字段时按零值写回，
+// 管理员一次普通保存即抹掉既有配置（白标链 P0 根因之一）。
 type brandingUpdateReq struct {
-	BrandName    string  `json:"brand_name"`    // 品牌名称
-	BrandLink    string  `json:"brand_link"`    // 品牌链接
-	LogoURL      string  `json:"logo_url"`      // Logo 地址
-	FaviconURL   string  `json:"favicon_url"`   // Favicon 地址
-	PrimaryColor string  `json:"primary_color"` // 主题色
-	CustomDomain *string `json:"custom_domain"` // 指针：可清空（传 null 或空串）
-	CustomCSS    string  `json:"custom_css"`    // 自定义 CSS
-	CustomJS     string  `json:"custom_js"`     // 自定义 JS
+	BrandName      *string `json:"brand_name"`      // 品牌名称
+	BrandLink      *string `json:"brand_link"`      // 品牌链接
+	LogoURL        *string `json:"logo_url"`        // Logo 地址
+	FaviconURL     *string `json:"favicon_url"`     // Favicon 地址
+	PrimaryColor   *string `json:"primary_color"`   // 主题色
+	SecondaryColor *string `json:"secondary_color"` // 辅助色（A4：旧结构缺此字段，前端辅色输入框从未生效）
+	CustomDomain   *string `json:"custom_domain"`   // 指针：可清空（传 null 或空串）
+	CustomCSS      *string `json:"custom_css"`      // 自定义 CSS（指针防误清）
+	CustomJS       *string `json:"custom_js"`       // 自定义 JS（指针防误清；租户侧仍被 P1-45 强制回填）
 }
 
 // applyBrandingUpdate 落库更新白标配置并失效租户解析缓存
@@ -65,15 +69,31 @@ func applyBrandingUpdate(tenantID uint, req brandingUpdateReq) (*model.Tenant, e
 	if err := db.DB.First(&t, tenantID).Error; err != nil {
 		return nil, err
 	}
-	// 构建更新字段映射
-	updates := map[string]interface{}{
-		"brand_name":    req.BrandName,
-		"brand_link":    req.BrandLink,
-		"logo_url":      req.LogoURL,
-		"favicon_url":   req.FaviconURL,
-		"primary_color": req.PrimaryColor,
-		"custom_css":    req.CustomCSS,
-		"custom_js":     req.CustomJS,
+	// 构建更新字段映射：仅收录调用方显式传入的字段（A2：nil 一律不写）
+	updates := map[string]interface{}{}
+	if req.BrandName != nil {
+		updates["brand_name"] = *req.BrandName
+	}
+	if req.BrandLink != nil {
+		updates["brand_link"] = *req.BrandLink
+	}
+	if req.LogoURL != nil {
+		updates["logo_url"] = *req.LogoURL
+	}
+	if req.FaviconURL != nil {
+		updates["favicon_url"] = *req.FaviconURL
+	}
+	if req.PrimaryColor != nil {
+		updates["primary_color"] = *req.PrimaryColor
+	}
+	if req.SecondaryColor != nil {
+		updates["secondary_color"] = *req.SecondaryColor
+	}
+	if req.CustomCSS != nil {
+		updates["custom_css"] = *req.CustomCSS
+	}
+	if req.CustomJS != nil {
+		updates["custom_js"] = *req.CustomJS
 	}
 	// 自定义域名特殊处理：指针 nil 表示不修改，空串表示清空
 	if req.CustomDomain != nil {
@@ -113,7 +133,7 @@ func AdminUpdateBranding(c *gin.Context) {
 	// 租户管理员传入的新值被忽略（页面字段置只读）。超管仍可经 SuperUpdateBranding 修改。
 	var cur model.Tenant
 	if err := db.DB.First(&cur, tid).Error; err == nil {
-		req.CustomJS = cur.CustomJS
+		req.CustomJS = &cur.CustomJS // 指针回填现值：租户侧传入的 custom_js 新值被整体忽略
 	}
 	t, err := applyBrandingUpdate(tid, req)
 	if err != nil {
@@ -121,6 +141,25 @@ func AdminUpdateBranding(c *gin.Context) {
 		return
 	}
 	RespOK(c, "品牌配置已更新", brandingData(t))
+}
+
+// AdminGetBranding 租户管理员读取本租户白标配置
+// GET /api/v1/admin/tenant/branding
+// A2 修复(2026-09-14)：旧前端用 Host 解析的 public 接口读本租户配置——管理员在平台域
+// 操作时拿到的是平台默认品牌（恒空表单），保存即把空串写回 → 白标配置被清。
+// 本端点走登录态+租户作用域，与 PUT 对称。
+func AdminGetBranding(c *gin.Context) {
+	tid := middleware.EffectiveTenantID(c)
+	if tid == 0 {
+		RespErr(c, http.StatusForbidden, 403, "无法识别租户")
+		return
+	}
+	var t model.Tenant
+	if err := db.DB.First(&t, tid).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "租户不存在")
+		return
+	}
+	RespOK(c, "ok", brandingData(&t))
 }
 
 // SuperGetBranding 超管读取任意租户白标配置

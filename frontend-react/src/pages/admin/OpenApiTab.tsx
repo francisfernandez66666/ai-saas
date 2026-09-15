@@ -1,7 +1,8 @@
 // 开放平台 Tab（F1 从 Admin.tsx 拆出）：API Key 签发、启停与删除。
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { Button, Input, MessagePlugin, Table, Tag } from 'tdesign-react'
-import { getToken } from '../../lib/api'
+import { authHeaders, getToken } from '../../lib/api'
 import type { CellProps, TableRowData } from '../../types'
 
 const PERM_LABELS: Record<string, string> = { 'customer.read': '客户读取', 'cdp.read': '画像读取', 'chat.read': '会话读取', 'all': '全部权限' }
@@ -13,24 +14,24 @@ export function OpenApiTab() {
   const [name, setName] = useState('')
   const [perms, setPerms] = useState<string[]>(['customer.read'])
   async function load() {
-    const r = await fetch('/api/v1/admin/apikeys', { headers: { Authorization: 'Bearer ' + getToken() } })
+    const r = await fetch('/api/v1/admin/apikeys', { headers: authHeaders() })
     const j = await r.json()
     if (j.code === 0) setKeys((j.data && j.data.list) || [])
   }
   useEffect(() => { load() }, [])
   async function create() {
     if (!name || perms.length === 0) { MessagePlugin.warning('请填写名称并至少选择一项权限'); return }
-    const r = await fetch('/api/v1/admin/apikeys', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() }, body: JSON.stringify({ name, perms }) })
+    const r = await fetch('/api/v1/admin/apikeys', { method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }), body: JSON.stringify({ name, perms }) })
     const j = await r.json()
     if (j.code !== 0) { MessagePlugin.error(j.message || '签发失败'); return }
     const key = j.data.key
-    if (confirm('【请立即保存】明文 Key 仅显示这一次：\n\n' + key + '\n\n点击确定尝试复制到剪贴板')) {
-      try { await navigator.clipboard.writeText(key) } catch {}
+    if (await confirmDialog('【请立即保存】明文 Key 仅显示这一次：\n\n' + key + '\n\n点击确定尝试复制到剪贴板', '保存 API Key')) {
+      try { await navigator.clipboard.writeText(key) } catch { /* 取数失败静默 */ }
     }
     setName(''); setShowCreate(false); load()
   }
-  const toggle = async (id: number, active: boolean) => { await fetch(`/api/v1/admin/apikeys/${id}/${active ? 'enable' : 'disable'}`, { method: 'POST', headers: { Authorization: 'Bearer ' + getToken() } }); load() }
-  const del = async (id: number) => { if (!confirm('确认删除该 Key？')) return; await fetch(`/api/v1/admin/apikeys/${id}`, { method: 'DELETE', headers: { Authorization: 'Bearer ' + getToken() } }); load() }
+  const toggle = async (id: number, active: boolean) => { await fetch(`/api/v1/admin/apikeys/${id}/${active ? 'enable' : 'disable'}`, { method: 'POST', headers: authHeaders() }); load() }
+  const del = async (id: number) => { if (!(await confirmDialog('确认删除该 Key？'))) return; await fetch(`/api/v1/admin/apikeys/${id}`, { method: 'DELETE', headers: authHeaders() }); load() }
   const cols = [
     { colKey: 'name', title: '名称', width: 160 },
     { colKey: 'key_prefix', title: 'Key前缀', width: 160, cell: (p: CellProps) => <code className="bg-gray-100 px-2 py-0.5 rounded text-xs">{p.row.key_prefix}...</code> },

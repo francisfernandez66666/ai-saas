@@ -163,7 +163,7 @@ func TestScoreAndAlertPackQuality(t *testing.T) {
 			t.Fatalf("create attribution %d: %v", i, err)
 		}
 	}
-	if scored, err := ScoreReplyAttributions(10); err != nil || scored != 3 {
+	if scored, err := ScoreReplyAttributions(10, tid); err != nil || scored != 3 {
 		t.Fatalf("expected 3 scored, got %d err=%v", scored, err)
 	}
 	alerts, err := CheckPackQualityAlerts(AlertFilter{Days: 1, MinSamples: 3, Threshold: 60, Consecutive: 3})

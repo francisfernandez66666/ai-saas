@@ -13,7 +13,10 @@ import (
 func registerAuthPublic(v1 *gin.RouterGroup) {
 	auth := v1.Group("/auth")
 	{
-		auth.POST("/login", Login)
+		// B5 修复(2026-09-14)：登录补 IP 聚合限流——旧实现仅按"用户名"和"IP+用户名"锁定，
+		// 攻击者用 N 个用户名各撞 5 次即可绕过（且每错都吃 ~100ms bcrypt CPU 放大）。
+		// 纯 IP 维度 20 次/分钟先兜住量，再叠加既有账号锁定。
+		auth.POST("/login", middleware.IPRateLimit("login", 20, time.Minute), Login)
 		auth.POST("/register", middleware.TurnstileGuard(), middleware.IPRateLimit("register", 10, 10*time.Minute), Register)
 		auth.GET("/register-config", RegisterConfig)
 		auth.POST("/email-code", middleware.TurnstileGuard(), middleware.IPRateLimit("reset_email_code", 5, 10*time.Minute), SendRegisterEmailCode)
@@ -57,6 +60,8 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	v1.GET("/chat/history", middleware.OptionalJWTAuth(), GetChatHistory)
 	// 延迟清零（顾问/管理员"立即回复"）：IP 限流 + handler 内双重归属校验
 	v1.POST("/chat/clear-delay", middleware.IPRateLimit("chat_clear_delay", 30, time.Minute), ClearDelay)
+	// E3：C 端"找人工"（访客身份自证，限流防刷）
+	v1.POST("/chat/request-human", middleware.IPRateLimit("chat_req_human", 20, time.Minute), GuestRequestHuman)
 	// 支付网关异步回调（免登录，服务端到服务端）：必须注册在 v1.Use(JWTAuth) 之前，
 	// 回调不携带用户 JWT，安全性靠 HMAC 验签（挂鉴权组内会被 401 拦截导致永远无法到账）。
 	v1.POST("/billing/webhook/:channel", BillingWebhook)

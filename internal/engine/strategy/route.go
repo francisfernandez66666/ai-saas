@@ -5,6 +5,7 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/runtimecfg"
+	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"strings"
 )
@@ -43,17 +44,18 @@ func Step5_CalcUrgency(intentScore float64, highIntentRounds int) string {
 	return UrgencyL1
 }
 
-// IsPriceInquiry 检查客户消息是否为询价意图
-// 硬编码：多个询价关键词匹配，命中即返回true
+// IsPriceInquiry 检查客户消息是否为询价意图（缺省行业关键词表）。
+// G5 收敛(2026-09-14)：关键词单一事实源迁到行业语义层 service.defaultPriceKeywords，
+// 旧 route.go 里另有一份手抄表 → 两处漂移（改了语义层忘了改这里）。现委托租户版传 0。
 func IsPriceInquiry(text string) bool {
-	priceKeywords := []string{
-		"多少钱", "什么价", "报价", "价格", "价位", "售价", "贵不贵",
-		"怎么卖", "怎么算", "落地价", "优惠多少", "便宜多少",
-		"车价", "售价多少", "多少钱一辆", "多少钱一台",
-		"价格多少", "价格怎么", "什么价格", "如何收费",
-	}
-	for _, kw := range priceKeywords {
-		if strings.Contains(text, kw) {
+	return IsPriceInquiryForTenant(text, 0)
+}
+
+// IsPriceInquiryForTenant 租户级询价意图判定——命中行业包配置的询价词即 true。
+// tenantID=0 或行业包未配置时回退汽车版默认关键词（service 层统一兜底）。
+func IsPriceInquiryForTenant(text string, tenantID uint) bool {
+	for _, kw := range service.IndustryPriceKeywordsForTenant(tenantID) {
+		if kw != "" && strings.Contains(text, kw) {
 			return true
 		}
 	}
@@ -82,14 +84,16 @@ func Step6_RouteDecision(
 	state model.SessionState,
 	urgencyLevel string,
 	customerInput string,
+	tenantID uint,
 ) (routeResult string, reason string) {
 
 	// ============================================================
 	// 第0步：询价硬路由（最高优先级）
 	// 客户问价格 → RoutePrice → 到店试驾引导流程
 	// 已留资客户不重复问留资信息，直接引导到店试驾体验后出报价
+	// G5：询价词按租户行业包配置（缺省回退汽车版），不再用本包手抄表
 	// ============================================================
-	if IsPriceInquiry(customerInput) {
+	if IsPriceInquiryForTenant(customerInput, tenantID) {
 		return RoutePrice, "客户询价，引导到店试驾后出报价"
 	}
 

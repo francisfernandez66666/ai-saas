@@ -54,6 +54,15 @@ func ResolveOrCreateCustomer(tenantID, channelID uint, externalID, staffID, name
 		StaffID:    staffID,
 	}
 	if err := db.DB.Create(&ni).Error; err != nil {
+		// D9 修复(2026-09-14)：并发首入站撞 (channel_id, external_id) 唯一索引——
+		// 旧实现直接报错，输家的消息被丢弃（ProcessInbound 返回错误→kf 游标卡死/回调丢失）。
+		// 现：冲突后回查赢家的绑定，回收孤儿客户，复用其 customer_id，消息不丢。
+		var won model.ChannelIdentity
+		if qerr := db.DB.Where("channel_id = ? AND external_id = ?", channelID, externalID).
+			First(&won).Error; qerr == nil {
+			db.DB.Model(&model.Customer{}).Where("id = ?", cust.ID).Update("status", 0) // 孤儿软删
+			return won.CustomerID, nil
+		}
 		return cust.ID, err
 	}
 	return cust.ID, nil
@@ -91,10 +100,22 @@ func tailN(s string, n int) string {
 
 // gormErrNoRows 复用 gorm 的 ErrRecordNotFound
 // isTokenInvalidErr 判定渠道返回是否"access_token 失效"（-1 或含 invalid token）。
+// D13 修复(2026-09-14)：优先结构化错误码判定——旧实现纯字符串嗅探，
+// 永久业务错误的 errmsg 里只要带 "40001"/"expired" 字样就误触发刷新型重试（徒耗 gettoken 配额）。
+// 已知 token 失效码：40001(invalid credential)/42001(token expired)/41001(missing access_token)/40014(不合法 token)。
 func isTokenInvalidErr(err error) bool {
 	if err == nil {
 		return false
 	}
+	var tf *ErrTokenFailed
+	if errors.As(err, &tf) {
+		switch tf.Code {
+		case -1, 40001, 42001, 41001, 40014:
+			return true
+		}
+		return false // 结构化渠道错误：其余码（含 45015 超窗等）不再靠 errmsg 文本误判
+	}
+	// 非渠道返回错误（网络层/解析层文本）：保留旧文本嗅探兜底
 	s := err.Error()
 	return strings.Contains(s, "code=-1") || strings.Contains(s, "40001") || strings.Contains(s, "42001") ||
 		strings.Contains(strings.ToLower(s), "invalid token") || strings.Contains(strings.ToLower(s), "expired")

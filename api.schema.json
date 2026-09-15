@@ -432,6 +432,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/tenant/branding",
+      "group": "admin",
+      "handler": "AdminGetBranding",
+      "auth": [
+        "jwt",
+        "admin"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/usage/summary",
       "group": "admin",
       "handler": "AdminUsageSummary",
@@ -929,6 +939,16 @@
       "path": "/api/v1/super/feedbacks",
       "group": "super",
       "handler": "SuperFeedbackList",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/invoices",
+      "group": "super",
+      "handler": "SuperListInvoices",
       "auth": [
         "jwt",
         "super_admin"
@@ -1761,6 +1781,15 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/chat/request-human",
+      "group": "chat",
+      "handler": "GuestRequestHuman",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/chat/test",
       "group": "chat",
       "handler": "ChatTest",
@@ -1918,9 +1947,49 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/super/billing/orders/:id/mock-webhook",
+      "group": "super",
+      "handler": "SuperMockWebhook",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/billing/orders/:id/refund",
+      "group": "super",
+      "handler": "SuperRefundOrder",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/super/feedbacks/resolve",
       "group": "super",
       "handler": "SuperResolveFeedback",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/invoices/:order_id/issue",
+      "group": "super",
+      "handler": "SuperIssueInvoice",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/invoices/:order_id/void",
+      "group": "super",
+      "handler": "SuperVoidInvoice",
       "auth": [
         "jwt",
         "super_admin"

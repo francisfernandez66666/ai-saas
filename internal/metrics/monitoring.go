@@ -21,6 +21,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/redisclient"
 )
 
 // HealthStatus 健康分级枚举
@@ -153,7 +154,54 @@ func ComputeHealth() HealthSnapshot {
 			snap.HasWarn = true
 		}
 	}
+	// G6 修复(2026-09-14)：多实例但无 Redis 的"静默降级单实例语义"显式化——
+	// release 模式且声明副本数>1 时，合并队列/WS 广播/登录锁都会各说各话（消息可能双处理、
+	// 跨实例推送丢失、防爆破锁不共享），必须红灯而非无声运行。副本数经 SetDeploymentContext 注入。
+	if multiInstanceNoRedis() {
+		check := HealthCheck{
+			Name:   "instance_coordination",
+			Status: StatusCrit,
+			Value:  "replicas>1_without_redis",
+			WarnAt: "-",
+			CritAt: "多实例但未启用 Redis",
+			Desc:   "多实例部署须启用 Redis（分布式锁/合并裁决/跨实例广播）",
+		}
+		snap.Checks = append(snap.Checks, check)
+		snap.HasCrit = true
+	}
+	// F6：出站死信积压水位——堆积说明有通道持续投递失败（凭据失效/端点异常），
+	// 超阈值转 warn 并纳入 /status，运维可在通道页人工重发（不做 crit，避免误伤个别租户死信）。
+	if dl := GetChannelDeadLetterPending(); dl >= deadLetterWarnThreshold {
+		snap.Checks = append(snap.Checks, HealthCheck{
+			Name:   "channel_dead_letter",
+			Status: StatusWarn,
+			Value:  strconv.FormatInt(dl, 10),
+			WarnAt: strconv.Itoa(deadLetterWarnThreshold),
+			CritAt: "-",
+			Desc:   "通道出站死信积压，疑似某通道凭据失效或端点异常，请查 /admin 通道页重发",
+		})
+	}
 	return snap
+}
+
+// deadLetterWarnThreshold 出站死信积压告警阈值（超过计入 /status warn）。
+const deadLetterWarnThreshold = 50
+
+// 部署上下文（G6）：由 main 启动时注入，供健康检查判断多实例降级。
+var (
+	deployReplicas  int
+	deployIsRelease bool
+)
+
+// SetDeploymentContext 注入副本数与是否 release，供 ComputeHealth 判定多实例降级红灯。
+func SetDeploymentContext(replicas int, isRelease bool) {
+	deployReplicas = replicas
+	deployIsRelease = isRelease
+}
+
+// multiInstanceNoRedis 声明副本>1 且当前无 Redis 视为危险降级（release 才判，避免本地误报）。
+func multiInstanceNoRedis() bool {
+	return deployIsRelease && deployReplicas > 1 && !redisclient.IsEnabled()
 }
 
 // MaybeAlert 对 crit 级指标主动通知（带冷却）

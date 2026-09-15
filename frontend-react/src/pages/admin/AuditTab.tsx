@@ -1,7 +1,7 @@
 // 审计日志 Tab（F1 从 Admin.tsx 拆出）：按动作与时间范围查看关键操作记录。
 import { useEffect, useState } from 'react'
 import { Button, Table, Tag } from 'tdesign-react'
-import { getToken } from '../../lib/api'
+import { authHeaders } from '../../lib/api'
 import type { CellProps, TableRowData } from '../../types'
 
 /** 审计日志 Tab：展示租户内关键操作记录。 */
@@ -15,7 +15,7 @@ export function AuditTab() {
     if (action) q.set('action', action)
     if (from) q.set('from', from)
     if (to) q.set('to', to)
-    const r = await fetch('/api/v1/admin/audit-logs?' + q.toString(), { headers: { Authorization: 'Bearer ' + getToken() } })
+    const r = await fetch('/api/v1/admin/audit-logs?' + q.toString(), { headers: authHeaders() })
     const j = await r.json()
     if (j.code === 0) setRows(j.data.list || [])
   }

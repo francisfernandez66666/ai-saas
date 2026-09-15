@@ -76,21 +76,21 @@ func OrgResolve() gin.HandlerFunc {
 // 否则改密后最长 30s 内仍被拦（缓存未失效），SQL 直改标记也无法即时生效
 func MustChangePasswordGuard() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		path := c.Request.URL.Path
-		if path == "/api/v1/auth/change-password" || path == "/api/v1/auth/me" {
-			c.Next() // 白名单：改密本身与身份查询必须可用
-			return
-		}
 		uidV, _ := c.Get("user_id")
 		uid := toUint(uidV)
 		if uid == 0 {
 			c.Next()
 			return
 		}
-		var flag bool
+		// B4 修复(2026-09-14)：token 吊销核对——复用本中间件的每请求查库，
+		// 同读 token_version；签发后用户改过密码/重置/换绑邮箱 → 旧 token 立即 401。
+		var row struct {
+			Flag         bool
+			TokenVersion uint
+		}
 		if err := db.DB.Table("tenant_users").
-			Select("COALESCE(must_change_password,false)").
-			Where("id = ?", uid).Scan(&flag).Error; err != nil {
+			Select("COALESCE(must_change_password,false) AS flag, COALESCE(token_version,0) AS token_version").
+			Where("id = ?", uid).Scan(&row).Error; err != nil {
 			// P2-8 修复(2026-09-09)：DB 错误 fail-open→fail-closed。原实现 err 忽略、
 			// 以 flag 默认 false 放行——DB 故障时所有人绕过强改密。改为 500 拒绝。
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
@@ -99,6 +99,21 @@ func MustChangePasswordGuard() gin.HandlerFunc {
 			})
 			return
 		}
+		tvV, _ := c.Get("token_tv")
+		claimsTV := toUint(tvV)
+		if row.TokenVersion > claimsTV {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
+				"code": 401, "error_code": "token_revoked",
+				"message": "账号凭据已更新，请重新登录", "data": nil,
+			})
+			return
+		}
+		path := c.Request.URL.Path
+		if path == "/api/v1/auth/change-password" || path == "/api/v1/auth/me" {
+			c.Next() // 白名单：改密本身与身份查询必须可用
+			return
+		}
+		flag := row.Flag
 		if flag {
 			// P1-43(2026-09-09)：补 error_code——前端按此区分"必须改密"与普通 403(权限/配额)，
 			// 否则前端把 AdminRequired/配额拦截的 403 一律当改密跳转（误甩+丢当前页）

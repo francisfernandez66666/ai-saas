@@ -4,6 +4,7 @@
  * 依赖接口：/api/v1/auth/change-password、/api/v1/auth/email/code、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
  */
 import { useState, useEffect } from 'react'
+import { confirmDialog, toast } from '../lib/confirm'
 import { AUTH, getToken } from '../lib/api'
 import type { ApiResp, KbMaterial } from '../types'
 
@@ -99,7 +100,7 @@ export default function AppSettings() {
   async function uploadKb() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: '企业知识' } })
     if (j.code === 0) { setKbTitle(''); setKbContent(''); loadKb() }
-    alert(j.message)
+    toast.info(j.message || '已上传')
   }
 
   /**
@@ -115,7 +116,7 @@ export default function AppSettings() {
    * 需二次确认密码；平台级动作，名下 API Key 同步禁用
    */
   async function cancelAccount() {
-    if (!confirm('确认注销？次日零点起账号停用（数据保留）')) return
+    if (!(await confirmDialog('确认注销？次日零点起账号停用（数据保留）'))) return
     // 注销需二次确认密码；平台级动作，名下 API Key 同步禁用
     const j: ApiResp<unknown> = await AUTH('/api/v1/admin/account/cancel', { method: 'POST', body: { password: cancelPwd } })
     setCMsg(j.message || '')
@@ -126,7 +127,7 @@ export default function AppSettings() {
    * 与账号注销不同：注销只停用，删除申请到期后匿名化账号侧 PII。
    */
   async function requestUserDeletion() {
-    if (!confirm('申请删除你的账号个人信息？提交后将在到期前匿名化，账号注销需另行确认。')) return
+    if (!(await confirmDialog('申请删除你的账号个人信息？提交后将在到期前匿名化，账号注销需另行确认。'))) return
     setDelBusy(true)
     const j: ApiResp<{ deadline?: string; duplicated?: boolean }> = await AUTH('/api/v1/privacy/deletion-request', { method: 'POST', body: { scope: 'user' } })
     setDMsg(j.code === 0 ? `已受理${j.data?.deadline ? '，预计 ' + new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''}` : (j.message || '提交失败'))

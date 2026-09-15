@@ -114,6 +114,16 @@ func main() {
 		log.Printf("⚠️  ⚠️  ⚠️  当前运行模式 GIN_MODE=%s（非 release）：SQL/业务日志按调试级别输出，生产环境务必设 GIN_MODE=release ⚠️  ⚠️  ⚠️", cfg.Server.Mode)
 	}
 
+	// G6 修复(2026-09-14)：多实例但无 Redis 的静默降级显式告警——
+	// 合并队列裁决/跨实例 WS 广播/登录防爆破锁在 Redis 关闭时退化为"各实例单干"，
+	// 生产多副本会造成消息双处理、跨实例推送丢失、防爆破可绕。声明副本>1 时启动即 WARN，
+	// 并注入健康检查使 /status 转红（release 模式生效，避免本地误报）。
+	metrics.SetDeploymentContext(cfg.Server.Replicas, cfg.Server.Mode == "release")
+	if cfg.Server.Mode == "release" && cfg.Server.Replicas > 1 && !redisclient.IsEnabled() {
+		log.Printf("⚠️  [G6] 声明 APP_REPLICAS=%d（多实例）但未启用 Redis：合并队列/WS 广播/登录锁将退化为单实例语义，"+
+			"存在消息双处理与跨实例推送丢失风险。请设 REDIS_ENABLED=true 或修正 APP_REPLICAS。/status 已置红。", cfg.Server.Replicas)
+	}
+
 	// 4. 初始化数据库
 	err = db.Init()
 	if err != nil {
@@ -679,6 +689,8 @@ func registerRoutes(r *gin.Engine) {
 			"version":             "v2.3.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
 			"db_ok":               snap.DBOK,
+			"redis_enabled":       redisclient.IsEnabled(),
+			"replicas":            config.GlobalConfig.Server.Replicas,
 			"critical_alerts_24h": crit24h,
 			"status":              status,
 			"ok":                  snap.DBOK,

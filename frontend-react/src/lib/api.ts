@@ -61,6 +61,29 @@ export function clearToken() {
 // 访客身份键（C 端客户本地持久化，退出登录不得清除——P2-85）
 export const VISITOR_KEY = 'scrm_visitor_key'
 
+// E4 修复(2026-09-14)：super_admin 进 /admin 需带 X-Tenant-ID（租户作用域路径强制显式租户）。
+// 超管在 Admin 入口的"租户选择器"选定租户后写入此键，apiFetch 统一注入；退出/切换时清除。
+export const IMPERSONATE_TENANT_KEY = 'scrm_impersonate_tenant'
+/** 读取当前超管选定的代管租户 ID（无则空串）。 */
+export function getImpersonateTenant(): string {
+  return localStorage.getItem(IMPERSONATE_TENANT_KEY) || ''
+}
+/** 写入/清除代管租户 ID（传空值即清除，退出或切回平台视图时调用）。 */
+export function setImpersonateTenant(id: string | number) {
+  if (id === '' || id == null) localStorage.removeItem(IMPERSONATE_TENANT_KEY)
+  else localStorage.setItem(IMPERSONATE_TENANT_KEY, String(id))
+}
+
+// authHeaders E4 修复(2026-09-14)：统一鉴权请求头 helper——
+// 供 Admin 各 Tab 裸 fetch 复用，自动附带 token 与（超管代管时）X-Tenant-ID，
+// 避免逐处手写 Authorization 而漏带租户头导致 400。
+export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const h: Record<string, string> = { Authorization: 'Bearer ' + getToken(), ...extra }
+  const imp = getImpersonateTenant()
+  if (imp && localStorage.getItem('role') === 'super_admin') h['X-Tenant-ID'] = imp
+  return h
+}
+
 /**
  * P2-85 修复：统一退出登录 helper。
  * 原来 Admin/SuperAdmin/Advisor 直接 localStorage.clear() 连 C 端 visitor_key 一起清，
@@ -94,6 +117,14 @@ function handleUnauthorized() {
  * @param opts - fetch 配置项
  * @returns 原始 Response 对象
  */
+// isPlatformPath 判断是否平台级路径（super 无需 X-Tenant-ID 的豁免路径），与后端 isPlatformSuperPath 对齐。
+function isPlatformPath(url: string): boolean {
+  const p = url.split('?')[0]
+  if (p.startsWith('/api/v1/super') || p.startsWith('/api/v1/auth')) return true
+  if (p.startsWith('/api/v1/admin/config') && p !== '/api/v1/admin/config/rollback') return true
+  return false
+}
+
 /** 带 token 和租户上下文发起 fetch，保留原始 Response 供上层处理。 */
 export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Response> {
   const headers: Record<string, string> = {
@@ -102,6 +133,9 @@ export async function apiFetch(url: string, opts: RequestInit = {}): Promise<Res
   }
   const tk = getToken()
   if (tk) headers['Authorization'] = 'Bearer ' + tk
+  // E4：超管代管租户上下文——仅对**租户作用域**路径注入 X-Tenant-ID，平台路径(/super/*、/auth/me)不带
+  const imp = getImpersonateTenant()
+  if (imp && localStorage.getItem('role') === 'super_admin' && !isPlatformPath(url)) headers['X-Tenant-ID'] = imp
   const res = await fetch(url, { ...opts, headers })
   if (res.status === 401) {
     handleUnauthorized()
@@ -171,11 +205,23 @@ export async function AUTH<T = any>(
   url: string,
   opts: { method?: string; body?: any; headers?: Record<string, string> } = {},
 ): Promise<T> {
-  const { json } = await apiJSON<T>(url, {
-    method: opts.method || 'GET',
-    headers: opts.headers,
-    body: opts.body ? JSON.stringify(opts.body) : undefined,
-  })
+  // E6 修复(2026-09-14)：网络异常/超时不再让 AUTH reject——旧行为下调用方
+  // `const j = await AUTH(...); j.code` 直接踩 unhandled rejection → 白屏。
+  // 统一兜底成 {code:-1, message} 错误信封，让调用方的 `if (j.code === 0)` 正常走 else 分支。
+  let json: T
+  try {
+    const r = await apiJSON<T>(url, {
+      method: opts.method || 'GET',
+      headers: opts.headers,
+      body: opts.body ? JSON.stringify(opts.body) : undefined,
+    })
+    json = r.json
+  } catch {
+    json = { code: -1, message: '网络异常，请稍后重试' } as unknown as T
+  }
+  if (!json || typeof (json as any).code !== 'number') {
+    json = { code: -1, message: '响应解析失败' } as unknown as T
+  }
   toastError(json) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
   return json
 }

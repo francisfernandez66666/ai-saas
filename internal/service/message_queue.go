@@ -160,6 +160,17 @@ func (s *MessageQueueService) getQueue(key string) *CustomerQueue {
 	return q
 }
 
+// CurrentEpoch D5 修复(2026-09-14)：读取客户队列当前处理代际（不接管处理权）。
+// 离题/硬边界等"入队前直接回复"路径须携带本代际调 SetReply——旧实现传 epoch=0，
+// 被 fencing 的 `epoch != 0` 短路放行：在途批次被错误唤醒（lastReply 覆盖成离题话术）、
+// processing 锁提前释放（等待者二次接管，客户收到两条不相关回复）。
+func (s *MessageQueueService) CurrentEpoch(tenantID, customerID uint) uint64 {
+	q := s.getQueue(queueKey(tenantID, customerID))
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.epoch
+}
+
 // SweepIdleQueues 巡检删除长时间空闲的客户队列（2026-09-09 内存治理）。
 // 背景：queues map 只增不删，长跑后内存随客户数单调增长。
 // 规则：最近 idleTimeout 内无任何活跃 且 不在 processing/simpleProcessing 中 且 无积压待合并消息

@@ -47,7 +47,8 @@ export const MENU_GROUPS: MenuGroupDef[] = [
       { k: 'usage', label: '用量' },
       { k: 'referral', label: '邀请推广' },
       { k: 'branding', label: '品牌定制' },
-      { k: 'audit', label: '审计日志' },
+      { k: 'privacy', label: '隐私删除请求' },
+      { k: 'audit', label: '审计日志' }
     ],
   },
 ]

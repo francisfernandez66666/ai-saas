@@ -68,8 +68,9 @@ type RedisConfig struct {
 
 // ServerConfig 服务配置
 type ServerConfig struct {
-	Port string // 服务端口
-	Mode string // gin模式: debug/release
+	Port     string // 服务端口
+	Mode     string // gin模式: debug/release
+	Replicas int    // G6：声明的部署副本数（可选 env APP_REPLICAS，默认 1）。>1 且未开 Redis 时启动告警
 }
 
 // DatabaseConfig 数据库配置（PostgreSQL）
@@ -242,8 +243,9 @@ var GlobalConfig *Config
 func LoadConfig() *Config {
 	GlobalConfig = &Config{
 		Server: ServerConfig{
-			Port: getEnv("SERVER_PORT", "8080"),
-			Mode: getEnv("GIN_MODE", "debug"),
+			Port:     getEnv("SERVER_PORT", "8080"),
+			Mode:     getEnv("GIN_MODE", "debug"),
+			Replicas: getEnvInt("APP_REPLICAS", 1),
 		},
 		Database: DatabaseConfig{
 			Host:            getEnv("DB_HOST", "localhost"),

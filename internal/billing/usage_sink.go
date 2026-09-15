@@ -154,11 +154,15 @@ func (s *UsageSink) Record(r usageSinkRecord) {
 	if len(s.buf) >= s.maxBuf {
 		s.dropped++
 		d := s.dropped
+		// C8 修复(2026-09-14)：溢出时丢弃**最旧**记录并收新（旧实现丢新收旧，
+		// 与"丢弃最旧"注释口径相反；最新计量对欠账追补更关键，DB 恢复期优先保新账）
+		copy(s.buf, s.buf[1:])
+		s.buf[len(s.buf)-1] = r
 		s.mu.Unlock()
 		if d == 1 || d%1000 == 0 { // 首条与每千条告警，避免刷屏
-			log.Printf("[UsageSink][ERROR] 缓冲超上限(%d)已丢弃第 %d 条计量（DB 长时间不可用？欠账由影子自愈兜底）", s.maxBuf, d)
+			log.Printf("[UsageSink][ERROR] 缓冲超上限(%d)已丢弃最旧第 %d 条计量（DB 长时间不可用？欠账由影子自愈兜底）", s.maxBuf, d)
 		}
-		// 丢弃前仍推一次 flush，尽量把已积压的落库
+		// 丢弃后立即推一次 flush，尽量把已积压的落库
 		select {
 		case s.wake <- struct{}{}:
 		default:

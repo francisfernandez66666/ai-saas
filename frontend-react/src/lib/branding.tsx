@@ -5,6 +5,19 @@
  */
 import { createContext, useContext, useEffect, useState } from 'react'
 
+// BrandingResp /api/v1/public/branding 的 data 契约（白标配置字段，均可选）
+interface BrandingResp {
+  brand_name?: string
+  brand_link?: string
+  logo_url?: string
+  favicon_url?: string
+  primary_color?: string
+  secondary_color?: string
+  platform_default?: boolean
+  custom_css?: string
+  custom_js?: string
+}
+
 /**
  * 租户白标类型定义：品牌名/Logo/主题色等（按 Host 拉取）
  * platformDefault 为 true 表示使用平台默认配置，未做白标定制
@@ -59,15 +72,19 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
     // 按当前 Host 拉取租户白标配置（接口匿名可访问，用于登录前展示）
     fetch('/api/v1/public/branding')
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!d) return
+      .then((res) => {
+        if (!res) return
+        // A1 修复(2026-09-14)：后端是 {code,data} 信封（RespOK），旧代码顶层取值全
+        // undefined → platform_default 判定失真，租户域名上标题被反改成"跨山 LexCross"，
+        // favicon/主题色/自定义 CSS 永不注入——白标链路整体静默失效。统一解包 data。
+        const d: BrandingResp = res.data || {}
         const brandName =
-          d.brand_name && d.brand_name !== '跨山 LexCross' ? d.brand_name : '跨山 LexCross'
+          d.brand_name && d.brand_name !== '跨山 LexCross' ? String(d.brand_name) : '跨山 LexCross'
         setB({
           brandName,
-          brandLink: d.brand_link || '',
-          logoUrl: d.logo_url || '',
-          faviconUrl: d.favicon_url || '',
+          brandLink: (d.brand_link as string) || '',
+          logoUrl: (d.logo_url as string) || '',
+          faviconUrl: (d.favicon_url as string) || '',
           primaryColor: d.primary_color,
           secondaryColor: d.secondary_color,
           platformDefault: !!d.platform_default,

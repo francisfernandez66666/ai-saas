@@ -77,8 +77,23 @@ func AdminExportCustomers(c *gin.Context) {
 			strconv.FormatUint(uint64(cu.AssignedUserID), 10),
 			cu.CreatedAt.Format(time.RFC3339),
 		}
+		sanitizeCSVRow(rec) // B9：防客户可控字段（姓名/标签等）以 = + - @ 开头触发 Excel 公式执行
 		_ = w.Write(rec)
 		w.Flush()
+	}
+}
+
+// sanitizeCSVRow B9 修复(2026-09-14)：CSV 公式注入防护——以 =、+、-、@、TAB、CR 开头的
+// 单元格会被 Excel/WPS 当作公式解析（客户起名 "=cmd|..." 即打进管理员表格）。前缀单引号中和。
+func sanitizeCSVRow(rec []string) {
+	for i, s := range rec {
+		if s == "" {
+			continue
+		}
+		switch s[0] {
+		case '=', '+', '-', '@', '\t', '\r':
+			rec[i] = "'" + s
+		}
 	}
 }
 
@@ -125,6 +140,7 @@ func AdminExportConversations(c *gin.Context) {
 			strconv.FormatFloat(m.IntentScore, 'f', 2, 64),
 			m.CreatedAt.Format(time.RFC3339),
 		}
+		sanitizeCSVRow(rec) // B9：消息正文客户可控，同样防公式注入
 		_ = w.Write(rec)
 		w.Flush()
 	}

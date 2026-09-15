@@ -65,6 +65,7 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.GET("/config", GetSystemConfigs)
 		admin.PUT("/config", BatchUpdateSystemConfig)
 		admin.PUT("/tenant/branding", AdminUpdateBranding)
+		admin.GET("/tenant/branding", AdminGetBranding) // A2：租户侧带登录态读取本租户白标（与 PUT 对称）
 		admin.POST("/config/reset", SuperRequired(), ResetSystemConfig)
 		admin.POST("/config/rollback", RollbackTenantConfig)
 		admin.POST("/config/init", SuperRequired(), ForceInitSystemConfig)

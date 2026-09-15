@@ -22,6 +22,10 @@ type Claims struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
 	TenantID uint   `json:"tenant_id"` // 租户ID，0=系统管理员，非NULL=某租户下用户
+	// TV B4 修复(2026-09-14)：签发时的用户 token_version 快照。改密/重置/换绑邮箱
+	// 递增库内版本后，旧 token（TV 落后）即时失效——此前无任何吊销机制，
+	// 密码泄露后改密并不能踢掉攻击者会话。
+	TV uint `json:"tv,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -30,13 +34,19 @@ type Claims struct {
 // username: 用户名
 // role: 用户角色
 // tenantID: 租户ID，0=超级管理员，非0=某租户下用户
-func GenerateToken(userID uint, username string, role string, tenantID uint) (string, error) {
+// tokenVersion（可选，B4）：签发时用户的 token_version；改密/重置/换绑后旧 token 即失效
+func GenerateToken(userID uint, username string, role string, tenantID uint, tokenVersion ...uint) (string, error) {
 	expireHours := config.GlobalConfig.JWT.ExpireHours
+	var tv uint
+	if len(tokenVersion) > 0 {
+		tv = tokenVersion[0]
+	}
 	claims := Claims{
 		UserID:   userID,
 		Username: username,
 		Role:     role,
 		TenantID: tenantID,
+		TV:       tv,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Duration(expireHours) * time.Hour)),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -110,6 +120,7 @@ func JWTAuth() gin.HandlerFunc {
 		c.Set("username", claims.Username)
 		c.Set("role", claims.Role)
 		c.Set("tenant_id", claims.TenantID)
+		c.Set("token_tv", claims.TV) // B4：供 MustChangePasswordGuard 做吊销版本核对
 
 		c.Next()
 	}

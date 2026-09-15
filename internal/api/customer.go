@@ -5,10 +5,12 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/schema"
+	"errors"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -142,23 +144,49 @@ func CreateCustomer(c *gin.Context) {
 		customer.PriceSensitivity = 0.5
 	}
 
-	// 配额检查（SaaS）：租户客户数上限（MaxCustomers=0 视为不限）
-	if tid := db.EffectiveTenantIDFromGin(c); tid > 0 {
-		var tenant model.Tenant
-		if err := db.DB.Select("max_customers").First(&tenant, tid).Error; err == nil && tenant.MaxCustomers > 0 {
-			var cnt int64
-			db.RQ(c).Model(&model.Customer{}).Count(&cnt)
-			if cnt >= int64(tenant.MaxCustomers) {
-				RespErr(c, http.StatusForbidden, 403, "客户数已达套餐上限，请升级套餐")
-				return
-			}
-		}
-	}
-
-	// 初始化T向量
+	// 初始化T向量（置于配额检查前：C7 事务分支的 tx.Create 也须带 t_vector_json）
 	tVector := customer.GetTVector()
 	customer.SaveTVector(tVector)
 
+	// 配额检查（SaaS）：租户客户数上限（MaxCustomers=0 视为不限）
+	// C7 修复(2026-09-14)：count-then-insert 非原子，并发建客可超上限（配额=钱的边界）。
+	// 用租户级 pg_advisory_xact_lock 把"复查计数+插入"串行化在单事务内。
+	if tid := db.EffectiveTenantIDFromGin(c); tid > 0 {
+		var tenant model.Tenant
+		if err := db.DB.Select("max_customers").First(&tenant, tid).Error; err == nil && tenant.MaxCustomers > 0 {
+			quotaErr := errors.New("quota_exceeded")
+			// C7 回归修复(2026-09-15)：原用裸 db.DB.Transaction，其 *gorm.DB 会话不带请求 context，
+			// 写入盖章回调 TenantFromContext(stmt.Context)=0 → 客户被盖成 tenant_id=0（跨租户越权读+
+			// 归属错乱，quota'd 租户建客后 /chat 找不到自己客户）。改走 db.RQ(c).Transaction 让 tx
+			// 继承租户 context；并显式 customer.TenantID=tid 双保险（回调对非零值不覆写）。
+			customer.TenantID = tid
+			txErr := db.RQ(c).Transaction(func(tx *gorm.DB) error {
+				if r := tx.Exec("SELECT pg_advisory_xact_lock(?)", int64(tid)); r.Error != nil {
+					return r.Error
+				}
+				var cnt int64
+				if r := tx.Model(&model.Customer{}).Where("tenant_id = ?", tid).Count(&cnt); r.Error != nil {
+					return r.Error
+				}
+				if cnt >= int64(tenant.MaxCustomers) {
+					return quotaErr
+				}
+				return tx.Create(customer).Error
+			})
+			switch {
+			case errors.Is(txErr, quotaErr):
+				RespErr(c, http.StatusForbidden, 403, "客户数已达套餐上限，请升级套餐")
+				return
+			case txErr != nil:
+				RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+txErr.Error())
+				return
+			}
+			RespOK(c, "创建成功", customer)
+			return
+		}
+	}
+
+	// 无配额上限路径：直接创建（t_vector 已在配额检查前初始化）
 	result := db.RQ(c).Create(customer)
 	if result.Error != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+result.Error.Error())
@@ -286,6 +314,13 @@ func DeleteCustomer(c *gin.Context) {
 func GetCustomerConversations(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
 
+	// B1 修复(2026-09-14)：先校验客户在本人数据范围内，再放行其会话（旧实现跨销售越权读）
+	var cust model.Customer
+	if err := db.RQ(c).First(&cust, customerID).Error; err != nil ||
+		!customerInDataScope(c, cust.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return
+	}
 	var conversations []model.Conversation
 	db.RQ(c).Where("customer_id = ?", customerID).
 		Order("created_at DESC").

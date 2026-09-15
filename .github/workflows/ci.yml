@@ -81,6 +81,8 @@ jobs:
         run: npm run test
       - name: 类型检查（tsc --noEmit）
         run: npx tsc --noEmit
+      - name: Lint（ESLint 硬门：0 error，warning 锁基线不升）
+        run: npm run lint:ci
       - name: 构建
         run: npm run build
 

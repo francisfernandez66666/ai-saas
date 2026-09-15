@@ -9,6 +9,13 @@ vi.mock('../../lib/api', () => ({
   getToken: () => 'test-token',
 }))
 
+// E8：删除入口改用 confirmDialog（非原生 confirm），mock 成"用户点了确认"
+vi.mock('../../lib/confirm', () => ({
+  confirmDialog: () => Promise.resolve(true),
+  uiAlert: () => Promise.resolve(),
+  toast: { success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn() },
+}))
+
 import { AUTH } from '../../lib/api'
 const authMock = AUTH as ReturnType<typeof vi.fn>
 
@@ -16,7 +23,6 @@ beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('role', 'user')
   authMock.mockReset()
-  vi.stubGlobal('confirm', () => true)
 })
 
 describe('AppSettings 个人信息删除', () => {

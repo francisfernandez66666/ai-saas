@@ -10,11 +10,17 @@ vi.mock('../../lib/chat', async () => {
   return { ...actual, collectFreshMessages: () => [] }
 })
 
+// E8：删除/找人工改用 confirmDialog（非原生 confirm），mock 成"用户点了确认"
+vi.mock('../../lib/confirm', () => ({
+  ConfirmDialog: ({ open, onConfirm }: { open: boolean; onConfirm: () => void }) => (open ? <button onClick={onConfirm}>confirm-mock</button> : null),
+  confirmDialog: () => Promise.resolve(true),
+  uiAlert: () => Promise.resolve(),
+}))
+
 beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('scrm_customer_id', '7')
   localStorage.setItem('scrm_visitor_key', 'vk_test')
-  vi.stubGlobal('confirm', () => true)
 })
 
 describe('Client 个人信息删除', () => {

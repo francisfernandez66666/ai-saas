@@ -1,5 +1,6 @@
 // F3 租户资料上传页：JSON/MD/TXT 文件解析后上传到 /admin/kb/upload，并列出/删除租户自有片段。
 import { useCallback, useMemo, useRef, useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { Button, Input, MessagePlugin, Table, Tag, Textarea } from 'tdesign-react'
 import { useCrud } from '../../hooks/useCrud'
 import { AUTH } from '../../lib/api'
@@ -30,6 +31,7 @@ export default function TenantKBTab({ configs = [] }: { configs?: Cfg[] }) {
   const vectorCfg = useMemo(() => configs.find((c) => c.key === 'kb_vector_search'), [configs])
   const vectorOn = vectorCfg?.value !== 'false'
 
+  // 批量上传知识片段（F3）：POST 后按返回码聚合成功/失败并刷新列表
   const uploadPayloads = useCallback(async (items: KBUpsertPayload[]) => {
     if (items.length === 0) {
       MessagePlugin.warning('没有可上传的有效内容')
@@ -49,6 +51,7 @@ export default function TenantKBTab({ configs = [] }: { configs?: Cfg[] }) {
     return ok > 0
   }, [crud])
 
+  // 处理本地文件选择：逐个读取文本内容，转成知识片段 payload 后批量上传
   const onFiles = async (files: FileList | null) => {
     if (!files || files.length === 0) return
     const accepted = Array.from(files).filter((f) => ACCEPT_EXT.includes(extOf(f.name)))
@@ -66,6 +69,7 @@ export default function TenantKBTab({ configs = [] }: { configs?: Cfg[] }) {
     if (fileRef.current) fileRef.current.value = ''
   }
 
+  // 提交手工录入的知识片段（标题/正文），成功后清空表单
   const submitManual = async () => {
     if (!manual.title.trim() || !manual.content.trim()) {
       MessagePlugin.warning('请填写标题和内容')
@@ -75,8 +79,9 @@ export default function TenantKBTab({ configs = [] }: { configs?: Cfg[] }) {
     if (ok) setManual({ title: '', content: '' })
   }
 
+  // 删除单个租户知识片段（二次确认，复用 crud.remove）
   const remove = async (id: number) => {
-    if (!confirm('确认删除该租户知识片段？')) return
+    if (!(await confirmDialog('确认删除该租户知识片段？'))) return
     const j = await crud.remove(id)
     if (j?.code === 0) MessagePlugin.success('已删除')
   }

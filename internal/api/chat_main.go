@@ -18,6 +18,7 @@ import (
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/schema"
 	"ai-scrm/internal/service"
@@ -140,6 +141,22 @@ func Chat(c *gin.Context) {
 			Order("updated_at DESC").
 			First(&conversation)
 
+		// D8 修复(2026-09-14)：进程内 convMu 跨实例无效——多实例并发首条消息会各建一个
+		// active 会话。Redis 短锁裁决：持锁者复查后创建；拿不到锁=他实例在途，等 500ms 复查；
+		// 仍未命中才兜底自建（Redis 关闭时维持旧单机语义）。
+		if result.Error != nil {
+			h := redisclient.TryLock(fmt.Sprintf("conv:create:%d", customer.ID), 8*time.Second)
+			if h != nil {
+				defer h.Unlock()
+				result = db.RQ(c).Scopes(db.T(c)).Where("customer_id = ? AND status = ?", customer.ID, "active").
+					Order("updated_at DESC").First(&conversation) // 持锁复查，防双查皆空
+			} else if redisclient.IsEnabled() {
+				time.Sleep(500 * time.Millisecond)
+				result = db.RQ(c).Scopes(db.T(c)).Where("customer_id = ? AND status = ?", customer.ID, "active").
+					Order("updated_at DESC").First(&conversation)
+			}
+		}
+
 		if result.Error != nil {
 			// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
 			conversation = model.Conversation{
@@ -192,8 +209,23 @@ func Chat(c *gin.Context) {
 	// 导致顾问端出现多条重复/近似回复气泡
 	// 方案：入队前查客户最近2条消息，用2-gram关键词重叠度>50%判断是否"相似问题"
 	// 相似则返回merged状态，前端不渲染新气泡，等主请求回复即可
+	// D1 修复(2026-09-14)：候选消息必须落在合并时间窗内（合并窗口×2，下限2分钟/上限10分钟）。
+	// 旧实现无时间窗——与三周前旧问重叠即被静默吞掉，"重复问题永远没人回"。
+	mergeSuppressWindow := 2 * 25 * time.Second
+	if runtimecfg.DefaultSystemConfigService != nil {
+		mw := runtimecfg.DefaultSystemConfigService.GetIntForTenant(
+			db.EffectiveTenantIDFromGin(c), "merge_window_seconds", 25)
+		mergeSuppressWindow = time.Duration(mw*2) * time.Second
+	}
+	if mergeSuppressWindow < 2*time.Minute {
+		mergeSuppressWindow = 2 * time.Minute
+	}
+	if mergeSuppressWindow > 10*time.Minute {
+		mergeSuppressWindow = 10 * time.Minute
+	}
 	var recentCustomerMsgs []model.Message
-	if err := db.RQ(c).Where("customer_id = ? AND sender_type = ?", customer.ID, "customer").
+	if err := db.RQ(c).Where("customer_id = ? AND sender_type = ? AND created_at > ?",
+		customer.ID, "customer", time.Now().Add(-mergeSuppressWindow)).
 		Order("id DESC").Limit(2).Find(&recentCustomerMsgs).Error; err == nil {
 		currentKeywords := chatflow.ExtractKeywords(req.Content)
 		if len(currentKeywords) > 0 {
@@ -319,8 +351,11 @@ func Chat(c *gin.Context) {
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&offTopicMsg)
-		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复，epoch=0 不做代际拦截）
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, 0, reply)
+		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复）。
+		// D5 修复(2026-09-14)：携带当前代际而非 epoch=0——旧实现绕过 fencing，
+		// 在途批次的等待者会被离题话术错误唤醒、处理锁被提前释放（新批二次接管=双回复）。
+		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID,
+			service.DefaultMessageQueueService.CurrentEpoch(tenantID, customer.ID), reply)
 		RespOK(c, "success", gin.H{
 			"conversation_id": conversation.ID,
 			"ai_reply":        reply,
@@ -939,16 +974,28 @@ skipStoreVisitFast:
 	// 13. 返回结果
 	// 欢迎词由 /chat/welcome 接口独立返回，此处不再附带 earlier_messages
 	RespOK(c, "success", schema.ChatResponse{
-		ConversationID:   conversation.ID,
-		Message:          aiMsg,
-		StrategyInfo:     strategyInfo,
-		RouteResult:      routeResult,
-		Mode:             conversation.Mode,
-		NewTags:          newTags,
-		PendingHandoff:   conversation.PendingHandoff,
-		MergedCustomerID: uint(leadCapturedResult),
+		ConversationID: conversation.ID,
+		Message:        aiMsg,
+		StrategyInfo:   strategyInfo,
+		RouteResult:    routeResult,
+		Mode:           conversation.Mode,
+		NewTags:        newTags,
+		PendingHandoff: conversation.PendingHandoff,
+		// G5 修复(2026-09-14)：DetectLeadCapture 返回 -1 表"已留资无需合并"，
+		// 旧 `uint(-1)` 溢出成 4294967295 → 前端 merged>0 守卫误判、把 customer_id 切到不存在的老客户。
+		// 仅 >0（真发生 OneID 合并）才回传目标 ID，其余一律 0。
+		MergedCustomerID: mergedCustomerIDFor(leadCapturedResult),
 		VisitorKey:       customer.VisitorKey,
 	})
+}
+
+// mergedCustomerIDFor G5：把 DetectLeadCapture 的 int 结果安全转成回传前端的合并目标 ID——
+// 仅正数（真发生 OneID 合并）才回传，0/负值（含 -1 "已留资无需合并"）一律 0，杜绝 uint 负数溢出。
+func mergedCustomerIDFor(v int) uint {
+	if v > 0 {
+		return uint(v)
+	}
+	return 0
 }
 
 // HumanReply 人工回复接口

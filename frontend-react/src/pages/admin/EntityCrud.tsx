@@ -1,5 +1,6 @@
 // F1/F4 通用后台 CRUD 面板：列表、筛选、弹窗表单、启停/删除，复用于知识库和标签体系。
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { Button, Dialog, Input, InputNumber, MessagePlugin, Select, Switch, Table, Tag, Textarea } from 'tdesign-react'
 import { useCrud, type CrudRow } from '../../hooks/useCrud'
 import type { CellProps, TableRowData } from '../../types'
@@ -162,10 +163,12 @@ export function EntityCrud({
     })
   }, [initialFilters])
 
+  // 把草稿筛选条件落到 crud 真实过滤器（值变化才 setFilter，避免无谓重查）
   const applyFilters = useCallback(() => {
     Object.entries(draftFilters).forEach(([k, v]) => { if (crud.filters[k] !== v) crud.setFilter(k, v) })
   }, [crud, draftFilters])
 
+  // 打开新增表单：按字段定义预置默认值（bool→false / number→0 / 其余空）
   const openCreate = () => {
     setEditing(null)
     const f: Record<string, any> = {}
@@ -173,13 +176,16 @@ export function EntityCrud({
     setForm(f)
     setDialogVisible(true)
   }
+  // 打开编辑表单：把行数据回填为表单初值
   const openEdit = (row: CrudRow) => {
     setEditing(row)
     setForm(rowToForm(row))
     setDialogVisible(true)
   }
 
+  // 当前生效的字段集：编辑态用 editFields（未给则回落 createFields），新增态用 createFields
   const activeFields = () => editing ? (editFields || createFields) : createFields
+  // 提交新增/编辑：先必填与 JSON 校验，再 create/update，成功关窗
   const submit = async () => {
     const fields = activeFields()
     const missing = validateRequired(fields, form)
@@ -195,11 +201,13 @@ export function EntityCrud({
       setEditing(null)
     }
   }
+  // 删除一行（二次确认，取行名作提示主体）
   const remove = async (row: CrudRow) => {
-    if (!confirm(`确认删除「${row.name || row.title || row.param_name || row.id}」？`)) return
+    if (!(await confirmDialog(`确认删除「${row.name || row.title || row.param_name || row.id}」？`))) return
     const j = await crud.remove(row.id)
     if (j?.code === 0) MessagePlugin.success('已删除')
   }
+  // 启用/停用一行（按当前 status 反向调 disable/enable）
   const toggle = async (row: CrudRow) => {
     const active = Number(row.status) === 1
     const j = await crud.action(`${base}/${row.id}/${active ? 'disable' : 'enable'}`)

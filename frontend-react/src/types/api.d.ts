@@ -46,6 +46,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/tag-weights": unknown
   "GET /api/v1/admin/tags": unknown
   "GET /api/v1/admin/tags/:id": unknown
+  "GET /api/v1/admin/tenant/branding": unknown
   "GET /api/v1/admin/usage/summary": unknown
   "GET /api/v1/admin/webhooks": unknown
   "GET /api/v1/admin/webhooks/:id/deliveries": unknown
@@ -101,6 +102,7 @@ export interface ApiRoutes {
   "GET /api/v1/super/agreements": unknown
   "GET /api/v1/super/audit-logs": unknown
   "GET /api/v1/super/feedbacks": unknown
+  "GET /api/v1/super/invoices": unknown
   "GET /api/v1/super/materials": unknown
   "GET /api/v1/super/monitor/health": unknown
   "GET /api/v1/super/orders/pending": unknown
@@ -186,6 +188,7 @@ export interface ApiRoutes {
   "POST /api/v1/chat/clear-delay": unknown
   "POST /api/v1/chat/guest": unknown
   "POST /api/v1/chat/human/reply": unknown
+  "POST /api/v1/chat/request-human": unknown
   "POST /api/v1/chat/test": unknown
   "POST /api/v1/chat/transfer/ai": unknown
   "POST /api/v1/chat/transfer/human": unknown
@@ -203,7 +206,11 @@ export interface ApiRoutes {
   "POST /api/v1/privacy/deletion-request": unknown
   "POST /api/v1/strategy/templates": unknown
   "POST /api/v1/strategy/test": unknown
+  "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
+  "POST /api/v1/super/billing/orders/:id/refund": unknown
   "POST /api/v1/super/feedbacks/resolve": unknown
+  "POST /api/v1/super/invoices/:order_id/issue": unknown
+  "POST /api/v1/super/invoices/:order_id/void": unknown
   "POST /api/v1/super/materials/:id/evals": unknown
   "POST /api/v1/super/materials/:id/review": unknown
   "POST /api/v1/super/orders/:id/confirm": unknown

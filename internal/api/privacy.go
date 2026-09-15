@@ -57,16 +57,28 @@ func PrivacyDeletionRequest(c *gin.Context) {
 			RespErr(c, http.StatusBadRequest, 400, "customer_id 必填")
 			return
 		}
-		// 身份防线：登录态（顾问/管理员）放行；匿名必须 visitor_key 与目标客户一致
+		// 身份防线：匿名必须 visitor_key 与目标客户一致。
+		// B8 修复(2026-09-14)：登录态旧实现"即放行且不看归属"——任何销售可对租户内**任意客户**
+		// 发起 PIPL 删除（误删/恶意面）。现收敛为：仍须该客户落在本人数据范围内
+		// （tenant_admin/super 恒真，sales 仅本人名下），与读接口 DataScope 同口径。
+		var cust model.Customer
 		_, logged := c.Get("user_id")
 		if !logged {
-			var cust model.Customer
 			if err := db.RQ(c).Where("id = ?", req.CustomerID).First(&cust).Error; err != nil {
 				RespErr(c, http.StatusNotFound, 404, "客户不存在")
 				return
 			}
-			if req.VisitorKey == "" || cust.VisitorKey == "" || cust.VisitorKey != req.VisitorKey {
+			if req.VisitorKey == "" || !hashEqual(cust.VisitorKey, req.VisitorKey) {
 				RespErr(c, http.StatusForbidden, 403, "visitor_key 校验失败")
+				return
+			}
+		} else {
+			if err := db.RQ(c).Where("id = ?", req.CustomerID).First(&cust).Error; err != nil {
+				RespErr(c, http.StatusNotFound, 404, "客户不存在")
+				return
+			}
+			if !customerInDataScope(c, cust.AssignedUserID) {
+				RespErr(c, http.StatusForbidden, 403, "该客户不在你的数据范围内，无权发起删除")
 				return
 			}
 		}

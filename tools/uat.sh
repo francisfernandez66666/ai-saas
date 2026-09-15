@@ -144,7 +144,9 @@ echo ""
 echo "== 四、换绑撞库（防薅v2）=="
 $PSQL "INSERT INTO reward_claims (grant_type,tenant_id,email,note) VALUES ('referral_paid',$UB_ID,'uat-swap@t.com','占位撞库样本')" >/dev/null
 SW=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/auth/email/change" -H "$BH" -H "Content-Type: application/json" \
-  -d '{"new_email":"uat-swap@t.com","code":"any"}')
+  -d '{"new_email":"uat-swap@t.com","code":"any","old_password":"uat123456"}')
+# B4(2026-09-15)：换绑需旧密码二次确认，缺 old_password 会先被 binding 拦成 400；
+# 带上正确旧密码方能走到"撞库邮箱"分支断言 409（本用例验证的是防薅不变量，非改密链）。
 check "撞库邮箱换绑被拒(409)" 409 "$SW"
 
 echo ""
@@ -219,6 +221,10 @@ CUST_B=$(echo "$CUST_RAW" | jget "d['data']['id']")
 [ -z "$CUST_B" ] && echo "    [debug] customers原始: $(echo "$CUST_RAW" | head -c 160)"
 [ -n "$CUST_B" ] && R=y || R=n
 check "C端建联" y "$R"
+# C7 租户盖章回归护栏(2026-09-15)：配额分支建客必须落到本租户（tenant_id=$UB_ID），
+# 绝不能因事务丢 context 而盖成 tenant_id=0（跨租户泄露 + 本租户 chat 反查不到自己客户）。
+CUST_TID=$($PSQL "SELECT tenant_id FROM customers WHERE id=$CUST_B")
+check "建客租户归属正确(非tenant_id=0)" "$UB_ID" "$CUST_TID"
 round(){ curl -s --max-time 170 -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Type: application/json" -d "{\"customer_id\":$CUST_B,\"content\":\"$1\"}" >/dev/null; sleep 15; }
 round "极石01空间大吗"
 F1=$($PSQL "SELECT free_token_balance FROM tenants WHERE id=$UB_ID"); M1=$($PSQL "SELECT monthly_token_used FROM tenants WHERE id=$UB_ID"); B1=$($PSQL "SELECT token_balance FROM tenants WHERE id=$UB_ID")

@@ -37,15 +37,31 @@ type TokenManager struct {
 	cm  map[uint]*cachedToken
 	hc  *http.Client
 	now func() time.Time
+	// D6 修复(2026-09-14)：per-channel 刷新互斥——旧实现在缓存过期瞬间 N 个并发发送者
+	// 各自触发 gettoken，微信侧轮转失效（旧 token 立即作废互相踢）+ 日 IP 限额烧穿。
+	refreshMu map[uint]*sync.Mutex
 }
 
 // NewTokenManager 构造（now 注入便于单测计时）。
 func NewTokenManager() *TokenManager {
 	return &TokenManager{
-		cm:  map[uint]*cachedToken{},
-		hc:  &http.Client{Timeout: 10 * time.Second},
-		now: time.Now,
+		cm:        map[uint]*cachedToken{},
+		hc:        &http.Client{Timeout: 10 * time.Second},
+		now:       time.Now,
+		refreshMu: map[uint]*sync.Mutex{},
 	}
+}
+
+// channelLock 返回该通道的刷新互斥锁（惰性创建）。
+func (tm *TokenManager) channelLock(channelID uint) *sync.Mutex {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	l, ok := tm.refreshMu[channelID]
+	if !ok {
+		l = &sync.Mutex{}
+		tm.refreshMu[channelID] = l
+	}
+	return l
 }
 
 // defaultTokenManager 全局实例（出站/入站适配器共用）。
@@ -68,6 +84,19 @@ func (tm *TokenManager) Token(channelID uint, fetch func() (string, int, error))
 	tm.mu.Lock()
 	c := tm.cm[channelID]
 	if c != nil && tm.now().Before(c.expireAt) {
+		tok := c.token
+		tm.mu.Unlock()
+		return tok, nil
+	}
+	tm.mu.Unlock()
+
+	// D6 修复(2026-09-14)：过期刷新加 per-channel 锁 + 双检（single-flight），
+	// 并发只放一个请求真去 gettoken，其余等它写缓存后复用（避免轮转失效/日限额烧穿）。
+	l := tm.channelLock(channelID)
+	l.Lock()
+	defer l.Unlock()
+	tm.mu.Lock()
+	if c := tm.cm[channelID]; c != nil && tm.now().Before(c.expireAt) {
 		tok := c.token
 		tm.mu.Unlock()
 		return tok, nil

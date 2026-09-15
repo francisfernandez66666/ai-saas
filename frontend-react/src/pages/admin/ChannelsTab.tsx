@@ -1,7 +1,8 @@
 // F11 通道接入 Tab（F1 从 Admin.tsx 拆出）：通道凭据 CRUD、连通测试与出站死信重发。
 import { useEffect, useState } from 'react'
+import { confirmDialog } from '../../lib/confirm'
 import { Button, Dialog, Input, MessagePlugin, Select, Table, Tag, Textarea } from 'tdesign-react'
-import { getToken } from '../../lib/api'
+import { authHeaders } from '../../lib/api'
 import type { CellProps } from '../../types'
 
 type ChannelView = {
@@ -43,8 +44,10 @@ export function ChannelsTab() {
   const [saving, setSaving] = useState(false)
   const [created, setCreated] = useState<CreateChannelResp | null>(null)
 
-  const auth = (): Record<string, string> => ({ Authorization: 'Bearer ' + getToken() })
+  // 统一鉴权头（Authorization + 超管代管时 X-Tenant-ID）
+  const auth = (): Record<string, string> => authHeaders()
 
+  // 并行拉取通道列表与出站死信列表，回填两个表格
   async function load() {
     setLoading(true)
     try {
@@ -63,10 +66,12 @@ export function ChannelsTab() {
   }
   useEffect(() => { load() }, [])
 
+  // 打开"新增通道"表单：预置默认类型 wecom_app，清空全部字段
   function openCreate() {
     setEditingId(null)
     setForm({ type: 'wecom_app', name: '', corpid: '', appid: '', agentid: '', secret: '', token: '', encoding_aes_key: '', department_id: '', config_json: '{}' })
   }
+  // 打开"编辑通道"表单：回填非敏感字段；secret/token/aeskey 后端只存掩码，故留空表示"不修改"
   function openEdit(ch: ChannelView) {
     const cfg = safeParseConfig(ch.config_json)
     setEditingId(ch.id)
@@ -75,12 +80,16 @@ export function ChannelsTab() {
       secret: '', token: '', encoding_aes_key: '', department_id: String(ch.department_id || ''), config_json: ch.config_json || '{}',
     })
   }
+  // 关闭表单弹窗并退出编辑态
   function closeForm() { setForm(null); setEditingId(null) }
+  // 受控更新表单某个字段（form 为 null 时忽略，防弹窗外误写）
   function setF<K extends keyof ChannelForm>(k: K, v: ChannelForm[K]) {
     setForm((s) => s ? { ...s, [k]: v } : s)
   }
+  // 是否要求填 CorpID：企微自建应用/微信客服需要，公众号只需 AppID
   function requireWecomCorpid(type: string) { return type !== 'wechat_mp' }
 
+  // 提交新建/编辑：先做前端必填与扩展配置 JSON 形态校验，再 PUT/POST；新建成功弹一次性明文
   async function submit() {
     if (!form) return
     if (!form.name.trim()) { MessagePlugin.warning('请输入通道名称'); return }
@@ -119,6 +128,7 @@ export function ChannelsTab() {
     }
   }
 
+  // 连通测试：调后端 verify 端点试拿 access_token，成功/失败提示并刷新列表状态
   async function verify(ch: ChannelView) {
     const r = await fetch(`/api/v1/admin/channels/${ch.id}/verify`, { method: 'POST', headers: auth() })
     const j = (await r.json().catch(() => null)) as ApiResp<{ ok?: boolean; detail?: string }> | null
@@ -126,20 +136,23 @@ export function ChannelsTab() {
     else MessagePlugin.warning(j?.data?.detail || j?.message || '连通失败')
     load()
   }
+  // 启用/停用通道（active↔disabled），停用后入站回调与出站投递不再处理
   async function setStatus(ch: ChannelView, status: 'active' | 'disabled') {
     const r = await fetch(`/api/v1/admin/channels/${ch.id}/status?status=${status}`, { method: 'PUT', headers: auth() })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '状态更新失败')
     load()
   }
+  // 删除通道：二次确认后调 DELETE，回调地址随即失效（提示已写明）
   async function del(ch: ChannelView) {
-    if (!confirm(`确认删除通道「${ch.name}」？删除后回调地址会失效。`)) return
+    if (!(await confirmDialog(`确认删除通道「${ch.name}」？删除后回调地址会失效。`))) return
     const r = await fetch(`/api/v1/admin/channels/${ch.id}`, { method: 'DELETE', headers: auth() })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '删除失败')
     else MessagePlugin.success('已删除')
     load()
   }
+  // 死信重发：把出站队列里超上限失败的投递重新入队投递一次
   async function retryDeadLetter(row: OutboundView) {
     const r = await fetch(`/api/v1/admin/channel-dlq/${row.id}/retry`, { method: 'POST', headers: auth() })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
@@ -148,6 +161,7 @@ export function ChannelsTab() {
     load()
   }
 
+  // 通道表格列定义（类型/名称/标识/状态/凭据掩码/操作）
   const cols = [
     { colKey: 'type', title: '类型', width: 130, cell: (p: CellProps) => <Tag theme="primary">{CHANNEL_TYPE_LABELS[p.row.type] || p.row.type}</Tag> },
     { colKey: 'name', title: '名称', width: 160 },
@@ -165,6 +179,7 @@ export function ChannelsTab() {
       </div>
     ) },
   ]
+  // 出站死信表格列定义（含重发操作按钮）
   const dlqCols = [
     { colKey: 'id', title: 'ID', width: 70 },
     { colKey: 'channel_id', title: '通道', width: 80 },

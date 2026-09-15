@@ -5,6 +5,7 @@ import { ChannelsTab } from '../ChannelsTab'
 
 vi.mock('../../../lib/api', () => ({
   getToken: () => 'test-token',
+  authHeaders: () => ({ Authorization: 'Bearer test-token' }),
 }))
 
 const channel = {

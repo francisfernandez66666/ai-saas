@@ -13,6 +13,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/binary"
 	"errors"
@@ -138,8 +139,11 @@ func (c *Crypt) Signature(timestamp, nonce, encrypt string) string {
 }
 
 // VerifySignature 校验传入签名与本地计算是否一致。
+// B9 修复(2026-09-14)：改常量时间比较——旧 `!=` 短路会在首个不匹配字节返回，
+// 理论上可时序侧信道逐字节猜签名；sha1 hex 定长，用 subtle.ConstantTimeCompare。
 func (c *Crypt) VerifySignature(timestamp, nonce, encrypt, given string) error {
-	if c.Signature(timestamp, nonce, encrypt) != given {
+	want := c.Signature(timestamp, nonce, encrypt)
+	if subtle.ConstantTimeCompare([]byte(want), []byte(given)) != 1 {
 		return ErrSignature
 	}
 	return nil

@@ -1,9 +1,11 @@
 // 平台超管后台页（SuperAdmin）：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 import { useState, useEffect } from 'react'
+import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { AUTH, apiJSON, logoutAndRedirect } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
+import { MonitorTab } from './super/MonitorTab'
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
 const { Header, Aside, Content } = Layout
@@ -64,8 +66,8 @@ export default function SuperAdmin() {
   const [agType, setAgType] = useState('')
   // 白标定制：当前选中的租户 ID
   const [bdTenant, setBdTenant] = useState<number | ''>('')
-  // 白标表单字段（自定义域名/品牌名/Logo/主题色等）
-  const [bd, setBd] = useState({ custom_domain: '', brand_name: '', brand_link: '', logo_url: '', favicon_url: '', primary_color: '', secondary_color: '' })
+  // 白标表单字段（自定义域名/品牌名/Logo/主题色等；A5：补 custom_css/custom_js 编辑位）
+  const [bd, setBd] = useState({ custom_domain: '', brand_name: '', brand_link: '', logo_url: '', favicon_url: '', primary_color: '', secondary_color: '', custom_css: '', custom_js: '' })
   // 白标保存结果提示
   const [bdMsg, setBdMsg] = useState('')
   // 当前菜单页（左侧正式菜单切换，不再纵向堆叠全部功能）
@@ -120,7 +122,7 @@ export default function SuperAdmin() {
   async function loadBdTenant() {
     if (bdTenant === '') return
     const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding'); const b = j.data || {}
-    setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== '跨山 LexCross') ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '' })
+    setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== '跨山 LexCross') ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '', custom_css: b.custom_css || '', custom_js: b.custom_js || '' })
   }
   // 保存选中租户的白标配置
   async function saveBd() {
@@ -147,9 +149,15 @@ export default function SuperAdmin() {
   // 把空值安全转成字符串，避免表格渲染出 undefined
   const esc = (s?: string) => (s == null ? '' : String(s))
 
-  // 封禁/恢复租户（带确认）
+  // 给租户发放一次性试用额度（幂等，已发放过的后端拒绝）
+  async function grantTrial(id: number) {
+    if (!(await confirmDialog('将为该租户发放一次性试用额度（幂等，已发放过的租户会被拒绝）。确认？', '发放试用额度'))) return
+    const j = await AUTH(`/api/v1/super/tenants/${id}/grant-trial`, { method: 'POST' })
+    MessagePlugin[j?.code === 0 ? 'success' : 'warning'](j?.message || (j?.code === 0 ? '已发放' : '发放失败'))
+  }
+  // 停用/恢复租户（带二次确认），成功后刷新租户列表
   async function setStatus(id: number, st: string) {
-    if (!confirm('确认将租户 #' + id + ' 置为 ' + st + ' ?')) return
+    if (!(await confirmDialog('确认将租户 #' + id + ' 置为 ' + st + ' ?'))) return
     await AUTH(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', body: { status: st } })
     load()
   }
@@ -173,7 +181,7 @@ export default function SuperAdmin() {
   }
   // 人工确认收款：核实到账后发放权益，接口幂等（重复确认自动跳过）
   async function confirmOrder(id: number) {
-    if (!confirm('确认已收到该笔款项？确认后立即发放对应权益。')) return
+    if (!(await confirmDialog('确认已收到该笔款项？确认后立即发放对应权益。'))) return
     const j = await AUTH(`/api/v1/super/orders/${id}/confirm`, { method: 'POST' }); MessagePlugin.info(j.message || '操作完成'); loadPending()
   }
   // 标记反馈为已处理（可填处理备注）
@@ -183,6 +191,7 @@ export default function SuperAdmin() {
     loadFeedbacks()
   }
 
+  // 租户列表列定义（含状态标签、用量、停用/恢复与发试用操作）
   const tenantCols = [
     { colKey: 'id', title: 'ID', width: 60 },
     { colKey: 'name', title: '企业名称', width: 160 },
@@ -191,8 +200,16 @@ export default function SuperAdmin() {
     { colKey: 'used', title: '客户用量', width: 100, cell: (p: CellProps) => `${p.row.used_customers}/${p.row.max_customers || '∞'}` },
     { colKey: 'status', title: '状态', width: 90, cell: (p: CellProps) => <Tag theme={p.row.status === 'suspended' ? 'danger' : 'success'}>{p.row.status}</Tag> },
     { colKey: 'created_at', title: '开通日期', width: 120 },
-    { colKey: 'op', title: '操作', width: 100, cell: (p: CellProps) => p.row.status === 'suspended' ? <Button size="small" theme="success" onClick={() => setStatus(p.row.id, 'active')}>恢复</Button> : <Button size="small" theme="danger" variant="outline" onClick={() => setStatus(p.row.id, 'suspended')}>停用</Button> },
+    { colKey: 'op', title: '操作', width: 190, cell: (p: CellProps) => (
+      <div style={{ display: 'flex', gap: 6 }}>
+        {p.row.status === 'suspended'
+          ? <Button size="small" theme="success" onClick={() => setStatus(p.row.id, 'active')}>恢复</Button>
+          : <Button size="small" theme="danger" variant="outline" onClick={() => setStatus(p.row.id, 'suspended')}>停用</Button>}
+        <Button size="small" variant="outline" onClick={() => grantTrial(p.row.id)}>发试用</Button>
+      </div>
+    ) },
   ]
+  // AI 商业包列定义（类型/售价/有效期/上下架切换）
   const pkgCols = [
     { colKey: 'id', title: 'ID', width: 50 }, { colKey: 'code', title: '标识', width: 120 }, { colKey: 'name', title: '名称', width: 120 },
     { colKey: 'p_type', title: '类型', width: 90, cell: (p: CellProps) => TYPE_NAMES[p.row.p_type] || p.row.p_type },
@@ -202,6 +219,7 @@ export default function SuperAdmin() {
     { colKey: 'enabled', title: '状态', width: 80, cell: (p: CellProps) => <Tag theme={p.row.enabled ? 'success' : 'default'}>{p.row.enabled ? '上架' : '下架'}</Tag> },
     { colKey: 'op', title: '操作', width: 90, cell: (p: CellProps) => <Button size="small" theme={p.row.enabled ? 'danger' : 'success'} variant="outline" onClick={() => togglePkg(p.row.id, !p.row.enabled)}>{p.row.enabled ? '下架' : '上架'}</Button> },
   ]
+  // 用户反馈列定义（租户/提交人/类型/意见/标记处理）
   const fbCols = [
     { colKey: 'created_at', title: '时间', width: 140, cell: (p: CellProps) => (p.row.created_at || '').replace('T', ' ').slice(0, 16) },
     { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `#${p.row.tenant_id} ${esc(p.row.tenant_name)}` },
@@ -210,17 +228,20 @@ export default function SuperAdmin() {
     { colKey: 'content', title: '意见', width: 220, ellipsis: true },
     { colKey: 'op', title: '操作', width: 100, cell: (p: CellProps) => p.row.status === 'open' ? <Button size="small" theme="success" onClick={() => resolveFb(p.row.id)}>标记处理</Button> : <span style={{ fontSize: 12, color: '#718096' }}>已处理</span> },
   ]
+  // 待确认收款订单列定义（含确认到账发放按钮）
   const pendingCols = [
     { colKey: 'order_no', title: '订单号', width: 160 }, { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
     { colKey: 'package_name', title: '商业包', width: 140 }, { colKey: 'amount_cents', title: '金额', width: 100, cell: (p: CellProps) => '¥' + (p.row.amount_cents / 100).toFixed(2) },
     { colKey: 'created_at', title: '提交时间', width: 160 }, { colKey: 'op', title: '操作', width: 140, cell: (p: CellProps) => <Button size="small" theme="success" onClick={() => confirmOrder(p.row.id)}>确认到账并发放</Button> },
   ]
+  // 平台审计日志列定义（动作/critical 高亮/操作人/IP）
   const auditCols = [
     { colKey: 'created_at', title: '时间', width: 150 }, { colKey: 'tenant_id', title: '租户', width: 70, cell: (p: CellProps) => '#' + p.row.tenant_id },
     { colKey: 'action', title: '动作', width: 200, cell: (p: CellProps) => <Tag theme={p.row.action.includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
     { colKey: 'username', title: '操作人', width: 100, cell: (p: CellProps) => p.row.username || p.row.user_id }, { colKey: 'resource', title: '资源', width: 160 },
     { colKey: 'detail', title: '详情', width: 260, ellipsis: true }, { colKey: 'ip', title: 'IP', width: 120 },
   ]
+  // 协议签署记录列定义（用户/租户/协议类型/版本/状态）
   const agCols = [
     { colKey: 'id', title: 'ID', width: 60 }, { colKey: 'username', title: '用户', width: 120, cell: (p: CellProps) => esc(p.row.username) },
     { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
@@ -255,11 +276,13 @@ export default function SuperAdmin() {
               <MenuItem value="audit">审计日志</MenuItem>
               <MenuItem value="agreements">协议签署</MenuItem>
               <MenuItem value="branding">品牌定制（白标）</MenuItem>
+              <MenuItem value="monitor">平台健康监控</MenuItem>
             </MenuGroup>
           </Menu>
         </Aside>
         <Content style={{ padding: '20px 24px', minWidth: 0 }}>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+            {view === 'monitor' && <MonitorTab />}
             {view === 'tenants' && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>
@@ -360,6 +383,12 @@ export default function SuperAdmin() {
                     <Field label="主题主色" v={bd.primary_color} set={(x) => setBd({ ...bd, primary_color: x })} ph="#4f46e5" />
                     <Field label="主题辅色" v={bd.secondary_color} set={(x) => setBd({ ...bd, secondary_color: x })} ph="#6366f1" />
                   </div>
+                  {/* A5 修复(2026-09-14)：custom_css/custom_js 有库列有注入执行链但全站无编辑入口；
+                      A3：旧表单缺这两字段时后端按零值覆盖，超管每次保存即抹掉既有 CSS/JS——后端已指针化，此处补编辑位 */}
+                  <div><label style={{ display: 'block', fontSize: 13, color: '#475569', marginBottom: 4 }}>自定义 CSS（注入该租户全部页面）</label>
+                    <textarea value={bd.custom_css} onChange={(e) => setBd({ ...bd, custom_css: e.target.value })} placeholder="如 .tdesign-header { display:none }" style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'monospace', fontSize: 12 }} /></div>
+                  <div><label style={{ display: 'block', fontSize: 13, color: '#475569', marginBottom: 4 }}>自定义 JS（仅超管可改；空=不改）</label>
+                    <textarea value={bd.custom_js} onChange={(e) => setBd({ ...bd, custom_js: e.target.value })} placeholder="平台侧注入脚本（信任面：超管专属）" style={{ width: '100%', minHeight: 60, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6, fontFamily: 'monospace', fontSize: 12 }} /></div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                     <Button theme="primary" onClick={saveBd}>保存品牌配置</Button>
                     <span style={{ fontSize: 13, color: bdMsg.includes('✅') ? '#16a34a' : '#dc2626' }}>{bdMsg}</span>

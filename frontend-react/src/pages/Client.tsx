@@ -8,6 +8,8 @@ import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
 import { getToken } from '../lib/api'
+import { ConfirmDialog } from '../lib/ui'
+import { confirmDialog, uiAlert } from '../lib/confirm'
 import { Msg } from '../types'
 import { collectFreshMessages, filterReplyMessages, promoteTempAndRegister, dropSystemNotice } from '../lib/chat'
 
@@ -120,7 +122,7 @@ export default function Client() {
    */
   async function poll() {
     const cid = convIdRef.current
-    let url = cid ? `${API}/chat/history?conversation_id=${cid}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
+    const url = cid ? `${API}/chat/history?conversation_id=${cid}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
     try {
       const r = await fetch(url); const j = await r.json()
       if (j.code === 0 && j.data && j.data.length) {
@@ -136,7 +138,7 @@ export default function Client() {
           scrollBottom()
         }
       }
-    } catch {}
+    } catch { /* 取历史失败静默 */ }
   }
 
   /**
@@ -150,7 +152,7 @@ export default function Client() {
   async function send() {
     const content = input.trim(); if (!content) return
     // 安全：开启人机验证（Turnstile）且未通过时禁止发送，防止脚本刷对话
-    if (tsEnabled && !tsOk) { alert('请先完成人机验证'); return }
+    if (tsEnabled && !tsOk) { setMsgs((m) => [...m, { sender_type: 'system', content: '请先完成下方人机验证再发送' }]); scrollBottom(); return }
     setInput('')
     // 创建临时消息（乐观更新），使用时间戳作为临时 ID
     const temp: Msg = { id: 'temp_' + Date.now(), sender_type: 'customer', content, created_at: new Date().toISOString() }
@@ -199,6 +201,32 @@ export default function Client() {
     finally { clearTimeout(t1); clearTimeout(t2); setTyping(false) }
   }
 
+  // E3 修复(2026-09-14)：C 端"找人工"——旧版转人工只能等 AI 触发，客户主动求助无入口。
+  // 二次确认用项目 ConfirmDialog（非原生 confirm，遵循 G-20/E8 统一收口）；
+  // 后端 visitor_key 自证后置会话 mode=human，前端本地追加系统提示，AI 停止接管。
+  const [humanBusy, setHumanBusy] = useState(false)
+  const [humanConfirm, setHumanConfirm] = useState(false)
+  async function doRequestHuman() {
+    setHumanConfirm(false)
+    setHumanBusy(true)
+    try {
+      const vk = localStorage.getItem(LS_KEY) || ''
+      const r = await fetch(`${API}/chat/request-human?visitor_key=${encodeURIComponent(vk)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current }),
+      })
+      const j = await r.json()
+      if (j?.code === 0) {
+        setTyping(false)
+        setMsgs((m) => [...m, { sender_type: 'system', content: j.message || '已为你转接人工顾问，请稍候~' }])
+        scrollBottom()
+      } else {
+        setMsgs((m) => [...m, { sender_type: 'system', content: j?.message || '转接失败，请稍后再试' }])
+      }
+    } catch {
+      setMsgs((m) => [...m, { sender_type: 'system', content: '网络异常，请稍后再试' }])
+    } finally { setHumanBusy(false) }
+  }
+
   /**
    * 初始化人机验证（Cloudflare Turnstile）
    * 站点开启时动态加载 Turnstile 脚本并渲染验证框
@@ -217,7 +245,7 @@ export default function Client() {
         if (el && (window as any).turnstile) (window as any).turnstile.render(el, { sitekey: j.data.site_key, callback: (t: string) => { setTsToken(t); setTsOk(true) } })
       }
       document.head.appendChild(s)
-    } catch {}
+    } catch { /* Turnstile 加载失败降级无验证码 */ }
   }
 
   useEffect(() => {
@@ -252,7 +280,7 @@ export default function Client() {
             if (gd.visitor_key) localStorage.setItem(LS_KEY, gd.visitor_key)
             setWsCid(cid); setWsVk(gd.visitor_key || localStorage.getItem(LS_KEY) || null)
           }
-        } catch {}
+        } catch { /* 欢迎语失败静默 */ }
       }
       await loadHistory()
       // 仅当该客户还没有任何会话/历史时才发欢迎语，避免刷新或切页重复出现"顾问正在接通中"
@@ -272,9 +300,9 @@ export default function Client() {
    * 匿名访客用 visitor_key 自证；登录态可额外带 Authorization，后端按 user_id 放行本人关联客户。
    */
   async function requestCustomerDeletion() {
-    if (!custId.current) { alert('请先开始对话'); return }
+    if (!custId.current) { uiAlert('请先开始对话'); return }
     if (privacyBusy) return
-    if (!confirm('申请删除你的咨询资料？提交后将在到期前匿名化，历史内容不再用于后续服务。')) return
+    if (!(await confirmDialog('申请删除你的咨询资料？提交后将在到期前匿名化，历史内容不再用于后续服务。'))) return
     setPrivacyBusy(true)
     try {
       const token = getToken()
@@ -295,10 +323,10 @@ export default function Client() {
         setMsgs((m) => [...m, { sender_type: 'system', content: `已受理删除申请${deadline ? '，预计 ' + deadline : ''}` }])
         scrollBottom()
       } else {
-        alert(j?.message || '删除申请提交失败')
+        uiAlert(j?.message || '删除申请提交失败')
       }
     } catch {
-      alert('删除申请提交失败')
+      uiAlert('删除申请提交失败')
     } finally {
       setPrivacyBusy(false)
     }
@@ -348,7 +376,10 @@ export default function Client() {
         <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" aria-label="消息输入框" style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
         {/* G-20：发送按钮 aria-label 标注操作意图；人机验证未通过时 disabled 并降低透明度 */}
         <button onClick={send} disabled={(tsEnabled && !tsOk)} aria-label="发送消息" style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
+        {/* E3：找人工入口——转接后真人接管，AI 停回自动回复 */}
+        <button onClick={() => setHumanConfirm(true)} disabled={humanBusy} aria-label="转接人工顾问" style={{ background: '#fff', color: 'var(--pri, #4f46e5)', border: '1px solid var(--pri, #4f46e5)', borderRadius: 20, padding: '10px 14px', fontSize: 14, fontWeight: 600, opacity: humanBusy ? 0.5 : 1 }}>{humanBusy ? '转接中…' : '找人工'}</button>
       </div>
+      <ConfirmDialog open={humanConfirm} title="转接人工顾问" message="转接后由真人顾问回复你，AI 助手将暂停自动回复。确认转接？" onConfirm={doRequestHuman} onCancel={() => setHumanConfirm(false)} />
     </div>
   )
 }

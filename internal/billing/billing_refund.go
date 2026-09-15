@@ -20,9 +20,10 @@ import (
 
 // refundClawback 退款需同步回收的权益（关闭「付费→退款→白嫖」口子）
 type refundClawback struct {
-	tokens    int64 // increment：回收②永久余额份额
-	expire    bool  // paid：摘除订阅（expired_at=现在 + 月配额清零）
-	shrinkDay int   // paid 非最新订阅单：expired_at 仅回退该单剩余天数（R12 多单不误伤）
+	tokens    int64      // increment：回收②永久余额份额
+	expire    bool       // paid：摘除订阅（expired_at=现在 + 月配额清零）
+	shrinkDay int        // paid 非最新订阅单：expired_at 仅回退该单剩余天数（R12 多单不误伤）
+	expireTo  *time.Time // C1 修复(2026-09-14)：退最新单但更早订阅单窗口未耗尽 → expired_at 回落到其最晚窗口终点而非 now
 }
 
 // MarkOrderRefunded 按剩余比例退款（2026-09-08 商业化审计修复）。
@@ -101,13 +102,19 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 				refundInfo.tokens = v
 			}
 			if cb.expire {
+				// C1 修复(2026-09-14)：退最新单时若更早订阅窗口未耗尽，到期日回落到该窗口终点
+				// 且保留月配额（订阅仍有效）；确无在途订阅才即刻摘除清零。
+				exp := now
+				updates := map[string]any{"expired_at": exp}
+				if cb.expireTo != nil && cb.expireTo.After(now) {
+					updates["expired_at"] = *cb.expireTo
+				} else {
+					updates["monthly_token_quota"] = 0
+					updates["monthly_token_used"] = 0
+				}
 				r := tx.Model(&model.Tenant{}).
 					Where("id = ?", *o.TenantID).
-					Updates(map[string]any{
-						"expired_at":          now,
-						"monthly_token_quota": 0,
-						"monthly_token_used":  0,
-					})
+					Updates(updates)
 				if r.Error != nil {
 					return r.Error
 				}
@@ -242,6 +249,22 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 		if later > 0 {
 			return &refundClawback{shrinkDay: left}, refund, nil
 		}
+		// C1 修复(2026-09-14)：旧逻辑"无更晚单 → 整体摘除 expired_at=now"，叠加订阅下
+		// 会把**更早订单未消耗的窗口**一并清零（3/1 买 A 至 3/31 + 3/15 买 B 至 4/14，
+		// 3/20 退 B → A 剩余 11 天蒸发）。改为回落到其余仍付费订阅单的最晚窗口终点。
+		var other struct {
+			MaxEnd *time.Time
+		}
+		tx.Table("billing_orders o2").
+			Select("MAX(COALESCE(o2.paid_at, o2.created_at) + (COALESCE(p2.duration_days, 0) * INTERVAL '1 day')) AS max_end").
+			Joins("JOIN packages p2 ON p2.id = o2.package_id").
+			Where("o2.tenant_id = ? AND o2.id <> ? AND o2.status = 'paid' AND p2.p_type = ?",
+				*o.TenantID, o.ID, model.PackageTypePaid).
+			Scan(&other)
+		if other.MaxEnd != nil && other.MaxEnd.After(nowT) {
+			expireTo := *other.MaxEnd
+			return &refundClawback{expire: true, expireTo: &expireTo}, refund, nil
+		}
 		return &refundClawback{expire: true}, refund, nil
 	default:
 		return nil, 0, nil // free 等：金额0/注册礼，无权益可回收
@@ -284,7 +307,7 @@ func orderIncrementRemaining(tx *gorm.DB, o model.BillingOrder, t model.Tenant, 
 }
 
 // RequestInvoice 申请发票：置 InvoiceRequested=true, InvoiceStatus=requested（幂等，仅 pending/paid 可申）
-func RequestInvoice(orderID uint) (*model.BillingOrder, error) {
+func RequestInvoice(orderID uint, args ...string) (*model.BillingOrder, error) {
 	var o model.BillingOrder
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, fmt.Errorf("订单不存在")
@@ -292,8 +315,61 @@ func RequestInvoice(orderID uint) (*model.BillingOrder, error) {
 	if o.Status != "paid" {
 		return nil, fmt.Errorf("仅已支付订单可申请发票（当前 %s）", o.Status)
 	}
+	// §W 发票极限(2026-09-14)：抬头/税号/邮箱随申请落库（旧实现前端硬编码"AI-SCRM服务费"、
+	// 无税号字段）——资质到位前支持"人工开票 + 超管回录发票号"，requested→issued→voided 状态机。
+	upd := map[string]interface{}{"invoice_requested": true, "invoice_status": "requested"}
+	if len(args) > 0 && args[0] != "" {
+		upd["invoice_title"] = args[0]
+	}
+	if len(args) > 1 && args[1] != "" {
+		upd["invoice_tax_no"] = args[1]
+	}
+	if len(args) > 2 && args[2] != "" {
+		upd["invoice_email"] = args[2]
+	}
+	// 已开票(reissued 前)允许重提更新抬头；issued 之后拒绝改
+	if o.InvoiceStatus == "issued" {
+		return nil, fmt.Errorf("发票已开具，如需修改请联系平台作废")
+	}
 	if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).
-		Updates(map[string]interface{}{"invoice_requested": true, "invoice_status": "requested"}).Error; err != nil {
+		Updates(upd).Error; err != nil {
+		return nil, err
+	}
+	db.DB.First(&o, orderID)
+	return &o, nil
+}
+
+// IssueInvoice §W：超管人工开票后回录发票号，置 issued（幂等：仅 requested 可转 issued）。
+func IssueInvoice(orderID uint, invoiceNo string) (*model.BillingOrder, error) {
+	var o model.BillingOrder
+	if err := db.DB.First(&o, orderID).Error; err != nil {
+		return nil, fmt.Errorf("订单不存在")
+	}
+	if o.InvoiceStatus != "requested" {
+		return nil, fmt.Errorf("仅已申请待开具的发票可回录（当前 %s）", o.InvoiceStatus)
+	}
+	if invoiceNo == "" {
+		return nil, fmt.Errorf("发票号必填")
+	}
+	if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).
+		Updates(map[string]interface{}{"invoice_status": "issued", "invoice_no": invoiceNo}).Error; err != nil {
+		return nil, err
+	}
+	db.DB.First(&o, orderID)
+	return &o, nil
+}
+
+// VoidInvoice §W：作废发票（issued→voided），允许租户重新申请。
+func VoidInvoice(orderID uint) (*model.BillingOrder, error) {
+	var o model.BillingOrder
+	if err := db.DB.First(&o, orderID).Error; err != nil {
+		return nil, fmt.Errorf("订单不存在")
+	}
+	if o.InvoiceStatus == "" {
+		return nil, fmt.Errorf("该订单未申请发票")
+	}
+	if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", orderID).
+		Updates(map[string]interface{}{"invoice_status": "voided", "invoice_requested": false}).Error; err != nil {
 		return nil, err
 	}
 	db.DB.First(&o, orderID)

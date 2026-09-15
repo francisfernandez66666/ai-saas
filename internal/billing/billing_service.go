@@ -14,9 +14,11 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/redisclient"
 )
 
 // ErrRefundNoRemaining 退款拒绝哨兵：订单权益已全部消耗/过期，无剩余可退
@@ -210,6 +212,70 @@ func VerifyGatewaySign(key, orderNo, status, sign string) bool {
 	mac := hmac.New(sha256.New, []byte(key))
 	mac.Write([]byte(orderNo + "|" + status))
 	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sign))
+}
+
+// ============================================================
+// C6 修复(2026-09-14)：webhook 防重放
+// 旧签名仅 HMAC(order_no|trade_status)——同一报文可无限重放。
+// 今日靠 MarkOrderPaid 条件转移兜底，但 paid 副作用（webhook 扇出/奖励事件）
+// 一旦增强即成资金口。新口径：HMAC(order_no|trade_status|timestamp|nonce)，
+// 时间窗 ±5min + nonce 去重（Redis 可用走 SETNX，否则进程内存表）。
+// ============================================================
+
+// VerifyGatewaySignV2 新版回调验签（timestamp 为 unix 秒字符串）
+func VerifyGatewaySignV2(key, orderNo, status, timestamp, nonce, sign string) bool {
+	if key == "" || sign == "" || timestamp == "" || nonce == "" {
+		return false
+	}
+	mac := hmac.New(sha256.New, []byte(key))
+	mac.Write([]byte(orderNo + "|" + status + "|" + timestamp + "|" + nonce))
+	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sign))
+}
+
+// WebhookTimestampFresh 时间窗校验（±300s，防截获后无限期重放）
+func WebhookTimestampFresh(timestamp string) bool {
+	secs, err := strconv.ParseInt(timestamp, 10, 64)
+	if err != nil {
+		return false
+	}
+	diff := time.Now().Unix() - secs
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= 300
+}
+
+// 进程内 nonce 去重表（Redis 不可用时兜底；10min 窗口，量级极小直接全表清扫）
+var (
+	webhookNonceMu sync.Mutex
+	webhookNonces  = map[string]time.Time{}
+)
+
+// WebhookNonceSeen nonce 是否已被消费（true=重放）。Redis 优先跨实例去重。
+func WebhookNonceSeen(nonce string) bool {
+	if nonce == "" {
+		return true
+	}
+	if redisclient.IsEnabled() {
+		// TryLock(SETNX+TTL)：抢不到即已见过；故意不 Unlock，留到 TTL 自然过期
+		if h := redisclient.TryLock("billing:webhook:nonce:"+nonce, 10*time.Minute); h == nil {
+			return true
+		}
+		return false
+	}
+	webhookNonceMu.Lock()
+	defer webhookNonceMu.Unlock()
+	now := time.Now()
+	for k, exp := range webhookNonces {
+		if now.After(exp) {
+			delete(webhookNonces, k)
+		}
+	}
+	if _, dup := webhookNonces[nonce]; dup {
+		return true
+	}
+	webhookNonces[nonce] = now.Add(10 * time.Minute)
+	return false
 }
 
 // loadGatewayProvider 从系统配置/环境变量装配网关（热加载，缺省环境变量兜底）

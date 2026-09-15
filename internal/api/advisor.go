@@ -1131,10 +1131,22 @@ func AdvisorSendMessage(c *gin.Context) {
 		if cust.AssignedUserID != jwtUserID {
 			// 如果客户尚未分配，允许接管（先分配再发消息）
 			if cust.AssignedUserID == 0 {
-				db.RQ(c).Model(&cust).Updates(map[string]interface{}{
-					"assigned_user_id":  jwtUserID,
-					"assignment_reason": "ai_handover",
-				})
+				// D10 修复(2026-09-14)：读后写竞态——两顾问并发发首条消息旧实现都会"分配给自己+发送"，
+				// assigned 最后写赢，客户被两人同时接。改条件抢占：仅当仍无人认领才成功，输者 403。
+				res := db.RQ(c).Model(&model.Customer{}).
+					Where("id = ? AND COALESCE(assigned_user_id, 0) = 0", cust.ID).
+					Updates(map[string]interface{}{
+						"assigned_user_id":  jwtUserID,
+						"assignment_reason": "ai_handover",
+					})
+				if res.Error != nil {
+					RespErr(c, http.StatusInternalServerError, 500, "接管失败")
+					return
+				}
+				if res.RowsAffected == 0 {
+					RespErr(c, http.StatusForbidden, 403, "该客户刚被其他顾问接管，请刷新客户列表")
+					return
+				}
 				log.Printf("[顾问发消息-自动分配] 客户%d 未分配，自动分配给顾问%d", cust.ID, jwtUserID)
 			} else {
 				RespErr(c, http.StatusForbidden, 403, "该客户已分配给其他顾问，无法发送消息")

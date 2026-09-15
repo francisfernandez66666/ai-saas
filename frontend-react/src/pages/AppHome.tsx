@@ -19,7 +19,7 @@ export default function AppHome() {
     { to: '/app/billing', icon: '💰', title: '收银台', desc: '三桶余额/套餐充值' },
     { to: '/app/referral', icon: '🎁', title: '邀请推广', desc: '链接/二维码/奖励' },
     { to: '/app/settings', icon: '⚙️', title: '账号设置', desc: '改密/换绑/知识库/注销' },
-    { to: '/app/billing', icon: '🧾', title: '定价', desc: '行业包免费·token计费' },
+    { to: '/pricing', icon: '🧾', title: '定价', desc: '行业包免费·token计费' },
   ]
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', padding: 16 }}>

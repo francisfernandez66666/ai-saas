@@ -27,28 +27,35 @@ elif ! diff -q "$TMP_API_TS" frontend-react/src/types/api.d.ts > /dev/null; then
 fi
 
 # ---- 3. 前端调用路径 ↔ 后端路由清单 ----
+# G2：脚本现以退出码表示"有孤儿/方法错配"，INFO 反向清单只报告不影响判定，
+# 故改用 exit code 而非"stdout 非空即红"。
 go run ./cmd/apidump -format paths -out - > /tmp/_api_routes.txt
-ORPHANS=$(node scripts/check_api_contract.mjs /tmp/_api_routes.txt)
-if [ -n "$ORPHANS" ]; then
-  echo "  FAIL  前端调用了后端不存在的路径："
-  echo "$ORPHANS"
+CONTRACT_OUT=$(node scripts/check_api_contract.mjs /tmp/_api_routes.txt)
+CONTRACT_RC=$?
+if [ "$CONTRACT_RC" -ne 0 ]; then
+  echo "  FAIL  前端调用路径/方法与后端路由清单不一致："
+  echo "$CONTRACT_OUT" | grep -vE '^    (GET|POST|PUT|DELETE|PATCH) ' 
   FAIL=1
+else
+  echo "$CONTRACT_OUT" | grep -E '^  INFO' || true
 fi
 
-# ---- 4. as any 基线只降不升 ----
-AS_ANY=$(grep -rhoE ":\s*any\b" frontend-react/src --include="*.ts" --include="*.tsx" | wc -l | tr -d ' ')
+# ---- 4. 显式 any 基线只降不升 ----
+# G3 口径修正(2026-09-14)：原名"as any"实为只统计 `: any` 类型注解，漏计 `as any` 断言。
+# 改为同时统计两处显式 any 逃逸（`: any` 注解 + `as any` 断言），与 no-explicit-any 语义对齐。
+EXPLICIT_ANY=$(grep -rhoE "(:\s*any\b|\bas any\b)" frontend-react/src --include="*.ts" --include="*.tsx" | wc -l | tr -d ' ')
 BASELINE_FILE="frontend-react/src/.as_any_baseline"
 if [ ! -f "$BASELINE_FILE" ]; then
-  echo "$AS_ANY" > "$BASELINE_FILE"
-  echo "  INFO  as any 基线已建立: $AS_ANY"
+  echo "$EXPLICIT_ANY" > "$BASELINE_FILE"
+  echo "  INFO  显式 any 基线已建立: $EXPLICIT_ANY"
 else
   BASELINE=$(tr -d '[:space:]' < "$BASELINE_FILE")
-  if [ "$AS_ANY" -gt "$BASELINE" ]; then
-    echo "  FAIL  as any 数量上升: $BASELINE → $AS_ANY（只降不升）"
+  if [ "$EXPLICIT_ANY" -gt "$BASELINE" ]; then
+    echo "  FAIL  显式 any 数量上升: $BASELINE → ${EXPLICIT_ANY}（只降不升）"
     FAIL=1
-  elif [ "$AS_ANY" -lt "$BASELINE" ]; then
-    echo "  INFO  as any 数量下降: $BASELINE → $AS_ANY（基线自动收紧）"
-    echo "$AS_ANY" > "$BASELINE_FILE"
+  elif [ "$EXPLICIT_ANY" -lt "$BASELINE" ]; then
+    echo "  INFO  显式 any 数量下降: $BASELINE → ${EXPLICIT_ANY}（基线自动收紧）"
+    echo "$EXPLICIT_ANY" > "$BASELINE_FILE"
   fi
 fi
 

@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/service"
 	"log"
 	"strings"
+	"sync/atomic"
 )
 
 // ============================================================
@@ -26,14 +27,21 @@ import (
 // Step7：意向分反哺
 // ============================================================
 
+// cachedData 策略引擎缓存快照（G4 修复，2026-09-14）：
+// 模板/卖点以"整体换指针"的不可变快照形式发布，读侧一次 Load 拿到一致性视图，
+// 杜绝旧实现"直接换切片头字段"与在途 Infer 读造成的数据竞态（torn read）。
+type cachedData struct {
+	templates []model.Template
+	features  []model.Feature
+}
+
 // Engine 策略引擎结构体
 // SaaS 化改造：支持多租户下的数据隔离
 // TenantID=0 表示查询所有租户数据（启动时默认），>0 则严格隔离
 type Engine struct {
 	TenantID uint // 当前租户ID
-	// 可以在这里缓存模板、卖点等数据，避免每次都查库
-	templates []model.Template
-	features  []model.Feature
+	// data 缓存模板、卖点等数据（atomic.Value 承载不可变 *cachedData 快照），避免每次查库
+	data atomic.Value
 }
 
 // DefaultEngine 默认策略引擎实例
@@ -63,7 +71,6 @@ func (e *Engine) LoadData() {
 	if err := query.Find(&templates).Error; err != nil { // 修复：原为 db.DB.Find（过滤被丢弃）
 		log.Printf("[策略引擎] 加载话术模板失败: %v", err)
 	}
-	e.templates = templates
 	log.Printf("已加载 %d 条话术模板 (tenant=%d)", len(templates), e.TenantID)
 
 	// 加载所有启用的卖点
@@ -75,13 +82,23 @@ func (e *Engine) LoadData() {
 	if err := query2.Find(&features).Error; err != nil { // 同上修复
 		log.Printf("[策略引擎] 加载卖点数据失败: %v", err)
 	}
-	e.features = features
 	log.Printf("已加载 %d 条卖点数据 (tenant=%d)", len(features), e.TenantID)
+
+	// G4：整体发布新快照（读侧要么全旧要么全新，不会读到换到一半的切片头）
+	e.data.Store(&cachedData{templates: templates, features: features})
 
 	// 动态装载车型注册表（modelFromTVector 依赖），仅全量引擎(TenantID=0)刷新一次即可
 	if e.TenantID == 0 {
 		refreshCarModelRegistry()
 	}
+}
+
+// snapshot 取当前缓存快照（从未加载返回空快照，调用方按空集降级）。
+func (e *Engine) snapshot() *cachedData {
+	if v := e.data.Load(); v != nil {
+		return v.(*cachedData)
+	}
+	return &cachedData{}
 }
 
 // templatesForTenant 按租户+部门链过滤话术模板（M1 租户隔离修复 + 三级包架构 2026-08-26）
@@ -134,12 +151,12 @@ func (e *Engine) ReloadData() {
 // Features 获取当前加载的卖点列表
 // 供AI Prompt构建器动态注入卖点知识
 func (e *Engine) Features() []model.Feature {
-	return e.features
+	return e.snapshot().features
 }
 
 // Templates 获取当前加载的话术模板列表
 func (e *Engine) Templates() []model.Template {
-	return e.templates
+	return e.snapshot().templates
 }
 
 // Infer 执行一次完整的策略推理
@@ -367,10 +384,11 @@ afterAnchorSelection:
 	// ============================================================
 	if output.FinalAnchor != AnchorNoThrow || output.TemplateID == "" {
 		// 三级包架构+KB继承链（2026-08-26）：解析可见域（链内①/跨部门回退④）
+		snap := e.snapshot() // G4：本次推理取一致性快照，避免与热重载并发换切片撕裂
 		recallScope := service.ResolveRecallScope(input.TenantID, input.DeptIDs)
-		tenantTemplates := templatesForTenant(e.templates, input.TenantID, recallScope)
+		tenantTemplates := templatesForTenant(snap.templates, input.TenantID, recallScope)
 		log.Printf("[策略引擎] Step4: 模板池过滤 全量=%d → 本租户可见=%d (tenant=%d 链内部门=%d 跨部门候选=%d)",
-			len(e.templates), len(tenantTemplates), input.TenantID,
+			len(snap.templates), len(tenantTemplates), input.TenantID,
 			len(recallScope.OwnDepts), len(recallScope.CrossDepts))
 		template, similarity := Step4_RecallTemplate(
 			finalAnchor,
@@ -393,7 +411,7 @@ afterAnchorSelection:
 				InterestProduct: modelFromTVector(tVector),
 				Name:            "客户", // 这里简化，实际应从DB获取
 			}
-			promptText, hookText, _ := FillTemplate(template, customer, featuresForTenant(e.features, input.TenantID, recallScope))
+			promptText, hookText, _ := FillTemplate(template, customer, featuresForTenant(snap.features, input.TenantID, recallScope))
 			output.PromptText = promptText
 			output.HookText = hookText
 
@@ -438,7 +456,7 @@ afterAnchorSelection:
 	// ============================================================
 	// Step6：路由决策
 	// ============================================================
-	routeResult, routeReason := Step6_RouteDecision(tVector, input.State, urgencyLevel, input.CustomerInput)
+	routeResult, routeReason := Step6_RouteDecision(tVector, input.State, urgencyLevel, input.CustomerInput, input.TenantID)
 	output.RouteResult = routeResult
 	output.RouteReason = routeReason
 

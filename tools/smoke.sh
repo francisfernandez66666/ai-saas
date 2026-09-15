@@ -119,8 +119,17 @@ CHG=$(curl -s -X POST "$B/api/v1/auth/change-password" \
   -d '{"old_password":"admin123","new_password":"admin123"}' | jsonget "['code']")
 [ "$CHG" = "0" ] && check "改密成功清除标记" y y || check "改密成功清除标记" y n
 
+# B4 收口(2026-09-14)：改密会 bump token_version，旧 token 即刻失效——这是吊销语义的预期，
+# 故"改密后放行"必须用**重新登录的新 token**；同时旧 FTOKEN 应被 401(token_revoked)。
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "Authorization: Bearer $FTOKEN")
-check "改密后接口恢复放行" 200 "$CODE"
+check "改密后旧token被吊销→401(B4)" 401 "$CODE"
+# 重新登录拿新 token（标记已清除，新 token 携带最新 token_version）
+NTOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"admin123"}' | jsonget "['data']['token']")
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "Authorization: Bearer $NTOKEN")
+check "改密后重新登录→恢复放行200" 200 "$CODE"
+# 下游断言复用主 TOKEN：改密已吊销旧 $TOKEN，统一刷新为最新会话（保持"已改密"契约不变）
+TOKEN="$NTOKEN"
 
 echo "---- 五、M1 收银台 mock 全链路 + 幂等 ----"
 BOOSTER=$(curl -s "$B/api/v1/packages" | python3 -c "

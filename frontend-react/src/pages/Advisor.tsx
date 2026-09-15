@@ -49,6 +49,16 @@ export default function Advisor() {
   const [checkedTags, setCheckedTags] = useState<string[]>([])
   const [fbOpen, setFbOpen] = useState(false)
   const [fbText, setFbText] = useState('')
+  // E2 修复(2026-09-14)：后端就绪但工作台零入口的 5 个能力补齐——
+  // 策略推荐卡片 / 新建跟进 / 阶段调整 / 建·改试驾 / 接管对话
+  const [rec, setRec] = useState<{ intent_score?: number; urgency_level?: string; recommends?: { anchor_name?: string; template_name?: string; prompt_template?: string }[] } | null>(null)
+  const [fuOpen, setFuOpen] = useState(false)
+  const [fuForm, setFuForm] = useState<{ method: string; content: string; next_follow_at: string }>({ method: 'phone', content: '', next_follow_at: '' })
+  const [stageOpen, setStageOpen] = useState(false)
+  const [stageForm, setStageForm] = useState<{ journey_stage: string; journey_sub_stage: string }>({ journey_stage: '', journey_sub_stage: '' })
+  const [tdOpen, setTdOpen] = useState(false)
+  const [tdEdit, setTdEdit] = useState<any>(null) // 非空=编辑已有单（PUT），空=新建（POST）
+  const [tdForm, setTdForm] = useState<Record<string, string>>({ scheduled_at: '', model_name: '', contact_name: '', contact_phone: '', location: '', note: '', status: 'pending' })
   const [chanCtx, setChanCtx] = useState<any>(null)
   const [chanKey, setChanKey] = useState<{ corpid: string; external_userid: string } | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -91,7 +101,7 @@ export default function Advisor() {
     setDetailId(id)
     const j = await AUTH(API + '/customer/' + id)
     if (j.code === 0 && j.data) { setDetail(j.data); const conv = (j.data.conversations && j.data.conversations[0]); setConvId(conv ? conv.id : null); setAiOn(conv ? conv.is_ai_reply_enabled !== false : true) }
-    loadChat(id); loadTestDrives(id)
+    loadChat(id); loadTestDrives(id); loadRecommend(id)
   }
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
   // P2-84 修复：打开详情时重置 ID 集合并全量替换；WS/轮询增量时只追加新消息
@@ -128,6 +138,56 @@ export default function Advisor() {
     if (!detailId) return
     const j = await AUTH(API + '/customer/' + detailId + '/tags', { method: 'PUT', body: { tags: checkedTags } })
     if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
+  }
+  // E2：拉取策略推荐（进详情即拉，失败静默不打扰顾问）
+  const loadRecommend = async (id: number) => {
+    setRec(null)
+    const j = await AUTH(`${API}/strategy/recommend?customer_id=${id}&conversation_id=${convId || ''}`)
+    if (j?.code === 0) setRec(j.data)
+  }
+  // E2：新建跟进提醒（method=phone/wechat/store/email，next_follow_at 留空=仅记录不提醒）
+  async function saveFollowup() {
+    if (!detailId) return
+    const body: Record<string, unknown> = { customer_id: detailId, type: 'manual', method: fuForm.method, content: fuForm.content }
+    if (fuForm.next_follow_at) body.next_follow_at = new Date(fuForm.next_follow_at).toISOString()
+    const j = await AUTH(API + '/customer/' + detailId + '/followup', { method: 'POST', body })
+    if (j.code === 0) { MessagePlugin.success('跟进已记录'); setFuOpen(false); setFuForm({ method: 'phone', content: '', next_follow_at: '' }) }
+    else MessagePlugin.error(j?.message || '保存失败')
+  }
+  // E2：调整旅程阶段（journey_stage 必填；仅 arrived 时子状态有效）
+  async function saveStage() {
+    if (!detailId || !stageForm.journey_stage) { MessagePlugin.warning('请选择目标阶段'); return }
+    const body: Record<string, string> = { journey_stage: stageForm.journey_stage }
+    if (stageForm.journey_stage === 'arrived' && stageForm.journey_sub_stage) body.journey_sub_stage = stageForm.journey_sub_stage
+    const j = await AUTH(API + '/customer/' + detailId + '/stage', { method: 'PUT', body })
+    if (j.code === 0) { MessagePlugin.success('阶段已更新'); setStageOpen(false); openDetail(detailId) }
+    else MessagePlugin.error(j?.message || '更新失败')
+  }
+  // E2：创建/更新试驾单（tdEdit 非空走 PUT，附状态变更）
+  async function saveTestDrive() {
+    if (!detailId) return
+    if (!tdForm.scheduled_at) { MessagePlugin.warning('请选择预约时间'); return }
+    let j
+    if (tdEdit) {
+      j = await AUTH(API + '/test-drive/' + tdEdit.id, { method: 'PUT', body: { ...tdForm, scheduled_at: new Date(tdForm.scheduled_at).toISOString() } })
+    } else {
+      j = await AUTH(API + '/test-drive', { method: 'POST', body: { customer_id: detailId, ...tdForm, scheduled_at: new Date(tdForm.scheduled_at).toISOString() } })
+    }
+    if (j?.code === 0) { MessagePlugin.success(tdEdit ? '试驾单已更新' : '试驾单已创建'); setTdOpen(false); loadTestDrives(detailId) }
+    else MessagePlugin.error(j?.message || '保存失败')
+  }
+  // E2：快捷改试驾单状态（已完成/已取消）
+  async function setTDStatus(td: { id: number }, status: string) {
+    const j = await AUTH(API + '/test-drive/' + td.id, { method: 'PUT', body: { status } })
+    if (j?.code === 0) { MessagePlugin.success('已更新'); loadTestDrives(detailId!) }
+    else MessagePlugin.error(j?.message || '更新失败')
+  }
+  // E2：一键接管对话（mode=human，AI 暂停自动回复）
+  async function takeover() {
+    if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
+    const j = await AUTH(API + '/chat/takeover', { method: 'POST', body: { conversation_id: convId } })
+    if (j.code === 0) { MessagePlugin.success('已接管，AI 暂停自动回复'); setAiOn(false) }
+    else MessagePlugin.error(j?.message || '接管失败')
   }
   // 提交用户反馈（产品建议/吐槽），走 /api/v1/feedback
   async function submitFeedback() {
@@ -249,21 +309,60 @@ export default function Advisor() {
               {(detail?.tags || []).map((t, i) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)}
               <Tag theme="default" style={{ cursor: 'pointer' }} onClick={() => { setCheckedTags((detail?.tags || []).map((t) => t.tag_name)); setTagOpen(true) }}>+ 标签</Tag>
             </div>
+            {/* E2 修复(2026-09-14)：动作条——后端早就绪但旧工作台只有聊天+标签，跟进/阶段/试驾/接管全靠口头或后台 */}
+            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+              <Button size="small" variant="outline" onClick={() => setFuOpen(true)}>新建跟进</Button>
+              <Button size="small" variant="outline" onClick={() => { setStageForm({ journey_stage: c?.journey_stage || '', journey_sub_stage: c?.journey_sub_stage || '' }); setStageOpen(true) }}>调整阶段</Button>
+              <Button size="small" variant="outline" onClick={() => { setTdEdit(null); setTdForm({ scheduled_at: '', model_name: c?.interest_model || '', contact_name: c?.name || '', contact_phone: c?.phone || '', location: '', note: '', status: 'pending' }); setTdOpen(true) }}>建试驾单</Button>
+              {c?.journey_stage && <span style={{ alignSelf: 'center', fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#eef2ff', color: '#4338ca' }}>{STAGE_LABELS[c.journey_stage] || c.journey_stage}</span>}
+            </div>
+            {/* E2：AI 策略推荐卡片（intent/紧迫度 + 推荐话术一键填入输入框） */}
+            {rec && (rec.recommends || []).length > 0 && (
+              <div style={{ background: 'linear-gradient(135deg,#eef2ff,#faf5ff)', border: '1px solid #e0e7ff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                  <b style={{ fontSize: 13 }}>策略推荐</b>
+                  <span style={{ fontSize: 11, color: '#4338ca' }}>意向 {(Number(rec.intent_score) * 100).toFixed(0)}%{rec.urgency_level ? ` · ${rec.urgency_level === 'high' ? '紧迫' : rec.urgency_level === 'medium' ? '中等' : '平稳'}` : ''}</span>
+                </div>
+                {(rec.recommends || []).slice(0, 2).map((r, i) => (
+                  <div key={i} style={{ background: '#fff', borderRadius: 8, padding: '8px 10px', marginTop: 6, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 11, color: '#7c3aed' }}>{r.anchor_name || '话术'} · {r.template_name}</div>
+                      <div style={{ marginTop: 2, color: '#374151' }}>{(r.prompt_template || '').slice(0, 80)}</div>
+                    </div>
+                    <button aria-label="填入输入框" onClick={() => setInput(r.prompt_template || '')} style={{ flexShrink: 0, background: 'var(--pri)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}>填入</button>
+                  </div>
+                ))}
+              </div>
+            )}
             <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#a0aec0' }}>手机</span><span>{c?.phone || '-'}{c?.phone && <a href={'tel:' + c.phone} style={{ marginLeft: 8, color: 'var(--pri)' }}>📞</a>}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>兴趣车型</span><span>{c?.interest_model || '-'}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>预算</span><span>{c?.budget > 0 ? c.budget + '万' : '-'}</span></div>
               <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>备注</span><span style={{ maxWidth: 200, textAlign: 'right' }}>{c?.remark || '-'}</span></div>
             </div>
-            {testDrives.length > 0 && <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-              <b style={{ fontSize: 13 }}>试驾单</b>
-              {testDrives.map((td, i) => <div key={i} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #f0f0f0' }}><span>{td.model_name || '试驾'}</span> <span style={{ color: '#a0aec0' }}>· {td.status === 'pending' ? '待试驾' : td.status === 'completed' ? '已完成' : '已取消'}</span></div>)}
-            </div>}
+            {/* E2：试驾单可操作——新建/编辑/完成/取消（旧版只读展示，状态全靠后台改） */}
+            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <b style={{ fontSize: 13 }}>试驾单</b>
+                <button onClick={() => { setTdEdit(null); setTdForm({ scheduled_at: '', model_name: c?.interest_model || '', contact_name: c?.name || '', contact_phone: c?.phone || '', location: '', note: '', status: 'pending' }); setTdOpen(true) }} style={{ background: 'none', border: 'none', color: 'var(--pri)', fontSize: 12, cursor: 'pointer' }}>+ 新建</button>
+              </div>
+              {testDrives.length === 0 && <div style={{ color: '#a0aec0', marginTop: 6, fontSize: 12 }}>暂无试驾单</div>}
+              {testDrives.map((td, i) => <div key={i} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ flex: 1 }}>{td.model_name || '试驾'} <span style={{ color: '#a0aec0' }}>· {td.status === 'pending' ? '待试驾' : td.status === 'completed' ? '已完成' : '已取消'}</span>{td.scheduled_at ? <span style={{ color: '#a0aec0' }}> · {new Date(td.scheduled_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span> : null}</span>
+                {td.status === 'pending' && <><button onClick={() => setTDStatus(td, 'completed')} style={{ background: 'none', border: '1px solid #c6f6d5', color: '#276749', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>完成</button>
+                  <button onClick={() => setTDStatus(td, 'cancelled')} style={{ background: 'none', border: '1px solid #fed7d7', color: '#9b2c2c', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>取消</button></>}
+                <button onClick={() => { setTdEdit(td); setTdForm({ scheduled_at: td.scheduled_at ? td.scheduled_at.slice(0, 16) : '', model_name: td.model_name || '', contact_name: td.contact_name || '', contact_phone: td.contact_phone || '', location: td.location || '', note: td.note || '', status: td.status || 'pending' }); setTdOpen(true) }} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>编辑</button>
+              </div>)}
+            </div>
             <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12 }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <b style={{ fontSize: 13 }}>聊天记录</b>
-                {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
-                <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
+                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {/* E2：一键接管对话（AI 暂停），与自动回复开关联动 */}
+                  <button onClick={takeover} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: '#fff', color: 'var(--pri)' }}>接管</button>
+                  {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
+                  <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
+                </div>
               </div>
               <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {msgs.map((m, i) => <div key={i} style={{ alignSelf: m.sender_type === 'human' ? 'flex-end' : 'flex-start', background: m.sender_type === 'human' ? 'var(--pri)' : m.sender_type === 'ai' ? '#ecfdf5' : '#f1f5f9', color: m.sender_type === 'human' ? '#fff' : '#1f2937', padding: '8px 12px', borderRadius: 10, maxWidth: '80%', fontSize: 13 }}>{m.content}</div>)}
@@ -294,6 +393,50 @@ export default function Advisor() {
       </Dialog>
       <Dialog header="产品反馈" visible={fbOpen} onClose={() => setFbOpen(false)} onConfirm={submitFeedback} confirmBtn="提交">
         <Textarea value={fbText} onChange={(v) => setFbText(v)} placeholder="说说你的建议…" autosize={{ minRows: 3 }} />
+      </Dialog>
+
+      {/* E2：新建跟进弹窗 */}
+      <Dialog header="新建跟进" visible={fuOpen} onClose={() => setFuOpen(false)} onConfirm={saveFollowup} confirmBtn="保存">
+        <div style={{ display: 'grid', gap: 10 }}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            {[{ k: 'phone', t: '电话' }, { k: 'wechat', t: '微信' }, { k: 'store', t: '到店' }, { k: 'email', t: '邮件' }].map((m) => (
+              <button key={m.k} onClick={() => setFuForm({ ...fuForm, method: m.k })} style={{ padding: '4px 12px', borderRadius: 16, fontSize: 13, border: 'none', background: fuForm.method === m.k ? 'var(--pri)' : '#f1f5f9', color: fuForm.method === m.k ? '#fff' : '#475569', cursor: 'pointer' }}>{m.t}</button>
+            ))}
+          </div>
+          <Textarea value={fuForm.content} onChange={(v) => setFuForm({ ...fuForm, content: v })} placeholder="跟进内容…" autosize={{ minRows: 2 }} />
+          <label style={{ fontSize: 13, color: '#475569' }}>下次跟进时间（可选）<input type="datetime-local" value={fuForm.next_follow_at} onChange={(e) => setFuForm({ ...fuForm, next_follow_at: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }} /></label>
+        </div>
+      </Dialog>
+
+      {/* E2：调整旅程阶段弹窗 */}
+      <Dialog header="调整客户阶段" visible={stageOpen} onClose={() => setStageOpen(false)} onConfirm={saveStage} confirmBtn="保存">
+        <div style={{ display: 'grid', gap: 10 }}>
+          <label style={{ fontSize: 13, color: '#475569' }}>目标阶段
+            <select value={stageForm.journey_stage} onChange={(e) => setStageForm({ ...stageForm, journey_stage: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }}>
+              <option value="">请选择…</option>
+              {Object.entries(STAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+            </select>
+          </label>
+          {stageForm.journey_stage === 'arrived' && <label style={{ fontSize: 13, color: '#475569' }}>到店子状态
+            <select value={stageForm.journey_sub_stage} onChange={(e) => setStageForm({ ...stageForm, journey_sub_stage: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }}>
+              <option value="">无</option><option value="test_driven">已试驾</option><option value="quoted">已报价</option>
+            </select>
+          </label>}
+        </div>
+      </Dialog>
+
+      {/* E2：建/改试驾单弹窗 */}
+      <Dialog header={tdEdit ? '编辑试驾单' : '新建试驾单'} visible={tdOpen} onClose={() => setTdOpen(false)} onConfirm={saveTestDrive} confirmBtn="保存">
+        <div style={{ display: 'grid', gap: 10 }}>
+          <label style={{ fontSize: 13, color: '#475569' }}>预约时间 *<input type="datetime-local" value={tdForm.scheduled_at} onChange={(e) => setTdForm({ ...tdForm, scheduled_at: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }} /></label>
+          <Input value={tdForm.model_name} onChange={(v) => setTdForm({ ...tdForm, model_name: v })} placeholder="试驾车型" />
+          <div style={{ display: 'flex', gap: 8 }}>
+            <Input value={tdForm.contact_name} onChange={(v) => setTdForm({ ...tdForm, contact_name: v })} placeholder="联系人" style={{ flex: 1 }} />
+            <Input value={tdForm.contact_phone} onChange={(v) => setTdForm({ ...tdForm, contact_phone: v })} placeholder="联系电话" style={{ flex: 1 }} />
+          </div>
+          <Input value={tdForm.location} onChange={(v) => setTdForm({ ...tdForm, location: v })} placeholder="试驾地点" />
+          <Textarea value={tdForm.note} onChange={(v) => setTdForm({ ...tdForm, note: v })} placeholder="备注" autosize={{ minRows: 2 }} />
+        </div>
       </Dialog>
     </div>
   )

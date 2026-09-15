@@ -61,6 +61,7 @@ function AIChainPanel({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Record<st
     zhipu_glm4_flash: 'GLM-4-Flash (智谱)',
     template_fallback: '模板兜底（不调用AI）',
   }
+  // 上移/下移降级链中的一个模型条目（dir=-1 上移，dir=1 下移）
   const move = (i: number, dir: -1 | 1) => {
     const arr = [...models]
     const j = i + dir
@@ -107,13 +108,29 @@ export function ConfigPanels({ cfgs, edits, setEdits }: { cfgs: Cfg[]; edits: Re
   }
   const cards = cfgs.map((c) => {
     const v = edits[c.key] ?? c.value
-    let control: React.ReactNode = null
+    let control: React.ReactNode
     if (c.key === 'reply_delay_mode') {
       const instant = v === 'instant'
       control = (
         <div className="flex items-center gap-3">
           <Tag theme={instant ? 'warning' : 'success'}>{instant ? '⚡ 秒回模式' : '🕐 正常延迟'}</Tag>
           <span className="text-xs text-gray-400">使用顶部"⚡ 延迟归零"按钮切换</span>
+        </div>
+      )
+    } else if (c.key === 'static_qr_image') {
+      // §W：静态收款码（pay_mode=static_qr 主收款通道）——URL 或 base64，给平台运营一个所见即所得预览位，
+      // 避免盲填字符串后到租户收银台才发现码错。空值时退化为普通输入。
+      const qr = String(v || '').trim()
+      control = (
+        <div>
+          <Textarea value={v} onChange={(val) => setEdits(c.key, val)} autosize={{ minRows: 1, maxRows: 3 }} placeholder="收款码图片 URL 或 data:image;base64 内容" />
+          {qr && (
+            <div className="mt-2 flex items-center gap-2">
+              <img src={qr} alt="收款码预览" style={{ width: 96, height: 96, objectFit: 'contain', border: '1px solid #e2e8f0', borderRadius: 6, background: '#fff' }}
+                onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none' }} />
+              <span className="text-xs text-gray-400">↑ 当前配置预览（租户下单后收银台展示此码）</span>
+            </div>
+          )}
         </div>
       )
     } else if (c.value_type === 'number') {

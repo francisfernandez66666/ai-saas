@@ -37,6 +37,7 @@ type wxPlainMessage struct {
 	MsgID          string `xml:"MsgId"`
 	AgentID        string `xml:"AgentID"`
 	ExternalUserID string `xml:"ExternalUserID"` // 客服/外部联系人事件里的外部号
+	UserID         string `xml:"UserID"`         // D13：事件里的接待成员 userid（外部联系人添加/授权等）
 }
 
 // init 初始化当前包的注册表、客户端或默认配置。
@@ -74,15 +75,21 @@ func (wecomAppAdapter) DecryptInbound(cred *Credential, timestamp, nonce, msgSig
 		return nil, fmt.Errorf("明文消息解析失败: %w", err)
 	}
 	ext := pm.ExternalUserID
+	staff := pm.UserID // D13 修复(2026-09-14)：接待成员取事件 UserID 字段——旧实现填 FromUserName，
+	// 外部单聊里那是客户 external_userid，侧边栏归属全部错标
 	if ext == "" {
 		ext = pm.FromUserName
+		if pm.UserID == "" {
+			staff = pm.FromUserName // 内部成员直接对话（非外部联系人）时才回退 From
+		}
 	}
 	return &InboundMessage{
 		ChannelType: model.ChannelTypeWecomApp,
 		ExternalID:  ext,
-		StaffID:     pm.FromUserName,
+		StaffID:     staff,
 		MsgType:     pm.MsgType,
 		Content:     pm.Content,
+		MsgID:       pm.MsgID, // D4：入站幂等锚
 		IsEvent:     pm.MsgType == "event",
 		EventKey:    pm.Event,
 		ReceiveID:   cred.ReceiveID(),
@@ -165,7 +172,12 @@ var chanHTTP = &http.Client{Timeout: 10 * time.Second}
 
 // postJSON 发 JSON 返回体解析到 out；返回渠道 errcode。
 func postJSON(ctx context.Context, url string, payload interface{}, out interface{}) (int, error) {
-	b, _ := json.Marshal(payload)
+	// D3 修复(2026-09-14)：旧实现吞掉 Marshal/状态码/解析错误，网关 4xx/5xx 或 HTML 错误页时
+	// errcode 恒 0 → 出站被误报"已发送"、回复静默丢失。现显式报错，交出站队列指数退避重试。
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return -1, fmt.Errorf("请求体序列化失败: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
 		return -1, err
@@ -176,13 +188,27 @@ func postJSON(ctx context.Context, url string, payload interface{}, out interfac
 		return -1, err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return -1, fmt.Errorf("读取渠道响应失败: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		snip := string(body)
+		if len(snip) > 120 {
+			snip = snip[:120]
+		}
+		return -1, fmt.Errorf("渠道 HTTP %d: %s", resp.StatusCode, snip)
+	}
 	if out != nil {
-		_ = json.Unmarshal(body, out)
+		if err := json.Unmarshal(body, out); err != nil {
+			return -1, fmt.Errorf("渠道响应解析失败: %w", err)
+		}
 	}
 	var ec struct {
 		ErrCode int `json:"errcode"`
 	}
-	_ = json.Unmarshal(body, &ec)
+	if err := json.Unmarshal(body, &ec); err != nil {
+		return -1, fmt.Errorf("渠道响应缺少 errcode: %w", err)
+	}
 	return ec.ErrCode, nil
 }

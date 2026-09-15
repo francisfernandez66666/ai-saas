@@ -216,6 +216,17 @@ func Update(tenantID, id uint, in UpdateInput) (*model.Channel, error) {
 		if err := db.DB.Model(ch).Updates(upd).Error; err != nil {
 			return nil, err
 		}
+		// D6 修复(2026-09-14)：凭据类字段变更即失效 access_token 缓存——
+		// 旧实现在换 secret/corpid 后仍复用旧 token 直到临期，新凭据不生效导致发送持续失败。
+		if _, hit := upd["secret_cipher"]; hit {
+			defaultTokenManager.Invalidate(id)
+		}
+		if _, hit := upd["corpid"]; hit {
+			defaultTokenManager.Invalidate(id)
+		}
+		if _, hit := upd["appid"]; hit {
+			defaultTokenManager.Invalidate(id)
+		}
 	}
 	return Get(tenantID, id)
 }

@@ -1,4 +1,5 @@
-// Package llm LLM 调用唯一入口：构建 Prompt、多模型降级路由（智谱GLM→硅基流动）、计量与兜底
+// Package llm LLM 调用唯一入口：构建 Prompt、多模型降级路由（硅基流动主力→DeepSeek备用，
+// 智谱已从路由移除——频繁 429，见 AGENTS.md；跨模型自动降级详见 ai/ai_router.go）、计量与兜底
 package llm
 
 import "ai-scrm/internal/billing"
@@ -122,7 +123,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 
-	// 检查是否有任何可用的AI模型（智谱或硅基流动）
+	// 检查是否有任何可用的AI模型（降级链中任一 provider 存活即可）
 	hasAnyAI := ai.DefaultClient.APIKey != ""
 	if ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled {
 		hasAnyAI = true
@@ -249,8 +250,11 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	}
 	metrics.IncAISuccess() // P1-2：真模型成功返回计为 AI 成功
 	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
-	// 网关模式下计费权在网关，本地不再重复落账/扣减
-	if !gatewayMode {
+	// C3 修复(2026-09-14)：gatewayMode 是调用前的预判；降级链若实际落到本地直连 key
+	// （provider != gateway），旧逻辑仍跳过计量 → 真实 token 消耗零落账零扣减（漏钱洞）。
+	// 以"实际服务的 provider"为准：仅网关侧服务时才免本地计量。
+	billedByGateway := gatewayMode && provider == string(ai.ProviderGateway)
+	if !billedByGateway {
 		billing.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
 			usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
 		// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）

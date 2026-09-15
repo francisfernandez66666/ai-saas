@@ -15,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 
 	"ai-scrm/internal/model"
@@ -36,6 +37,7 @@ type mpPlainMessage struct {
 	MsgType      string `xml:"MsgType"`
 	Content      string `xml:"Content"`
 	Event        string `xml:"Event"`
+	MsgID        string `xml:"MsgId"` // D4：入站幂等锚
 }
 
 // DecryptInbound 与企微共用 wxcrypt 信封，仅 receive_id=appid；公众号事件类也照此解析。
@@ -64,6 +66,7 @@ func (wechatMPAdapter) DecryptInbound(cred *Credential, ts, nonce, msgSig string
 		ExternalID:  pm.FromUserName,
 		MsgType:     pm.MsgType,
 		Content:     pm.Content,
+		MsgID:       pm.MsgID, // D4：入站幂等锚
 		IsEvent:     pm.MsgType == "event",
 		EventKey:    pm.Event,
 		ReceiveID:   cred.ReceiveID(),
@@ -126,8 +129,27 @@ func mpToken(ctx context.Context, cred *Credential) (string, error) {
 // 侧边栏 JS-SDK 签名（W7，企微 JS-SDK corp 级签名）
 // ============================================================
 
-// FetchCorpJSAPITicket 拉取企微 corp jsapi_ticket（缓存 30 分钟）。
+// D12 修复(2026-09-14)：corp jsapi_ticket 进程内缓存（按 channelID 分桶，提前 5 分钟刷新）。
+// 旧实现注释"缓存 30 分钟"但每次现拉——jsconfig 调用密集时烧微信接口配额且拖慢侧边栏首屏。
+var (
+	jsapiTicketMu  sync.Mutex
+	jsapiTicketMap = map[uint]struct {
+		ticket   string
+		expireAt time.Time
+	}{}
+)
+
+// FetchCorpJSAPITicket 拉取企微 corp jsapi_ticket（进程内缓存，临期前复用）。
 func FetchCorpJSAPITicket(ctx context.Context, cred *Credential) (string, error) {
+	// D12 命中缓存直接返回（cred.ChannelID 入站/侧边栏装配均已回填）
+	jsapiTicketMu.Lock()
+	if e, ok := jsapiTicketMap[cred.ChannelID]; ok && time.Now().Before(e.expireAt) {
+		tk := e.ticket
+		jsapiTicketMu.Unlock()
+		return tk, nil
+	}
+	jsapiTicketMu.Unlock()
+
 	tok, err := wecomToken(ctx, cred)
 	if err != nil {
 		return "", err
@@ -156,6 +178,18 @@ func FetchCorpJSAPITicket(ctx context.Context, cred *Credential) (string, error)
 	if err := json.Unmarshal(body, &r); err != nil || r.ErrCode != 0 {
 		return "", fmt.Errorf("拉取 corp jsapi_ticket 失败: %s", string(body))
 	}
+	// D12：写入缓存，提前 5 分钟到期（默认 7200s 生命周期）
+	ttl := time.Duration(r.ExpiresIn) * time.Second
+	if ttl <= 0 {
+		ttl = 30 * time.Minute
+	}
+	ttl -= 5 * time.Minute
+	jsapiTicketMu.Lock()
+	jsapiTicketMap[cred.ChannelID] = struct {
+		ticket   string
+		expireAt time.Time
+	}{r.Ticket, time.Now().Add(ttl)}
+	jsapiTicketMu.Unlock()
 	return r.Ticket, nil
 }
 

@@ -14,19 +14,52 @@ import (
 // 所以用channel取消机制替代DB scheduled_at更新
 // ============================================================
 
-var delayCancelMap sync.Map // key: customerID(uint), value: chan struct{}
-
 // conversationMu 客户级会话创建互斥锁表（包级单例，跨请求共享）
 // 修复 C4：原实现每次调用 new 一个 sync.Map，锁完全不生效，导致并发同客户请求
 // 各自创建重复会话/重复 FlowStateMachine 行。改为包级 sync.Map，同一客户共享一把锁。
+// D8 修复(2026-09-14)：进程内锁仅约束单实例——多实例下两节点可各建一个 active 会话，
+// 调用侧（chat_main.ensureActiveConversation）叠加 Redis 短锁裁决。
 var conversationMu sync.Map // key: customerID(uint), value: *sync.Mutex
+
+// D11 修复(2026-09-14)：改为"每客户一组等待通道"，用互斥锁保护，替换原
+// customerID→单个 chan 的 sync.Map。旧实现同客户并发 CancellableSleep 互相覆盖：
+// 后注册者 Store 顶掉前者，前者 defer Delete 又把后者的登记删掉，导致 CancelDelay
+// 打错对象/漏取消，且"立即回复"信号可能谁都没收到（前者睡满）。
+var (
+	delayMu     sync.Mutex
+	delayCancel = map[uint]map[*delayWait]struct{}{} // customerID → 等待集合
+)
+
+// delayWait 一次延迟等待的注册句柄
+type delayWait struct {
+	ch chan struct{}
+}
 
 // RegisterDelayCancel 注册一个延迟取消通道，返回通道
 // 在time.Sleep前调用，用于替代不可取消的sleep
 func RegisterDelayCancel(customerID uint) chan struct{} {
-	ch := make(chan struct{}, 1) // 带缓冲，避免发送方阻塞
-	delayCancelMap.Store(customerID, ch)
-	return ch
+	w := &delayWait{ch: make(chan struct{}, 1)}
+	delayMu.Lock()
+	set := delayCancel[customerID]
+	if set == nil {
+		set = map[*delayWait]struct{}{}
+		delayCancel[customerID] = set
+	}
+	set[w] = struct{}{}
+	delayMu.Unlock()
+	return w.ch
+}
+
+// unregisterDelay 从等待集合摘除本句柄（仅删自己，不碰同客户其它等待；集合空则删键）
+func unregisterDelay(customerID uint, w *delayWait) {
+	delayMu.Lock()
+	if set := delayCancel[customerID]; set != nil {
+		delete(set, w)
+		if len(set) == 0 {
+			delete(delayCancel, customerID)
+		}
+	}
+	delayMu.Unlock()
 }
 
 // CancellableSleep 可取消的延迟：等待duration或收到取消信号
@@ -35,8 +68,16 @@ func CancellableSleep(customerID uint, duration time.Duration) bool {
 	if duration <= 0 {
 		return true
 	}
-	ch := RegisterDelayCancel(customerID)
-	defer delayCancelMap.Delete(customerID) // 清理
+	w := &delayWait{ch: make(chan struct{}, 1)}
+	delayMu.Lock()
+	set := delayCancel[customerID]
+	if set == nil {
+		set = map[*delayWait]struct{}{}
+		delayCancel[customerID] = set
+	}
+	set[w] = struct{}{}
+	delayMu.Unlock()
+	defer unregisterDelay(customerID, w)
 
 	timer := time.NewTimer(duration)
 	defer timer.Stop()
@@ -44,25 +85,32 @@ func CancellableSleep(customerID uint, duration time.Duration) bool {
 	select {
 	case <-timer.C:
 		return true // 正常等完
-	case <-ch:
+	case <-w.ch:
 		log.Printf("[延迟清零] 客户%d 延迟被取消，立即回复", customerID)
 		return false // 被取消
 	}
 }
 
-// CancelDelay 取消指定客户的延迟，使其立即回复
+// CancelDelay 取消指定客户的延迟，使其立即回复（向该客户所有等待通道各发一次信号）
 func CancelDelay(customerID uint) {
-	if v, ok := delayCancelMap.Load(customerID); ok {
-		ch := v.(chan struct{})
+	delayMu.Lock()
+	set := delayCancel[customerID]
+	chans := make([]chan struct{}, 0, len(set))
+	for w := range set {
+		chans = append(chans, w.ch)
+	}
+	delayMu.Unlock()
+	if len(chans) == 0 {
+		log.Printf("[延迟清零] 客户%d 当前无活跃延迟", customerID)
+		return
+	}
+	for _, ch := range chans {
 		select {
 		case ch <- struct{}{}:
-			log.Printf("[延迟清零] 客户%d 取消信号已发送", customerID)
-		default:
-			log.Printf("[延迟清零] 客户%d 取消通道已满，可能已被处理", customerID)
+		default: // 已排队取消，跳过
 		}
-	} else {
-		log.Printf("[延迟清零] 客户%d 当前无活跃延迟", customerID)
 	}
+	log.Printf("[延迟清零] 客户%d 取消信号已发送(%d 个等待)", customerID, len(chans))
 }
 
 // GetConversationMutex 获取客户级别的会话创建互斥锁

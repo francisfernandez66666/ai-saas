@@ -226,7 +226,7 @@ func Stats(f StatFilter, gdb ...*gorm.DB) ([]model.PackTemplateStat, error) {
 	return rows, err
 }
 
-// SyncPackStats 小时级物化包/模板效果快照；供 taskrunner 定时调用。
+// SyncPackStats 小时级物化包/模板效果快照；供 main.go 后台 ticker（pack:quality:sweep）定时调用。
 func SyncPackStats(gdb ...*gorm.DB) error {
 	d := db.DB
 	if len(gdb) > 0 && gdb[0] != nil {
@@ -286,7 +286,7 @@ var (
 )
 
 // ScoreReplyAttributions 给未评分的归因回复补离线分（0~100）；limit<=0 默认 200。
-func ScoreReplyAttributions(limit int) (int, error) {
+func ScoreReplyAttributions(limit int, tenantIDs ...uint) (int, error) {
 	if ReplyScoreFunc == nil {
 		return 0, nil
 	}
@@ -294,7 +294,13 @@ func ScoreReplyAttributions(limit int) (int, error) {
 		limit = 200
 	}
 	var rows []model.ReplyAttribution
-	if err := db.DB.Where("template_id <> '' AND eval_score < 0").Order("id ASC").Limit(limit).Find(&rows).Error; err != nil {
+	q := db.DB.Where("template_id <> '' AND eval_score < 0")
+	// 测试隔离修复(2026-09-14)：可选租户过滤——共享库下全表扫描会把其它租户
+	// （E2E/开发数据）的未评分行挤进 limit，导致单测计数漂移。生产调用不传即全量。
+	if len(tenantIDs) > 0 && tenantIDs[0] > 0 {
+		q = q.Where("tenant_id = ?", tenantIDs[0])
+	}
+	if err := q.Order("id ASC").Limit(limit).Find(&rows).Error; err != nil {
 		return 0, err
 	}
 	tplCache := map[string][]string{}

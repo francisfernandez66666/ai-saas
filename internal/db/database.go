@@ -175,6 +175,7 @@ func autoMigrate() error {
 		&model.Channel{},
 		&model.ChannelOutbound{},
 		&model.ChannelIdentity{},
+		&model.ChannelInboundMsg{}, // D4：入站幂等去重（回调重推防双回复）
 		// ---- PIPL 删除请求（C2，2026-09-12；建表真源见 migrations/006，AutoMigrate 幂等共存）
 		&model.DeletionRequest{},
 		// ---- 出站事件 webhook（D6，2026-09-12；建表真源见 migrations/007）

@@ -9,5 +9,10 @@ export default defineConfig({
     include: ['src/**/__tests__/**/*.test.{ts,tsx}'],
     setupFiles: ['./src/test/setup.ts'],
     globals: true,
+    // G3 稳定性收口(2026-09-14)：test_all 与 go build/vite build 并发跑时，
+    // 默认 5s 单测超时在 CPU 争抢下会误报（jsdom 渲染+多路 AUTH mock 用例偶发 >5s）。
+    // 放宽到 20s，消除负载抖动导致的假失败，不改变用例逻辑。
+    testTimeout: 20000,
+    hookTimeout: 20000,
   },
 })

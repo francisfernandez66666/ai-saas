@@ -129,6 +129,19 @@ func GetMessages(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// B1 修复(2026-09-14)：消息正文读取补四级数据范围——旧实现仅租户隔离，
+	// sales 可通过遍历会话 ID 读取全租户客户聊天记录（与 GetChatHistory P1-15 同洞不同门）
+	var conv model.Conversation
+	if err := db.RQ(c).First(&conv, conversationID).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "会话不存在")
+		return
+	}
+	var convCustomer model.Customer
+	if err := db.RQ(c).First(&convCustomer, conv.CustomerID).Error; err != nil ||
+		!customerInDataScope(c, convCustomer.AssignedUserID) {
+		RespErr(c, http.StatusNotFound, 404, "会话不存在") // 不泄露存在性
+		return
+	}
 	var messages []model.Message
 	db.RQ(c).Where("conversation_id = ?", conversationID).
 		Order("created_at ASC").
@@ -136,6 +149,38 @@ func GetMessages(c *gin.Context) {
 		Find(&messages)
 
 	RespOK(c, "success", messages)
+}
+
+// scopeConversationsByCustomer B1 修复(2026-09-14)：会话列表按客户归属做数据范围过滤。
+// 语义对齐 db.DataScope（作用对象是 customers.assigned_user_id），此处对 conversations.customer_id 子查询。
+// fail-closed：未知角色/无部门路径一律 1=0。
+func scopeConversationsByCustomer(c *gin.Context, query *gorm.DB) *gorm.DB {
+	roleV, _ := c.Get("role")
+	roleStr, _ := roleV.(string)
+	switch roleStr {
+	case model.RoleSuperAdmin, model.RoleTenantAdmin:
+		return query
+	case model.RoleUser, model.RoleReadOnly:
+		// readonly 与 sales 同档：仅本人名下（旧 DataScope readonly 走部门档，此处从保守）
+		uidV, _ := c.Get("user_id")
+		uid, _ := uidV.(uint)
+		if uid == 0 {
+			return query.Where("1 = 0")
+		}
+		return query.Where("customer_id IN (SELECT id FROM customers WHERE assigned_user_id = ?)", uid)
+	case model.RoleDeptAdmin:
+		pathV, _ := c.Get("dept_path")
+		path, _ := pathV.(string)
+		if path == "" {
+			return query.Where("1 = 0")
+		}
+		tid := db.EffectiveTenantIDFromGin(c)
+		return query.Where(`customer_id IN (SELECT cu.id FROM customers cu
+			JOIN tenant_users u ON cu.assigned_user_id = u.id
+			LEFT JOIN departments d ON u.department_id = d.id
+			WHERE cu.tenant_id = ? AND u.tenant_id = ? AND d.path LIKE ?)`, tid, tid, path+"%")
+	}
+	return query.Where("1 = 0")
 }
 
 // GetConversationList 获取会话列表
@@ -146,7 +191,8 @@ func GetConversationList(c *gin.Context) {
 		return
 	}
 
-	query := db.RQ(c).Model(&model.Conversation{})
+	// B1 修复(2026-09-14)：补数据范围（同 GetMessages）
+	query := scopeConversationsByCustomer(c, db.RQ(c).Model(&model.Conversation{}))
 
 	if req.CustomerID > 0 {
 		query = query.Where("customer_id = ?", req.CustomerID)

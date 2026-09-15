@@ -3,6 +3,7 @@ package middleware
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -14,6 +15,7 @@ import (
 	"ai-scrm/internal/model"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -109,6 +111,29 @@ func StartTenantCacheSweeper() {
 // 租户查库加载（带缓存）
 // ============================================================
 
+// logTenantLoadErr G7 告警：区分"租户不存在"(正常负缓存) 与 "DB 故障"(fail-closed 期间的可用性损失)。
+// DB 故障按 key 维度短时打点，避免 DB down 时每个请求刷一条日志造成风暴。
+var (
+	tenantLoadErrLogged sync.Map // key → time.Time 上次告警时间
+)
+
+// logTenantLoadErr G7 修复(2026-09-14)：租户查库异常统一告警——
+// ErrRecordNotFound 属正常"不存在"（走负缓存）不打告警；其余 DB 异常按 key 30s 节流记一条
+// 告警日志（避免 DB 抖动时刷屏），调用方据此对租户缺失请求做 fail-closed 拒绝。
+func logTenantLoadErr(key string, err error) {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return // 正常"不存在"，走负缓存，无需告警
+	}
+	now := time.Now()
+	if last, ok := tenantLoadErrLogged.Load(key); ok {
+		if lt, isT := last.(time.Time); isT && now.Sub(lt) < 30*time.Second {
+			return
+		}
+	}
+	tenantLoadErrLogged.Store(key, now)
+	log.Printf("[TenantResolver][告警] 租户查库异常(DB 可能不可用) key=%s err=%v —— 该请求 fail-closed 拒绝", key, err)
+}
+
 // loadTenantByID 按 ID 加载租户
 // P3-5 修复：原 `|| cacheHit(key)` 恒为 false（getCachedTenant 命中过期条目时先 Delete 再返回 nil），
 // 已删除冗余判断。
@@ -120,6 +145,7 @@ func loadTenantByID(id uint) *model.Tenant {
 	var t model.Tenant
 	err := db.DB.Where("id = ? AND deleted_at IS NULL", id).First(&t).Error
 	if err != nil {
+		logTenantLoadErr(key, err)
 		setCachedTenant(key, nil)
 		return nil
 	}
@@ -140,6 +166,7 @@ func loadTenantByCode(code string) *model.Tenant {
 	var t model.Tenant
 	err := db.DB.Where("code = ? AND deleted_at IS NULL", strings.ToLower(code)).First(&t).Error
 	if err != nil {
+		logTenantLoadErr(key, err)
 		setCachedTenant(key, nil)
 		return nil
 	}
@@ -160,6 +187,7 @@ func loadTenantByCustomDomain(host string) *model.Tenant {
 	var t model.Tenant
 	err := db.DB.Where("custom_domain = ? AND deleted_at IS NULL", host).First(&t).Error
 	if err != nil {
+		logTenantLoadErr(key, err)
 		setCachedTenant(key, nil)
 		return nil
 	}
@@ -317,14 +345,27 @@ var skipTenantPaths = map[string]bool{
 // skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）
 // SPA 自身仅含登录/注册等免登页与静态资源；业务数据由页面内的 API 调用
 // 走各自的 JWT/TenantResolver 逻辑，不受此放行影响
-var skipTenantPrefixes = []string{"/app/", "/api/v1/billing/webhook/"}
+var skipTenantPrefixes = []string{"/app/", "/api/v1/billing/webhook/", "/api/v1/channel/callback/"}
 
 // TenantResolver 全局租户解析中间件（fail-closed）
 func TenantResolver() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// db 未初始化（极端场景防御）：放行但不注入租户
+		// G7 修复(2026-09-14)：DB 未初始化时旧实现直接 c.Next() 放行——fail-open。
+		// 下游 handler 多以 `tenant, _ := c.Get("tenant")` + 零值继续，租户上下文缺失会
+		// 落到 tenant_id=0 系统层造成跨租户读/脏写。改为 fail-closed：健康检查等 skip 路径已在
+		// 前面放行，其余租户作用域请求一律 403，绝不带着空身份进入业务层。
 		if db.DB == nil {
-			c.Next()
+			path := c.Request.URL.Path
+			// 仅放行本就免租户的路径（健康/指标/登录页静态资源），避免误伤启动探针
+			if skipTenantPaths[path] {
+				c.Next()
+				return
+			}
+			c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+				"code":    503,
+				"message": "服务暂不可用（数据库未就绪）",
+				"data":    nil,
+			})
 			return
 		}
 

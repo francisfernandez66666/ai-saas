@@ -76,6 +76,22 @@ C=$(echo "$R" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.g
 [ "${C:-0}" -gt 0 ] && R2=y || R2=n
 check "超管带租户头读取→含消息" y "$R2"
 
+# ---- 8.5 B1 会话列表按客户归属过滤（scopeConversationsByCustomer 负向）----
+# CID_A 为访客客户未分配到 sales1 名下：sales1 会话列表不应出现其会话，直读其消息应 403。
+if [ -n "$ST" ]; then
+  CONV_A=$($PSQL "SELECT id FROM conversations WHERE customer_id=$CID_A ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+  LEAK=$(curl -s "$B/api/v1/conversations?page=1&page_size=200" -H "Authorization: Bearer $ST" -H "X-Tenant-ID: 1" \
+    | python3 -c "import sys,json;d=json.load(sys.stdin);rows=d.get('data') or {};rows=rows.get('list') if isinstance(rows,dict) else rows;rows=rows or [];print(any(str(r.get('customer_id'))==str('$CID_A') for r in rows))" 2>/dev/null || echo "err")
+  check "sales1会话列表不泄露他人客户(CID_A)" False "$LEAK"
+  if [ -n "$CONV_A" ]; then
+    R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/conversations/$CONV_A/messages" -H "Authorization: Bearer $ST" -H "X-Tenant-ID: 1")
+    check "sales1直读他人会话消息→404(B1不泄露存在性)" 404 "$R"
+    # 反证：超管可读同一会话（证明 403 源于数据范围而非路径不存在）
+    ROK=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/conversations/$CONV_A/messages" -H "Authorization: Bearer $AT" -H "X-Tenant-ID: 1")
+    check "超管读同一会话→200(反证)" 200 "$ROK"
+  fi
+fi
+
 # ---- 9. 清理：停用测试客户（数据保留供核查，对齐惯例）----
 $PSQL "UPDATE customers SET status=0 WHERE id IN ($CID_A,$CID_B)" >/dev/null 2>&1
 

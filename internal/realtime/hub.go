@@ -26,8 +26,31 @@ type Client struct {
 	TenantID   uint // 租户ID（隔离用）
 	UserID     uint // 顾问端（>0）；客户端的 UserID=0
 	CustomerID uint // 客户端（>0）；顾问端的 CustomerID=0
-	send       chan []byte
-	lastSeen   atomic.Int64 // 最近活动时间（UnixNano，P2-70 心跳：清扫僵尸连接）
+	// B2 修复(2026-09-14)：顾问连接携带组织角色/部门路径，deliver 按数据范围过滤——
+	// 旧实现"顾问端全收"，普通 sales 的 WS 能收到全租户客户消息正文，绕过 HTTP 侧 DataScope。
+	Role     string // super_admin/tenant_admin/dept_admin/user/readonly；客户端为空
+	DeptPath string // dept_admin 物化路径（子树判定）
+	send     chan []byte
+	lastSeen atomic.Int64 // 最近活动时间（UnixNano，P2-70 心跳：清扫僵尸连接）
+}
+
+// AdvisorScopeFunc 判定顾问连接对某客户的事件是否可见（B2 注入点）。
+// 由 api 层注入（依赖 db/组织树），realtime 保持零业务依赖；
+// 未注入时保持旧行为（全收），仅供单测与降级兜底——生产由 api init 强制注入。
+type AdvisorScopeFunc func(role, deptPath string, userID, tenantID, customerID uint) bool
+
+var advisorScope atomic.Value // 存 AdvisorScopeFunc
+
+// SetAdvisorScope 注入数据范围判定函数（api 包 init 调用）
+func SetAdvisorScope(fn AdvisorScopeFunc) { advisorScope.Store(fn) }
+
+// getAdvisorScope 读取注入函数（未注入返回 nil）
+func getAdvisorScope() AdvisorScopeFunc {
+	if v := advisorScope.Load(); v != nil {
+		fn, _ := v.(AdvisorScopeFunc)
+		return fn
+	}
+	return nil
 }
 
 // Touch 标记连接活跃（读泵每收到一次消息调用；P2-70）
@@ -66,6 +89,14 @@ func NewClient(tenantID, userID, customerID uint) *Client {
 		CustomerID: customerID,
 		send:       make(chan []byte, 16),
 	}
+}
+
+// NewAdvisorClient 构造顾问端连接并携带组织上下文（B2：deliver 按 Role/DeptPath 过滤）
+func NewAdvisorClient(tenantID, userID uint, role, deptPath string) *Client {
+	cl := NewClient(tenantID, userID, 0)
+	cl.Role = role
+	cl.DeptPath = deptPath
+	return cl
 }
 
 // Send 非阻塞向连接推送（缓冲满丢弃，由轮询兜底）
@@ -130,14 +161,24 @@ func (h *Hub) StartSweeper() {
 }
 
 // deliver 按租户/客户路由把已序列化 payload 投递给本实例连接。
+// B2 修复(2026-09-14)：顾问端不再"全收"——按注入的数据范围函数过滤
+// （sales 仅本人名下客户；dept_admin 仅部门子树；tenant_admin/super 全租户）。
+// 未注入判定函数时退回全收（单实例兜底/测试），生产由 api 包 init 注入。
 func (h *Hub) deliver(tenantID, customerID uint, data []byte) {
+	scope := getAdvisorScope()
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	for cl := range h.clients {
 		if cl.TenantID != tenantID {
 			continue
 		}
-		hit := cl.UserID != 0 // 顾问端全收
+		hit := false
+		if cl.UserID != 0 { // 顾问端
+			hit = true
+			if scope != nil {
+				hit = scope(cl.Role, cl.DeptPath, cl.UserID, cl.TenantID, customerID)
+			}
+		}
 		if !hit && cl.CustomerID == customerID && customerID != 0 {
 			hit = true // 该客户端连接
 		}

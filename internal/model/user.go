@@ -15,21 +15,25 @@ import (
 // 复合唯一索引从未建出）。现定论：用户名全局唯一（Username uniqueIndex 既成事实），
 // 删除 TenantUser 死结构，角色常量与别名下沉本文件。
 type User struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`                                                  // 主键ID
-	Username           string    `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名（全局唯一）
-	PasswordHash       string    `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
-	RealName           string    `gorm:"size:50" json:"real_name"`                                              // 真实姓名
-	Role               string    `gorm:"size:20;not null;default:sales" json:"role"`                            // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
-	Phone              string    `gorm:"size:20" json:"phone"`                                                  // 手机号
-	Email              string    `gorm:"size:100" json:"email"`                                                 // 邮箱
-	Avatar             string    `gorm:"size:255" json:"avatar"`                                                // 头像URL
-	Status             int       `gorm:"default:1" json:"status"`                                               // 状态: 1-正常 0-禁用
-	MustChangePassword bool      `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
-	Department         string    `gorm:"size:50" json:"department"`                                             // 部门
-	TenantID           *uint     `gorm:"index" json:"-"`                                                        // 租户ID，NULL=超级管理员，非NULL=某租户下用户
-	DepartmentID       *uint     `gorm:"index" json:"department_id"`                                            // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
-	CreatedAt          time.Time `json:"created_at"`                                                            // 创建时间
-	UpdatedAt          time.Time `json:"updated_at"`                                                            // 更新时间
+	ID                 uint   `gorm:"primaryKey" json:"id"`                                                  // 主键ID
+	Username           string `gorm:"size:50;uniqueIndex;not null" json:"username"`                          // 用户名（全局唯一）
+	PasswordHash       string `gorm:"size:255;not null" json:"-"`                                            // 密码哈希（不返回给前端）
+	RealName           string `gorm:"size:50" json:"real_name"`                                              // 真实姓名
+	Role               string `gorm:"size:20;not null;default:sales" json:"role"`                            // 角色: super_admin(超级管理员)/tenant_admin(租户管理员)/sales(销售)/readonly(只读)
+	Phone              string `gorm:"size:20" json:"phone"`                                                  // 手机号
+	Email              string `gorm:"size:100" json:"email"`                                                 // 邮箱
+	Avatar             string `gorm:"size:255" json:"avatar"`                                                // 头像URL
+	Status             int    `gorm:"default:1" json:"status"`                                               // 状态: 1-正常 0-禁用
+	MustChangePassword bool   `gorm:"column:must_change_password;default:false" json:"must_change_password"` // 首登强制改密标记（M3，seed 默认账号置 true）
+	// TokenVersion B4 修复(2026-09-14)：JWT 吊销版本号——改密/重置/换绑邮箱时 +1，
+	// 携带旧版本号的有效 token 立即失效（此前密码改了旧 token 照样能用满过期期，
+	// 配合"换绑邮箱只需新邮箱验证码"构成账号接管链）。
+	TokenVersion uint      `gorm:"column:token_version;default:0" json:"-"`
+	Department   string    `gorm:"size:50" json:"department"`  // 部门
+	TenantID     *uint     `gorm:"index" json:"-"`             // 租户ID，NULL=超级管理员，非NULL=某租户下用户
+	DepartmentID *uint     `gorm:"index" json:"department_id"` // 所属部门ID（NULL=直属租户层，仅 tenant_admin 允许）
+	CreatedAt    time.Time `json:"created_at"`                 // 创建时间
+	UpdatedAt    time.Time `json:"updated_at"`                 // 更新时间
 }
 
 // Role constants for type-safe checks（P1-32 自 tenant_user.go 收敛于此）

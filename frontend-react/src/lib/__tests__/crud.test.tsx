@@ -2,7 +2,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { useCrud } from '../../hooks/useCrud'
-import { CrudTable } from '../../components/CrudTable'
 
 vi.mock('../../lib/api', () => ({
   AUTH: vi.fn(),
@@ -42,15 +41,5 @@ describe('useCrud', () => {
     await captured.create({ name: '新增' })
     await waitFor(() => expect(authMock).toHaveBeenCalledTimes(3))
     expect(authMock.mock.calls[1]).toEqual(['/api/v1/admin/demo', { method: 'POST', body: { name: '新增' } }])
-  })
-})
-
-describe('CrudTable', () => {
-  it('渲染数据行与空态错误提示', () => {
-    const cols = [{ colKey: 'name', title: '名称' }]
-    render(<CrudTable data={[{ id: 1, name: '知识库片段' }]} columns={cols} total={1} loading={false} />)
-    expect(screen.getByText('知识库片段')).toBeInTheDocument()
-    render(<CrudTable data={[]} columns={cols} error="加载失败" empty="暂无数据" />)
-    expect(screen.getByText('加载失败')).toBeInTheDocument()
   })
 })

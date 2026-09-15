@@ -32,6 +32,9 @@ type Channel struct {
 	Status       string `gorm:"size:20;default:unverified" json:"status"`  // active|disabled|unverified
 	DepartmentID uint   `gorm:"index" json:"department_id"`                // 归属部门（数据范围对齐 OrgResolve）
 	ConfigJSON   string `gorm:"type:text" json:"config_json"`              // 通道差异化扩展（如 48h 窗口、菜单 ID）
+	// KfCursor D14 修复(2026-09-14)：微信客服同步游标独立成列——旧实现读改写整个
+	// config_json（与管理员编辑凭据/参数并发时互相覆盖丢键），列写天然原子、无丢失更新。
+	KfCursor string `gorm:"column:kf_cursor;size:256" json:"-"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
@@ -48,7 +51,7 @@ const (
 	OutboundFailed  = "failed"  // 超过最大重试，进死信（/admin 通道页可见，可人工重发）
 )
 
-// ChannelOutbound 出站消息队列：把"回复产生"与"通道发送"解耦，可靠性靠 taskrunner 重试。
+// ChannelOutbound 出站消息队列：把"回复产生"与"通道发送"解耦，可靠性靠 main.go 后台 ticker 出站 worker 重试。
 type ChannelOutbound struct {
 	ID             uint       `gorm:"primaryKey" json:"id"`
 	TenantID       uint       `gorm:"index;not null" json:"tenant_id"`
@@ -84,3 +87,22 @@ type ChannelIdentity struct {
 
 // TableName 指定表名
 func (ChannelIdentity) TableName() string { return "channel_identities" }
+
+// ChannelInboundMsg D4 修复(2026-09-14)：入站幂等去重表。
+// 微信/企微回调超时重推是常态——旧实现无 MsgId 去重，一次重推=客户收到双份 AI 回复。
+// 唯一锚 (channel_id, msg_id)：ProcessInbound 先抢占插入，冲突即视为重放直接 ack 丢弃。
+// D2 配套：失败计数记录处理失败，同批重拉时成功者被 processed 跳过、失败者有限重试，
+// 超限(5 次)进死信不再阻塞游标推进（防毒消息卡死轮询）。
+type ChannelInboundMsg struct {
+	ID        uint      `gorm:"primaryKey" json:"id"`
+	TenantID  uint      `gorm:"index;not null" json:"tenant_id"`
+	ChannelID uint      `gorm:"not null;uniqueIndex:idx_chan_msg" json:"channel_id"`
+	MsgID     string    `gorm:"size:128;not null;uniqueIndex:idx_chan_msg" json:"msg_id"`
+	Status    string    `gorm:"size:20;default:processing;index" json:"status"` // processing|processed|failed
+	Attempts  int       `gorm:"default:0" json:"attempts"`                      // 处理尝试次数（首次=1）
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// TableName 指定表名
+func (ChannelInboundMsg) TableName() string { return "channel_inbound_msgs" }

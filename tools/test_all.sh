@@ -161,6 +161,9 @@ step "E2E 层：smoke_org.sh（11 项）"
 step "E2E 层：smoke_saas.sh（注册漏斗 8 项）"
 ./tools/smoke_saas.sh "$PORT" >/tmp/test_all_saas.log 2>&1; verdict "smoke_saas.sh" $?; tail -2 /tmp/test_all_saas.log
 
+step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放 14 项，C6 资金安全）"
+./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
+
 step "E2E 层：smoke_channel.sh（企微/公众号通道 E2E 32 项，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 

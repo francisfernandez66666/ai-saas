@@ -103,7 +103,16 @@ func (r DeductResult) String() string {
 // 2026-09-03 计费统一：本函数由 UsageSink 批量落库调用（每租户每 flush 周期一次），
 // 业务层不再直接 `go DeductTokensActual`，而是投递 SinkRecordUsage 统一计量。
 func DeductTokensActual(tenantID uint, tokens int64) error {
-	if tenantID == 0 || tokens <= 0 || !TokenBillingEnabled() {
+	if tenantID == 0 || !TokenBillingEnabled() {
+		return nil
+	}
+	// C5 修复(2026-09-14)：tokens<=0 旧实现静默放行——负值意味着上游计量异常
+	// （usage 解析错误/重复扣减残留），必须留痕并失效影子余额强制重 seed，不再无声吞账。
+	if tokens <= 0 {
+		if tokens < 0 {
+			log.Printf("[TokenBilling][ERROR] 租户%d 收到负值扣减请求 tokens=%d（计量异常，已失效影子余额）", tenantID, tokens)
+			InvalidateShadow(tenantID)
+		}
 		return nil
 	}
 	if !billingEnforced() {

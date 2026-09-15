@@ -158,9 +158,15 @@ type BillingOrder struct {
 	PaymentData         string     `json:"payment_data"`                        // 支付平台回调原始数据
 	ManualConfirm       bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）
 	InvoiceRequested    bool       `json:"invoice_requested"`                   // 是否申请发票
-	InvoiceStatus       string     `gorm:"size:20" json:"invoice_status"`       // 发票状态
-	QRContent           string     `gorm:"type:text" json:"qr_content"`         // 收款码内容（URL/base64，下单时从系统配置快照）
-	Remark              string     `json:"remark"`                              // 备注
+	InvoiceStatus       string     `gorm:"size:20" json:"invoice_status"`       // 发票状态（§W 状态机：requested→issued→voided）
+	// ---- B7 双轨退款 / §W 发票极限（2026-09-14）----
+	RefundRequested bool   `gorm:"default:false" json:"refund_requested"` // B7：租户侧只能"申请退款"，超管 confirm 才执行 clawback+出款
+	InvoiceTitle    string `gorm:"size:200" json:"invoice_title"`         // 发票抬头（E9：替代前端硬编码）
+	InvoiceTaxNo    string `gorm:"size:64" json:"invoice_tax_no"`         // 纳税人识别号
+	InvoiceEmail    string `gorm:"size:120" json:"invoice_email"`         // 接收邮箱
+	InvoiceNo       string `gorm:"size:64" json:"invoice_no"`             // 人工开票后回录的发票号
+	QRContent       string `gorm:"type:text" json:"qr_content"`           // 收款码内容（URL/base64，下单时从系统配置快照）
+	Remark          string `json:"remark"`                                // 备注
 	// ---- 换包升级差额抵扣（2026-09-09）----
 	// 语义：租户已有生效付费订阅且换订不同付费包 → 旧包剩余价值按比例抵扣新包金额，
 	// 新包从今天起算即时生效（GrantPackageUpgrade），旧单作废但保留退款闸门防双重回收。

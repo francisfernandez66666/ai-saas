@@ -19,6 +19,12 @@ func registerSuper(v1 *gin.RouterGroup) {
 		// 商业化 M1/M2/M5
 		super.GET("/orders/pending", SuperPendingOrders)
 		super.POST("/orders/:id/confirm", SuperConfirmOrder)
+		super.POST("/billing/orders/:id/refund", SuperRefundOrder)       // B7 双轨退款：平台审批落点
+		super.POST("/billing/orders/:id/mock-webhook", SuperMockWebhook) // §W 测试资产：模拟网关到账回调（非 release + mock 渠道双闸门）
+		// §W 发票极限闭环：申请列表 + 人工开具回录 + 作废（资质到位前不接税控）
+		super.GET("/invoices", SuperListInvoices)
+		super.POST("/invoices/:order_id/issue", SuperIssueInvoice)
+		super.POST("/invoices/:order_id/void", SuperVoidInvoice)
 		super.GET("/packages", SuperPackageList)
 		super.POST("/packages", SuperPackageCreate)
 		super.PUT("/packages/:id", SuperPackageUpdate)

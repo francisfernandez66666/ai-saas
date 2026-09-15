@@ -201,6 +201,63 @@ func renderPackCounter(b *[]byte, name, help string, m *sync.Map, withTemplate b
 	}
 }
 
+// ============================================================
+// F6 收口(2026-09-14)：通道出站死信指标
+// 出站队列此前只有 /admin 通道页可见死信列表，Prometheus 侧零指标——
+// 死信堆积（如通道凭据失效、微信端点持续 5xx）无人感知，属运维盲区。
+// 补两枚：① 计数 ai_scrm_channel_dead_letter_total{reason} 追踪进入死信的速率；
+//        ② gauge  ai_scrm_channel_dead_letter_pending 反映当前积压水位（供告警阈值）。
+// ============================================================
+
+var (
+	channelDeadLetterTotal   sync.Map // reason(fatal|exhausted) -> *uint64
+	channelDeadLetterPending int64    // 当前 failed 出站数（每轮扫描回填）
+)
+
+// IncChannelDeadLetter 出站死信计数 +1（reason 维度）。
+func IncChannelDeadLetter(reason string) {
+	if p, ok := channelDeadLetterTotal.Load(reason); ok {
+		atomic.AddUint64(p.(*uint64), 1)
+		return
+	}
+	p := new(uint64)
+	actual, _ := channelDeadLetterTotal.LoadOrStore(reason, p)
+	atomic.AddUint64(actual.(*uint64), 1)
+}
+
+// SetChannelDeadLetterPending 回填当前出站死信积压数（gauge）。
+func SetChannelDeadLetterPending(n int64) { atomic.StoreInt64(&channelDeadLetterPending, n) }
+
+// GetChannelDeadLetterPending 读取当前出站死信积压数（供 /status 健康检查）。
+func GetChannelDeadLetterPending() int64 { return atomic.LoadInt64(&channelDeadLetterPending) }
+
+// renderLabeledCounter 渲染单标签(reason)计数器（供死信指标复用）。
+func renderLabeledCounter(b *[]byte, name, help, label string, m *sync.Map) {
+	type entry struct {
+		key   string
+		value uint64
+	}
+	var entries []entry
+	m.Range(func(k, v interface{}) bool {
+		key, ok := k.(string)
+		p, ok2 := v.(*uint64)
+		if !ok || !ok2 {
+			return true
+		}
+		entries = append(entries, entry{key: key, value: atomic.LoadUint64(p)})
+		return true
+	})
+	if len(entries) == 0 {
+		return
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].key < entries[j].key })
+	*b = append(*b, fmt.Sprintf("# HELP %s %s\n", name, help)...)
+	*b = append(*b, fmt.Sprintf("# TYPE %s counter\n", name)...)
+	for _, e := range entries {
+		*b = append(*b, fmt.Sprintf("%s{%s=%q} %d\n", name, label, promEscape(e.key), e.value)...)
+	}
+}
+
 // ---- HTTP 请求延迟直方图（P99 来源）----
 // 桶（秒）：指数分布覆盖 5ms~10s，用于Prometheus histogram计算
 var latencyBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10}
@@ -402,6 +459,12 @@ func RenderPrometheus() string {
 	renderPackCounter(&b, "ai_scrm_pack_reply_total", "AI reply attribution count by pack/template", &packReplyTotal, true)
 	renderPackCounter(&b, "ai_scrm_pack_lead_captured_total", "Lead captured count attributed by pack", &packLeadCapturedTotal, false)
 	renderPackCounter(&b, "ai_scrm_pack_alert_total", "Pack quality alert count by pack", &packAlertTotal, false)
+
+	// ---- F6 指标：通道死信速率 + 积压水位 ----
+	renderLabeledCounter(&b, "ai_scrm_channel_dead_letter_total", "Outbound/inbound messages moved to dead-letter by reason", "reason", &channelDeadLetterTotal)
+	b = append(b, "# HELP ai_scrm_channel_dead_letter_pending Current failed outbound messages (dead-letter backlog)\n"...)
+	b = append(b, "# TYPE ai_scrm_channel_dead_letter_pending gauge\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_channel_dead_letter_pending %d\n", atomic.LoadInt64(&channelDeadLetterPending))...)
 
 	return string(b)
 }

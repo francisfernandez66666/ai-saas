@@ -113,7 +113,7 @@ func (a wecomKfAdapter) SendText(ctx context.Context, cred *Credential, external
 }
 
 // SyncPullOnce 拉取指定 kf 通道的增量消息（cursor 存 config_json.kf_cursor）。
-// 由 taskrunner ticker 每 5s 调用；返回处理条数。
+// 由 main.go 后台 ticker（channel:kf_sync，5s）调用；返回处理条数。
 func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 	cred, err := DecryptCredential(ch)
 	if err != nil {
@@ -127,7 +127,10 @@ func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 	if base == "" {
 		base = "https://qyapi.weixin.qq.com"
 	}
-	cursor := cfgStr(ch.ConfigJSON, "kf_cursor")
+	cursor := ch.KfCursor // D14：优先读独立列
+	if cursor == "" {
+		cursor = cfgStr(ch.ConfigJSON, "kf_cursor") // 存量数据回落（列上线前的旧游标存在 config_json）
+	}
 	u := fmt.Sprintf("%s/cgi-bin/kf/sync_msg?access_token=%s&limit=50", base, url.QueryEscape(tok))
 	if cursor != "" {
 		u += "&cursor=" + url.QueryEscape(cursor)
@@ -159,6 +162,7 @@ func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 		return 0
 	}
 	n := 0
+	failed := false // D2 修复(2026-09-14)：任一条入站处理失败即不推进游标
 	for _, m := range r.MsgList {
 		if m.Origin != 3 || m.Content == "" {
 			continue // 只处理客户发出（3）的文本消息
@@ -168,13 +172,18 @@ func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 			ExternalID:  m.ExternalUserid,
 			MsgType:     m.MsgType,
 			Content:     m.Content,
+			MsgID:       m.MsgID, // D4：轮询重拉同批经入站幂等去重，不产生双回复
 			ReceiveID:   cred.ReceiveID(),
 		}
-		if err := ProcessInbound(ch, in); err == nil {
-			n++
+		if err := ProcessInbound(ch, in); err != nil {
+			failed = true
+			continue
 		}
+		n++
 	}
-	if r.NextCursor != "" {
+	// D2 修复(2026-09-14)：旧实现无条件推进 next_cursor——ProcessInbound 报错的客户消息被永久跳过（丢消息）。
+	// 现：整批全成功才推进；有失败保留旧游标，下轮重拉同批，已成功的靠 channel_inbound_msgs 幂等跳过。
+	if r.NextCursor != "" && !failed {
 		updateKfCursor(ch.ID, r.NextCursor)
 	}
 	return n
@@ -182,12 +191,8 @@ func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 
 // updateKfCursor 将 next_cursor 写入 config_json（简单文本替换：无则加，有则换）。
 func updateKfCursor(channelID uint, cursor string) {
-	var ch model.Channel
-	if err := db.DB.First(&ch, channelID).Error; err != nil {
-		return
-	}
-	cfg := setCfgStr(ch.ConfigJSON, "kf_cursor", cursor)
-	db.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("config_json", cfg)
+	// D14 修复(2026-09-14)：游标独立列原子写，不再读改写 config_json（防与凭据编辑并发丢键）
+	db.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("kf_cursor", cursor)
 }
 
 // setCfgStr 在 config_json 中 set 一个字符串键（简易：读入 map→写回，避免依赖大 jsonb 表达式）。
@@ -205,7 +210,7 @@ func setCfgStr(configJSON, key, val string) string {
 	return string(b)
 }
 
-// SyncAllActiveKfChannels 由 taskrunner 每 5s 调用：轮询所有启用中的 kf 通道拉增量。
+// SyncAllActiveKfChannels 由 main.go 后台 ticker（channel:kf_sync，5s）调用：轮询所有启用中的 kf 通道拉增量。
 // 无 token 时 SyncPullOnce 直接返回 0，不做无谓重试。
 func SyncAllActiveKfChannels(ctx context.Context) {
 	var list []model.Channel

@@ -105,9 +105,15 @@ func grantPackage(tx *gorm.DB, tenantID uint, pkg *model.Package, replace bool) 
 			"subscribed_at":        now,
 		}
 		// P1.5(2026-08-26)：token制包月 → 设定①月度订阅额度并清零当月已用
+		// C2 修复(2026-09-14)：期内续订不再清零 monthly_token_used——旧实现同一自然月内
+		// 连买两单每次都清零 = 双倍月额度（可套利）。used 只在跨月任务（usage_service
+		// ResetMonthlyUsage）或"上一周期已到期/换包"重新起周期时清零。
 		if pkg.TokenAmount > 0 {
 			updates["monthly_token_quota"] = pkg.TokenAmount
-			updates["monthly_token_used"] = 0
+			renewedMidCycle := !replace && t.ExpiredAt != nil && t.ExpiredAt.After(time.Now())
+			if !renewedMidCycle {
+				updates["monthly_token_used"] = 0
+			}
 		}
 		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(updates)
 		if res.Error != nil {

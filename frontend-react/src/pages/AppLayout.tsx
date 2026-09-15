@@ -46,7 +46,11 @@ export default function AppLayout() {
 
   // G-23：角色过滤——根据 localStorage 中存储的用户角色判断权限级别
   // 管理员角色（super_admin/tenant_admin/admin/dept_admin）可看到全部导航菜单
-  // 普通成员角色（sales/user/readonly）仅看到"对话"和"设置"两项
+  // E5 修复(2026-09-14)：旧实现顾问台/邀请仅 isAdmin——sales 在移动端看不到本岗位核心工作台，
+  // 与桌面 redirectByRole(sales→/advisor) 自相矛盾。按后端实际权限分级：
+  //   顾问台：所有登录成员（含 sales，后端 /advisor/* 工作台接口本就是销售岗）
+  //   邀请：所有登录成员（referral info/records/qrcode 为只读个人资产，P1-42 已放开非管理员）
+  //   收银台：仅管理岗（下单/支付需 AdminRequired，sales 进去也是 403）
   const role = localStorage.getItem('role') || ''
   const isAdmin = ['super_admin', 'tenant_admin', 'admin', 'dept_admin'].includes(role)
 
@@ -59,9 +63,9 @@ export default function AppLayout() {
         {/* G-23：基于角色的导航菜单过滤 */}
         {/* 条件渲染：必须同时满足"已登录"且"管理员角色"才显示以下菜单项 */}
         {/* 成员角色（sales/user/readonly）登录后只能看到"对话"和"设置"，不暴露管理功能入口 */}
-        {token && isAdmin && link('/app/advisor', '顾问台')}
+        {token && link('/app/advisor', '顾问台')}
         {token && isAdmin && link('/app/billing', '收银台')}
-        {token && isAdmin && link('/app/referral', '邀请')}
+        {token && link('/app/referral', '邀请')}
         {token && link('/app/settings', '设置')}
         <span style={{ flex: 1 }} />
         {/* 未登录显示登录链接，已登录显示退出按钮 */}

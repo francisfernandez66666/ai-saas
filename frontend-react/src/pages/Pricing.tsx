@@ -43,7 +43,7 @@ export default function Pricing() {
         {plans.map((p, i) => {
           // 套餐亮点为 JSON 字符串，解析失败时降级为空数组
           let hl: string[] = []
-          try { hl = JSON.parse(p.highlights || '[]') } catch {}
+          try { hl = JSON.parse(p.highlights || '[]') } catch { /* 非法 JSON 降级空数组 */ }
           const m = (p.price_monthly_cents / 100).toFixed(0)
           const hasPrice = p.price_monthly_cents > 0
           return (
