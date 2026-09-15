@@ -415,6 +415,10 @@ check "零消耗包月全额退款" 0 "$RF_REFUND_SUB_CODE"
 check "包月退款金额=支付金额" "$RF_SUB_AMT" "$RF_REFUND_SUB_AMT"
 RF_AFTER=$($PSQL "SELECT monthly_token_quota, COALESCE(EXTRACT(EPOCH FROM (NOW()-expired_at)) < 120, false) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
 check "退款后到期日回退且月配额清零" "0|t" "$RF_AFTER"
+# 15.3 F1 回归(2026-09-15)：订单列表接口必须带回退款字段（修复前 Select 白名单漏列恒为 0/null）
+RF_LIST_RAW=$(curl -s "$B/api/v1/billing/orders?limit=50" -H "$RH")
+RF_LIST_REFUND=$(echo "$RF_LIST_RAW" | jget "sum(1 for o in d['data'] if o['id']==$RF_ORDER and o.get('refund_amount_cents')==$RF_AMT and o.get('refunded_at'))")
+check "订单列表含退款金额与退款时间(F1)" 1 "$RF_LIST_REFUND"
 
 echo ""
 echo "== 恢复现场 =="

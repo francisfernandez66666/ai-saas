@@ -1,9 +1,11 @@
 // 行业语义读取层校验（泛行业化 P2，2026-09-03）
 // 覆盖：无配置回退汽车默认、系统层配置生效、租户覆盖优先、关键词/话术确定性
+// UATFOLLOWUP F2(2026-09-15)：新增无包绑定租户的中立口径断言
 package service
 
 import (
 	"ai-scrm/internal/runtimecfg"
+	"strings"
 	"testing"
 )
 
@@ -94,5 +96,29 @@ func TestGetOffTopicReplyForTenant(t *testing.T) {
 	})
 	if p := GetOffTopicReplyForTenant(2, "anything"); p != "我们不聊这个，聊点正事吧" {
 		t.Errorf("租户自定义话术未生效, got %q", p)
+	}
+}
+
+// TestNeutralFallbackForUnboundTenant F2(2026-09-15)：无行业包绑定租户走行业中立口径
+// 单测环境 db.DB 为 nil → TenantHasIndustryPack 恒 false → 询价/无关话题兜底必须不含汽车专属词。
+// 修复前：general 租户询价硬拦截返回"约试驾"、无关话题兜底自称"卖车的"（UAT 实测复现）。
+func TestNeutralFallbackForUnboundTenant(t *testing.T) {
+	old := runtimecfg.DefaultSystemConfigService
+	runtimecfg.DefaultSystemConfigService = nil
+	defer func() { runtimecfg.DefaultSystemConfigService = old }()
+
+	for _, lead := range []bool{true, false} {
+		for _, r := range IndustryPriceRepliesForTenant(1, lead) {
+			if strings.Contains(r, "试驾") || strings.Contains(r, "车") {
+				t.Errorf("无包绑定租户询价回复含汽车专属词（lead=%v）: %q", lead, r)
+			}
+		}
+	}
+	ot := GetOffTopicReplyForTenant(1, "abc")
+	if strings.Contains(ot, "卖车") || strings.Contains(ot, "车") {
+		t.Errorf("无包绑定租户无关话题兜底含汽车专属词: %q", ot)
+	}
+	if ot == "" {
+		t.Error("中立兜底话术不应为空")
 	}
 }

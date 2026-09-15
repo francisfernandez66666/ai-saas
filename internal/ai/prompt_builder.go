@@ -40,9 +40,13 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 	toneStyle := runtimecfg.DefaultSystemConfigService.GetString("tone_style", "warm")
 
 	// 人设——优先行业包配置，缺省按tone_style动态调整
-	// 泛行业化（P2）：industry.salesperson 由行业包注入，空回退内置汽车人设
+	// 泛行业化（P2）：industry.salesperson 由行业包注入
+	// UATFOLLOWUP F3 修复(2026-09-15)：无行业包绑定的租户（general/新行业）回退**行业中立**人设，
+	// 不再硬编码"越野SUV品牌的销售顾问"——绑定车企包的租户行为不变。
 	if persona := service.IndustrySalespersonForTenant(tenantID); persona != "" {
 		sb.WriteString(persona)
+	} else if !service.TenantHasIndustryPack(tenantID) {
+		sb.WriteString(neutralPersona)
 	} else {
 		sb.WriteString(getTonePersona(toneStyle))
 	}
@@ -117,18 +121,21 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 		sb.WriteString("7. 回复中自然嵌入客户说过的关键词，让客户感觉你在认真听他说话\n")
 
 		// 价格管控：未到店客户禁止提及具体价格
+		// UATFOLLOWUP F3 修复(2026-09-15)：话术参考改读行业键 IndustryPriceRepliesForTenant
+		// （P1-29 已建键但 Prompt 层此前未接线，无包租户被硬编码汽车"约试驾"话术污染）；
+		// 行业键未配置时由该函数按"有无包绑定"分流：有包→汽车口径，无包→中立口径。
 		if !hasArrived {
 			sb.WriteString("6. 【重要】不得提及任何具体价格数字、优惠金额、金融方案具体数字\n")
 			// P1-26 修复(2026-09-09)：原询价规则整段被注释吞掉（代码卷进 // 注释，`\n` 字面量可见），
 			// 系统 prompt 从未注入"客户问价格时怎么答"规则。现恢复为可执行代码。
 			if leadCaptured {
-				// 已留资：体验后报价（不再约试驾，已经约上了）
-				// Q5：正向话术参考改「你」（去 AI 味铁律）；反问句仍是"不要反问"负例，保留「您」供模型识别要避免的写法
-				sb.WriteString("7. 客户问价格时，说价格得看配置和需求来定。话术参考：「等你试驾体验过后，我再根据你的配置需求做个报价」。不要反问「您什么时候试驾」「您对配置有什么要求」——客户已经留过资了，试驾已经在安排中，不需要再约\n")
+				// 已留资：体验后报价（不再约到店/体验，已经约上了）
+				priceRef := priceReplyRef(tenantID, true)
+				sb.WriteString("7. 客户问价格时，说价格得看具体需求来定。话术参考：「" + priceRef + "」。不要反问「您什么时候方便」「您对配置有什么要求」——客户已经留过资了，安排已经在进行中，不需要再约\n")
 			} else {
-				// 未留资：引导到店试驾后出报价
-				// Q5：正向话术参考改「你」
-				sb.WriteString("7. 客户问价格时，引导到店试驾后出报价，话术参考：「要不帮你约个试驾，体验过后我再根据你的配置需求做个报价」，禁止直接报价、禁止说具体数字\n")
+				// 未留资：引导进一步沟通后出报价，禁止直接报价
+				priceRef := priceReplyRef(tenantID, false)
+				sb.WriteString("7. 客户问价格时，引导客户说明需求后再出报价，话术参考：「" + priceRef + "」，禁止直接报价、禁止说具体数字\n")
 			}
 		}
 	}
@@ -557,11 +564,27 @@ func BuildFallbackReply(strategyOutput *strategytypes.StrategyOutput, canPromote
 // neutral=冷静专业 / warm=略带热情 / enthusiastic=热情主动
 // ============================================================
 
+// neutralPersona 行业中立人设（F3：无行业包绑定租户的兜底，不再绑死汽车销售）
+const neutralPersona = "你是经验丰富的销售顾问，微信聊天风格，真诚接地气，帮客户选对产品。"
+
+// priceReplyRef 取询价话术参考（Prompt 注入用）：行业键优先，兜底按有无包绑定分流（F3）
+func priceReplyRef(tenantID uint, lead bool) string {
+	if replies := service.IndustryPriceRepliesForTenant(tenantID, lead); len(replies) > 0 {
+		return replies[0]
+	}
+	return "价格得看你的具体需求来定，你说说你的情况，我给你做个详细报价"
+}
+
 // domainConstraintText 领域约束句子（泛行业化 P2）
-// 行业包可通过 industry.domain_constraint 配置「只聊什么」，缺省回退汽车版文案
+// 行业包可通过 industry.domain_constraint 配置「只聊什么」；
+// UATFOLLOWUP F3 修复(2026-09-15)：无行业包绑定的租户回退行业中立文案（旧回退写死"只聊车"），
+// 绑定车企包的租户保持汽车文案不变。
 func domainConstraintText(tenantID uint) string {
 	if s := service.IndustryDomainConstraintForTenant(tenantID); s != "" {
 		return s
+	}
+	if !service.TenantHasIndustryPack(tenantID) {
+		return "只聊咱们家的产品、服务和使用场景相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回来：「这个我还真不太懂，不过你说的这个让我想到，你是不是对这方面有需求？咱可以细聊」或「哈哈这块我不太行，咱们还是说你关心的事吧」。绝不装全能、绝不硬答无关领域"
 	}
 	return "你只聊车、品牌、用车生活相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回车：「这个我还真不太懂，不过你说的这个让我想到，你是不是对智能化挺感兴趣的？咱车的智能座舱你可能会有兴趣」或「哈哈这块我不太行，咱们还是聊聊你用车的事吧」。绝不装全能、绝不硬答无关领域"
 }

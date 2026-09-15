@@ -22,6 +22,7 @@ import (
 	"ai-scrm/pkg/wxcrypt"
 )
 
+// sentMsg 模拟微信端点的出站消息记录（供冒烟脚本核对投递内容与时间）
 type sentMsg struct {
 	Time      string      `json:"time"`
 	ToUser    string      `json:"to_user"`

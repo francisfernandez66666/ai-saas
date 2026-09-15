@@ -17,7 +17,7 @@ type Pkg = { id: number; p_type: string; name: string; price_cents: number; desc
 // 订阅订单类型（我的订单列表）
 // E1 修复(2026-09-14)：补 qr_content/refund_requested/invoice_status——后端一直下发，
 // 前端旧版不渲染收款码（static_qr 模式下用户根本看不到码）
-type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string }
+type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string; refund_amount_cents?: number; refunded_at?: string }
 
 // 收银台接口鉴权头
 const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
@@ -201,7 +201,9 @@ export default function Billing() {
               <td style={td}>{o.order_no}</td>
               <td style={td}>¥{(o.amount_cents / 100).toFixed(2)}<br /><span style={{ fontSize: 11, color: '#718096' }}>{o.package_name || ''}</span></td>
               <td style={td}>{CH[o.channel as keyof typeof CH] || o.channel || '-'}</td>
-              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status}</span></td>
+              {/* F1(2026-09-15)：后端列表接口已补退款字段——已退款单显示中文态与实际退款金额，
+                  旧版直接显示英文原值"refunded"且看不到退了多少钱 */}
+              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : o.status === 'refunded' ? '#fed7d7' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : o.status === 'refunded' ? '#9b2c2c' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status === 'refunded' ? `已退款${o.refund_amount_cents ? ' ¥' + (o.refund_amount_cents / 100).toFixed(2) : ''}` : o.status}</span></td>
               <td style={td}>{new Date(o.created_at).toLocaleString()}</td>
               <td style={td}>{o.status === 'pending' ? <button aria-label={'继续支付订单' + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
                 <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>

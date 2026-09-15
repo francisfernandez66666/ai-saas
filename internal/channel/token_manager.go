@@ -26,6 +26,7 @@ func (e *ErrTokenFailed) Error() string {
 	return fmt.Sprintf("换取 access_token 失败: code=%d msg=%s", e.Code, e.Msg)
 }
 
+// cachedToken 通道 access_token 进程内缓存项（按通道实例维度，expireAt 过期后强制重取）
 type cachedToken struct {
 	token    string
 	expireAt time.Time

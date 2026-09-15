@@ -11,6 +11,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
+// redactLogger GORM 日志脱敏包装器：在输出 SQL 前把绑定参数里的手机号/邮箱等
+// PII 打码（G4 审计要求：日志不得泄 PII），inner 通常为 logger.Default 的降级实例。
 type redactLogger struct {
 	inner logger.Interface
 }

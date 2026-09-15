@@ -9,6 +9,7 @@
 package service
 
 import (
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"encoding/json"
@@ -94,15 +95,49 @@ func IndustryVisitKeywordsForTenant(tenantID uint) []string {
 // IndustryPriceRepliesForTenant 租户级询价回复话术
 // P1-29 修复(2026-09-09)：询价硬拦截话术迁入行业键（JSON 数组）。
 // lead=true 为已留资分支（体验后报价，严禁"约试驾"——P1-30），lead=false 为未留资引导分支。
-// 行业包未配置时回退内置汽车版文案（与改造前一致）。
+// UATFOLLOWUP F2 修复(2026-09-15)：兜底按「有无行业包绑定」分流——
+// 有绑定（车企等既有租户）→ 保持汽车口径不变（兼容既有行为与 UAT 断言）；
+// 无绑定（general/新行业未上架包）→ 行业中立口径，不再让通用行业租户
+// 收到"约试驾/车价"等汽车销售话术（UAT 字节级实测复现：general 租户询价
+// 硬拦截返回试驾话术）。行业键已配置时两口径均被覆盖，优先级不变。
 func IndustryPriceRepliesForTenant(tenantID uint, lead bool) []string {
 	key := IndustryPriceReplyNoLead
-	fallback := defaultPriceRepliesNoLead
 	if lead {
 		key = IndustryPriceReplyLead
-		fallback = defaultPriceRepliesLead
 	}
-	return industryKeywordList(tenantID, key, fallback)
+	if list := industryKeywordList(tenantID, key, nil); len(list) > 0 {
+		return list
+	}
+	return priceReplyFallback(tenantID, lead)
+}
+
+// priceReplyFallback 询价回复兜底口径分流（F2）：
+// 有行业包绑定 → 汽车版（兼容既有车企租户）；无绑定 → 行业中立版。
+func priceReplyFallback(tenantID uint, lead bool) []string {
+	if TenantHasIndustryPack(tenantID) {
+		if lead {
+			return defaultPriceRepliesLead
+		}
+		return defaultPriceRepliesNoLead
+	}
+	if lead {
+		return neutralPriceRepliesLead
+	}
+	return neutralPriceRepliesNoLead
+}
+
+// neutralPriceRepliesLead 中立口径·已留资询价回复（不提试驾/车，行业无关）
+var neutralPriceRepliesLead = []string{
+	"价格得看具体方案和你的需求来定，你体验之后就清楚了",
+	"费用跟方案组合有关，确认好需求我按你的情况出个详细报价",
+	"具体价格看你选什么方案，你定好了我按需求给你报价",
+}
+
+// neutralPriceRepliesNoLead 中立口径·未留资询价回复（引导进一步沟通，不提行业专属动作）
+var neutralPriceRepliesNoLead = []string{
+	"价格得看你的需求来定，要不我先了解下你的情况，再给你做个详细报价",
+	"费用要看具体方案，你说说主要想解决什么，我按需求给你报个准数",
+	"价格跟方案配置有关，我先帮你捋一下需求，然后给你个合适的报价",
 }
 
 // defaultPriceRepliesLead 已留资询价回复（体验后报价，不约试驾，与 prompt 硬规则一致）
@@ -153,10 +188,33 @@ func IsOffTopicForTenant(tenantID uint, content string) bool {
 }
 
 // GetOffTopicReplyForTenant 租户级无关话题兜底话术（按长度散列保证确定性）
+// F2 修复(2026-09-15)：无行业包绑定的租户回退中立口径（不再说"我是卖车的"），
+// 有绑定租户保持汽车版不变；租户/系统层 industry.offtopic_replies 配置优先级最高。
 func GetOffTopicReplyForTenant(tenantID uint, content string) string {
-	replies := industryKeywordList(tenantID, IndustryOffTopicReplies, defaultOffTopicReplies)
+	fallback := defaultOffTopicReplies
+	if !TenantHasIndustryPack(tenantID) {
+		fallback = neutralOffTopicReplies
+	}
+	replies := industryKeywordList(tenantID, IndustryOffTopicReplies, fallback)
 	idx := len([]rune(content)) % len(replies)
 	return replies[idx]
+}
+
+// neutralOffTopicReplies 中立口径·无关话题兜底话术（行业无关，不暴露销售领域）
+var neutralOffTopicReplies = []string{
+	"这块我确实不太在行，咱们聊回正事吧，你想了解点啥？",
+	"这个我还真不懂，说回你关心的产品吧，有啥想问的？",
+	"哈哈这个超纲了，正事上我专业，你想了解哪方面？",
+	"这块帮不上你，咱们还是说你关心的事吧，想了解啥？",
+}
+
+// TenantHasIndustryPack 租户是否绑定了任意行业/企业包（F2 话术口径分流依据）。
+// db 未初始化（单测环境）按无绑定处理（走中立口径）；绑定结果走 boundPackCodes 的 30s 进程缓存。
+func TenantHasIndustryPack(tenantID uint) bool {
+	if tenantID == 0 || db.DB == nil {
+		return false
+	}
+	return len(boundPackCodes(tenantID)) > 0
 }
 
 // GetHumanTakeoverReplyForTenant 人工接管/待接管话术（P2-21）

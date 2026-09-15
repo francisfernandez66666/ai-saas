@@ -40,6 +40,8 @@ func callbackURLHint(ch *model.Channel) string {
 	return "/api/v1/channel/callback/" + strconv.FormatUint(uint64(ch.ID), 10)
 }
 
+// channelCreateReq 通道接入凭据创建/更新请求体：type 为适配器类型（wecom_app/wecom_kf/wechat_mp），
+// 凭据明文字段服务端经 pkg/crypto AES-GCM 加密后落密文列，响应永不回显明文。
 type channelCreateReq struct {
 	Type         string `json:"type" binding:"required"`
 	Name         string `json:"name" binding:"required"`

@@ -32,12 +32,14 @@ func TestIsOffTopic(t *testing.T) {
 }
 
 // TestGetOffTopicReply 无关话题兜底话术：确定性（按长度散列）且非空
+// UATFOLLOWUP F2(2026-09-15)：GetOffTopicReply 走 tenantID=0（无包绑定）→ 中立口径，
+// 预设集合同步更新为 neutralOffTopicReplies（旧汽车集合仅对绑定车企包的租户生效）。
 func TestGetOffTopicReply(t *testing.T) {
 	replies := map[string]bool{
-		"哈哈这块我确实不太行，咱们还是聊车吧？你平时用车都干啥？": true,
-		"这个我还真不懂，不过你平时有没有自驾出行的需求？":     true,
-		"哈哈我是卖车的，专业对口才靠谱，你想了解哪款？":      true,
-		"这块超纲了哈，我对车倒是门儿清，有啥想了解的？":      true,
+		"这块我确实不太在行，咱们聊回正事吧，你想了解点啥？": true,
+		"这个我还真不懂，说回你关心的产品吧，有啥想问的？":  true,
+		"哈哈这个超纲了，正事上我专业，你想了解哪方面？":   true,
+		"这块帮不上你，咱们还是说你关心的事吧，想了解啥？":  true,
 	}
 	got := GetOffTopicReply("abc")
 	if !replies[got] {

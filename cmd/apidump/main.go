@@ -20,6 +20,8 @@ import (
 	"ai-scrm/internal/api"
 )
 
+// Route 单条 API 路由元数据（T7 契约 golden 的最小单元）：
+// DataTS 为该路由的核心响应数据时间戳口径（契约漂移检测用，可空）。
 type Route struct {
 	Method  string   `json:"method"`
 	Path    string   `json:"path"`
@@ -29,6 +31,7 @@ type Route struct {
 	DataTS  string   `json:"data_ts,omitempty"`
 }
 
+// Schema api.schema.json golden 文件的顶层结构（check_api_contract.sh 逐项比对）
 type Schema struct {
 	GeneratedBy string         `json:"generated_by"`
 	Version     int            `json:"version"`

@@ -98,9 +98,14 @@ func ListBillingOrders(c *gin.Context) {
 		limit = 50
 	}
 	orders := []model.BillingOrder{}
+	// F1 修复(2026-09-15)：Select 白名单补齐退款/发票/升级抵扣列——旧口径只选 10 列，
+	// 退款成功后列表接口 refund_amount_cents 恒为 0、refunded_at 恒为 null（DB 有值），
+	// Admin 订单列表与财务对账视图被误导（UAT 字节级复核实测复现）。
 	if err := db.DB.Where("tenant_id = ?", tid).
-		Select("id, order_no, package_id, amount_cents, period, channel, status," +
-			"manual_confirm, paid_at, created_at").
+		Select("id, order_no, package_id, amount_cents, original_amount_cents, period, channel, status," +
+			"manual_confirm, paid_at, created_at, refunded_at, refund_amount_cents, refund_psp_status," +
+			"expire_at, invoice_requested, invoice_status, invoice_no, invoice_title," +
+			"upgrade_offset_cents, upgrade_base_order_id").
 		Order("id DESC").Limit(limit).Find(&orders).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
 		return

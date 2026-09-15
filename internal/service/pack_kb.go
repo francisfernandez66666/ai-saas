@@ -25,6 +25,14 @@ import (
 // 一个租户可绑定行业包和企业包，返回去重后的code列表
 // P2-51 修复：加短TTL进程缓存——检索/提 prompt 每次会话都查绑定表（每片段、每 prompt 各一次）
 func boundPackCodes(tenantID uint) []string {
+	if tenantID == 0 {
+		return nil
+	}
+	// F3 修复(2026-09-15)：db 未初始化（纯逻辑单测环境）直接返回无绑定，
+	// 防止 nil 指针 panic——与 TenantHasIndustryPack 的 nil 防护口径一致
+	if db.DB == nil {
+		return nil
+	}
 	if v, ok := packBindCache.Load(tenantID); ok {
 		e := v.(packBindCacheEntry)
 		if time.Now().Before(e.expireAt) {

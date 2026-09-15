@@ -13,6 +13,7 @@ export type MenuItemDef = { k: string; label: string; link?: string }
 
 export type MenuGroupDef = { title: string; items: MenuItemDef[] }
 
+// MENU_GROUPS 后台正式菜单分组定义（k 为 Tab 键、link 为路由路径，link 空表示仅锚点分组）
 export const MENU_GROUPS: MenuGroupDef[] = [
   {
     title: '店端运营',

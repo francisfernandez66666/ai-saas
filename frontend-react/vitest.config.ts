@@ -14,5 +14,9 @@ export default defineConfig({
     // 放宽到 20s，消除负载抖动导致的假失败，不改变用例逻辑。
     testTimeout: 20000,
     hookTimeout: 20000,
+    // UATFOLLOWUP F4 修复(2026-09-15)：冷启动（transform/import 峰值 35s+87s）下
+    // testing-library 的 findBy*/waitFor 默认 1s 异步等待也会超时，首跑 flaky。
+    // asyncUtilTimeout 放宽到 8s，只影响异步查询等待上限，不改用例逻辑。
+    asyncUtilTimeout: 8000,
   },
 })
