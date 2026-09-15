@@ -58,4 +58,8 @@ for t in $DLIST; do
   esac
 done
 psql "$DBURL" -c "DELETE FROM tenants WHERE id IN ($IDS);" >/dev/null 2>&1
+# 陈旧 ut_* 测试包回收（packages 是全局目录表不挂租户；testutil.CleanupTenant 带 1h 年龄窗，
+# 长期不跑单测的环境残留由此兜底——仅回收无任何订单引用的测试包，绝不触碰真实在售包）
+STALE_PKGS=$(psql "$DBURL" -tAc "DELETE FROM packages WHERE code LIKE 'ut\_%' AND id NOT IN (SELECT COALESCE(package_id,0) FROM billing_orders WHERE package_id IS NOT NULL) RETURNING id;" 2>/dev/null | grep -c . || true)
+echo "已回收陈旧 ut_* 测试包 $STALE_PKGS 个。"
 echo "已清理 $CNT 个测试租户及其级联数据。"

@@ -74,7 +74,7 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "mental_stage", Key: "force_stage0_attempts", Value: "1", ValueType: "number", Description: "Attempts≤此值强制stage=0", DefaultValue: "1", SortOrder: 4},
 
 	// ---- 分类4：ai_chain（AI链路类）----
-	{Category: "ai_chain", Key: "model_priority", Value: `["siliconflow_deepseek_v4_flash","siliconflow_glm4_9b","zhipu_glm4_flash","template_fallback"]`, ValueType: "json", Description: "模型降级优先级(可拖拽排序)", DefaultValue: `["siliconflow_deepseek_v4_flash","siliconflow_glm4_9b","zhipu_glm4_flash","template_fallback"]`, SortOrder: 1},
+	{Category: "ai_chain", Key: "model_priority", Value: `["siliconflow_deepseek_v4_flash","siliconflow_glm4_9b","template_fallback"]`, ValueType: "json", Description: "模型降级优先级(可拖拽排序,与 InitRouter 实际链一致;如需恢复智谱在 stage_models 指定 provider=zhipu)", DefaultValue: `["siliconflow_deepseek_v4_flash","siliconflow_glm4_9b","template_fallback"]`, SortOrder: 1},
 	{Category: "ai_chain", Key: "mock_mode", Value: "false", ValueType: "bool", Description: "Mock模式开关(仅返回模板回复)", DefaultValue: "false", SortOrder: 2},
 	{Category: "ai_chain", Key: "ai_temperature", Value: "0.7", ValueType: "number", Description: "AI采样温度(0-1,越大越随机)", DefaultValue: "0.7", SortOrder: 3},
 	{Category: "ai_chain", Key: "ai_max_tokens", Value: "1024", ValueType: "number", Description: "AI最大输出token数", DefaultValue: "1024", SortOrder: 4},
@@ -127,10 +127,24 @@ var DefaultConfigs = []model.SystemConfig{
 	// ---- 支付网关 sdk 配置（2026-08-31 UAT 修复）----
 	// 平台级支付网关参数：必须在此预置系统层种子行，admin/config 才能写入系统层(tenant_id=0)，
 	// 否则 BatchUpdate 静默0行、webhook/loadGatewayProvider 读系统层永远拿到空值（验签必败）。
-	{Category: "billing", Key: "pay_gateway_url", Value: "\"\"", ValueType: "string", Description: "支付网关端点(OpenAI式HTTP API，sdk模式下单/查单用)", DefaultValue: "\"\"", SortOrder: 13},
+	{Category: "billing", Key: "pay_gateway_url", Value: "\"\"", ValueType: "string", Description: "支付网关端点([OI]式HTTP API，sdk模式下单/查单用)", DefaultValue: "\"\"", SortOrder: 13},
 	{Category: "billing", Key: "pay_gateway_app_id", Value: "\"\"", ValueType: "string", Description: "支付网关应用ID(商户标识)", DefaultValue: "\"\"", SortOrder: 14},
 	{Category: "billing", Key: "pay_gateway_key", Value: "\"\"", ValueType: "string", Description: "支付网关验签密钥(HMAC-SHA256，与网关创建支付/回调验签对称，敏感勿外泄)", DefaultValue: "\"\"", SortOrder: 15},
 	{Category: "billing", Key: "pay_gateway_notify_url", Value: "\"\"", ValueType: "string", Description: "支付网关异步通知回调地址(收到到账后回调本系统webhook)", DefaultValue: "\"\"", SortOrder: 16},
+	// ---- P0-1 原生支付渠道（2026-09-15，微信支付V3/支付宝当面付）----
+	// pay_provider 分发 sdk 模式渠道：默认 gateway 兼容存量部署（已配 pay_gateway_* 零感知）。
+	// wechat/alipay 的私钥/密钥为敏感配置，走系统配置或环境变量注入，不入日志不入审计明文。
+	{Category: "billing", Key: "pay_provider", Value: "\"gateway\"", ValueType: "string", Description: "sdk模式支付渠道:gateway=通用HMAC网关(默认)|wechat=微信支付V3|alipay=支付宝当面付", DefaultValue: "\"gateway\"", SortOrder: 17},
+	{Category: "billing", Key: "pay_wechat_app_id", Value: "\"\"", ValueType: "string", Description: "微信支付公众号/小程序AppID", DefaultValue: "\"\"", SortOrder: 18},
+	{Category: "billing", Key: "pay_wechat_mch_id", Value: "\"\"", ValueType: "string", Description: "微信支付商户号", DefaultValue: "\"\"", SortOrder: 19},
+	{Category: "billing", Key: "pay_wechat_serial_no", Value: "\"\"", ValueType: "string", Description: "微信商户API证书序列号(Authorization头用)", DefaultValue: "\"\"", SortOrder: 20},
+	{Category: "billing", Key: "pay_wechat_private_key", Value: "\"\"", ValueType: "string", Description: "微信商户API私钥PEM全文(敏感勿外泄,PKCS8/PKCS1)", DefaultValue: "\"\"", SortOrder: 21},
+	{Category: "billing", Key: "pay_wechat_apiv3_key", Value: "\"\"", ValueType: "string", Description: "微信APIv3密钥(32字节,回调解密用,敏感勿外泄)", DefaultValue: "\"\"", SortOrder: 22},
+	{Category: "billing", Key: "pay_wechat_notify_url", Value: "\"\"", ValueType: "string", Description: "微信支付回调地址(须外网可达,如https://域名/api/v1/billing/webhook/wechat)", DefaultValue: "\"\"", SortOrder: 23},
+	{Category: "billing", Key: "pay_alipay_app_id", Value: "\"\"", ValueType: "string", Description: "支付宝开放平台应用AppID", DefaultValue: "\"\"", SortOrder: 24},
+	{Category: "billing", Key: "pay_alipay_private_key", Value: "\"\"", ValueType: "string", Description: "支付宝应用私钥PEM全文(敏感勿外泄,RSA2)", DefaultValue: "\"\"", SortOrder: 25},
+	{Category: "billing", Key: "pay_alipay_public_key", Value: "\"\"", ValueType: "string", Description: "支付宝平台公钥PEM(异步通知验签用,开放平台加签方式页下载)", DefaultValue: "\"\"", SortOrder: 26},
+	{Category: "billing", Key: "pay_alipay_notify_url", Value: "\"\"", ValueType: "string", Description: "支付宝异步通知地址(如https://域名/api/v1/billing/webhook/alipay)", DefaultValue: "\"\"", SortOrder: 27},
 
 	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
 	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
@@ -194,6 +208,17 @@ var PlatformLevelKeys = map[string]bool{
 	"pay_gateway_app_id":               true, // UAT修复(2026-08-31)：支付网关应用ID(平台级)
 	"pay_gateway_key":                  true, // UAT修复(2026-08-31)：支付网关验签密钥(平台级)——不入租户覆盖层，否则 webhook 验签永远失败
 	"pay_gateway_notify_url":           true, // UAT修复(2026-08-31)：支付网关异步通知地址(平台级)
+	"pay_provider":                     true, // P0-1(2026-09-15)：sdk模式渠道分发(平台级)——租户改它等于改全站收款方式
+	"pay_wechat_app_id":                true, // P0-1(2026-09-15)：微信支付凭证(平台级,含私钥/apiv3key 敏感项,绝不入租户层)
+	"pay_wechat_mch_id":                true,
+	"pay_wechat_serial_no":             true,
+	"pay_wechat_private_key":           true,
+	"pay_wechat_apiv3_key":             true,
+	"pay_wechat_notify_url":            true,
+	"pay_alipay_app_id":                true, // P0-1(2026-09-15)：支付宝凭证(平台级,含应用私钥/平台公钥敏感项)
+	"pay_alipay_private_key":           true,
+	"pay_alipay_public_key":            true,
+	"pay_alipay_notify_url":            true,
 	"contentsafety_enabled":            true, // C1(2026-09-12)：内容安全闸门总开关(平台级，租户不可各自关闭合规)
 	"contentsafety_mode":               true, // C1：shadow|enforce 模式(平台级统一灰度节奏)
 	"evals_pack_alert_enabled":         true, // D9(2026-09-13)：包质量低分告警开关(平台级统一触达)

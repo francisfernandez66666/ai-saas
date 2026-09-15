@@ -162,9 +162,18 @@ func MarkOrderRefunded(orderID uint) (*model.BillingOrder, bool, error) {
 		var o2 model.BillingOrder
 		if db.DB.First(&o2, orderID).Error == nil && refundInfo.refund > 0 &&
 			o2.Channel != "" && o2.Channel != "mock" && o2.Channel != "manual" {
-			gp := loadGatewayProvider()
+			// P0-1 渠道分发修复(2026-09-15)：原实现固定 loadGatewayProvider 出款——
+			// wechat/alipay 渠道订单退款会被打到通用网关端点（协议不对，必败误标 psp_pending）。
+			// 现按订单 channel 装配对应适配器出款。
 			status := "psp_ok"
-			if rerr := gp.Refund(&o2, int(refundInfo.refund)); rerr != nil {
+			prov, perr := providerForChannel(o2.Channel)
+			if perr != nil {
+				status = "psp_pending"
+				log.Printf("[Billing][ERROR] 订单%d(%s) 退款出款适配器装配失败: %v（账面已回收，需人工出款核销）",
+					orderID, o2.OrderNo, perr)
+				notify.NotifyGroup(fmt.Sprintf("【退款出款失败】订单 %s 应退 %d 分，出款通道未就绪(%v)，权益已回收但资金未出，请财务人工处理",
+					o2.OrderNo, refundInfo.refund, perr))
+			} else if rerr := prov.Refund(&o2, int(refundInfo.refund)); rerr != nil {
 				status = "psp_pending"
 				log.Printf("[Billing][ERROR] 订单%d(%s) PSP 出款失败: %v（账面已回收，需人工出款核销）",
 					orderID, o2.OrderNo, rerr)

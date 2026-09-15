@@ -413,9 +413,134 @@ func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) 
 
 // BillingWebhook POST /api/v1/billing/webhook/:channel —— 支付网关异步回调（无需鉴权）
 // 校验签名 → 定位订单 → 幂等到账 → 发放权益。PSP 到账后由服务端到服务端调用，
-// 故不可依赖登录态；安全性来自网关签名校验（VerifyGatewaySign）。
+// 故不可依赖登录态；安全性来自渠道验签。
+//
+// P0-1b(2026-09-15)：按渠道分发验签协议——
+//   wechat：微信支付 V3 回调（JSON body resource 字段 AES-256-GCM 解密，APIv3Key 为解密凭证；
+//           Wechatpay-Timestamp ±5min 时间窗 + Wechatpay-Nonce 防重放）。
+//   alipay：支付宝异步通知（form 参数 RSA2 平台公钥全参数验签，notify_id 防重放）。
+//   其它（mock/gateway/自定义聚合台）：既有 HMAC-SHA256 V2 通用验签（C6 口径不变）。
+//
+// 各渠道最终都汇入 ConfirmOrderByChannel（渠道互验 L3 + MarkOrderPaid 幂等 + 台账先行发放），
+// 协议差异只体现在"如何拿到可信的 orderNo/到账状态"，不触碰资金安全语义。
 func BillingWebhook(c *gin.Context) {
 	channel := c.Param("channel")
+	switch channel {
+	case "wechat":
+		billingWebhookWechat(c)
+	case "alipay":
+		billingWebhookAlipay(c)
+	default:
+		billingWebhookGateway(c, channel)
+	}
+}
+
+// billingWebhookWechat 微信支付 V3 回调分支。
+// 报文：{resource:{ciphertext, nonce, associated_data}}，HTTP 头 Wechatpay-Timestamp/Wechatpay-Nonce。
+func billingWebhookWechat(c *gin.Context) {
+	// 时间窗：Wechatpay-Timestamp 为 unix 秒，±5min（复用 C6 窗口校验）
+	if !billing.WebhookTimestampFresh(c.GetHeader("Wechatpay-Timestamp")) {
+		RespErr(c, http.StatusForbidden, 403, "回调时间戳超出有效窗口（±5分钟）")
+		return
+	}
+	nonceHdr := c.GetHeader("Wechatpay-Nonce")
+	if nonceHdr == "" || billing.WebhookNonceSeen(nonceHdr) {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（nonce 已消费）")
+		return
+	}
+	var body struct {
+		Resource struct {
+			Ciphertext      string `json:"ciphertext"`
+			Nonce           string `json:"nonce"`
+			AssociatedData  string `json:"associated_data"`
+		} `json:"resource"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || body.Resource.Ciphertext == "" {
+		RespErr(c, http.StatusBadRequest, 400, "回调参数错误（缺少 resource.ciphertext）")
+		return
+	}
+	apiv3Key := getPayConf("pay_wechat_apiv3_key", "PAY_WECHAT_APIV3_KEY")
+	orderNo, tradeState, err := billing.DecryptWechatResource(apiv3Key, body.Resource.Ciphertext, body.Resource.Nonce, body.Resource.AssociatedData)
+	if err != nil {
+		RespErr(c, http.StatusForbidden, 403, err.Error())
+		return
+	}
+	if orderNo == "" {
+		RespErr(c, http.StatusBadRequest, 400, "回调明文缺少 out_trade_no")
+		return
+	}
+	if tradeState != "SUCCESS" {
+		RespOK(c, "非成功状态，忽略", gin.H{"trade_state": tradeState})
+		return
+	}
+	order, flowed, err := billing.ConfirmOrderByChannel(orderNo, "wechat")
+	if err != nil {
+		RespErr(c, http.StatusNotFound, 404, err.Error())
+		return
+	}
+	// 微信要求成功应答 {code:"SUCCESS"}，非成功应答会被重推；本系统统一信封 + 200 亦满足"2xx 即成功"语义
+	RespOK(c, map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed], gin.H{"order_no": order.OrderNo, "flowed": flowed})
+}
+
+// billingWebhookAlipay 支付宝异步通知分支（form 表单）。
+// 验签：全参数（排除 sign/sign_type/空值）字典序拼串 → 支付宝平台公钥 RSA2 验签。
+func billingWebhookAlipay(c *gin.Context) {
+	if err := c.Request.ParseForm(); err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "通知 form 解析失败")
+		return
+	}
+	params := map[string]string{}
+	for k := range c.Request.PostForm {
+		params[k] = c.Request.PostForm.Get(k)
+	}
+	// 防重放：notify_id 为支付宝通知唯一标识
+	if params["notify_id"] != "" && billing.WebhookNonceSeen(params["notify_id"]) {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（notify_id 已消费）")
+		return
+	}
+	pubPEM := getPayConf("pay_alipay_public_key", "PAY_ALIPAY_PUBLIC_KEY")
+	if pubPEM == "" {
+		RespErr(c, http.StatusServiceUnavailable, 503, "支付宝平台公钥未配置（pay_alipay_public_key），无法验签")
+		return
+	}
+	pub, err := billing.ParseRSAPublicKey([]byte(pubPEM))
+	if err != nil {
+		RespErr(c, http.StatusServiceUnavailable, 503, "支付宝平台公钥解析失败: "+err.Error())
+		return
+	}
+	orderNo, tradeStatus, err := billing.VerifyAlipayNotify(pub, params)
+	if err != nil {
+		RespErr(c, http.StatusForbidden, 403, err.Error())
+		return
+	}
+	if orderNo == "" {
+		RespErr(c, http.StatusBadRequest, 400, "通知缺少 out_trade_no")
+		return
+	}
+	if tradeStatus != "TRADE_SUCCESS" && tradeStatus != "TRADE_FINISHED" {
+		RespOK(c, "非成功状态，忽略", gin.H{"trade_status": tradeStatus})
+		return
+	}
+	order, flowed, cerr := billing.ConfirmOrderByChannel(orderNo, "alipay")
+	if cerr != nil {
+		RespErr(c, http.StatusNotFound, 404, cerr.Error())
+		return
+	}
+	RespOK(c, map[bool]string{true: "到账成功，权益已发放", false: "订单此前已处理"}[flowed], gin.H{"order_no": order.OrderNo, "flowed": flowed})
+}
+
+// getPayConf 平台配置读取（系统层优先，env 兜底）——webhook 侧与 billing 包 getPlatformConf 同款语义。
+func getPayConf(sysKey, envKey string) string {
+	if runtimecfg.DefaultSystemConfigService != nil {
+		if v := runtimecfg.DefaultSystemConfigService.GetString(sysKey, ""); v != "" {
+			return v
+		}
+	}
+	return os.Getenv(envKey)
+}
+
+// billingWebhookGateway 既有通用 HMAC V2 验签分支（mock/gateway/自定义聚合台，C6 口径不变）。
+func billingWebhookGateway(c *gin.Context, channel string) {
 	var cb struct {
 		OutTradeNo  string `json:"out_trade_no"`
 		OrderNo     string `json:"order_no"`
@@ -437,13 +562,7 @@ func BillingWebhook(c *gin.Context) {
 		return
 	}
 	// 网关签名密钥（与 CreatePayment 对称）
-	key := ""
-	if runtimecfg.DefaultSystemConfigService != nil {
-		key = runtimecfg.DefaultSystemConfigService.GetString("pay_gateway_key", "")
-	}
-	if key == "" {
-		key = os.Getenv("PAY_GATEWAY_KEY")
-	}
+	key := getPayConf("pay_gateway_key", "PAY_GATEWAY_KEY")
 	// §W 极限收口(2026-09-14)：未配置 pay_gateway_key 时，仅"mock 渠道 + 非 release 模式"
 	// 允许固定开发密钥（本地/E2E 模拟 PSP 到账）；release 一律 503——不给任何渠道开假到账后门。
 	if key == "" {

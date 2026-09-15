@@ -602,6 +602,24 @@ func main() {
 		c.Header("X-Content-Type-Options", "nosniff")
 		c.Header("X-Frame-Options", "SAMEORIGIN")
 		c.Header("Referrer-Policy", "strict-origin-when-cross-origin")
+		// P2-9a(2026-09-15)：CSP 缺口补齐（AUDIT_GAP_VERIFICATION §4.4）。
+		// 防御版策略，必须与前端既有能力兼容：
+		//   - script-src 'unsafe-inline'：白标 custom_js 经 branding.tsx 动态内联注入（P1-5 产品功能，
+		//     后端已限制仅超管可改），nonce 方案改动面大留后续版本；challenges.cloudflare.com 为 Turnstile
+		//     人机验证脚本域（Client.tsx 动态加载）。
+		//   - frame-src Turnstile widget 以 iframe 渲染；frame-ancestors 与 X-Frame-Options 同语义（防嵌他站）。
+		//   - img-src data: https: http:：static_qr 收款码支持外链/内网图片（Billing.tsx <img>）。
+		//   - connect-src ws:/wss:：/api/v1/ws/* 同源 WS 升级（旧浏览器 'self' 不含 ws 协议，显式放行）。
+		c.Header("Content-Security-Policy",
+			"default-src 'self'; "+
+				"script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "+
+				"style-src 'self' 'unsafe-inline'; "+
+				"img-src 'self' data: https: http:; "+
+				"font-src 'self' data:; "+
+				"connect-src 'self' ws: wss:; "+
+				"frame-src https://challenges.cloudflare.com; "+
+				"frame-ancestors 'self'; "+
+				"object-src 'none'; base-uri 'self'; form-action 'self'")
 		c.Next()
 	})
 	r.Use(middleware.TenantResolver())

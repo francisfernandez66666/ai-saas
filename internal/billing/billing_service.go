@@ -14,6 +14,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -296,20 +297,118 @@ func loadGatewayProvider() GatewayProvider {
 	}
 }
 
-// selectProvider 按当前 pay_mode 选择渠道适配器
+// selectProvider 按当前 pay_mode 选择渠道适配器。
+// sdk 模式按平台配置 pay_provider 分发：wechat=微信支付V3 / alipay=支付宝 / gateway=通用HMAC网关（默认，兼容现状）。
 func selectProvider() (PaymentProvider, error) {
 	switch GetPayMode() {
 	case "sdk":
-		g := loadGatewayProvider()
-		if g.Endpoint == "" {
-			return nil, fmt.Errorf("sdk 支付未配置网关（pay_gateway_url 缺失）")
-		}
-		return g, nil
+		return loadSDKProvider()
 	case "static_qr", "mock":
 		return MockProvider{}, nil
 	default:
 		return MockProvider{}, nil
 	}
+}
+
+// loadSDKProvider 装配 sdk 模式渠道适配器（P0-1，2026-09-15）。
+// pay_provider 未配置时默认 gateway——存量部署（已配 pay_gateway_* 的租户）零感知升级。
+func loadSDKProvider() (PaymentProvider, error) {
+	prov := strings.ToLower(strings.TrimSpace(getPlatformConf("pay_provider", "PAY_PROVIDER")))
+	if prov == "" {
+		prov = "gateway"
+	}
+	switch prov {
+	case "wechat":
+		w, err := LoadWechatProviderFromConf()
+		if err != nil {
+			return nil, err
+		}
+		return w, nil
+	case "alipay":
+		a, err := LoadAlipayProviderFromConf()
+		if err != nil {
+			return nil, err
+		}
+		return a, nil
+	case "gateway":
+		g := loadGatewayProvider()
+		if g.Endpoint == "" {
+			return nil, fmt.Errorf("sdk 支付未配置网关（pay_gateway_url 缺失）")
+		}
+		return g, nil
+	default:
+		return nil, fmt.Errorf("未知支付渠道 pay_provider=%s（支持 wechat/alipay/gateway）", prov)
+	}
+}
+
+// providerForChannel 按订单渠道装配退款出款适配器。
+// R8 隐患修复(2026-09-15)：MarkOrderRefunded 原实现固定 loadGatewayProvider 出款——
+// wechat/alipay 渠道订单退款会被打到通用网关端点（协议不对，出款必败误标 psp_pending）。
+// 现按订单 channel 分发；gateway/未知渠道回落通用网关。
+func providerForChannel(channel string) (PaymentProvider, error) {
+	switch channel {
+	case "wechat":
+		return LoadWechatProviderFromConf()
+	case "alipay":
+		return LoadAlipayProviderFromConf()
+	default:
+		g := loadGatewayProvider()
+		if g.Endpoint == "" {
+			return nil, ErrRefundNotWired
+		}
+		return g, nil
+	}
+}
+
+// LoadWechatProviderFromConf 从系统配置/env 装配微信支付 V3 客户端。
+// 私钥为 PEM 文本（PKCS8/PKCS1），经系统配置 pay_wechat_private_key 或环境变量 PAY_WECHAT_PRIVATE_KEY 注入。
+func LoadWechatProviderFromConf() (*WechatPayProvider, error) {
+	mchID := getPlatformConf("pay_wechat_mch_id", "PAY_WECHAT_MCH_ID")
+	keyPEM := getPlatformConf("pay_wechat_private_key", "PAY_WECHAT_PRIVATE_KEY")
+	if mchID == "" || keyPEM == "" {
+		return nil, fmt.Errorf("微信支付未配置（pay_wechat_mch_id / pay_wechat_private_key 缺失）")
+	}
+	priv, err := ParseRSAPrivateKey([]byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("微信支付商户私钥解析失败: %w", err)
+	}
+	notify := getPlatformConf("pay_wechat_notify_url", "PAY_WECHAT_NOTIFY_URL")
+	if notify == "" {
+		return nil, fmt.Errorf("微信支付缺少回调地址（pay_wechat_notify_url）——Native 下单必填，须外网可达")
+	}
+	return &WechatPayProvider{
+		AppID:      getPlatformConf("pay_wechat_app_id", "PAY_WECHAT_APP_ID"),
+		MchID:      mchID,
+		SerialNo:   getPlatformConf("pay_wechat_serial_no", "PAY_WECHAT_SERIAL_NO"),
+		PrivateKey: priv,
+		APIv3Key:   getPlatformConf("pay_wechat_apiv3_key", "PAY_WECHAT_APIV3_KEY"),
+		NotifyURL:  notify,
+	}, nil
+}
+
+// LoadAlipayProviderFromConf 从系统配置/env 装配支付宝客户端。
+// 平台公钥缺失不阻塞下单/退款（仅验签用，回调分支会显式报错），返回 nil 公钥。
+func LoadAlipayProviderFromConf() (*AlipayProvider, error) {
+	appID := getPlatformConf("pay_alipay_app_id", "PAY_ALIPAY_APP_ID")
+	keyPEM := getPlatformConf("pay_alipay_private_key", "PAY_ALIPAY_PRIVATE_KEY")
+	if appID == "" || keyPEM == "" {
+		return nil, fmt.Errorf("支付宝未配置（pay_alipay_app_id / pay_alipay_private_key 缺失）")
+	}
+	priv, err := ParseRSAPrivateKey([]byte(keyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("支付宝应用私钥解析失败: %w", err)
+	}
+	a := &AlipayProvider{
+		AppID:      appID,
+		PrivateKey: priv,
+		NotifyURL:  getPlatformConf("pay_alipay_notify_url", "PAY_ALIPAY_NOTIFY_URL"),
+	}
+	if pubPEM := getPlatformConf("pay_alipay_public_key", "PAY_ALIPAY_PUBLIC_KEY"); pubPEM != "" {
+		if pub, perr := ParseRSAPublicKey([]byte(pubPEM)); perr == nil {
+			a.AlipayPublicKey = pub
+		}
+	}
+	return a, nil
 }
 
 // GetPayMode 读当前收款模式（系统配置热加载，默认 mock）

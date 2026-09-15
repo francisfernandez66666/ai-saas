@@ -574,6 +574,27 @@ func (s *SystemConfigService) BatchUpdate(items []ConfigUpdateItem) error {
 			log.Printf("[系统配置] 更新失败: key=%s, error=%v", item.Key, result.Error)
 			return result.Error
 		}
+		// 修复（2026-09-15）：UPDATE-only 在行缺失时静默 no-op（返回成功但什么都没写）——
+		// 新增默认键若未及 seed、或行被清理脚本误删，admin API 将永远写不回去。
+		// 改为 upsert：0 行受影响即 INSERT（元数据尽量取 DefaultConfigs）
+		if result.RowsAffected == 0 {
+			row := model.SystemConfig{TenantID: 0, Key: item.Key, Value: normVal, ValueType: "string", Category: "custom"}
+			for _, d := range DefaultConfigs {
+				if d.Key == item.Key {
+					row.Category = d.Category
+					row.ValueType = d.ValueType
+					row.Description = d.Description
+					row.DefaultValue = d.DefaultValue
+					row.SortOrder = d.SortOrder
+					break
+				}
+			}
+			if err := db.DB.Create(&row).Error; err != nil {
+				log.Printf("[系统配置] 补建失败: key=%s, error=%v", item.Key, err)
+				return err
+			}
+			log.Printf("[系统配置] 系统层缺失该行，已补建: key=%s", item.Key)
+		}
 
 		log.Printf("[系统配置] 已更新: key=%s, value=%s", item.Key, item.Value)
 	}
@@ -595,6 +616,16 @@ func (s *SystemConfigService) ResetAll() error {
 		if result.Error != nil {
 			log.Printf("[系统配置] 重置失败: key=%s, error=%v", cfg.Key, result.Error)
 			return result.Error
+		}
+		// 修复（2026-09-15）：与 BatchUpdate 同口径——行缺失时补建，不再静默 no-op
+		if result.RowsAffected == 0 {
+			row := model.SystemConfig{TenantID: 0, Key: cfg.Key, Value: cfg.DefaultValue,
+				ValueType: cfg.ValueType, Category: cfg.Category, Description: cfg.Description,
+				DefaultValue: cfg.DefaultValue, SortOrder: cfg.SortOrder}
+			if err := db.DB.Create(&row).Error; err != nil {
+				log.Printf("[系统配置] 重置补建失败: key=%s, error=%v", cfg.Key, err)
+				return err
+			}
 		}
 	}
 

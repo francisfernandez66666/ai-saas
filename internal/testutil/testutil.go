@@ -157,8 +157,13 @@ func CleanupTenant(t *testing.T, id uint) {
 	// 测试订单（tenant 直属）+ 其引用的测试包：此前不清理导致 packages 表被
 	// 数百个 ut_* 包污染，uat.sh 的"取第一个付费包"断言随机漂移到错误额度。
 	_ = db.DB.Exec("DELETE FROM billing_orders WHERE tenant_id = ?", id).Error
-	// 回收不再被任何订单引用的 ut_* 测试包（全局目录表，按 code 前缀 + 无引用判定）
+	// 回收不再被任何订单引用的 ut_* 测试包（全局目录表，按 code 前缀 + 无引用判定）。
+	// P1-3 加固(2026-09-15)：加 1 小时年龄窗——go test ./... 各包是独立进程并行跑同一共享库，
+	// 无年龄窗时本包 teardown 会回收"他包已建包、尚未建单"窗口内的活跃测试包，
+	// 导致 GrantOrderEntitlement 查包 record not found（TestGrantEntitlementLedgerIdempotent
+	// 偶发 FAIL 的根因）。1h 内的活跃包不回收；陈旧残留由 tools/cleanup_test_tenants.sh 兜底。
 	_ = db.DB.Exec(`DELETE FROM packages WHERE code LIKE 'ut\_%'
+		AND created_at < NOW() - INTERVAL '1 hour'
 		AND id NOT IN (SELECT COALESCE(package_id,0) FROM billing_orders WHERE package_id IS NOT NULL)`).Error
 	_ = db.DB.Exec("DELETE FROM tenants WHERE id = ?", id).Error
 }
