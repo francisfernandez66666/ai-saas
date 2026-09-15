@@ -42,3 +42,4 @@ data/
 *.aipack
 build/
 test-results
+BENCH_*
