@@ -416,10 +416,11 @@ func confirmAndGrant(c *gin.Context, order *model.BillingOrder, channel string) 
 // 故不可依赖登录态；安全性来自渠道验签。
 //
 // P0-1b(2026-09-15)：按渠道分发验签协议——
-//   wechat：微信支付 V3 回调（JSON body resource 字段 AES-256-GCM 解密，APIv3Key 为解密凭证；
-//           Wechatpay-Timestamp ±5min 时间窗 + Wechatpay-Nonce 防重放）。
-//   alipay：支付宝异步通知（form 参数 RSA2 平台公钥全参数验签，notify_id 防重放）。
-//   其它（mock/gateway/自定义聚合台）：既有 HMAC-SHA256 V2 通用验签（C6 口径不变）。
+//
+//	wechat：微信支付 V3 回调（JSON body resource 字段 AES-256-GCM 解密，APIv3Key 为解密凭证；
+//	        Wechatpay-Timestamp ±5min 时间窗 + Wechatpay-Nonce 防重放）。
+//	alipay：支付宝异步通知（form 参数 RSA2 平台公钥全参数验签，notify_id 防重放）。
+//	其它（mock/gateway/自定义聚合台）：既有 HMAC-SHA256 V2 通用验签（C6 口径不变）。
 //
 // 各渠道最终都汇入 ConfirmOrderByChannel（渠道互验 L3 + MarkOrderPaid 幂等 + 台账先行发放），
 // 协议差异只体现在"如何拿到可信的 orderNo/到账状态"，不触碰资金安全语义。
@@ -450,9 +451,9 @@ func billingWebhookWechat(c *gin.Context) {
 	}
 	var body struct {
 		Resource struct {
-			Ciphertext      string `json:"ciphertext"`
-			Nonce           string `json:"nonce"`
-			AssociatedData  string `json:"associated_data"`
+			Ciphertext     string `json:"ciphertext"`
+			Nonce          string `json:"nonce"`
+			AssociatedData string `json:"associated_data"`
 		} `json:"resource"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.Resource.Ciphertext == "" {

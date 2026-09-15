@@ -60,9 +60,11 @@ func GenerateToken(userID uint, username string, role string, tenantID uint, tok
 
 // ParseToken 解析JWT Token
 func ParseToken(tokenString string) (*Claims, error) {
+	// 纵深防御(2026-09-15 增强批)：显式算法白名单 HS256——v5 默认虽已拒 none/RSA 混淆，
+	// 但 WithValidMethods 把"签名算法不可协商"写死在代码里，防未来换 keyfunc 实现时退化。
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (interface{}, error) {
 		return []byte(config.GlobalConfig.JWT.Secret), nil
-	})
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 
 	if err != nil {
 		return nil, err

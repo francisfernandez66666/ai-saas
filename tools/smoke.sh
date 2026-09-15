@@ -6,7 +6,8 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 # 用法: ./tools/smoke.sh [端口]   默认 9090
 # 前置: 服务已启动（./start.sh 或 go run cmd/server/main.go）
 # 覆盖: 租户解析 fail-closed / debug 兜底 / JWT↔Host 一致性 /
-#       超管跨租户显式指定+审计 / C端租户归属 / 基础数据隔离
+#       超管跨租户显式指定+审计 / C端租户归属 / 基础数据隔离 /
+#       /status readiness 生产就绪探针（2026-09-15 价值批：ready 字段+检查项清单 2 断言）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -202,6 +203,12 @@ APICALLS=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -t
 echo "---- 七、P1/P2 实时监控+健康检查+WS鉴权 ----"
 ST_STATUS=$(curl -s "$B/status" | jsonget "['data']['status']")
 [ -n "$ST_STATUS" ] && check "状态页返回健康分级(status=$ST_STATUS)" y y || check "状态页返回健康分级" y n
+
+# 生产就绪探针（2026-09-15 增强批）：ready 布尔 + readiness 清单（debug 也应返回 skipped 占位）
+ST_READY=$(curl -s "$B/status" | jsonget "['data']['ready']")
+[ -n "$ST_READY" ] && check "生产就绪探针返回ready=$ST_READY" y y || check "生产就绪探针返回ready" y n
+ST_RNAME=$(curl -s "$B/status" | jsonget "['data']['readiness'][0]['name']")
+[ -n "$ST_RNAME" ] && check "就绪检查项清单非空(首项=$ST_RNAME)" y y || check "就绪检查项清单非空" y n
 
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/monitor/health" -H "Authorization: Bearer $TOKEN")
 check "超管健康探测→200" 200 "$CODE"

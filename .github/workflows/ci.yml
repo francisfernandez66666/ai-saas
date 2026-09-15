@@ -57,6 +57,12 @@ jobs:
         run: go mod verify
       - name: go vet
         run: go vet ./...
+      - name: govulncheck 官方漏洞库扫描（供应链安全，2026-09-15 增强批）
+        # 首月观察模式：存量依赖命中 CVE 不阻断 CI，人工评估升级窗口后去掉本行
+        continue-on-error: true
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
       - name: 单测（含 DB 依赖用例，连 PG service）
         run: go test ./...
       - name: 编译

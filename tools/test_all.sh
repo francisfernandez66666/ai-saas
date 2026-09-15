@@ -3,10 +3,17 @@
 # test_all.sh —— 自动化测试统一编排入口（能力基建，2026-09-05）
 #
 # 解决的历史欠账：
-#   1. 五套 E2E 脚本共享"改全局开关再恢复"模式，无并发护栏——
+#   1. 八套 E2E 脚本共享"改全局开关再恢复"模式，无并发护栏——
 #      本入口用 flock 文件锁强制单实例，并跑即拒绝（防互相踩配置）；
 #   2. 单测/E2E/前端各自为战，无统一汇总——这里串行编排并输出
 #      PASS/FAIL 总账，任一环节失败 exit=1（CI 可直接消费）。
+#
+# 2026-09-15 价值增强批纳入的自动化内容（无需新增阶段，走既有用例层）：
+#   - smoke.sh +2 断言：/status readiness 生产就绪探针（ready 字段 + 检查项清单）；
+#   - go test 层：internal/metrics readiness 判级、internal/logx slog 桥接级别映射、
+#     internal/archive 冷数据归档（租户范围原子搬移/默认关空转，均连真库）；
+#   - 前端 vitest 层：pages/__tests__/smoke.test.tsx 10 核心页 jsdom 冒烟 + 登录漏斗；
+#   - CI go job 另有 govulncheck 供应链扫描（首月观察模式，不在本编排内）。
 #
 # 用法：
 #   ./tools/test_all.sh            # 完整回归（含 uat，耗时约 20-40 分钟）
@@ -15,7 +22,7 @@
 #   ./tools/test_all.sh --capacity # 单测+构建+T7契约+C5 双实例 WS/Redis 广播矩阵（本地环境）
 #   SERVER_PORT=9090 ./tools/test_all.sh   # 指定服务端口（默认 9090）
 #
-# 阶段顺序：单元层 → 构建 → E2E 层（五套） → 汇总。每阶段失败继续跑后续
+# 阶段顺序：单元层 → 构建 → E2E 层（八套） → 汇总。每阶段失败继续跑后续
 #（除非 --failfast），最终以总账定 exit code。
 # ============================================================
 set -u
@@ -36,7 +43,7 @@ acquire_lock() {
   return 0
 }
 if ! acquire_lock; then
-  echo "[test_all] ✗ 已有测试在跑（$LOCK_FILE 被占）——五套 E2E 共享全局开关，禁止并发，请等待其结束。"
+  echo "[test_all] ✗ 已有测试在跑（$LOCK_FILE 被占）——八套 E2E 共享全局开关，禁止并发，请等待其结束。"
   exit 1
 fi
 release_lock() {
@@ -134,7 +141,7 @@ if [ "$MODE" = "capacity" ]; then
   [ "$FAIL" = "0" ] && exit 0 || exit 1
 fi
 
-# ---------- 阶段三：E2E 层（五套断言脚本） ----------
+# ---------- 阶段三：E2E 层（七套断言脚本 + uat） ----------
 step "E2E 层：起服务（端口 ${PORT}）"
 ./stop.sh >/dev/null 2>&1 || true
 # 兜底清端口：stop.sh 依赖 .pid 文件，nohup 直启未写时会残留旧进程占端口
@@ -146,7 +153,7 @@ for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$P
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（84 项）"
+step "E2E 层：smoke.sh（86 项）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 17 项）"

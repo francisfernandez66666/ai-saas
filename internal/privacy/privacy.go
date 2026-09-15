@@ -145,10 +145,19 @@ func ProcessExpired() int {
 
 // ---------- 内部匿名化实现 ----------
 
+// archivedMessageRow 映射 messages_archive（冷归档表，迁移011）做匿名化用——
+// 归档开关开启后老消息在归档表里，PIPL 删除权必须同步覆盖，否则"归档=绕开删除"。
+type archivedMessageRow struct {
+	ID      uint `gorm:"primaryKey"`
+	Content string
+}
+
+func (archivedMessageRow) TableName() string { return "messages_archive" }
+
 // anonymizeCustomer 客户主体：断 messages.content（哈希化，保行数与数值列）+ customers PII 列 + cdp profile_data。
 // 数值统计列（intent_score/hooked/…）不动，保证经营分析与模型反哺不失真。
 func anonymizeCustomer(tx *gorm.DB, tenantID, customerID uint) error {
-	// 1. 消息：content 哈希化（已 anon: 前缀跳过——幂等）
+	// 1. 消息：content 哈希化（已 anon: 前缀跳过——幂等），热表+归档表同一规则
 	var msgs []model.Message
 	if err := tx.Where("tenant_id = ? AND customer_id = ?", tenantID, customerID).
 		Select("id, content").Find(&msgs).Error; err != nil {
@@ -161,6 +170,22 @@ func anonymizeCustomer(tx *gorm.DB, tenantID, customerID uint) error {
 		sum := sha256.Sum256([]byte(m.Content))
 		newContent := anonPrefix + hex.EncodeToString(sum[:])
 		if err := tx.Model(&model.Message{}).Where("id = ?", m.ID).Update("content", newContent).Error; err != nil {
+			return err
+		}
+	}
+	var archived []archivedMessageRow
+	if err := tx.Table("messages_archive").
+		Where("tenant_id = ? AND customer_id = ?", tenantID, customerID).
+		Select("id, content").Find(&archived).Error; err != nil {
+		return err
+	}
+	for _, m := range archived {
+		if m.Content == "" || strings.HasPrefix(m.Content, anonPrefix) {
+			continue
+		}
+		sum := sha256.Sum256([]byte(m.Content))
+		newContent := anonPrefix + hex.EncodeToString(sum[:])
+		if err := tx.Table("messages_archive").Where("id = ?", m.ID).Update("content", newContent).Error; err != nil {
 			return err
 		}
 	}

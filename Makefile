@@ -2,7 +2,7 @@
 # 依赖：go 1.25、node >= 20（前端构建用）
 # 测试说明：内部依赖 DB 的单测在未起 PG 时自动跳过（testutil.SetupTestDB 内 t.Skip）
 
-.PHONY: build vet fmt fmt-check test test-short frontend-build smoke all
+.PHONY: build vet fmt fmt-check test test-short frontend-build smoke vuln all
 
 all: fmt-check vet test build
 
@@ -41,3 +41,7 @@ smoke:
 	./tools/smoke.sh 9090
 	./tools/smoke_org.sh 9090
 	./tools/uat.sh 9090
+
+# 依赖漏洞扫描（官方 vuln 数据库，CI 已接入同一命令）
+vuln:
+	go run golang.org/x/vuln/cmd/govulncheck@latest ./...

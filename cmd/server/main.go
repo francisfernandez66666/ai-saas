@@ -11,6 +11,7 @@ import (
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/api"
+	"ai-scrm/internal/archive"
 	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/cdp"
@@ -22,6 +23,7 @@ import (
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/gateway"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/privacy"
@@ -85,7 +87,19 @@ func main() {
 
 	// 2. 加载配置
 	cfg := config.LoadConfig()
-	log.Printf("配置加载完成，服务端口: %s", cfg.Server.Port)
+
+	// 2.0 结构化日志（2026-09-15 增强批）：LOG_FORMAT=json|text，release 默认 json、debug 默认 text。
+	// 全仓 556 处 std log.Printf 经 logx 桥接逐条转 slog 记录，云端可直接按行解析聚合。
+	logFormat := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_FORMAT")))
+	if logFormat != "text" && logFormat != "json" {
+		logFormat = "text"
+		if cfg.Server.Mode == "release" {
+			logFormat = "json"
+		}
+	}
+	logx.InitStructuredLogging(logFormat)
+
+	log.Printf("配置加载完成，服务端口: %s（日志格式 %s）", cfg.Server.Port, logFormat)
 
 	// 2.1 网关配置安全校验（P0-5 修复：配了 URL 却漏配 TOKEN 会让所有租户匿名出网、
 	// 计费旁路；配了 LISTEN 却没配 TOKEN 会让内嵌网关成为无鉴权 LLM 代理——一律拒绝启动）
@@ -369,6 +383,26 @@ func main() {
 				}
 				if redisclient.IsEnabled() {
 					if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
+						run()
+						h.Unlock()
+					}
+				} else {
+					run()
+				}
+			})
+		}
+	}()
+
+	// 9.48 消息冷数据归档（2026-09-15 增强批）：messages → messages_archive 每日搬迁。
+	// 默认关闭：message_archive_days=0 直接空转；有真实量级后按租户行业节奏手动开（热配置，改完即生效）。
+	// 多实例 Redis 选主，CTE 先删后插原子搬移；PIPL 匿名化已同步覆盖归档表（privacy.go）。
+	go func() {
+		ticker := time.NewTicker(24 * time.Hour)
+		for range ticker.C {
+			safeRun("archive:messages", func() {
+				run := func() { archive.RunMessagesOnce() }
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:archive:messages", 40*time.Minute); h != nil {
 						run()
 						h.Unlock()
 					}
@@ -703,6 +737,10 @@ func registerRoutes(r *gin.Engine) {
 				}
 			}
 		}
+		// 生产就绪探针（2026-09-15 增强批）：把 DEPLOY_CHECKLIST 里"忘开=烧钱/合规裸奔"
+		// 类开关代码化逐项体检，只展示不群告警（配置红灯重启前会常亮，刷群无意义）
+		readyChecks := metrics.ComputeReadiness()
+		ready, rCrit, rWarn := metrics.ReadinessSummary(readyChecks)
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
 			"version":             "v2.3.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
@@ -712,6 +750,10 @@ func registerRoutes(r *gin.Engine) {
 			"critical_alerts_24h": crit24h,
 			"status":              status,
 			"ok":                  snap.DBOK,
+			"ready":               ready,
+			"readiness_crit":      rCrit,
+			"readiness_warn":      rWarn,
+			"readiness":           readyChecks,
 		}})
 	})
 
