@@ -742,7 +742,8 @@ func registerRoutes(r *gin.Engine) {
 		readyChecks := metrics.ComputeReadiness()
 		ready, rCrit, rWarn := metrics.ReadinessSummary(readyChecks)
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
-			"version":             "v2.3.0",
+			// 版本真源：与 README 更新日志主版本线保持一致，逐批手动 bump（此前 v2.3.0 系历史遗留未同步）
+			"version":             "v2.16.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
 			"db_ok":               snap.DBOK,
 			"redis_enabled":       redisclient.IsEnabled(),
