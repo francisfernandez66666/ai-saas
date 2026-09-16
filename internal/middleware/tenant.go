@@ -13,6 +13,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/redisclient"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -86,6 +87,33 @@ func InvalidateTenantCache() {
 		resolveCache.Delete(k)
 		return true
 	})
+}
+
+// tenantCacheInvalidateChannel G7 修复(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：
+// 跨实例租户缓存失效广播频道。旧行为：InvalidateTenantCache 只清本实例，多实例下
+// 超管封禁/换套餐/白标变更在其它实例仍最长 30s 命中旧缓存——"立即封禁"名不副实。
+const tenantCacheInvalidateChannel = "scrm:tenant:cache:invalidate"
+
+// InvalidateTenantCacheCluster 本实例失效 + Redis 广播全实例失效（未启用 Redis 时
+// 等价于本实例失效，维持旧单机语义）。低频管理动作，直发不等确认。
+func InvalidateTenantCacheCluster() {
+	InvalidateTenantCache()
+	redisclient.Publish(tenantCacheInvalidateChannel, "1")
+}
+
+// StartTenantCacheInvalidateSubscriber 启动订阅协程（main 启动时调用一次）。
+// Redis 未启用/订阅失败返回 false——调用方无需处理，行为退化为"仅本实例失效+30s TTL"。
+func StartTenantCacheInvalidateSubscriber() bool {
+	ch := redisclient.Subscribe(tenantCacheInvalidateChannel)
+	if ch == nil {
+		return false
+	}
+	go func() {
+		for range ch {
+			InvalidateTenantCache()
+		}
+	}()
+	return true
 }
 
 // StartTenantCacheSweeper P2-1 修复：租户负缓存只增不扫——高频扫随机子域名会写入

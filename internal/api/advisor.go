@@ -7,6 +7,7 @@ import "ai-scrm/internal/pii"
 // 写操作均经四级组织数据范围门禁(canOperateCustomer/customerInDataScope)防越权。
 
 import (
+	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
@@ -1134,20 +1135,22 @@ func AdvisorSendMessage(c *gin.Context) {
 			RespErr(c, http.StatusNotFound, 404, "客户不存在")
 			return
 		}
-		if err := db.RQ(c).Where("customer_id = ? AND status = 'active'", cust.ID).
-			Order("id DESC").First(&conversation).Error; err != nil {
-			conversation = model.Conversation{
-				CustomerID:     cust.ID,
-				AssignedUserID: cust.AssignedUserID,
-				Status:         "active",
-				Mode:           "human",
-				Channel:        "web",
-			}
-			if cerr := db.RQ(c).Create(&conversation).Error; cerr != nil {
+		// P1-11 路径（复核续）：无活跃会话则以人工模式保障一条（G1 收口 2026-09-16C：
+		// 统一 EnsureActiveConversation——进程内查插改跨实例锁+唯一索引兜底，防与
+		// web/通道并发各建一条 active 会话）
+		if conversation.ID == 0 {
+			convEnsured, created, cerr := chatflow.EnsureActiveConversation(
+				db.EffectiveTenantIDFromGin(c), cust.ID, cust.AssignedUserID,
+				func(cv *model.Conversation) { cv.Mode = "human"; cv.Channel = "web" },
+			)
+			if cerr != nil {
 				RespErr(c, http.StatusInternalServerError, 500, "会话创建失败")
 				return
 			}
-			log.Printf("[顾问发消息-P1-11] 客户%d 无活跃会话，新建会话%d（人工模式）", cust.ID, conversation.ID)
+			conversation = convEnsured
+			if created {
+				log.Printf("[顾问发消息-P1-11] 客户%d 无活跃会话，新建会话%d（人工模式）", cust.ID, conversation.ID)
+			}
 		}
 	}
 

@@ -208,7 +208,10 @@ DLID=$(echo "$DLQ" | python3 -c "import sys,json;d=json.load(sys.stdin)['data'][
 check "死信列表可见" y "$([ -n "$DLID" ] && echo y || echo n)"
 curl -s -o /dev/null -X POST "$B/api/v1/admin/channel-dlq/$DLID/retry" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
 DLST=$(psql "$DBURL" -tAc "SELECT status FROM channel_outbound WHERE id=$DLID" | tr -d '[:space:]')
-check "死信重发置 pending" "pending" "$DLST"
+# G9 修复(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：retry 置 pending 后 3s worker 可能
+# 已把 mock 渠道投递成功翻成 sent——读库单点断言存在时序竞态（实测偶发误红）。
+# 两者都证明重发链路已激活：接受 pending|sent；failed/closed 才是真失败。
+check "死信重发置 pending|sent" y "$(echo "$DLST" | grep -qE '^(pending|sent)$' && echo y || echo n)"
 
 # ---- 七、鉴权与隔离 ----
 echo "---- 七、通道接口鉴权 ----"

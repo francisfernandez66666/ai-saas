@@ -35,6 +35,7 @@ func validateChannelMockBaseURL(cfgJSON string) error {
 	return webhook.ValidateCallbackURL(base)
 }
 
+// chanID 从 :id 路径参数取通道 ID（非法值回退 0，由调用处按"不存在"处理）。
 func chanID(c *gin.Context) uint {
 	n, _ := strconv.ParseUint(c.Param("id"), 10, 64)
 	return uint(n)

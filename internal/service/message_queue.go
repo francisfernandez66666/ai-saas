@@ -261,8 +261,10 @@ func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, con
 			}
 			q.redisLock = h
 			q.mu.Unlock()
-			// 锁空闲期间其他实例转交的消息先收进当前批次
-			s.absorbRemotePending(k, q)
+			// D6 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：删除抢锁后立即调用的
+			// absorbRemotePending——此刻 q.processing 仍为 false，全部消息进 leftover 再
+			// RPush 回队：纯空转，且与 waitRemotely 的 LPUSH 头插形成新旧消息首尾倒置风险。
+			// 转交消息唯一有效吸收点=窗口收账（waitForMerge 内 absorb，批次已开 processing=true）。
 			return s.processLocally(k, content, true)
 		}
 		// 其他实例正在处理该客户：消息转交对方合并，本请求远程等回复
@@ -434,11 +436,19 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	}
 	locked = false
 	myEpoch := q.epoch
+	myBatch := q.currentBatch
+	startCount := q.mergeCount
 	q.mu.Unlock()
 
-	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q", k, q.currentBatch, myEpoch, q.mergeCount, logx.Safe(content, 40))
+	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q", k, myBatch, myEpoch, startCount, logx.Safe(content, 40))
 	merged, waitDuration := s.waitForMerge(q, k)
-	return merged, true, "", waitDuration, false, q.mergeCount, myEpoch
+	// D5 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：q.mergeCount 在窗口期由
+	// absorbRemotePending/新消息累加在锁内写、这里无锁读——数据竞争（go test -race 可炸，
+	// 读半值致 mergeCount 决策失真）。解锁后重取快照。
+	q.mu.Lock()
+	finalCount := q.mergeCount
+	q.mu.Unlock()
+	return merged, true, "", waitDuration, false, finalCount, myEpoch
 }
 
 // waitRemotely 远程等待路径（本实例未抢到锁，消息转交处理者实例）
@@ -498,6 +508,9 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 		q.mu.Lock()
 		q.redisLock = h
 		q.mu.Unlock()
+		// D6 注(2026-09-16B)：与 EnqueueAndWait 抢锁段不同，接管场景本地队列可能正有
+		// processing=true 的在途批次（web 请求），此处 absorb 能把死实例转交的消息并进
+		// 该批次（真语义，非空转）——保留。抢锁段的同款调用已删（见 EnqueueAndWait D6 注释）。
 		s.absorbRemotePending(k, q)
 		return s.processLocally(k, content, false)
 	}

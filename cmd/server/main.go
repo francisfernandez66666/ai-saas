@@ -243,6 +243,11 @@ func main() {
 
 	// P2-1：启动租户解析缓存周期清扫（30s 一轮，清理过期正/负缓存条目）
 	middleware.StartTenantCacheSweeper()
+	// G7 收口(2026-09-16C)：订阅跨实例租户缓存失效广播（Redis 未启用时自动退化为
+	// 本实例失效+30s TTL 旧语义）
+	if middleware.StartTenantCacheInvalidateSubscriber() {
+		log.Printf("[main] 租户缓存失效广播订阅已启动（scrm:tenant:cache:invalidate）")
+	}
 
 	// 8. 初始化策略中心引擎
 	strategy.InitEngine()

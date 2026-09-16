@@ -109,7 +109,7 @@ func applyBrandingUpdate(tenantID uint, req brandingUpdateReq) (*model.Tenant, e
 	}
 	// 重新加载租户数据（含新值）并清除内存缓存
 	db.DB.First(&t, tenantID)
-	middleware.InvalidateTenantCache()
+	middleware.InvalidateTenantCacheCluster()
 	return &t, nil
 }
 

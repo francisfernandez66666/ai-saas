@@ -129,8 +129,12 @@ func uintToStr(v uint) string {
 	return string(digits)
 }
 
-// renameLegacyAiColumns 历史字段拼写修正：aic_talls → ai_calls（幂等）
-// 根因：早期 Go 字段 MaxAICTalls/UsedAICTalls 被 GORM 自动派生为错误列名
+// renameLegacyAiColumns 历史字段拼写修正：aic_talls → ai_calls（幂等）。
+// 根因：早期 Go 字段 MaxAICTalls/UsedAICTalls 被 GORM 自动派生为错误列名。
+// G3 收口(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：旧实现遇"新旧列并存"直接
+// continue——而 Automigrate 先按 model tag 建出新列，改名分支永远追不上，死列
+// max_aic_talls/used_aic_talls 就此长存（实测 1 行孤儿值）。补并存分支：
+// 旧列非空且新列为空的行先搬值（不覆盖新列已有数据），再 DROP 旧列，一次收敛。
 func renameLegacyAiColumns() {
 	pairs := [][3]string{
 		{"tenants", "max_aic_talls", "max_ai_calls_monthly"},
@@ -148,13 +152,25 @@ func renameLegacyAiColumns() {
 		DB.Raw(`SELECT EXISTS (
 			SELECT 1 FROM information_schema.columns
 			WHERE table_name = ? AND column_name = ?)`, p[0], p[2]).Scan(&newExists)
-		if newExists {
+		if !newExists {
+			if err := DB.Exec(`ALTER TABLE ` + p[0] + ` RENAME COLUMN ` + p[1] + ` TO ` + p[2]).Error; err != nil {
+				log.Printf("[org-migrate] 列改名 %s.%s 失败: %v", p[0], p[1], err)
+			} else {
+				log.Printf("[org-migrate] 已修正历史列名 %s.%s → %s", p[0], p[1], p[2])
+			}
 			continue
 		}
-		if err := DB.Exec(`ALTER TABLE ` + p[0] + ` RENAME COLUMN ` + p[1] + ` TO ` + p[2]).Error; err != nil {
-			log.Printf("[org-migrate] 列改名 %s.%s 失败: %v", p[0], p[1], err)
+		// 新旧并存：搬孤儿值（仅新列为 NULL 的行）→ 删旧列
+		mv := DB.Exec(`UPDATE ` + p[0] + ` SET ` + p[2] + ` = ` + p[1] +
+			` WHERE ` + p[2] + ` IS NULL AND ` + p[1] + ` IS NOT NULL`)
+		if mv.Error != nil {
+			log.Printf("[org-migrate] 历史列 %s.%s 数据迁移失败(保留旧列不删): %v", p[0], p[1], mv.Error)
+			continue
+		}
+		if err := DB.Exec(`ALTER TABLE ` + p[0] + ` DROP COLUMN ` + p[1]).Error; err != nil {
+			log.Printf("[org-migrate] 删除历史死列 %s.%s 失败: %v", p[0], p[1], err)
 		} else {
-			log.Printf("[org-migrate] 已修正历史列名 %s.%s → %s", p[0], p[1], p[2])
+			log.Printf("[org-migrate] 已删除历史死列 %s.%s（%d 行值迁至 %s）", p[0], p[1], mv.RowsAffected, p[2])
 		}
 	}
 }

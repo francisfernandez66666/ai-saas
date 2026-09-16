@@ -76,6 +76,9 @@ func SuperUpdateTenantPlan(c *gin.Context) {
 		TenantID: t.ID, Action: "plan_change", Resource: fmt.Sprintf("tenant:%d", t.ID),
 		Detail: fmt.Sprintf(`{"from_plan_id":%d,"to_plan_id":%d,"to_plan":"%s","max_users":%d}`, oldPlanID, plan.ID, plan.Name, plan.MaxUsers),
 	})
+	// G7 收口(2026-09-16C)：套餐快照变更须全实例即时生效（旧仅 30s TTL 被动衰减，
+	// 多实例下席位/配额校验各实例窗口不一致）
+	middleware.InvalidateTenantCacheCluster()
 	_, actor, _ := middleware.CurrentUser(c)
 	log.Printf("[超管换套餐] 租户%d(%s) %d→%d(%s) 席位=%d 操作人=%s", t.ID, t.Code, oldPlanID, plan.ID, plan.Name, plan.MaxUsers, actor)
 	RespOK(c, "套餐已更新", gin.H{"plan_id": plan.ID, "plan_name": plan.Name, "max_users": plan.MaxUsers})

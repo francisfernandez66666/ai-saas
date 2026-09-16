@@ -14,12 +14,14 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/middleware"
@@ -200,6 +202,31 @@ func WSAdvisor(c *gin.Context) {
 		cl := realtime.NewAdvisorClient(claims.TenantID, claims.UserID, roleStr, deptPath)
 		realtime.DefaultHub.Register(cl)
 		defer realtime.DefaultHub.Unregister(cl)
+		// G2 收口(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：在线连接吊销抽检。
+		// 握手已核 token_version（P0-6），但连接存续期内改密/换绑/重置吊销的旧 token
+		// 仍能持续收流——每 5min 抽检一次，命中吊销即关连接（读泵报错退出→Unregister；
+		// 前端重连需有效新 token，重连失败自然引导重新登录）。uid=0 平台层身份不核
+		// （与 TokenRevoked 语义一致）。
+		if claims.UserID > 0 {
+			stopWatch := make(chan struct{})
+			defer close(stopWatch)
+			go func() {
+				tk := time.NewTicker(5 * time.Minute)
+				defer tk.Stop()
+				for {
+					select {
+					case <-stopWatch:
+						return
+					case <-tk.C:
+						if middleware.TokenRevoked(claims.UserID, claims.TV) {
+							log.Printf("[WS] 顾问%d 凭据已吊销，断开在线连接（tenant=%d）", claims.UserID, claims.TenantID)
+							_ = ws.Close()
+							return
+						}
+					}
+				}
+			}()
+		}
 		// 写泵：从客户端发送队列读取消息并推送到 WebSocket
 		// P1-9 修复：删除死变量 done channel（只 close 从不消费），Send 失败直接断开即可
 		go func() {

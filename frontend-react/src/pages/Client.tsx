@@ -102,7 +102,11 @@ export default function Client() {
    * 失败时降级为默认欢迎文案
    */
   async function callWelcome() {
-    const r = await fetch(`${API}/chat/welcome`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current, visitor_key: localStorage.getItem(LS_KEY) || '' }) })
+    // 修复(2026-09-16C)：后端 CheckVisitorKey 只读 query 参数，旧版把 visitor_key 放在
+    // body 里——匿名访客的 welcome 一直 403，页面显示的其实是本文件兜底欢迎语，
+    // 真实欢迎消息/会话复用从未生效。改走 query，与 history/chat.test 口径一致。
+    const vkQ = encodeURIComponent(localStorage.getItem(LS_KEY) || '')
+    const r = await fetch(`${API}/chat/welcome?visitor_key=${vkQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current }) })
     const j = await r.json()
     if (j.code === 0 && j.data) {
       const cid = j.data.conversation_id || 0

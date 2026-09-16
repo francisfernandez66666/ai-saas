@@ -107,6 +107,13 @@ go test -cover ./... >/tmp/test_all_go.log 2>&1
 verdict "go test ./...（覆盖率见下方）" $?
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
 
+# D5 配套(2026-09-16B)：核心并发包 -race 抽查——合并队列/实时 Hub 是双发/挂死类
+# 缺陷高发区，此前 CI 无 race 检测器，解锁读共享字段（D5）长期隐身。
+step "单元测试层：并发包 -race 抽查（service/realtime/chatflow/channel）"
+go test -race -count=1 ./internal/service ./internal/realtime ./internal/chatflow ./internal/channel >/tmp/test_all_race.log 2>&1
+verdict "go test -race（并发包）" $?
+grep -E "DATA RACE|^(ok|FAIL)" /tmp/test_all_race.log | tail -10 || true
+
 step "单元测试层：前端 vitest"
 ( cd frontend-react && npm run test >/tmp/test_all_fe.log 2>&1 )
 FE_RC=$?
@@ -154,8 +161,11 @@ sleep 1
 nohup ./ai-scrm > ai-scrm.log 2>&1 &
 echo $! > .pid
 for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$PORT/health" && break; done
+# D9 修复(2026-09-16B，见 AUDIT_UAT_VERIFY_2026-09-16B)：各脚本各自清 flag、smoke.sh 执行中
+# 还会置 admin=true（B4 改密用例），个别脚本中断即残留，卡死后续所有套件的登录（403）。
+# E2E 前置统一复位（admin + 出厂弱密码 sales*，与各套件自清口径一致）。
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
-  "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1 || true
+  "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
 step "E2E 层：smoke.sh（92 项）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log

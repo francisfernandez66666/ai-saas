@@ -119,18 +119,16 @@ func ChatTest(c *gin.Context) {
 	if service.IsOffTopicForTenant(tenantID, req.Content) {
 		reply := service.GetOffTopicReplyForTenant(tenantID, req.Content)
 		log.Printf("[硬边界-测试接口] 客户%d 拦截无关话题(入队前): %q → %q", customer.ID, pii.MaskPhoneInText(req.Content), pii.MaskPhoneInText(reply))
-		// 查找或创建活跃会话
-		var conv model.Conversation
-		if err := db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
-			Order("updated_at DESC").First(&conv).Error; err != nil {
-			conv = model.Conversation{
-				CustomerID:     customer.ID,
-				AssignedUserID: customer.AssignedUserID,
-				Status:         "active",
-				Mode:           "ai",
-				Channel:        "web",
-			}
-			db.RQ(c).Create(&conv)
+		// 查找或创建活跃会话（G1 收口 2026-09-16C：统一 EnsureActiveConversation，
+		// 与 Chat 冷启动同 Redis 锁键 + 唯一索引兜底）
+		conv, _, convErr := chatflow.EnsureActiveConversation(
+			tenantID, customer.ID, customer.AssignedUserID,
+			func(cv *model.Conversation) { cv.Channel = "web" },
+		)
+		if convErr != nil {
+			log.Printf("[测试接口-告警] 客户%d 会话保障失败: %v", customer.ID, convErr)
+			RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+			return
 		}
 		// 保存客户消息+AI拦截回复
 		customerMsg := model.Message{
@@ -195,18 +193,15 @@ func ChatTest(c *gin.Context) {
 		// ---- 留资前置检测：当前消息是否包含手机号 ----
 		phoneMatchTest := chatflow.PhoneRegex.FindString(req.Content)
 
-		// 查找或创建活跃会话（各分支共用）
-		var conv model.Conversation
-		if err := db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
-			Order("updated_at DESC").First(&conv).Error; err != nil {
-			conv = model.Conversation{
-				CustomerID:     customer.ID,
-				AssignedUserID: customer.AssignedUserID,
-				Status:         "active",
-				Mode:           "ai",
-				Channel:        "web",
-			}
-			db.RQ(c).Create(&conv)
+		// 查找或创建活跃会话（各分支共用；G1 收口 2026-09-16C：统一 EnsureActiveConversation）
+		conv, _, convErr := chatflow.EnsureActiveConversation(
+			tenantID, customer.ID, customer.AssignedUserID,
+			func(cv *model.Conversation) { cv.Channel = "web" },
+		)
+		if convErr != nil {
+			log.Printf("[测试接口-告警] 客户%d 会话保障失败: %v", customer.ID, convErr)
+			RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+			return
 		}
 
 		// 保存客户消息（各分支共用）
@@ -274,13 +269,17 @@ func ChatTest(c *gin.Context) {
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
 					// P1-12 修复(2026-09-09)：无销售用户时不再硬编码 uint(2)（跨租户脏分配），
-					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领
+					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领。
+					// D1 修复(2026-09-16B)：删除误写入 customers 的 pending_handoff 键（该列属
+					// conversations，42703 会中止整行 UPDATE 导致留资静默丢失，见 AUDIT_UAT_VERIFY_2026-09-16B）
 					leadUpdates["assigned_user_id"] = uint(0)
-					leadUpdates["pending_handoff"] = true
 				}
 			}
 			if len(leadUpdates) > 0 {
-				db.RQ(c).Model(&customer).Updates(leadUpdates)
+				// D1 修复(2026-09-16B)：留资落库失败留痕，杜绝吞 error 假成功
+				if uerr := db.RQ(c).Model(&customer).Updates(leadUpdates).Error; uerr != nil {
+					log.Printf("[留资-告警][测试接口] 客户%d 留资字段落库失败(phone/stage未持久化): %v", customer.ID, uerr)
+				}
 				// 同步内存对象（修复Bug1：断言改安全形式）
 				if v, ok := leadUpdates["phone"]; ok {
 					customer.Phone, _ = v.(string)
@@ -473,19 +472,15 @@ skipStoreVisitFastTest:
 		}
 
 		simpleReply := service.GetSimpleReply(req.Content)
-		// 查找或创建活跃会话
-		var conv model.Conversation
-		db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
-			Order("updated_at DESC").Limit(1).Find(&conv)
-		if conv.ID == 0 {
-			conv = model.Conversation{
-				CustomerID:     customer.ID,
-				AssignedUserID: customer.AssignedUserID,
-				Status:         "active",
-				Mode:           "ai",
-				Channel:        "web",
-			}
-			db.RQ(c).Create(&conv)
+		// 查找或创建活跃会话（G1 收口 2026-09-16C：统一 EnsureActiveConversation）
+		conv, _, convErr := chatflow.EnsureActiveConversation(
+			tenantID, customer.ID, customer.AssignedUserID,
+			func(cv *model.Conversation) { cv.Channel = "web" },
+		)
+		if convErr != nil {
+			log.Printf("[测试接口-告警] 客户%d 会话保障失败: %v", customer.ID, convErr)
+			RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+			return
 		}
 		// 修复问题4：更新先存的那条客户消息的conversation_id
 		db.RQ(c).Model(&model.Message{}).Where("id = ?", testCustomerMsgID).Update("conversation_id", conv.ID)
@@ -550,32 +545,27 @@ skipStoreVisitFastTest:
 
 	// ---- 拿到处理权的请求：用合并后的内容走完整流程 ----
 
-	// Bug 2 修复：会话创建用竞态保护（先查再建），与正式接口统一
-	// 原Bug：测试接口完全没有会话管理，冷启动秒回不会出现
-	// 修复：用客户级互斥锁串行化"查找或创建"，确保只有一个会话 + 冷启动秒回
+	// Bug 2 修复：会话"先查再建"防重（正式接口统一）；欢迎词在 /chat/welcome，此处不建。
+	// G1 收口(2026-09-16C)：旧实现只靠进程内 convMu——与 Chat 主入口的 Redis 跨实例锁不同级，
+	// 多实例并发首消息仍各建一条 active；现统一走 EnsureActiveConversation（同锁键+唯一索引兜底）。
 	var conversation model.Conversation
 	isNewConversation := false
 	// 欢迎词已移至 /chat/welcome 接口，此处不再创建
 
-	convMu := chatflow.GetConversationMutex(customer.ID)
-	convMu.Lock()
+	convEnsured, created, convErr := chatflow.EnsureActiveConversation(
+		tenantID, customer.ID, customer.AssignedUserID,
+		func(cv *model.Conversation) { cv.Channel = "web" },
+	)
+	if convErr != nil {
+		// 持处理权后早退必须归还批次（P0-8 纪律），空回复释放
+		log.Printf("[测试接口-告警] 客户%d 会话保障失败: %v", customer.ID, convErr)
+		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, "")
+		RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+		return
+	}
+	conversation, isNewConversation = convEnsured, created
 
-	// 先查该客户是否已有活跃会话（复用，不重复创建）
-	result = db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
-		Order("updated_at DESC").
-		First(&conversation)
-
-	if result.Error != nil {
-		// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
-		conversation = model.Conversation{
-			CustomerID:     customer.ID,
-			AssignedUserID: customer.AssignedUserID,
-			Status:         "active",
-			Mode:           "ai",
-			Channel:        "web",
-		}
-		db.RQ(c).Create(&conversation)
-		isNewConversation = true
+	if isNewConversation {
 		log.Printf("[测试接口] 冷启动: 客户%d创建新会话%d", customer.ID, conversation.ID)
 
 		// 欢迎词已移至 /chat/welcome 接口负责秒回，此处不再创建欢迎消息
@@ -592,8 +582,6 @@ skipStoreVisitFastTest:
 		// 已有活跃会话，直接复用（不触发冷启动秒回）
 		log.Printf("[测试接口] 复用已有会话%d, 客户%d", conversation.ID, customer.ID)
 	}
-
-	convMu.Unlock()
 
 	// 修复(2026-09-09)：会话已确定，立即回填该请求客户消息的 conversation_id 与合并后内容，
 	// 并推送顾问端。

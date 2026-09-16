@@ -3,6 +3,7 @@ package chatflow
 
 import (
 	"ai-scrm/config"
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
@@ -18,6 +19,10 @@ import (
 // CheckHumanTimeout 检查人工是否超时
 // 销售3分钟未回复，AI自动接管
 // 同时检查软接管超时：pending_handoff状态下销售3分钟未接管，自动回退到纯AI模式
+// D4 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：两个超时分支旧行为只改内存对象——
+// 调用方（chat_main 仅硬超时分支回写会话）挂掉/异常时接管状态不落库，下轮请求从 DB 重载
+// 又回到"待接管/人工"态，超时判定形同虚设。现在判定即持久化（定向 Updates 只写接管相关列，
+// 不破 P1-9"末尾整行 Save 覆写接管态"防回潮口径；where 带 tenant_id 双保险）。
 func CheckHumanTimeout(conversation *model.Conversation) bool {
 	// 软接管超时检查
 	if conversation.PendingHandoff && conversation.HandoffNotifiedAt != nil {
@@ -28,6 +33,15 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 			log.Printf("[对话] 软接管超时，AI完全接管会话: %d", conversation.ID)
 			conversation.PendingHandoff = false
 			conversation.HandoffNotifiedAt = nil
+			// D4：软超时同样落库——旧实现只改内存，请求结束即丢，销售池永远挂着死线索
+			if err := db.DB.Model(&model.Conversation{}).
+				Where("id = ? AND tenant_id = ?", conversation.ID, conversation.TenantID).
+				Updates(map[string]interface{}{
+					"pending_handoff":     false,
+					"handoff_notified_at": nil,
+				}).Error; err != nil {
+				log.Printf("[对话-告警] 会话%d 软接管超时落库失败(下轮将重复判定): %v", conversation.ID, err)
+			}
 			return false // 继续AI模式，不需要切人工
 		}
 	}
@@ -38,19 +52,34 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 	if conversation.IsHumanLocked {
 		return false
 	}
+	timedOut := false
 	if conversation.LastHumanReplyAt == nil {
 		// 还没有人工回复过，检查最后消息时间
 		if conversation.LastMessageAt != nil {
 			since := time.Since(*conversation.LastMessageAt)
 			timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
-			return since > timeout
+			timedOut = since > timeout
 		}
-		return false
+	} else {
+		since := time.Since(*conversation.LastHumanReplyAt)
+		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+		timedOut = since > timeout
 	}
-
-	since := time.Since(*conversation.LastHumanReplyAt)
-	timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
-	return since > timeout
+	if timedOut {
+		// D4：硬超时（AI 接管）落库，防调用方中途异常导致"接管"只在内存生效一次
+		conversation.Mode = "ai"
+		conversation.IsHumanLocked = false
+		if err := db.DB.Model(&model.Conversation{}).
+			Where("id = ? AND tenant_id = ?", conversation.ID, conversation.TenantID).
+			Updates(map[string]interface{}{
+				"mode":             "ai",
+				"is_human_locked":  false,
+				"pending_handoff":  false,
+			}).Error; err != nil {
+			log.Printf("[对话-告警] 会话%d 人工超时AI接管落库失败(下轮将重复判定): %v", conversation.ID, err)
+		}
+	}
+	return timedOut
 }
 
 // UpdateConversationState 更新会话状态

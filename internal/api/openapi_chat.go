@@ -330,10 +330,15 @@ func resolveOpenAPICustomer(c *gin.Context, tenantID uint, channel, externalUser
 	return &cust, nil
 }
 
-// resolveOpenAPIConversation external_user_id + session_id 解析/创建会话
+// resolveOpenAPIConversation external_user_id + session_id 解析/创建会话。
+// G1 收口(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：旧查询不带 status='active' 过滤，
+// 可命中已关账会话继续写入；且"查无即插"无锁，与 web/通道并发会各建一条 active（013
+// 唯一索引上线后撞约束变 500）。现补 active 过滤，并统一到 EnsureActiveConversation：
+// 精确(session)查不到时，兜底复用该客户任意活跃会话（每客户至多一条 active 的全局不变式），
+// 无活跃会话才新建。
 func resolveOpenAPIConversation(c *gin.Context, tenantID, customerID uint, channel, sessionID string) (*model.Conversation, error) {
 	var conv model.Conversation
-	q := db.RQ(c).Where("customer_id = ?", customerID)
+	q := db.RQ(c).Where("customer_id = ? AND status = ?", customerID, "active")
 	if sessionID != "" {
 		q = q.Where("session_id = ?", sessionID)
 	} else {
@@ -346,19 +351,17 @@ func resolveOpenAPIConversation(c *gin.Context, tenantID, customerID uint, chann
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
-	conv = model.Conversation{
-		TenantID:       tenantID,
-		CustomerID:     customerID,
-		Status:         "active",
-		Mode:           "ai",
-		Channel:        channel,
-		SessionID:      sessionID,
-		GuidedDisabled: true, // 外部渠道默认关闭引导式反问（渠道侧自管节奏）
+	// 本 session 无活跃会话 → 保障客户唯一活跃会话（可能归属其他 session：跨渠道共存时
+	// 以既有会话延续上下文，符合 OneID 单活跃不变式；归属/接管状态一律不改写）
+	ensured, _, eerr := chatflow.EnsureActiveConversation(tenantID, customerID, 0, func(cv *model.Conversation) {
+		cv.Channel = channel
+		cv.SessionID = sessionID
+		cv.GuidedDisabled = true // 外部渠道默认关闭引导式反问（渠道侧自管节奏）
+	})
+	if eerr != nil {
+		return nil, eerr
 	}
-	if err := db.RQ(c).Create(&conv).Error; err != nil {
-		return nil, err
-	}
-	return &conv, nil
+	return &ensured, nil
 }
 
 // applyOpenAPILeadCapture 留资标记 + 轮询分配顾问（与站内一致）
@@ -385,9 +388,11 @@ func applyOpenAPILeadCapture(c *gin.Context, customer *model.Customer, phone str
 			leadUpdates["assigned_user_id"] = best
 		} else {
 			// P1-12 修复(2026-09-09)：无销售用户时不再硬编码 uint(2)（跨租户脏分配），
-			// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领
+			// 对齐 chat_lead 语义：assigned_user_id=0 进人工池由 PendingHandoff 认领。
+			// D1 修复(2026-09-16B)：删除误写入 customers 的 pending_handoff 键——该列属
+			// conversations，SQLSTATE 42703 会中止整行 UPDATE，无销售租户留资静默丢失
+			//（见 AUDIT_UAT_VERIFY_2026-09-16B D1）。OpenAPI 留资本就不改会话接管态（既有口径）。
 			leadUpdates["assigned_user_id"] = uint(0)
-			leadUpdates["pending_handoff"] = true
 		}
 	}
 	if err := db.RQ(c).Model(customer).Updates(leadUpdates).Error; err != nil {

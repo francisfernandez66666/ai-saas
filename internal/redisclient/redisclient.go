@@ -337,6 +337,56 @@ func DrainList(key string) []string {
 	return nil
 }
 
+// Publish G7(2026-09-16C)：向频道发布一条广播（未启用 Redis 时静默 no-op，单实例无需广播）。
+func Publish(channel, payload string) {
+	if !IsEnabled() {
+		return
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	if err := rdb.Publish(ctx, channel, payload).Err(); err != nil {
+		log.Printf("[redisclient] Publish %s 失败: %v", channel, err)
+	}
+}
+
+// Subscribe G7(2026-09-16C)：订阅频道，返回消息文本通道（连接失败/未启用返回 nil，
+// 调用方按"无广播=维持旧行为"降级）。channel 关闭即停止。
+func Subscribe(channel string) <-chan string {
+	if !IsEnabled() {
+		return nil
+	}
+	ctx, cancel := ctxDefault()
+	pubsub := rdb.Subscribe(ctx, channel)
+	if _, err := pubsub.Receive(ctx); err != nil {
+		log.Printf("[redisclient] Subscribe %s 失败(降级无广播): %v", channel, err)
+		_ = pubsub.Close()
+		cancel()
+		return nil
+	}
+	out := make(chan string, 16)
+	go func() {
+		defer close(out)
+		defer cancel()
+		defer pubsub.Close()
+		ch := pubsub.Channel()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case msg, ok := <-ch:
+				if !ok {
+					return
+				}
+				select {
+				case out <- msg.Payload:
+				default: // 消费慢：丢弃积压广播（缓存失效幂等，丢一条下次再触发）
+				}
+			}
+		}
+	}()
+	return out
+}
+
 // randomHex 用 crypto/rand 生成 n 字节随机数的十六进制串（分布式锁值/唯一后缀）
 func randomHex(n int) string {
 	b := make([]byte, n)

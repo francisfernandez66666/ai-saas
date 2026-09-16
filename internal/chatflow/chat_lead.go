@@ -272,136 +272,212 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	log.Printf("[OneID合并] 检测到同手机号老客户: 访客%d → 老客户%d, 手机号=%s, 租户=%d",
 		guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), tid)
 
-	// 1. 迁移会话 → 老客户（租户守卫：只迁本租户数据）
-	db.DB.Model(&model.Conversation{}).
-		Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-		Update("customer_id", existingCustomer.ID)
-
-	// 2. 迁移消息 → 老客户
-	db.DB.Model(&model.Message{}).
-		Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-		Update("customer_id", existingCustomer.ID)
-
-	// 2.5 迁移线索(FollowUp) → 老客户
-	db.DB.Model(&model.FollowUp{}).
-		Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-		Update("customer_id", existingCustomer.ID)
-
-	// 3.5 迁移试驾(TestDrive) → 老客户
-	db.DB.Model(&model.TestDrive{}).
-		Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-		Update("customer_id", existingCustomer.ID)
-
-	// 3.6 迁移客户标签关联(customer_tags) → 老客户（去重）
-	var guestTagRecords []model.CustomerTag
-	db.DB.Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).Find(&guestTagRecords)
-	for _, gtr := range guestTagRecords {
-		var count int64
-		db.DB.Model(&model.CustomerTag{}).
-			Where("customer_id = ? AND tag_id = ? AND tenant_id = ?", existingCustomer.ID, gtr.TagID, tid).
-			Count(&count)
-		if count == 0 {
-			gtr.ID = 0
-			gtr.CustomerID = existingCustomer.ID
-			gtr.TenantID = tid
-			db.DB.Create(&gtr)
+	// D2 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：1~9 步收进单事务——旧实现
+	// 9 条独立语句无事务，中途任一条失败即"半合并"脑裂（消息挂老客户、访客仍有效、
+	// identity 指错人），且全部走 db.DB 吞 error 无从感知。失败整体回滚并返回 0
+	// （调用方按"未合并"继续走访客留资流程，数据自洽，宁可不合并不可半合并）。
+	// C7 红线合规：事务内唯一的 Create（customer_tags）已显式设 TenantID，update 全部带 tenant_id 条件。
+	var survivorID uint
+	txErr := db.DB.Transaction(func(tx *gorm.DB) error {
+		// 1.0 G1 收口(2026-09-16C，迁移013 唯一索引 ux_conv_one_active 配套)：迁移归属前
+		// 预收拢双方 active——013 后"同客户多条 active"在 DB 层已不可能，若直接把访客
+		// active 会话改挂到老客户名下会当场撞约束、整个合并事务回滚（OneID 合并反而失效）。
+		// 规则与 012/9.2 一致：按 (updated_at, id) 定序保留最新一条，另一方的先关账。
+		if err := tx.Exec(`UPDATE conversations s SET status = 'closed'
+			WHERE s.tenant_id = ? AND s.customer_id = ? AND s.status = 'active'
+			  AND EXISTS (SELECT 1 FROM conversations g
+				WHERE g.tenant_id = ? AND g.customer_id = ? AND g.status = 'active'
+				  AND (g.updated_at, g.id) > (s.updated_at, s.id))`,
+			tid, existingCustomer.ID, tid, guestCustomer.ID).Error; err != nil {
+			return fmt.Errorf("预收拢(关老客户active): %w", err)
 		}
-	}
-
-	// 4. 合并标签（去重）
-	existingTags := existingCustomer.GetTags()
-	guestTags := guestCustomer.GetTags()
-	mergedTags := existingTags
-	tagSet := make(map[string]bool)
-	for _, t := range existingTags {
-		tagSet[t] = true
-	}
-	for _, t := range guestTags {
-		if !tagSet[t] {
-			mergedTags = append(mergedTags, t)
+		if err := tx.Exec(`UPDATE conversations g SET status = 'closed'
+			WHERE g.tenant_id = ? AND g.customer_id = ? AND g.status = 'active'
+			  AND EXISTS (SELECT 1 FROM conversations s
+				WHERE s.tenant_id = ? AND s.customer_id = ? AND s.status = 'active'
+				  AND (s.updated_at, s.id) >= (g.updated_at, g.id))`,
+			tid, guestCustomer.ID, tid, existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("预收拢(关访客active): %w", err)
 		}
-	}
-	if len(mergedTags) > 0 {
-		existingCustomer.SetTags(mergedTags)
-		tVector := existingCustomer.GetTVector()
-		existingCustomer.SaveTVector(tVector)
-	}
 
-	// 5. 取最高旅程阶段
-	guestStageOrder := model.JourneyStageOrder[guestCustomer.JourneyStage]
-	existingStageOrder := model.JourneyStageOrder[existingCustomer.JourneyStage]
-	if guestStageOrder > existingStageOrder {
-		existingCustomer.JourneyStage = guestCustomer.JourneyStage
-	}
+		// 1. 迁移会话 → 老客户（租户守卫：只迁本租户数据）
+		// D2 注(2026-09-16B)：用 UpdateColumn 跳过自动时间戳——归属重指不是业务活动，
+		// 覆写 updated_at 会把访客旧会话顶到顾问端"最近更新"列表顶端，且践踏 9.2 收拢的最新判定。
+		if err := tx.Model(&model.Conversation{}).
+			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
+			UpdateColumn("customer_id", existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("迁移会话: %w", err)
+		}
 
-	// 6. 合并意向分等数值（取更高值）
-	if guestCustomer.IntentScore > existingCustomer.IntentScore {
-		existingCustomer.IntentScore = guestCustomer.IntentScore
-	}
-	if guestCustomer.TrustLevel > existingCustomer.TrustLevel {
-		existingCustomer.TrustLevel = guestCustomer.TrustLevel
-	}
+		// 2. 迁移消息 → 老客户
+		if err := tx.Model(&model.Message{}).
+			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
+			Update("customer_id", existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("迁移消息: %w", err)
+		}
 
-	// 7. 补充老客户缺失信息（访客有的字段老客户没有的）
-	if existingCustomer.WechatID == "" && guestCustomer.WechatID != "" {
-		existingCustomer.WechatID = guestCustomer.WechatID
-	}
-	if existingCustomer.Source == "" && guestCustomer.Source != "" {
-		existingCustomer.Source = guestCustomer.Source
-	}
+		// 2.5 迁移线索(FollowUp) → 老客户
+		if err := tx.Model(&model.FollowUp{}).
+			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
+			Update("customer_id", existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("迁移线索: %w", err)
+		}
 
-	// 8. 保存老客户更新
-	db.DB.Save(&existingCustomer)
+		// 3.5 迁移试驾(TestDrive) → 老客户
+		if err := tx.Model(&model.TestDrive{}).
+			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
+			Update("customer_id", existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("迁移试驾: %w", err)
+		}
 
-	// 8.5 老客户无顾问时，轮询分配给当前客户最少的销售
-	if existingCustomer.AssignedUserID == 0 {
-		var salesUsers []model.User
-		// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同 DetectLeadCapture 主路径）
-		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, existingCustomer.TenantID).Find(&salesUsers)
-		if len(salesUsers) > 0 {
-			minCount := -1
-			var bestUserID uint = salesUsers[0].ID
-			for _, u := range salesUsers {
-				var count int64
-				db.DB.Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count)
-				if minCount < 0 || int(count) < minCount {
-					minCount = int(count)
-					bestUserID = u.ID
+		// 3.6 迁移客户标签关联(customer_tags) → 老客户（去重）
+		var guestTagRecords []model.CustomerTag
+		if err := tx.Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).Find(&guestTagRecords).Error; err != nil {
+			return fmt.Errorf("查访客标签: %w", err)
+		}
+		for _, gtr := range guestTagRecords {
+			var count int64
+			if err := tx.Model(&model.CustomerTag{}).
+				Where("customer_id = ? AND tag_id = ? AND tenant_id = ?", existingCustomer.ID, gtr.TagID, tid).
+				Count(&count).Error; err != nil {
+				return fmt.Errorf("查标签冲突: %w", err)
+			}
+			if count == 0 {
+				gtr.ID = 0
+				gtr.CustomerID = existingCustomer.ID
+				gtr.TenantID = tid
+				if err := tx.Create(&gtr).Error; err != nil {
+					return fmt.Errorf("迁标签落库: %w", err)
 				}
 			}
-			db.DB.Model(&existingCustomer).Update("assigned_user_id", bestUserID)
-			existingCustomer.AssignedUserID = bestUserID
-			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，轮询分配给顾问%d", existingCustomer.ID, bestUserID)
-		} else {
-			// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，置 assigned_user_id=0 待人工池认领
-			db.DB.Model(&existingCustomer).Update("assigned_user_id", uint(0))
-			existingCustomer.AssignedUserID = 0
-			log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，置 assigned_user_id=0 待人工池认领", existingCustomer.ID)
 		}
-	}
 
-	// 9. 标记访客为无效（不物理删除，保留审计）
-	db.DB.Model(guestCustomer).Update("status", 0)
+		// 4. 合并标签（去重）
+		existingTags := existingCustomer.GetTags()
+		guestTags := guestCustomer.GetTags()
+		mergedTags := existingTags
+		tagSet := make(map[string]bool)
+		for _, t := range existingTags {
+			tagSet[t] = true
+		}
+		for _, t := range guestTags {
+			if !tagSet[t] {
+				mergedTags = append(mergedTags, t)
+			}
+		}
+		if len(mergedTags) > 0 {
+			existingCustomer.SetTags(mergedTags)
+			tVector := existingCustomer.GetTVector()
+			existingCustomer.SaveTVector(tVector)
+		}
+
+		// 5. 取最高旅程阶段
+		guestStageOrder := model.JourneyStageOrder[guestCustomer.JourneyStage]
+		existingStageOrder := model.JourneyStageOrder[existingCustomer.JourneyStage]
+		if guestStageOrder > existingStageOrder {
+			existingCustomer.JourneyStage = guestCustomer.JourneyStage
+		}
+
+		// 6. 合并意向分等数值（取更高值）
+		if guestCustomer.IntentScore > existingCustomer.IntentScore {
+			existingCustomer.IntentScore = guestCustomer.IntentScore
+		}
+		if guestCustomer.TrustLevel > existingCustomer.TrustLevel {
+			existingCustomer.TrustLevel = guestCustomer.TrustLevel
+		}
+
+		// 7. 补充老客户缺失信息（访客有的字段老客户没有的）
+		if existingCustomer.WechatID == "" && guestCustomer.WechatID != "" {
+			existingCustomer.WechatID = guestCustomer.WechatID
+		}
+		if existingCustomer.Source == "" && guestCustomer.Source != "" {
+			existingCustomer.Source = guestCustomer.Source
+		}
+
+		// 8. 保存老客户更新
+		if err := tx.Save(&existingCustomer).Error; err != nil {
+			return fmt.Errorf("保存老客户: %w", err)
+		}
+
+		// 8.5 老客户无顾问时，轮询分配给当前客户最少的销售
+		if existingCustomer.AssignedUserID == 0 {
+			var salesUsers []model.User
+			// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同 DetectLeadCapture 主路径）
+			if err := tx.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, existingCustomer.TenantID).Find(&salesUsers).Error; err != nil {
+				return fmt.Errorf("查销售: %w", err)
+			}
+			if len(salesUsers) > 0 {
+				minCount := -1
+				var bestUserID uint = salesUsers[0].ID
+				for _, u := range salesUsers {
+					var count int64
+					tx.Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count)
+					if minCount < 0 || int(count) < minCount {
+						minCount = int(count)
+						bestUserID = u.ID
+					}
+				}
+				if err := tx.Model(&existingCustomer).Update("assigned_user_id", bestUserID).Error; err != nil {
+					return fmt.Errorf("分配顾问: %w", err)
+				}
+				existingCustomer.AssignedUserID = bestUserID
+				log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，轮询分配给顾问%d", existingCustomer.ID, bestUserID)
+			} else {
+				// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，置 assigned_user_id=0 待人工池认领
+				if err := tx.Model(&existingCustomer).Update("assigned_user_id", uint(0)).Error; err != nil {
+					return fmt.Errorf("顾问置零: %w", err)
+				}
+				existingCustomer.AssignedUserID = 0
+				log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，置 assigned_user_id=0 待人工池认领", existingCustomer.ID)
+			}
+		}
+
+		// 9. 标记访客为无效（不物理删除，保留审计）
+		if err := tx.Model(guestCustomer).Update("status", 0).Error; err != nil {
+			return fmt.Errorf("访客置无效: %w", err)
+		}
+
+		// 9.2 D2 修复(2026-09-16B)：合并后收拢 active 会话——访客会话迁过来后同一客户
+		// 可能挂多条 active（多入口/多通道各开一条），顾问端计数虚高、上下文分裂。
+		// 保留最近更新的一条，其余关账（closed，历史仍完整可查）。
+		if err := tx.Exec(`UPDATE conversations SET status = 'closed'
+			WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
+			  AND id NOT IN (
+				SELECT id FROM conversations
+				WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
+				ORDER BY updated_at DESC LIMIT 1)`,
+			tid, existingCustomer.ID, tid, existingCustomer.ID).Error; err != nil {
+			return fmt.Errorf("收拢active会话: %w", err)
+		}
+
+		survivorID = existingCustomer.ID
+		return nil
+	})
+	if txErr != nil {
+		log.Printf("[OneID合并-告警] 合并事务失败已整体回滚(访客%d→老客户%d,手机号=%s): %v",
+			guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), txErr)
+		return 0
+	}
 
 	// 9.5 CDP 锚点重指向（Phase B，2026-08-22）：
 	// 访客的 phone 锚点若已映射到访客 OneID(c:{guestID})，重指向 canonical 老客户 OneID
 	// 保证 ResolveOneID 查 phone 锚点必得 canonical，画像/事件/状态表分片键统一
 	cdp.RepointAnchor(tid, "phone", phone,
 		fmt.Sprintf("c:%d", guestCustomer.ID),
-		fmt.Sprintf("c:%d", existingCustomer.ID))
+		fmt.Sprintf("c:%d", survivorID))
 
 	// 9.6 L3：身份标识落库（增量补 identity，不重写现有合并逻辑）
 	// 把合并双方(访客+老客户)的手机号/微信号等身份锚点写入 customer_identities，
-	// 统一指向最终保留的老客户(identity.customer_id=existingCustomer.ID)，
-	// 并清理被合并访客遗留的 identity 行。事务包裹，失败整体回滚。
+	// 统一指向最终保留的老客户(identity.customer_id=survivorID)，
+	// 并清理被合并访客遗留的 identity 行。D2 后置于主事务成功之后（自身幂等 upsert+独立事务）。
 	if err := persistMergedIdentities(tid, &existingCustomer, guestCustomer); err != nil {
 		log.Printf("[OneID合并-告警] 身份标识落库失败(不影响主流程): %v", err)
 	}
 
 	log.Printf("[OneID合并] 合并完成: 访客%d(status=0) → 老客户%d, 标签数=%d, 阶段=%s",
-		guestCustomer.ID, existingCustomer.ID, len(mergedTags), existingCustomer.JourneyStage)
+		guestCustomer.ID, survivorID, len(existingCustomer.GetTags()), existingCustomer.JourneyStage)
 
-	return existingCustomer.ID
+	return survivorID
 }
 
 // persistMergedIdentities L3：OneID 合并时把双方身份锚点统一落 customer_identities

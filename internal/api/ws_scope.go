@@ -123,6 +123,8 @@ func advisorWSVisible(role, deptPath string, userID, tenantID, customerID uint) 
 	return false
 }
 
+// init 把顾问端 WS 可见性判定注入 realtime 包（realtime 不得反向 import api，
+// 用回调注入破环，与 SetBroadcast 同款模式）。
 func init() {
 	realtime.SetAdvisorScope(advisorWSVisible)
 }

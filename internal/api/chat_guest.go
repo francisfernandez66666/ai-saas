@@ -102,29 +102,24 @@ func Welcome(c *gin.Context) {
 		return
 	}
 
-	// 查找或创建会话（竞态保护，与Chat/ChatTest统一机制）
+	// 查找或创建会话（G1 收口 2026-09-16C：统一走 chatflow.EnsureActiveConversation——
+	// 先查复用 + Redis 短锁裁决 + 唯一索引冲突复查，与 Chat 冷启动同键互斥；
+	// 旧实现只有进程内 convMu，多实例并发首消息会各建一条 active 会话）
 	var conversation model.Conversation
 	isNewConversation := false // 标记是否新创建的会话（返回给前端，供UI区分）
 
-	convMu := chatflow.GetConversationMutex(customer.ID)
-	convMu.Lock()
+	conv, created, cerr := chatflow.EnsureActiveConversation(
+		db.EffectiveTenantIDFromGin(c), customer.ID, customer.AssignedUserID,
+		func(cv *model.Conversation) { cv.Channel = "web" },
+	)
+	if cerr != nil {
+		log.Printf("[欢迎-告警] 客户%d 会话保障失败: %v", customer.ID, cerr)
+		RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+		return
+	}
+	conversation, isNewConversation = conv, created
 
-	// 先查该客户是否已有活跃会话
-	db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
-		Order("updated_at DESC").
-		Limit(1).Find(&conversation)
-
-	if conversation.ID == 0 {
-		// 没有活跃会话 → 创建新会话
-		conversation = model.Conversation{
-			CustomerID:     customer.ID,
-			AssignedUserID: customer.AssignedUserID,
-			Status:         "active",
-			Mode:           "ai",
-			Channel:        "web",
-		}
-		db.RQ(c).Create(&conversation)
-		isNewConversation = true
+	if isNewConversation {
 		log.Printf("[欢迎] 创建新会话 %d, 客户 %d", conversation.ID, customer.ID)
 
 		// 启动默认流程（新会话的初始流程引擎）
@@ -139,8 +134,6 @@ func Welcome(c *gin.Context) {
 		// 已有活跃会话，直接复用
 		log.Printf("[欢迎] 复用已有会话 %d, 客户 %d", conversation.ID, customer.ID)
 	}
-
-	convMu.Unlock()
 
 	// 创建欢迎消息（每次调用都创建一条新的）
 	// 前端控制调用时机：仅在页面打开时调一次，不关闭页面不重复调

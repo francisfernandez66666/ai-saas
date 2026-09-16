@@ -8,8 +8,9 @@ DBURL="${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm}"
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
-# 匹配测试租户前缀（含进程后缀，如 uata79365 / unit_test_tenant 复用 code；e2e 来自 smoke_saas）
-PATTERNS=("uat%" "perm%" "rfd%" "chan_smoke%" "unit_test_tenant%" "rls_a%" "rls_b%" "e2e-e2e%" "e2etest")
+# 匹配测试租户前缀（含进程后缀，如 uata79365 / unit_test_tenant 复用 code；e2e 来自 smoke_saas
+# 与调试脚本 e2e-<随机> 形态，统一用 e2e% 兜住，合法租户不会以 e2e 起头）
+PATTERNS=("uat%" "perm%" "rfd%" "chan_smoke%" "unit_test_tenant%" "rls_a%" "rls_b%" "e2e%")
 
 build_where() {
   local i=0 cond=""

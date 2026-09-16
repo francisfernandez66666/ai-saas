@@ -17,6 +17,9 @@ import (
 // slogBridge 实现 io.Writer：std log 每条记录一次 Write，按前缀启发式分级转投 slog。
 type slogBridge struct{}
 
+// Write 实现 io.Writer：把 std log 输出的一行原文转投 slog。
+// 分级启发式：行首含 [ERROR]/[WARN]/panic 等标记时按对应级别，其余按 Info——
+// 旧代码里大量 log.Printf("[Billing][ERROR] ...") 自带级别前缀，不必逐文件改造。
 func (slogBridge) Write(p []byte) (int, error) {
 	msg := strings.TrimRight(string(p), "\n")
 	if strings.TrimSpace(msg) == "" {

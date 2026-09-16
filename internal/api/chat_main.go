@@ -158,17 +158,29 @@ func Chat(c *gin.Context) {
 			}
 		}
 
-		if result.Error != nil {
-			// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
-			conversation = model.Conversation{
-				CustomerID:     customer.ID,
-				AssignedUserID: customer.AssignedUserID,
-				Status:         "active",
-				Mode:           "ai",
-				Channel:        "web",
-			}
-			db.RQ(c).Create(&conversation)
-			log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, customer.ID)
+			if result.Error != nil {
+				// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
+				conversation = model.Conversation{
+					CustomerID:     customer.ID,
+					AssignedUserID: customer.AssignedUserID,
+					Status:         "active",
+					Mode:           "ai",
+					Channel:        "web",
+				}
+				// G1 收口(2026-09-16C)：013 唯一索引兜底后，Redis 关闭/他路（guest/通道/OpenAPI
+				// 的 EnsureActiveConversation）直插撞车时创建会报约束冲突——复查复用对方那条，
+				// 而非把 500 抛给客户。
+				if cerr := db.RQ(c).Create(&conversation).Error; cerr != nil {
+					if rerr := db.RQ(c).Scopes(db.T(c)).Where("customer_id = ? AND status = ?", customer.ID, "active").
+						Order("updated_at DESC").First(&conversation).Error; rerr != nil {
+						log.Printf("[对话-告警] 冷启动创建失败且复查无果: 客户%d err=%v recheck=%v", customer.ID, cerr, rerr)
+						RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+						return
+					}
+					log.Printf("[对话] 冷启动撞唯一约束，复用并发方会话%d（客户%d）", conversation.ID, customer.ID)
+				} else {
+					log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, customer.ID)
+				}
 
 			// 欢迎词已移至独立的 /chat/welcome 接口负责秒回
 			// 此处不再创建欢迎消息，避免欢迎词跟AI回复绑在一起等延迟
@@ -198,6 +210,8 @@ func Chat(c *gin.Context) {
 	}
 
 	// 3. 检查是否人工超时接管
+	// D4 修复(2026-09-16B)：软/硬两个超时分支的内存回写+DB持久化均已下沉到
+	// CheckHumanTimeout（旧实现硬超时只改内存由这里回写、软超时纯内存请求结束即丢）
 	humanTimeout := chatflow.CheckHumanTimeout(&conversation)
 	if humanTimeout {
 		log.Printf("[对话] 人工超时，AI接管会话: %d", conversation.ID)
@@ -442,13 +456,21 @@ func Chat(c *gin.Context) {
 					leadUpdates["assigned_user_id"] = bestUserID
 				} else {
 					// P1-12 修复(2026-09-09)：无销售用户时不硬编码 uint(2)（跨租户脏分配），
-					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池，由 PendingHandoff 认领
+					// 对齐 chat_lead 语义：assigned_user_id=0 进人工池，由 PendingHandoff 认领。
+					// D1 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：原此处往 customers 的
+					// Updates map 塞 pending_handoff——该列属 conversations，整条 UPDATE 以
+					// SQLSTATE 42703 中止且 error 未检查 → 无销售租户（=入驻默认态）手机号/阶段/
+					// 分配全部静默丢失，日志还打"留资成功"。待人工接管状态由本分支后段的
+					// conversations 定向 Updates 落库，customers 侧本就无此字段，删除该键。
 					leadUpdates["assigned_user_id"] = uint(0)
-					leadUpdates["pending_handoff"] = true
 				}
 			}
 			if len(leadUpdates) > 0 {
-				db.RQ(c).Model(&customer).Updates(leadUpdates)
+				// D1 修复(2026-09-16B)：留资落库失败必须留痕——旧行为吞 error，
+				// 客户已见"留资成功"话术而 DB 无数据，顾问端永远等不到这条线索。
+				if uerr := db.RQ(c).Model(&customer).Updates(leadUpdates).Error; uerr != nil {
+					log.Printf("[留资-告警][到店倾向] 客户%d 留资字段落库失败(phone/stage未持久化): %v", customer.ID, uerr)
+				}
 				// 同步内存对象（修复Bug1：断言全部改安全形式，杜绝留资链路 panic 中断）
 				if v, ok := leadUpdates["phone"]; ok {
 					customer.Phone, _ = v.(string)
@@ -694,6 +716,24 @@ skipStoreVisitFast:
 
 	// ---- 以下是拿到处理权的请求，用合并后的内容走完整流程
 	// 注意：策略引擎基于合并后的内容推理
+
+	// D8 护栏(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：持处理权后、SetReply 前任一 panic
+	// （策略/模板 nil 解引用等）会被 gin recovery 转 500，但 processing 锁挂死到 600s 超时
+	// 才自愈，期间该客户所有等待者（web+通道 worker）挂起。defer 兜底以空回复释放批次
+	// （epoch fencing 保证已正常释放/换代后本调用为无害 no-op）。
+	batchReleased := false
+	releaseBatch := func(text string) {
+		if !batchReleased {
+			batchReleased = true
+			service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, text)
+		}
+	}
+	defer func() {
+		if !batchReleased {
+			log.Printf("[Chat-告警] 客户%d 处理阶段异常退出，空回复释放批次 epoch=%d", customer.ID, processEpoch)
+			releaseBatch("")
+		}
+	}()
 
 	// ---- 硬拦截：留资检测（手机号校验+分配顾问） ----
 	// 放在策略引擎之前，确保手机号分配逻辑不受策略路由影响
@@ -998,7 +1038,8 @@ skipStoreVisitFast:
 	log.Printf("[Chat] 客户%d 延迟结束，返回回复", customer.ID)
 
 	// 12. 唤醒消息队列中等待的其他请求（携带本请求持有的处理代际，旧处理者复活不践踏）
-	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, aiReply)
+	// D8：改走幂等释放闭包，panic 兜底 defer 与正常路径互斥，只释放一次
+	releaseBatch(aiReply)
 
 	// 13. 返回结果
 	// 欢迎词由 /chat/welcome 接口独立返回，此处不再附带 earlier_messages

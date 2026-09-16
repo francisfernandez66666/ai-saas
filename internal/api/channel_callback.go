@@ -35,6 +35,8 @@ var channelTenantGate = struct {
 	at time.Time
 }{}}
 
+// channelTenantUsable 入站闸：租户停用/注销/审核中一律不再处理微信侧消息（P1-7 复核批）。
+// 带 30s 进程内缓存——回调高频（每条消息都查），全表查会放大 DB 压力；封禁生效延迟 ≤30s 可接受。
 func channelTenantUsable(tenantID uint) bool {
 	channelTenantGate.Lock()
 	defer channelTenantGate.Unlock()

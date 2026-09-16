@@ -152,6 +152,8 @@ type archivedMessageRow struct {
 	Content string
 }
 
+// TableName 归档表映射：messages 冷数据（迁移011）独立成表，PIPL 匿名化须同步覆盖，
+// 故用轻量行模型定向更新 content 列，不引入完整 Message（列多且含数值统计列须保留）。
 func (archivedMessageRow) TableName() string { return "messages_archive" }
 
 // anonymizeCustomer 客户主体：断 messages.content（哈希化，保行数与数值列）+ customers PII 列 + cdp profile_data。

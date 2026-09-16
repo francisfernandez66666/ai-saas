@@ -43,3 +43,6 @@ data/
 build/
 test-results
 BENCH_*
+
+# 通道冒烟 mockwx 运行产物（出站消息台账，非源码）
+mockwx_outbox.jsonl

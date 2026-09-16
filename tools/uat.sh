@@ -251,11 +251,24 @@ check "全空→降级规则话术" y "$R"
 
 echo ""
 echo "== 九、对话分支：留资合并 + 快捷通道 =="
+# D1 回归护栏(2026-09-16B，见 AUDIT_UAT_VERIFY_2026-09-16B)：原断言只 grep"留资检测"日志串——
+# 失败路径(customers 表被塞 conversations 专有列 pending_handoff → SQLSTATE 42703 整行 UPDATE
+# 中止且 error 未检查)照样打"留资成功"日志，76/76 全绿下真实丢数据。乙租户 signup 只有
+# tenant_admin 无 sales 用户，恰是 bug 触发态（=入驻默认态），故本用例即无销售变体覆盖。
+# 改为字节级 DB 断言：手机号/阶段/接管列必须真实落库。
+$PSQL "UPDATE customers SET phone=NULL, journey_stage='ai_connected', assigned_user_id=0 WHERE id=$CUST_B" >/dev/null
 curl -s --max-time 170 -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Type: application/json" \
   -d "{\"customer_id\":$CUST_B,\"content\":\"我叫赵铁柱，手机13912345678，明天想去店里看看\"}" >/dev/null
-sleep 1
-grep -E "留资检测|自动分配顾问" ai-scrm.log | tail -3 | grep -qE "." && R=y || R=n
-check "留资检测+分配顾问日志" y "$R"
+LP=""
+for _ in 1 2 3 4 5; do
+  LP=$($PSQL "SELECT COALESCE(phone,'') FROM customers WHERE id=$CUST_B" | tr -d '[:space:]')
+  [ "$LP" = "13912345678" ] && break
+  sleep 1
+done
+check "留资手机号真实落库-无销售租户(D1护栏)" 13912345678 "$LP"
+check "留资阶段推进lead_captured" lead_captured "$($PSQL "SELECT journey_stage FROM customers WHERE id=$CUST_B" | tr -d '[:space:]')"
+check "待接管落会话列(非customers表)" t "$($PSQL "SELECT pending_handoff FROM conversations WHERE customer_id=$CUST_B AND status='active' ORDER BY updated_at DESC LIMIT 1" | tr -d '[:space:]')"
+check "留资线索FollowUp落库" True "$([ "$($PSQL "SELECT COUNT(*) FROM follow_ups WHERE customer_id=$CUST_B AND result='lead_captured'" | tr -d '[:space:]')" -gt 0 ] && echo True || echo False)"
 QRAW=$(curl -s --max-time 60 -w "\nUAT_HTTP=%{http_code}" -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Type: application/json" \
   -d "{\"customer_id\":$CUST_B,\"content\":\"好的\"}")
 CODE=$(echo "$QRAW" | grep -oE "UAT_HTTP=[0-9]+" | cut -d= -f2)
@@ -419,6 +432,34 @@ check "退款后到期日回退且月配额清零" "0|t" "$RF_AFTER"
 RF_LIST_RAW=$(curl -s "$B/api/v1/billing/orders?limit=50" -H "$RH")
 RF_LIST_REFUND=$(echo "$RF_LIST_RAW" | jget "sum(1 for o in d['data'] if o['id']==$RF_ORDER and o.get('refund_amount_cents')==$RF_AMT and o.get('refunded_at'))")
 check "订单列表含退款金额与退款时间(F1)" 1 "$RF_LIST_REFUND"
+
+echo ""
+echo "== 十一、会话单活跃收口批（2026-09-16C，AUDIT_GAP_REALITY G1）=="
+# 11.1 013 部分唯一索引存在（每租户+客户至多一条 active 会话的 DB 级不变式）
+IDX13=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname='ux_conv_one_active'")
+check "013唯一索引已建(ux_conv_one_active)" 1 "$IDX13"
+# 11.2 C端访客双次 welcome：必须复用同一会话（EnsureActiveConversation 收口前，
+#      多实例/双路径各建一条 active 是 OneID 事故根因）
+GC_RAW=$(curl -s -X POST "$B/api/v1/chat/guest" -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: $UA_ID" -d '{}')
+GC_ID=$(echo "$GC_RAW" | jget "d['data']['customer_id']")
+GC_VK=$(echo "$GC_RAW" | jget "d['data']['visitor_key']")
+check "访客建联(11)" y "$([ -n "$GC_ID" ] && echo y || echo n)"
+CV1=$(curl -s -X POST "$B/api/v1/chat/welcome?visitor_key=$GC_VK" -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: $UA_ID" -d "{\"customer_id\":$GC_ID}" | jget "d['data']['conversation_id']")
+CV2=$(curl -s -X POST "$B/api/v1/chat/welcome?visitor_key=$GC_VK" -H "Content-Type: application/json" \
+  -H "X-Tenant-ID: $UA_ID" -d "{\"customer_id\":$GC_ID}" | jget "d['data']['conversation_id']")
+check "welcome返回会话ID(11)" y "$([ -n "$CV1" ] && echo y || echo n)"
+check "welcome两次复用同一会话" "$CV1" "$CV2"
+ACT11=$($PSQL "SELECT count(*) FROM conversations WHERE tenant_id=$UA_ID AND customer_id=$GC_ID AND status='active'")
+check "客户active会话数=1(字节级)" 1 "$ACT11"
+# 11.3 绕过应用直插第二条 active：必须被 013 索引拒绝——约束真实存在于 DB 层。
+# （psql 默认不输出 SQLSTATE 数字，按"unique constraint ux_conv_one_active"文案判定）
+DUP11=$(psql "${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm}" \
+  -c "INSERT INTO conversations (tenant_id,customer_id,status,mode,channel,created_at,updated_at) VALUES ($UA_ID,$GC_ID,'active','ai','web',NOW(),NOW())" 2>&1 | grep -cE '23505|unique constraint "ux_conv_one_active"')
+check "重复active直插被013索引拒绝(23505)" 1 "$DUP11"
+# 现场清理：本节测试客户及其会话/消息不留库
+$PSQL "DELETE FROM messages WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM conversations WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM customers WHERE id=$GC_ID" >/dev/null 2>&1
 
 echo ""
 echo "== 恢复现场 =="

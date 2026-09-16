@@ -123,7 +123,7 @@ func SuperTenantStatus(c *gin.Context) {
 		IP: c.ClientIP(), UserAgent: c.Request.UserAgent(),
 	})
 	// 租户解析缓存失效，封禁即时生效
-	middleware.InvalidateTenantCache()
+	middleware.InvalidateTenantCacheCluster()
 	RespOK(c, "状态已更新为 "+req.Status, nil)
 }
 

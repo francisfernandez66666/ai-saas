@@ -39,8 +39,10 @@ import (
 // 新结构：同步段只做"幂等抢占 + 身份/会话 + 客户消息落库 + 人工接管闸"（微信 5s ack 压力大幅缓解），
 // 随后把"入队等待合并 →（处理者）策略/生成/（被合并者）领取批次唯一回复 → 闸门 → 落库 → 出站"
 // 交给 headless worker goroutine，与 web 共用同一批次、同一 epoch fencing、同一 CalcHumanlikeDelay 节奏。
-// 已知保留差异（D5 残项，非本批目标）：通道 worker 不做留资硬拦截/到店快速通道/硬边界第一层
-// ——这些仍属 web handler 内联逻辑，抽取属 §7 计划的后续"chat 管线抽函数"手术。
+// 已知保留差异（残项更新 2026-09-16C，AUDIT_GAP_REALITY_2026-09-16）：留资硬拦截已由
+// D3 批（2026-09-16B）在 worker 处理段实装（本文件 DetectLeadCapture 调用点）；仍缺的是
+// 到店快速通道与硬边界第一层——这些属 web handler 内联逻辑，抽取属 §7 计划的
+// 后续"chat 管线抽函数"手术。
 func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	// 系统事件（change_contact/add_external_contact 等）→ CDP 摄入，不进对话
 	if in.IsEvent {
@@ -117,10 +119,18 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 
 	tid := ch.TenantID
 	var workErr error
+	// D8 护栏(2026-09-16B)：release 提升到函数作用域，panic 恢复时必须释放批次——
+	// 旧实现 recover 后直接收尾，processing 锁挂死到 600s 超时自愈，期间 web/通道
+	// 等待者全部悬着（与 chat_main 处理段 panic 无释放同型缺陷）。
+	var release func(string)
+	released := false
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[通道] 入站 worker panic 已恢复 channel=%d customer=%d: %v", ch.ID, customerID, r)
 			workErr = fmt.Errorf("inbound worker panic: %v", r)
+			if release != nil {
+				release("") // 空回复释放，epoch fencing 防践踏
+			}
 		}
 		done(workErr) // 台账收尾随 worker——回调 ack 期间状态为 processing，重推被 claim 挡
 	}()
@@ -136,6 +146,16 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		}
 		simpleReply := service.GetSimpleReply(in.Content)
 		saveAndDeliver(ch, conv, customerID, simpleReply, "channel_simple")
+		// D3 修复(2026-09-16B)：与 web 简单消息分支同款"防漏"留资检测（简单消息一般不含
+		// 手机号，但 2-gram 误判进快速通道时不能把留资吞掉）
+		var simpleCust model.Customer
+		if db.DB.First(&simpleCust, customerID).Error == nil &&
+			simpleCust.JourneyStage != model.JourneyLeadCaptured && simpleCust.JourneyStage != model.JourneyArrived &&
+			simpleCust.JourneyStage != model.JourneyOrdered && simpleCust.JourneyStage != model.JourneyDelivered {
+			if leadResult := chatflow.DetectLeadCapture(in.Content, &simpleCust); leadResult != 0 {
+				log.Printf("[通道] 客户%d 留资检测(简单消息防漏,OneID目标=%d)", customerID, leadResult)
+			}
+		}
 		return
 	}
 
@@ -156,8 +176,8 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 
 	// 分支 3：本 worker 是处理者。epoch fencing：无论何种退出，批次必须被释放（空回复也要），
 	// 否则 web/通道等待者挂到 processing 锁超时（600s）才自愈。
-	released := false
-	release := func(text string) {
+	// D8：released 标志与 release 闭包已提升到函数头（panic 兜底 defer 需要引用）。
+	release = func(text string) {
 		if !released {
 			released = true
 			service.DefaultMessageQueueService.SetReply(tid, customerID, epoch, text)
@@ -176,6 +196,22 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	if err := db.DB.First(&cust, customerID).Error; err != nil {
 		release("")
 		return
+	}
+	// D3 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：通道入站补留资硬拦截——旧实现
+	// 零引用 DetectLeadCapture，客户在企微/微信客服/公众号里发手机号不落 phone/阶段/顾问分配，
+	// 顾问端永远看不到线索。放在策略推理之前，与 web（chat_main 留资硬拦截）同口径。
+	if cust.JourneyStage != model.JourneyLeadCaptured && cust.JourneyStage != model.JourneyArrived &&
+		cust.JourneyStage != model.JourneyOrdered && cust.JourneyStage != model.JourneyDelivered {
+		if leadResult := chatflow.DetectLeadCapture(mergedContent, &cust); leadResult != 0 {
+			log.Printf("[通道] 客户%d 留资检测命中(OneID目标=%d)，重载客户并设1轮引导反问", customerID, leadResult)
+			db.DB.First(&cust, customerID) // 同步 journey_stage 等内存字段，供后续推理/延迟判定
+			db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
+				"guided_remaining_rounds": 1,
+				"guided_disabled":         false,
+			})
+			conv.GuidedRemainingRounds = 1
+			conv.GuidedDisabled = false
+		}
 	}
 	si := strategy.StrategyInput{
 		TVector:        cust.BuildBaseTVector(),
@@ -199,8 +235,29 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
 			"mode": "human", "is_human_locked": true, "is_ai_reply_enabled": false,
 		})
+		conv.Mode, conv.IsHumanLocked, conv.IsAiReplyEnabled = "human", true, false
 		release(exitText)
 		saveAndDeliver(ch, conv, customerID, exitText, "channel_human_exit")
+		return
+	case strategy.RoutePendingHuman:
+		// D7 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：软接管与 web 同口径——
+		// 旧实现在 default 分支静默，客户在微信里干等永不回复。退场词+锁会话+关AI回复，
+		// 顾问分配同样推迟到客户回手机号（留资拦截已在本 worker 前段接上）。
+		pendingExit := "你好，我现在有点忙，你要不留个信息咱们到店谈，我顺便帮你查一下你的问题"
+		db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
+			"mode": "human", "is_human_locked": true, "is_ai_reply_enabled": false,
+		})
+		conv.Mode, conv.IsHumanLocked, conv.IsAiReplyEnabled = "human", true, false
+		release(pendingExit)
+		saveAndDeliver(ch, conv, customerID, pendingExit, "channel_pending_human_exit")
+		return
+	case strategy.RouteFish:
+		// D7 修复(2026-09-16B)：养鱼罐头话术对齐 web（旧通道静默）。会话保持 active，
+		// 与 web 同：仅内存 Mode=fish 不回写（web 亦未持久化该列）。
+		fishText := "好的，你先考虑考虑，有任何问题随时找我~ 我会持续关注你的需求，有好消息也会及时通知你。"
+		conv.Mode = "fish"
+		release(fishText)
+		saveAndDeliver(ch, conv, customerID, fishText, "channel_fish")
 		return
 	case strategy.RouteAI, strategy.RoutePrice:
 		routeGo = true
@@ -305,23 +362,21 @@ func deliverAI(ch *model.Channel, conv *model.Conversation, customerID uint, tex
 	}
 }
 
-// ensureConversation 取该客户在渠道下的活跃会话，无则新建（Channel 标渠道类型，SessionID=externalID）。
+// ensureConversation 取该客户当前活跃会话，无则新建（Channel 标渠道类型，SessionID=externalID）。
+// G1 收口(2026-09-16C，AUDIT_GAP_REALITY_2026-09-16)：旧实现裸"先查后插"无锁——多实例
+// 并发入站、或与 web 冷启动赛跑会各建一条 active（013 唯一索引上线后将直接撞约束）。
+// 现统一走 chatflow.EnsureActiveConversation（Redis 短锁 + 持锁复查 + 撞索引回落复用）。
+// AssignedUserID 传 0：归属由留资/分配链路维护，保障会话不越权改写。
 func ensureConversation(tenantID, customerID uint, externalID, chType string) (*model.Conversation, error) {
-	var conv model.Conversation
-	err := db.DB.Where("customer_id = ? AND status = ?", customerID, "active").
-		Order("id DESC").First(&conv).Error
-	if err == nil {
-		return &conv, nil
+	conv, _, err := chatflow.EnsureActiveConversation(tenantID, customerID, 0, func(cv *model.Conversation) {
+		cv.Channel = channelTag(chType)
+		cv.SessionID = externalID
+		cv.IsAiReplyEnabled = true
+	})
+	if err != nil {
+		return nil, err
 	}
-	nc := model.Conversation{
-		TenantID: tenantID, CustomerID: customerID, Status: "active",
-		Channel: channelTag(chType), SessionID: externalID, Mode: "ai",
-		IsAiReplyEnabled: true,
-	}
-	if cerr := db.DB.Create(&nc).Error; cerr != nil {
-		return nil, cerr
-	}
-	return &nc, nil
+	return &conv, nil
 }
 
 // channelTag 为通道日志生成稳定标签。
