@@ -155,7 +155,10 @@ jobs:
       - name: 前端依赖（编排器会跑 vitest + build）
         run: npm ci
         working-directory: frontend-react
-      - name: 运行自动化测试编排器（单测+构建+三套E2E，lock 防并发）
+      - name: Playwright 浏览器（D3：真浏览器 E2E 接编排门禁）
+        run: npx playwright install --with-deps chromium
+        working-directory: frontend-react
+      - name: 运行自动化测试编排器（单测+构建+E2E+浏览器回归，lock 防并发）
         run: ./tools/test_all.sh --fast
 
   uat:

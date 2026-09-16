@@ -109,6 +109,7 @@ export interface ApiRoutes {
   "GET /api/v1/super/packages": unknown
   "GET /api/v1/super/packs": unknown
   "GET /api/v1/super/packs/stats": PackStatsResp
+  "GET /api/v1/super/plans": unknown
   "GET /api/v1/super/tenants": unknown
   "GET /api/v1/super/tenants/:id/branding": unknown
   "GET /api/v1/super/usage/cost": unknown
@@ -246,6 +247,7 @@ export interface ApiRoutes {
   "PUT /api/v1/super/packs/:id/share": unknown
   "PUT /api/v1/super/packs/:id/status": unknown
   "PUT /api/v1/super/tenants/:id/branding": unknown
+  "PUT /api/v1/super/tenants/:id/plan": unknown
   "PUT /api/v1/super/tenants/:id/status": unknown
 }
 

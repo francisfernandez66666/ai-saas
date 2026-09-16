@@ -70,6 +70,7 @@ import (
 
 // Chat POST /api/v1/chat 正式对话入口（JWT链；硬边界→快速通道→简单消息→合并队列四层分流）
 func ChatTest(c *gin.Context) {
+	extendWriteDeadlineForAI(c) // D4：同步处理者分支最坏 25+15+110s，延长本连接写截止（write_deadline.go）
 	// 修复：记录请求开始时间，用于总延迟2分钟硬顶兜底
 	// 总回复时长 = 合并等待 + AI调用 + 模拟延迟，不得超过2分钟
 	requestStart := time.Now()
@@ -78,7 +79,7 @@ func ChatTest(c *gin.Context) {
 	tenantID := middleware.EffectiveTenantID(c)
 
 	var req struct {
-		CustomerID uint   `json:"customer_id"`                // 客户ID，默认用1号模拟客户
+		CustomerID uint   `json:"customer_id"`                         // 客户ID，默认用1号模拟客户
 		Content    string `json:"content" binding:"required,max=4000"` // 客户说的话（P2：长度上限）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {

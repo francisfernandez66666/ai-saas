@@ -1,6 +1,38 @@
 import { test, expect } from '@playwright/test';
+import type { APIRequestContext } from '@playwright/test';
 
 const BASE = 'http://localhost:9090';
+
+// D3 修复(2026-09-16，AUDIT_DEFECT_VERIFY)：seed 每次启动都会把出厂弱密码账号重新置
+// must_change_password=true（seed/seed_tenant.go:127），MustChangePasswordGuard（middleware/org.go:117）
+// 随即对除 change-password/auth/me 外的全部路径返回 403——旧 spec 的 [200,400] 期望在"重启后的干净环境"
+// 必挂（实测 strategy test 用例 403）。这里做 API 回环自适应：检测到强改密标记 → 改密（服务端清标记，
+// B4 同时 bump token_version 故需重登）→ 再改回 admin123 恢复出厂凭据。change-password 无"新旧相同拒绝"
+// 限制（auth_password.go:89-96 仅验旧密码+强度），回环不污染任何账号密码，smoke/uat 脚本继续用 admin123。
+async function adminToken(request: APIRequestContext): Promise<string> {
+  const login = (password: string) =>
+    request
+      .post(`${BASE}/api/v1/auth/login`, { data: { username: 'admin', password } })
+      .then(r => r.json());
+  let j = await login('admin123');
+  let token = (j.data?.token || '') as string;
+  if (token && j.data?.user?.must_change_password) {
+    const tmp = 'E2eTemp2026Pass';
+    await request.post(`${BASE}/api/v1/auth/change-password`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { old_password: 'admin123', new_password: tmp },
+    });
+    j = await login(tmp);
+    token = j.data?.token || '';
+    await request.post(`${BASE}/api/v1/auth/change-password`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: { old_password: tmp, new_password: 'admin123' },
+    });
+    j = await login('admin123');
+    token = j.data?.token || '';
+  }
+  return token;
+}
 
 // 1. Landing page loads
 test('landing page loads with hero', async ({ page }) => {
@@ -46,11 +78,7 @@ test('protected route redirects to login', async ({ page }) => {
 
 // 7. Auth me returns user info
 test('auth me returns user info after login', async ({ request }) => {
-  const loginRes = await request.post(`${BASE}/api/v1/auth/login`, {
-    data: { username: 'admin', password: 'admin123' },
-  });
-  const loginBody = await loginRes.json();
-  const token = loginBody.data?.token;
+  const token = await adminToken(request);
   expect(token).toBeTruthy();
 
   const meRes = await request.get(`${BASE}/api/v1/auth/me`, {
@@ -81,11 +109,7 @@ test('chat test endpoint responds', async ({ request }) => {
 
 // 10. Strategy test endpoint works
 test('strategy test endpoint responds', async ({ request }) => {
-  const loginRes = await request.post(`${BASE}/api/v1/auth/login`, {
-    data: { username: 'admin', password: 'admin123' },
-  });
-  const loginBody = await loginRes.json();
-  const token = loginBody.data?.token;
+  const token = await adminToken(request);
 
   const r = await request.post(`${BASE}/api/v1/strategy/test`, {
     headers: { Authorization: `Bearer ${token}`, 'X-Tenant-ID': '1' },

@@ -66,6 +66,11 @@ type CustomerQueue struct {
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
 	redisLock           *redisclient.LockHandle // 跨实例分布式锁句柄（Redis模式处理者持有）
 	lastActivity        time.Time               // 最近活跃时间（空闲队列回收依据，2026-09-09）
+	// deliveredFor D5(2026-09-16)：批次投递认领表——key "epoch:channelID"。
+	// 通道 worker 并入合并队列后，一个批次的唯一回复可能由 web 处理者生成、通道等待者送达，
+	// 也可能处理者本身就是通道 worker——"每批每通道至多投递一次"必须原子裁决，
+	// 否则微信侧双发/全漏。Redis 模式走 SetNX 跨实例认领（见 ClaimReplyDelivery）。
+	deliveredFor map[string]bool
 }
 
 // getProcessingLockTimeout 获取processing锁超时时间
@@ -373,6 +378,9 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 		if msgIdx >= 0 {
 			q.pending[msgIdx].BatchID = q.currentBatch // 标记消息所属批次
 		}
+		// D5(2026-09-16)：记下"我合并进的是哪一批"的代际——唤醒后通道等待者据此做批次投递认领，
+		// 不能用醒来时刻的 q.epoch（等待期间可能已开下一批，拿错代际会顶掉下一批处理者的投递权）
+		waitEpoch := q.epoch
 		// 立刻通知主请求：新消息到达（事件驱动，替代定时轮询）
 		q.cond.Signal()
 
@@ -383,9 +391,11 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 			q.cond.Wait()
 		}
 		reply = q.lastReply
+		// D5：解锁前快照（P2-36 同款纪律——return 表达式里读受锁字段是数据竞争）
+		waitedCount := q.mergeCount
 		locked = false
 		q.mu.Unlock()
-		return "", false, reply, 0, false, q.mergeCount, 0
+		return "", false, reply, 0, false, waitedCount, waitEpoch
 	}
 
 	// 超过合并上限，积压队列——这是下一批的第一个
@@ -464,8 +474,13 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 		if v, ok := redisclient.Get("mq:lastseq:" + k); ok {
 			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > curSeq {
 				if r, ok := redisclient.Get(fmt.Sprintf("mq:reply:%s:%d", k, n)); ok && r != "" {
+					// D5：读取配对 epoch（老版本处理者未发布 → 0，投递认领退化为放行，宁双不漏）
+					var repEpoch uint64
+					if ev, ok := redisclient.Get(fmt.Sprintf("mq:replepoch:%s:%d", k, n)); ok {
+						repEpoch, _ = strconv.ParseUint(ev, 10, 64)
+					}
 					log.Printf("[合并队列] 客户%s 远程回复已取到(序号%d)", k, n)
-					return "", false, r, 0, false, 1, 0
+					return "", false, r, 0, false, 1, repEpoch
 				}
 			}
 		}
@@ -495,6 +510,37 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 	return content, false, "", 0, false, 1, 0
 }
 
+// ClaimReplyDelivery D5(2026-09-16)：为 (批次代际, 通道) 认领"本批唯一回复送达该通道"的一次性权利。
+// 通道 worker 并入合并队列后，批次处理者可能是 web 请求（不会出站投微信）也可能是另一路通道 worker，
+// 等待者里同通道可能有 0~N 条——投递必须"每批每通道恰好一次"，由本方法原子裁决：
+//   - 单实例：队列内 deliveredFor 表（随队列空闲回收自然清理）；
+//   - 多实例：Redis SetNX mq:deliver:{k}:{epoch}:{chID}（TTL 10min，跨实例互斥）；
+//   - epoch==0（旧协议回复无配对 epoch/降级路径）：放行投递——宁可极端双发（出站台账可查），不可静默漏发。
+//
+// 返回 true=本调用方负责投递；false=同批同通道已有他人认领。
+func (s *MessageQueueService) ClaimReplyDelivery(tenantID, customerID uint, epoch uint64, channelID uint) bool {
+	if epoch == 0 {
+		return true
+	}
+	k := queueKey(tenantID, customerID)
+	if redisclient.IsEnabled() {
+		h := redisclient.TryLock(fmt.Sprintf("mq:deliver:%s:%d:%d", k, epoch, channelID), 10*time.Minute)
+		return h != nil
+	}
+	q := s.getQueue(k)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.deliveredFor == nil {
+		q.deliveredFor = map[string]bool{}
+	}
+	key := fmt.Sprintf("%d:%d", epoch, channelID)
+	if q.deliveredFor[key] {
+		return false
+	}
+	q.deliveredFor[key] = true
+	return true
+}
+
 // WriteDegradedNotice 向客户最新会话落一条降级提示消息（P2-38）
 // 仅在极端超时兜底路径调用；带租户过滤查最新活跃会话，避免空等也避免二次计费。
 func (s *MessageQueueService) WriteDegradedNotice(tenantID, customerID uint, notice string) {
@@ -505,6 +551,10 @@ func (s *MessageQueueService) WriteDegradedNotice(tenantID, customerID uint, not
 		return
 	}
 	msg := model.Message{
+		// D6 护栏(2026-09-16)命中：db.DB 无请求 ctx，盖章回调取到 0 → 降级提示落 tenant_id=0
+		// （C7 同款第三处）——客户侧 RQ 查询看不见这条"等待中"提示，降级体验失效且污染平台视图。
+		// 后台路径必须显式传租户，与 billing/privacy/chat_lead(P1-5) 同款纪律。
+		TenantID:       tenantID,
 		ConversationID: conv.ID,
 		CustomerID:     customerID,
 		SenderType:     "system",
@@ -706,6 +756,8 @@ func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uin
 	q.lastReply = reply
 	q.lastReplyAt = time.Now()
 	q.processing = false
+	// D5：发布用代际在锁内快照（P2-36 教训：解锁后读受锁字段 = 数据竞争）
+	pubEpoch := q.epoch
 	log.Printf("[合并队列] 客户%s 回复已设置(代%d), 唤醒所有等待者, 回复前20字: %q", k, epoch, truncateStr(reply, 20))
 	// 唤醒所有等待的goroutine
 	q.cond.Broadcast()
@@ -716,6 +768,8 @@ func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uin
 		seq := redisclient.Incr("mq:seq:" + k)
 		redisclient.SetEx("mq:lastseq:"+k, strconv.FormatInt(seq, 10), 10*time.Minute)
 		redisclient.SetEx(fmt.Sprintf("mq:reply:%s:%d", k, seq), reply, 5*time.Minute)
+		// D5(2026-09-16)：epoch 随回复配对发布——远程通道等待者据此做"每批每通道一次"投递认领
+		redisclient.SetEx(fmt.Sprintf("mq:replepoch:%s:%d", k, seq), strconv.FormatUint(pubEpoch, 10), 5*time.Minute)
 		if h != nil {
 			h.Unlock()
 		}

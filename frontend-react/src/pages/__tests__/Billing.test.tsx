@@ -5,6 +5,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Billing from '../Billing'
 
+
 vi.mock('../../lib/api', () => ({
   AUTH: () => ({ headers: { Authorization: 'Bearer t' } }),
   apiFetch: (url: string, init?: RequestInit) => globalThis.fetch(url, init),
@@ -48,5 +49,43 @@ describe('Billing 收银台 E1 static_qr 渲染', () => {
     // 收款模式提示 + 我已付费入口（static_qr 非 sdk 走人工确认）
     expect(screen.getByText(/扫码转账/)).toBeTruthy()
     expect(screen.getByText('我已付费')).toBeTruthy()
+  })
+})
+
+// 续费触达 banner 回归（商业缺口批 2026-09-16）：到期/临期/待支付三态此前租户侧零感知。
+describe('Billing 续费触达 banner', () => {
+  beforeEach(() => { localStorage.clear(); localStorage.setItem('role', 'admin') })
+
+  function bannerFetch(quota: Record<string, unknown>, orders: unknown[] = []) {
+    return vi.fn(async (url: string) => {
+      const body = url.includes('/billing/my-package')
+        ? { code: 0, data: { tenant_name: 'ACME', used_ai_calls: 0, max_ai_calls: 100, ai_call_balance: 0, pay_mode: 'mock', ...quota } }
+        : url.includes('/api/v1/packages')
+          ? { code: 0, data: [] }
+          : url.includes('/billing/orders')
+            ? { code: 0, data: orders }
+            : { code: 0, data: {} }
+      return { json: async () => body, ok: true } as Response
+    })
+  }
+
+  it('status=expired 展示到期停服红色横幅', async () => {
+    vi.stubGlobal('fetch', bannerFetch({ status: 'expired' }))
+    render(<Billing />)
+    expect(await screen.findByText(/已到期.*续费到账后立即恢复/s, undefined, { timeout: 4000 })).toBeTruthy()
+  })
+
+  it('剩余不足 7 天展示临期横幅', async () => {
+    const soon = new Date(Date.now() + 3 * 86400000).toISOString()
+    vi.stubGlobal('fetch', bannerFetch({ status: 'active', expired_at: soon }))
+    render(<Billing />)
+    expect(await screen.findByText(/3 天后到期/, undefined, { timeout: 4000 })).toBeTruthy()
+  })
+
+  it('无到期风险但有待支付订单时提示继续支付', async () => {
+    const far = new Date(Date.now() + 300 * 86400000).toISOString()
+    vi.stubGlobal('fetch', bannerFetch({ status: 'active', expired_at: far }, [pendingOrder]))
+    render(<Billing />)
+    expect(await screen.findByText(/1 笔订单待支付/, undefined, { timeout: 4000 })).toBeTruthy()
   })
 })

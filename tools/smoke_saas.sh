@@ -81,6 +81,20 @@ sleep 31
 GUEST2=$(curl -s -o /dev/null -w "%{http_code}" -H "Host: e2e-$TAG.example.com" -X POST $B/api/v1/chat/guest)
 check "恢复后域名访问正常" 200 "$GUEST2"
 
+# 5b. 超管换套餐（商业缺口批 2026-09-16）：席位/客户配额快照同步 + 审计 + 不存在套餐 404
+PLANS=$(curl -s "$B/api/v1/super/plans" -H "Authorization: Bearer $AT")
+PN=$(echo "$PLANS" | python3 -c "import sys,json;print(len(json.load(sys.stdin)['data']['items']))" 2>/dev/null)
+check "套餐列表非空" y "$([ "${PN:-0}" -ge 1 ] && echo y || echo n)"
+PID=$(echo "$PLANS" | python3 -c "import sys,json;xs=[p for p in json.load(sys.stdin)['data']['items'] if p.get('max_users',0)>1];print(xs[0]['id'] if xs else '')" 2>/dev/null)
+PU=$(echo "$PLANS" | python3 -c "import sys,json;xs=[p for p in json.load(sys.stdin)['data']['items'] if p.get('max_users',0)>1];print(xs[0]['max_users'] if xs else 0)" 2>/dev/null)
+PSW=$(curl -s -X PUT "$B/api/v1/super/tenants/$TENANT_ID/plan" -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d "{\"plan_id\":${PID:-0}}")
+check "换套餐返回成功" 0 "$(echo "$PSW" | python3 -c "import sys,json;print(json.load(sys.stdin)['code'])" 2>/dev/null)"
+MU=$(curl -s "$B/api/v1/super/tenants?page_size=100" -H "Authorization: Bearer $AT" \
+  | python3 -c "import sys,json;print([t.get('max_users') for t in json.load(sys.stdin)['data']['list'] if t['code']=='e2e-$TAG'][0])" 2>/dev/null)
+check "席位配额随套餐同步" "$PU" "$MU"
+CODE404=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/tenants/$TENANT_ID/plan" -H "Authorization: Bearer $AT" -H "Content-Type: application/json" -d '{"plan_id":999999}')
+check "不存在套餐拒绝(404)" 404 "$CODE404"
+
 # 6. 恢复现场：邮箱验证/IP限流回默认（与 uat.sh 恢复口径一致）
 curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $AT0" -H "Content-Type: application/json" \
   -d '[{"category":"notify","key":"email_verify_enabled","value":"true"},{"category":"billing","key":"register_ip_daily_limit","value":"3"},{"category":"billing","key":"register_ip_min_interval_sec","value":"60"}]'

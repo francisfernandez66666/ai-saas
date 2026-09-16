@@ -16,6 +16,9 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.GET("/tenants", SuperTenantList)
 		super.PUT("/tenants/:id/status", SuperTenantStatus)
 		super.POST("/tenants/:id/grant-trial", SuperGrantTrial)
+		// 商业缺口批(2026-09-16)：超管一键换套餐（席位/客户/部门配额快照同步），此前只能人肉改库
+		super.GET("/plans", SuperPlans)
+		super.PUT("/tenants/:id/plan", SuperUpdateTenantPlan)
 		// 商业化 M1/M2/M5
 		super.GET("/orders/pending", SuperPendingOrders)
 		super.POST("/orders/:id/confirm", SuperConfirmOrder)

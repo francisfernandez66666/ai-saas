@@ -28,8 +28,8 @@ func TestIsPlatformSuperPathSegmentBoundary(t *testing.T) {
 		{"/api/v1/auth/me", true},
 		{"/api/v1/admin/config", true},
 		{"/api/v1/admin/config?category=billing", true}, // 查询串先剥离再判段
-		{"/api/v1/admin/config/rollback", false},       // 租户覆盖层操作显式排除
-		{"/api/v1/superx/anything", false},             // 撞名前缀必须不豁免
+		{"/api/v1/admin/config/rollback", false},        // 租户覆盖层操作显式排除
+		{"/api/v1/superx/anything", false},              // 撞名前缀必须不豁免
 		{"/api/v1/authorized_keys", false},
 		{"/api/v1/admin/config-backup", false},
 		{"/api/v1/org/departments", false}, // 租户作用域路径照旧要显式租户头

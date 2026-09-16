@@ -12,6 +12,7 @@ import "ai-scrm/internal/metrics"
 import (
 	"ai-scrm/internal/runtimecfg"
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -31,6 +32,15 @@ import (
 // ch：来源通道；in：归一化入站。返回错误仅用于回调侧决定是否重试，业务落库失败已尽量降级。
 // D4 修复(2026-09-14)：以 (channel_id, msg_id) 幂等抢占——微信/企微超时重推不再产生双份 AI 回复。
 // 命名返回值承载 done 回调标记 processed/failed（D2：失败计数支撑游标安全推进）。
+//
+// D5 重构(2026-09-16，AUDIT_DEFECT_VERIFY §7)：通道入站并入 web 同款合并队列。
+// 旧实现每收必生成必回（inbound.go 旧注释自认"通道未接入合并队列"），同一客户在企微/网页双入口
+// 连发消息时网页 25s 窗口合并回一条、微信侧逐条回复——合并语义与延迟节奏分裂（客户可感知）。
+// 新结构：同步段只做"幂等抢占 + 身份/会话 + 客户消息落库 + 人工接管闸"（微信 5s ack 压力大幅缓解），
+// 随后把"入队等待合并 →（处理者）策略/生成/（被合并者）领取批次唯一回复 → 闸门 → 落库 → 出站"
+// 交给 headless worker goroutine，与 web 共用同一批次、同一 epoch fencing、同一 CalcHumanlikeDelay 节奏。
+// 已知保留差异（D5 残项，非本批目标）：通道 worker 不做留资硬拦截/到店快速通道/硬边界第一层
+// ——这些仍属 web handler 内联逻辑，抽取属 §7 计划的后续"chat 管线抽函数"手术。
 func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	// 系统事件（change_contact/add_external_contact 等）→ CDP 摄入，不进对话
 	if in.IsEvent {
@@ -50,8 +60,14 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 		dedupID = in.EnvelopeID
 	}
 	done, skip := claimInbound(ch, dedupID)
-	defer func() { done(err) }()
+	handedOff := false
+	defer func() {
+		if !handedOff { // 未移交 worker：同步段结局直接写台账（processed/failed）
+			done(err)
+		}
+	}()
 	if skip {
+		err = nil
 		return nil // 重放/在途/死信：直接 ack，不再二次处理
 	}
 
@@ -64,7 +80,7 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 		return err
 	}
 
-	// 1. 落客户入站消息
+	// 1. 落客户入站消息（与 web "先落库再入队" 同款纪律：worker 挂窗口期间客户刷新历史不丢这条）
 	inMsg := model.Message{
 		TenantID: ch.TenantID, ConversationID: conv.ID, CustomerID: customerID,
 		SenderType: "customer", Content: in.Content, MessageType: "text",
@@ -76,29 +92,95 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 
 	db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Update("last_message_at", time.Now())
 
-	// D7 修复(2026-09-14)：通道入站与 web 链路对齐"相似消息合并"（同 2-gram 重叠>50% + 同时间窗）——
-	// 旧实现客户连发近似问题在微信侧得到多条重复 AI 回复，web 侧却只回一条，行为分叉。
-	// 通道未接入合并队列（无等待者语义），故只做"抑制重复回复"：消息照常落库（历史可查），跳过本轮生成。
-	if channelSimilarMerged(ch.TenantID, conv.ID, customerID, inMsg.ID, in.Content) {
-		log.Printf("[通道] 客户%d 相似消息抑制重复回复", customerID)
-		return nil
-	}
-
-	// 2. 人工接管态 / AI 关闭：不出声，等顾问手动回复（顾问回复经出站桥回渠道）
+	// 2. 人工接管态 / AI 关闭：不出声，等顾问手动回复（顾问回复经出站桥回渠道）。
+	//    不入队——避免白白占用一个合并窗口把后续真 AI 消息卷进静默批次。
 	if conv.IsHumanLocked || !conv.IsAiReplyEnabled {
 		log.Printf("[通道] 会话%d 人工锁定/AI关闭，AI 不回复", conv.ID)
 		return nil
 	}
 
-	// 3. 策略推理
+	// 3. 移交 headless worker（D5）：入队 → 生成/领取批次回复 → 出站。回调段即刻 ack success。
+	go runInboundWorker(ch, in, customerID, conv, inMsg.ID, done, time.Now())
+	handedOff = true
+	return nil
+}
+
+// runInboundWorker D5 headless 等待者：与 web chat 共用合并队列的通道处理循环。
+// 三种归宿：
+//  1. 简单消息 → 不合并，serial 锁 + 人类化延迟 + 罐头回复（与 web 简单消息分支同款语义）；
+//  2. 被并入在途批次（shouldProcess=false）→ EnqueueAndWait 已挂到批次收账，reply 即全批唯一回复
+//     （处理者可能是 web 请求或另一路通道 worker）；直接出站，不重复落库（DB 双入口共享）；
+//  3. 本 worker 持处理权 → 策略推理 + AI 生成 + 闸门 + 落库 + 人类化延迟 + SetReply(epoch) 唤醒
+//     web 等待者 + 出站投递。任何提前退出路径必须 release()（SetReply 空串）释放批次，防等待者挂死。
+func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, conv *model.Conversation,
+	inMsgID uint, done func(error), workerStart time.Time) {
+
+	tid := ch.TenantID
+	var workErr error
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[通道] 入站 worker panic 已恢复 channel=%d customer=%d: %v", ch.ID, customerID, r)
+			workErr = fmt.Errorf("inbound worker panic: %v", r)
+		}
+		done(workErr) // 台账收尾随 worker——回调 ack 期间状态为 processing，重推被 claim 挡
+	}()
+
+	mergedContent, shouldProcess, reply, mergeWaitDuration, isSimple, mergeCount, epoch :=
+		service.DefaultMessageQueueService.EnqueueAndWait(tid, customerID, in.Content)
+
+	// 分支 1：简单消息快速通道（不合并；与 web chat_main 简单消息分支同款节奏）
+	if isSimple {
+		defer service.DefaultMessageQueueService.SimpleMessageDone(tid, customerID)
+		if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
+			chatflow.CancellableSleep(customerID, service.GetSimpleReplyDelay())
+		}
+		simpleReply := service.GetSimpleReply(in.Content)
+		saveAndDeliver(ch, conv, customerID, simpleReply, "channel_simple")
+		return
+	}
+
+	// 分支 2：被合并进在途批次——本条内容已含在对方批次的合并文本里，只送达不生成。
+	// D5 投递认领：处理者可能已是同通道另一 worker（它投过），也可能是不出站的 web 请求——
+	// "每批每通道恰好一次"交给 ClaimReplyDelivery 原子裁决。
+	if !shouldProcess {
+		if reply == "" {
+			// 处理者走人工/静默路由（如转人工无感知）：通道同样不出声，网页侧自有提示
+			return
+		}
+		if service.DefaultMessageQueueService.ClaimReplyDelivery(tid, customerID, epoch, ch.ID) {
+			// 只投递不落库：回复文本已由批次处理者落 messages（DB 双入口共享，重复落=历史双气泡）
+			deliverText(ch, conv, customerID, reply)
+		}
+		return
+	}
+
+	// 分支 3：本 worker 是处理者。epoch fencing：无论何种退出，批次必须被释放（空回复也要），
+	// 否则 web/通道等待者挂到 processing 锁超时（600s）才自愈。
+	released := false
+	release := func(text string) {
+		if !released {
+			released = true
+			service.DefaultMessageQueueService.SetReply(tid, customerID, epoch, text)
+		}
+	}
+
+	// D7 相似抑制（跨窗口止痛）：仅当本批只有本一条通道消息时才判（mergeCount>1 时批次里可能
+	// 混着 web 消息，抑制会连带吞掉网页等待者的唯一回复——批内重复本就由合并窗口解决）。
+	if mergeCount <= 1 && channelSimilarMerged(tid, conv.ID, customerID, inMsgID, mergedContent) {
+		log.Printf("[通道] 客户%d 相似消息抑制重复回复", customerID)
+		release("")
+		return
+	}
+
 	var cust model.Customer
 	if err := db.DB.First(&cust, customerID).Error; err != nil {
-		return err
+		release("")
+		return
 	}
 	si := strategy.StrategyInput{
 		TVector:        cust.BuildBaseTVector(),
 		State:          conv.GetState(),
-		CustomerInput:  in.Content,
+		CustomerInput:  mergedContent, // D5：推理输入用合并后的批次全文（与 web 同口径）
 		CustomerID:     cust.ID,
 		ConversationID: conv.ID,
 		CanPromote:     cust.CanPromote(),
@@ -107,36 +189,105 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 		DeptIDs:        service.DeptChainForUser(conv.AssignedUserID),
 	}
 	out := strategy.DefaultEngine.Infer(si)
-
-	// 4. 路由：仅 AI 路径生成回复；转人工/接不住→关 AI 等顾问（无感知），不自动发
-	if out.RouteResult != strategy.RouteAI {
-		log.Printf("[通道] 会话%d 路由=%s，非AI直出", conv.ID, out.RouteResult)
-		return nil
+	// D5 路由对齐 web（chat_main 751-820）：旧通道实现非 AI 一律静默，price 询价/human 转人工
+	// 在微信侧与网页侧行为分裂（网页会引导到店/发退场词，通道无声）。合并后统一按 web 口径。
+	routeGo := out.RouteResult == strategy.RouteAI || out.RouteResult == strategy.RoutePrice
+	switch out.RouteResult {
+	case strategy.RouteHuman:
+		// 直接转人工（硬切，有感知）：退场词 + 锁定会话，与 web 同文案同动作
+		exitText := "你好，我现在有点忙，你要不留个信息咱们到店谈，我顺便帮你查一下你的问题"
+		db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
+			"mode": "human", "is_human_locked": true, "is_ai_reply_enabled": false,
+		})
+		release(exitText)
+		saveAndDeliver(ch, conv, customerID, exitText, "channel_human_exit")
+		return
+	case strategy.RouteAI, strategy.RoutePrice:
+		routeGo = true
+	default:
+		log.Printf("[通道] 会话%d 路由=%s，非AI直出（释放批次不出声）", conv.ID, out.RouteResult)
+	}
+	if !routeGo {
+		release("")
+		return
 	}
 
-	// 5. 生成 AI 回复（红线：flow→strategy→llm）
-	reply := flow.DefaultEngine.OrchestrateReply(&cust, conv.ID, in.Content, &out, si.DeptIDs)
-	if reply == "" {
-		return nil
+	// 生成 AI 回复（红线：flow→strategy→llm）
+	aiReply := flow.DefaultEngine.OrchestrateReply(&cust, conv.ID, mergedContent, &out, si.DeptIDs)
+	if aiReply == "" {
+		release("")
+		return
+	}
+	aiReply = gateReply(aiReply, tid, conv.ID)
+
+	// 人类化延迟与 web 同款：合并窗口已消耗的时间计入偏移，总时长 2 分钟硬顶截断
+	humanlikeDelay := service.CalcHumanlikeDelay(tid, aiReply, mergeWaitDuration, mergeCount,
+		service.IsStoreVisitIntentForTenant(tid, mergedContent) && !chatflow.IsLeadCaptured(&cust))
+	elapsed := time.Since(workerStart)
+	if remaining := 120*time.Second - elapsed; humanlikeDelay > remaining {
+		humanlikeDelay = remaining
+	}
+	if humanlikeDelay < 0 {
+		humanlikeDelay = 0
+	}
+	if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
+		chatflow.CancellableSleep(customerID, humanlikeDelay)
 	}
 
-	// 6. 内容安全闸门（C1 同款规则，本地实现避免 channel→api 环）
-	reply = gateReply(reply, ch.TenantID, conv.ID)
+	// D5 认领先于 release：等待者被唤醒后与处理者抢同一 (epoch,channel) 键，
+	// 处理者在批次持有期内先占，等待者（含后续批的）必拿 false——恰好一次投递。
+	claim := service.DefaultMessageQueueService.ClaimReplyDelivery(tid, customerID, epoch, ch.ID)
+	release(aiReply) // 唤醒 web/其它通道等待者（携带本批代际，旧处理者复活不践踏）
+	if claim {
+		deliverAI(ch, conv, customerID, aiReply, &out, si.TVector[0], inMsgID)
+	}
+}
 
-	// 7. 落 AI 消息 + 投递出站
+// deliverText D5 等待者路径专用：批次回复文本已由处理者落 messages（双入口共享历史），本函数只投出站。
+func deliverText(ch *model.Channel, conv *model.Conversation, customerID uint, text string) {
+	if text == "" {
+		return
+	}
+	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err) // 出站队列自带死信/重发
+	}
+}
+
+// saveAndDeliver 通道简单消息快速通道回复：落库（历史双入口共享）+ 出站投递。
+func saveAndDeliver(ch *model.Channel, conv *model.Conversation, customerID uint, text, routeResult string) {
+	if text == "" {
+		return
+	}
 	aiMsg := model.Message{
 		TenantID: ch.TenantID, ConversationID: conv.ID, CustomerID: customerID,
-		SenderType: "ai", Content: reply, MessageType: "text",
+		SenderType: "ai", Content: text, MessageType: "text",
+		RouteResult: routeResult,
+	}
+	if err := db.DB.Create(&aiMsg).Error; err != nil {
+		log.Printf("[通道] 回复落库失败 conv=%d: %v", conv.ID, err)
+	}
+	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err) // 出站队列自带死信/重发
+	}
+}
+
+// deliverAI 通道处理者分支的 AI 回复落库 + D9 包归因（锚/模板/意图前后值与旧逐条实现同口径）+ 出站。
+func deliverAI(ch *model.Channel, conv *model.Conversation, customerID uint, text string,
+	out *strategy.StrategyOutput, intentBefore float64, inMsgID uint) {
+	intentAfter := intentBefore + out.IntentDelta
+	if intentAfter < 0 {
+		intentAfter = 0
+	}
+	if intentAfter > 1 {
+		intentAfter = 1
+	}
+	aiMsg := model.Message{
+		TenantID: ch.TenantID, ConversationID: conv.ID, CustomerID: customerID,
+		SenderType: "ai", Content: text, MessageType: "text",
 		AnchorType: out.FinalAnchor, TemplateID: out.TemplateID, RouteResult: "channel_ai",
 	}
-	db.DB.Create(&aiMsg)
-	// D9：渠道 AI 回复落包/模板归因。
-	channelIntentAfter := si.TVector[0] + out.IntentDelta
-	if channelIntentAfter < 0 {
-		channelIntentAfter = 0
-	}
-	if channelIntentAfter > 1 {
-		channelIntentAfter = 1
+	if err := db.DB.Create(&aiMsg).Error; err != nil {
+		log.Printf("[通道] AI 回复落库失败 conv=%d: %v", conv.ID, err)
 	}
 	_ = attribution.RecordReply(attribution.RecordReplyInput{
 		TenantID:       ch.TenantID,
@@ -146,11 +297,12 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 		TemplateID:     out.TemplateID,
 		AnchorType:     out.FinalAnchor,
 		RouteResult:    "channel_ai",
-		IntentBefore:   si.TVector[0],
-		IntentAfter:    channelIntentAfter,
+		IntentBefore:   intentBefore,
+		IntentAfter:    intentAfter,
 	})
-
-	return Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, reply, "text")
+	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err)
+	}
 }
 
 // ensureConversation 取该客户在渠道下的活跃会话，无则新建（Channel 标渠道类型，SessionID=externalID）。

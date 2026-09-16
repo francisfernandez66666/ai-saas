@@ -1017,6 +1017,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/super/plans",
+      "group": "super",
+      "handler": "SuperPlans",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/super/tenants",
       "group": "super",
       "handler": "SuperTenantList",
@@ -2333,6 +2343,16 @@
       "path": "/api/v1/super/tenants/:id/branding",
       "group": "super",
       "handler": "SuperUpdateBranding",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/tenants/:id/plan",
+      "group": "super",
+      "handler": "SuperUpdateTenantPlan",
       "auth": [
         "jwt",
         "super_admin"

@@ -20,16 +20,16 @@ func TestValidateCallbackURLDebugAllowsLoopback(t *testing.T) {
 func TestValidateCallbackURLReleaseBlocksInternal(t *testing.T) {
 	t.Setenv("GIN_MODE", "release")
 	blocked := []string{
-		"http://127.0.0.1:9/webhook",    // 环回
-		"http://localhost/hook",         // 环回域名（解析到 127.x）
+		"http://127.0.0.1:9/webhook",               // 环回
+		"http://localhost/hook",                    // 环回域名（解析到 127.x）
 		"http://169.254.169.254/latest/meta-data/", // 云厂商凭证靶点
-		"http://10.1.2.3/internal",      // 私网段
-		"http://192.168.0.1/admin",      // 私网段
-		"http://[::1]/x",                // IPv6 环回
-		"http://0.0.0.0/x",              // 未指定地址
-		"ftp://example.com/wh",          // 非法 scheme
-		"://bad",                        // 解析失败
-		"https:///nohost",               // 缺主机名
+		"http://10.1.2.3/internal",                 // 私网段
+		"http://192.168.0.1/admin",                 // 私网段
+		"http://[::1]/x",                           // IPv6 环回
+		"http://0.0.0.0/x",                         // 未指定地址
+		"ftp://example.com/wh",                     // 非法 scheme
+		"://bad",                                   // 解析失败
+		"https:///nohost",                          // 缺主机名
 	}
 	for _, u := range blocked {
 		if err := ValidateCallbackURL(u); err == nil {

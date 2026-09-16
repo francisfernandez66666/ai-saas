@@ -55,6 +55,9 @@ func SuperTenantList(c *gin.Context) {
 		PlanName      *string `json:"plan_name"`      // 套餐名称
 		UsedCustomers int     `json:"used_customers"` // 已用客户数
 		MaxCustomers  int     `json:"max_customers"`  // 客户数上限
+		MaxUsers      int     `json:"max_users"`      // 席位上限（换套餐弹窗展示，2026-09-16 商业缺口批）
+		UsedUsers     int     `json:"used_users"`     // 已用席位（启用成员数）
+		PlanID        uint    `json:"plan_id"`        // 当前套餐ID
 		CreatedAt     string  `json:"created_at"`     // 创建时间
 	}
 	// P2-29 修复(2026-09-09)：原 Limit(500) 拖全表分页缺失；改分页+总数
@@ -69,7 +72,8 @@ func SuperTenantList(c *gin.Context) {
 	err := db.DB.Table("tenants t").
 		Select(`t.id, t.name, t.code, t.tier, t.status,
 			COALESCE(p.name,'') as plan_name,
-			t.used_customers, t.max_customers,
+			t.used_customers, t.max_customers, t.plan_id, t.max_users,
+			(SELECT count(*) FROM tenant_users u WHERE u.tenant_id = t.id AND u.status = 1) as used_users,
 			TO_CHAR(t.created_at,'YYYY-MM-DD') as created_at`).
 		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id").
 		// 2026-09-11：改 id DESC——前端无翻页 UI（一次拉 page_size 上限），

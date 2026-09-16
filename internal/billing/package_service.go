@@ -197,6 +197,9 @@ func ExpireCheck() int {
 
 	// 1. 过期摘除：expired_at 已过且仍是 active → expired
 	// （TenantResolver 对 expired 租户写操作返回402，读放行=宽限期语义）
+	// 商业缺口批（2026-09-16）：先查名单再摘除，被摘租户逐户直达管理员邮箱（此前只改库无任何触达）
+	var lapsed []model.Tenant
+	db.DB.Where("status = 'active' AND expired_at IS NOT NULL AND expired_at < NOW()").Find(&lapsed)
 	res := db.DB.Model(&model.Tenant{}).
 		Where("status = 'active' AND expired_at IS NOT NULL AND expired_at < NOW()").
 		Update("status", "expired")
@@ -205,6 +208,10 @@ func ExpireCheck() int {
 	} else if res.RowsAffected > 0 {
 		affected += int(res.RowsAffected)
 		log.Printf("[Package] 到期摘除：%d 个租户 active→expired", res.RowsAffected)
+		for _, t := range lapsed {
+			days := int(time.Until(*t.ExpiredAt).Hours() / 24) // 负数=已过期天数，邮件按"已到期"口径
+			notify.TenantExpiringEmail(t.ID, t.Name, t.Code, *t.ExpiredAt, days)
+		}
 	}
 
 	// 2. 到期提醒分档（M4，借鉴翻译助手三期§3.2）：7天档+3天档各自当日去重，
@@ -233,6 +240,8 @@ func ExpireCheck() int {
 			}
 			notify.NotifyGroup(fmt.Sprintf("【到期提醒】租户「%s」(%s) 将于 %s 到期（剩%d天），请联系续费",
 				t.Name, t.Code, t.ExpiredAt.Format("2006-01-02"), daysLeft))
+			// 商业缺口批（2026-09-16）：续费不能只靠销售人肉盯群——同档同去重窗口直达租户管理员邮箱
+			notify.TenantExpiringEmail(t.ID, t.Name, t.Code, *t.ExpiredAt, daysLeft)
 			db.DB.Create(&model.TenantAuditLog{
 				TenantID: t.ID, Action: b.action, Resource: fmt.Sprintf("tenant:%d", t.ID),
 				Detail: fmt.Sprintf(`{"expired_at":"%s","days_left":%d}`, t.ExpiredAt.Format(time.RFC3339), daysLeft),

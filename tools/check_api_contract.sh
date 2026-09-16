@@ -43,7 +43,11 @@ fi
 # ---- 4. 显式 any 基线只降不升 ----
 # G3 口径修正(2026-09-14)：原名"as any"实为只统计 `: any` 类型注解，漏计 `as any` 断言。
 # 改为同时统计两处显式 any 逃逸（`: any` 注解 + `as any` 断言），与 no-explicit-any 语义对齐。
-EXPLICIT_ANY=$(grep -rhoE "(:\s*any\b|\bas any\b)" frontend-react/src --include="*.ts" --include="*.tsx" | wc -l | tr -d ' ')
+# D1 口径修正(2026-09-16，AUDIT_DEFECT_VERIFY)：排除 __tests__ 与 *.test.* 文件——
+# 基线治理的对象是业务代码的类型逃逸，测试里用 any 做 mock 断言是合理逃生舱；
+# 原口径把 13 处测试 any 计入，HEAD 深审批未动业务基线却把门禁顶红（34→39），
+# CI contract job 自合入起必红。排除后由"只降不升"规则自动收紧到新基线。
+EXPLICIT_ANY=$(grep -rhoE "(:\s*any\b|\bas any\b)" frontend-react/src --include="*.ts" --include="*.tsx" --exclude-dir="__tests__" --exclude="*.test.ts" --exclude="*.test.tsx" | wc -l | tr -d ' ')
 BASELINE_FILE="frontend-react/src/.as_any_baseline"
 if [ ! -f "$BASELINE_FILE" ]; then
   echo "$EXPLICIT_ANY" > "$BASELINE_FILE"

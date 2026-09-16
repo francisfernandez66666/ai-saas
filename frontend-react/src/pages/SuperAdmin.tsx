@@ -17,7 +17,9 @@ const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功�
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
 
 // 租户摘要行（超管租户列表）
-type Tenant = { id: number; name: string; code: string; plan_name?: string; used_customers: number; max_customers?: number; status: string; created_at: string }
+type Tenant = { id: number; name: string; code: string; plan_name?: string; used_customers: number; max_customers?: number; status: string; created_at: string; max_users?: number; used_users?: number; plan_id?: number }
+// 换套餐下拉数据源（GET /super/plans，商业缺口批 2026-09-16）
+type PlanOpt = { id: number; name: string; tier?: string; max_users: number; max_customers: number; price_monthly_cents: number }
 // AI 商业包模型（后台包管理）
 type Pkg = { id: number; code: string; name: string; p_type: string; ai_calls: number; price_cents: number; duration_days?: number; enabled: boolean }
 // 模型成本核算汇总（近 N 天）
@@ -161,6 +163,21 @@ export default function SuperAdmin() {
     await AUTH(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', body: { status: st } })
     load()
   }
+  // 换套餐弹窗（商业缺口批 2026-09-16）：席位/客户/部门/AI 配额随套餐快照同步
+  const [planDlg, setPlanDlg] = useState<Tenant | null>(null)
+  const [planOpts, setPlanOpts] = useState<PlanOpt[]>([])
+  async function openPlan(t: Tenant) {
+    const j = await AUTH('/api/v1/super/plans')
+    setPlanOpts((j?.data && j.data.items) || [])
+    setPlanDlg(t)
+  }
+  async function doChangePlan() {
+    const el = document.getElementById('spPlan') as HTMLSelectElement | null
+    if (!planDlg || !el || !el.value) return
+    const j = await AUTH(`/api/v1/super/tenants/${planDlg.id}/plan`, { method: 'PUT', body: { plan_id: parseInt(el.value) || 0 } })
+    MessagePlugin[j?.code === 0 ? 'success' : 'error'](j?.message || (j?.code === 0 ? '套餐已更新' : '操作失败'))
+    if (j?.code === 0) { setPlanDlg(null); load() }
+  }
   // 上架/下架商业包
   async function togglePkg(id: number, enabled: boolean) {
     const j = await AUTH(`/api/v1/super/packages/${id}`, { method: 'PUT', body: { enabled } }); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败'); loadPkgs()
@@ -198,14 +215,16 @@ export default function SuperAdmin() {
     { colKey: 'code', title: '标识', width: 120 },
     { colKey: 'plan_name', title: '套餐', width: 100, cell: (p: CellProps) => p.row.plan_name || '-' },
     { colKey: 'used', title: '客户用量', width: 100, cell: (p: CellProps) => `${p.row.used_customers}/${p.row.max_customers || '∞'}` },
+    { colKey: 'seats', title: '席位', width: 80, cell: (p: CellProps) => `${p.row.used_users ?? 0}/${p.row.max_users || '∞'}` },
     { colKey: 'status', title: '状态', width: 90, cell: (p: CellProps) => <Tag theme={p.row.status === 'suspended' ? 'danger' : 'success'}>{p.row.status}</Tag> },
     { colKey: 'created_at', title: '开通日期', width: 120 },
-    { colKey: 'op', title: '操作', width: 190, cell: (p: CellProps) => (
+    { colKey: 'op', title: '操作', width: 260, cell: (p: CellProps) => (
       <div style={{ display: 'flex', gap: 6 }}>
         {p.row.status === 'suspended'
           ? <Button size="small" theme="success" onClick={() => setStatus(p.row.id, 'active')}>恢复</Button>
           : <Button size="small" theme="danger" variant="outline" onClick={() => setStatus(p.row.id, 'suspended')}>停用</Button>}
         <Button size="small" variant="outline" onClick={() => grantTrial(p.row.id)}>发试用</Button>
+        <Button size="small" variant="outline" onClick={() => openPlan(p.row as Tenant)}>换套餐</Button>
       </div>
     ) },
   ]
@@ -290,6 +309,26 @@ export default function SuperAdmin() {
                   <Input value={kw} onChange={(v) => setKw(v)} placeholder="按名称/标识搜索" style={{ maxWidth: 280 }} />
                 </div>
                 <div className="bg-white rounded-lg shadow-sm overflow-hidden"><Table rowKey="id" data={filtered} columns={tenantCols} size="small" /></div>
+                {/* 换套餐弹窗：下拉展示席位/客户/月价，确认后配额快照同步并刷新列表 */}
+                <Dialog
+                  visible={!!planDlg}
+                  header={planDlg ? `换套餐 · ${planDlg.name}` : '换套餐'}
+                  onClose={() => setPlanDlg(null)}
+                  onConfirm={doChangePlan}
+                  confirmBtn="确认变更"
+                  width={420}
+                >
+                  <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>
+                    当前套餐：{planDlg?.plan_name || '-'}（席位 {planDlg?.used_users ?? 0}/{planDlg?.max_users || '∞'}）。降级不删除存量用户/客户，新增按新配额拦截。
+                  </div>
+                  <select id="spPlan" defaultValue={String(planDlg?.plan_id || '')} style={{ width: '100%', padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }}>
+                    {planOpts.map((p) => (
+                      <option key={p.id} value={String(p.id)}>
+                        {p.name} · 席位{p.max_users || '∞'} · 客户{p.max_customers || '∞'} · ¥{(p.price_monthly_cents / 100).toFixed(0)}/月
+                      </option>
+                    ))}
+                  </select>
+                </Dialog>
               </>
             )}
             {view === 'packages' && (

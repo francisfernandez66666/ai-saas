@@ -60,6 +60,7 @@ func detectPhone(input string) string {
 // OpenAPIChatCompletions POST /openapi/v1/chat/completions
 // OpenAPIChatCompletions 通过 API Key 发起对话。
 func OpenAPIChatCompletions(c *gin.Context) {
+	extendWriteDeadlineForAI(c) // D4：OpenAPI 对话同步等 AI 链，延长本连接写截止（调用方 http 超时自管）
 	tenantID := middleware.EffectiveTenantID(c)
 	trace := middleware.GetTraceID(c) // P1-3：全链路 trace
 

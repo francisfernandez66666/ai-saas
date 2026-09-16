@@ -169,6 +169,28 @@ export default function Billing() {
         <div><span style={{ fontSize: 12, color: '#718096' }}>{payMode === 'static_qr' ? '收款方式：扫码转账+平台人工确认' : payMode === 'sdk' ? '收款方式：在线支付' : '测试环境：支持模拟支付'}</span>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
       </div>
 
+      {/* 续费触达 banner（商业缺口批 2026-09-16）：到期/临期/待支付订单三态，此前租户侧对到期零感知 */}
+      {quota && (() => {
+        const days = quota.expired_at ? Math.ceil((new Date(quota.expired_at).getTime() - Date.now()) / 86400000) : NaN
+        const pending = isAdmin ? orders.filter((o) => o.status === 'pending').length : 0
+        let banner: { bg: string; bd: string; tx: string } | null = null
+        if (quota.status === 'expired') {
+          banner = { bg: '#fff5f5', bd: '#feb2b2', tx: '企业空间已到期，AI 会话与新登录已暂停，数据保留——续费到账后立即恢复。' }
+        } else if (quota.status === 'trial' && !isNaN(days) && days <= 7) {
+          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: `试用将于 ${days} 天后到期，到期后需订阅商业包继续使用。` }
+        } else if (!isNaN(days) && days <= 7 && days >= 0) {
+          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: `套餐将于 ${days} 天后到期，请及时续费以免影响使用。` }
+        }
+        if (!banner && pending > 0) banner = { bg: '#ebf8ff', bd: '#90cdf4', tx: `您有 ${pending} 笔订单待支付，在下方订单区点击"继续支付"完成。` }
+        if (!banner) return null
+        return (
+          <div style={{ background: banner.bg, border: `1px solid ${banner.bd}`, borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#2d3748' }}>
+            {banner.tx}
+            {quota.status === 'expired' && !isAdmin && <span style={{ color: '#718096' }}>（请联系管理员处理）</span>}
+          </div>
+        )
+      })()}
+
       {/* 当前套餐用量展示区 */}
       <div style={{ background: '#fff', borderRadius: 12, padding: '16px 22px', boxShadow: '0 3px 14px rgba(0,0,0,.06)', display: 'flex', gap: 34, flexWrap: 'wrap', marginBottom: 26 }}>
         {!quota && <span style={{ color: '#718096' }}>加载中...</span>}

@@ -14,9 +14,8 @@ export default defineConfig({
     // 放宽到 20s，消除负载抖动导致的假失败，不改变用例逻辑。
     testTimeout: 20000,
     hookTimeout: 20000,
-    // UATFOLLOWUP F4 修复(2026-09-15)：冷启动（transform/import 峰值 35s+87s）下
-    // testing-library 的 findBy*/waitFor 默认 1s 异步等待也会超时，首跑 flaky。
-    // asyncUtilTimeout 放宽到 8s，只影响异步查询等待上限，不改用例逻辑。
-    asyncUtilTimeout: 8000,
+    // D2 修复(2026-09-16)：删除 asyncUtilTimeout——它不是 vitest 的配置键（原 F4 修复无效，
+    // 该键被 vitest 静默忽略）。testing-library 异步等待上限改在 src/test/setup.ts 里
+    // 用 configure({ asyncUtilTimeout: 8000 }) 真正设置。
   },
 })

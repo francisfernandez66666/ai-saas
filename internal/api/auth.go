@@ -225,12 +225,28 @@ func GetCurrentUser(c *gin.Context) {
 	}
 	db.DB.Model(&model.User{}).Select("COALESCE(must_change_password,false) AS must_change_password, COALESCE(email,'') AS email").
 		Where("id = ?", userID).Scan(&row)
-	RespOK(c, "", gin.H{
+	// 商业缺口批（2026-09-16）：回显租户到期概览，收银台/控制台据此挂续费 banner
+	// （原到期提醒只进平台群，租户侧无感知；响应加字段属向后兼容扩展，契约路由层零漂移）
+	data := gin.H{
 		"id":                   userID,
 		"username":             username,
 		"role":                 role,
 		"tenant_id":            tenantID,
 		"email":                row.Email,
 		"must_change_password": row.MustChangePassword,
-	})
+	}
+	if tenantID > 0 {
+		var t struct {
+			Status    string
+			ExpiredAt *time.Time
+		}
+		db.DB.Model(&model.Tenant{}).Select("status, expired_at").Where("id = ?", tenantID).Scan(&t)
+		if t.Status != "" {
+			data["tenant_status"] = t.Status
+			if t.ExpiredAt != nil {
+				data["tenant_expired_at"] = t.ExpiredAt.Format(time.RFC3339)
+			}
+		}
+	}
+	RespOK(c, "", data)
 }

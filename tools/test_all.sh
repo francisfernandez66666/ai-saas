@@ -93,6 +93,10 @@ fi
 if grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
   echo "  FAIL  G-6: gorm:query_option 废弃 API 残留"; grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
 fi
+# 4. D6 盖章护栏（2026-09-16）：db.DB.Create/Save 写租户表必须显式 TenantID——
+#    C7 事故形态（无 ctx 盖章落 0）历史上命中两次（C7、P1-5），接入即第三次被抓现行
+#    （message_queue.go WriteDegradedNotice，已修）。精准模式检测，见脚本头注释。
+python3 tools/check_tenant_stamp.py; verdict "D6 盖章护栏（db.DB 写租户表漏章检测）" $?
 verdict "G-6 防回潮断言" $G6_FAIL
 
 # ---------- 阶段一：单元测试层 ----------
@@ -153,7 +157,7 @@ for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$P
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（86 项）"
+step "E2E 层：smoke.sh（92 项）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 17 项）"
@@ -174,8 +178,19 @@ step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放 14 项，C6 资�
 step "E2E 层：smoke_channel.sh（企微/公众号通道 E2E 32 项，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
+step "E2E 层：playwright 真浏览器 E2E（10 项，D3 修复：孤儿套件接门禁）"
+# 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。
+# 无 chromium 缓存时 SKIP（不 FAIL——离线机器不该被下载卡死），CI e2e job 已显式安装。
+case "$(uname)" in Darwin) PW_CACHE="$HOME/Library/Caches/ms-playwright";; *) PW_CACHE="$HOME/.cache/ms-playwright";; esac
+if ls "$PW_CACHE" >/dev/null 2>&1 && ls "$PW_CACHE" | grep -q '^chromium'; then
+  (cd frontend-react && npx playwright test --reporter=line) >/tmp/test_all_pw.log 2>&1
+  verdict "playwright 浏览器 E2E" $?; tail -3 /tmp/test_all_pw.log
+else
+  echo "  SKIP  chromium 未安装（安装：cd frontend-react && npx playwright install chromium）"
+fi
+
 if [ "$MODE" != "fast" ]; then
-  step "E2E 层：uat.sh（67 断言全场景，较长）"
+  step "E2E 层：uat.sh（76 断言全场景，较长）"
   # uat 含真实 AI 调用与长时间等待，默认纳入 full 模式；CI 建议 --fast
   ./tools/uat.sh "$PORT" >/tmp/test_all_uat.log 2>&1; verdict "uat.sh" $?; tail -3 /tmp/test_all_uat.log
 else

@@ -80,8 +80,8 @@ type takeoverRequest struct {
 // F10 手工建的客户/新客没有会话，前端 convId 恒 null → 固定 400，"顾问主动触达
 // 新客户"整条链路断。缺会话时后端按 customer_id 找/建活跃会话（人工模式）。
 type advisorSendMsgRequest struct {
-	ConversationID uint   `json:"conversation_id"` // 会话ID（新客可为0，回落 customer_id）
-	CustomerID     uint   `json:"customer_id"`     // 客户ID（conversation_id 为 0 时必填）
+	ConversationID uint   `json:"conversation_id"`                     // 会话ID（新客可为0，回落 customer_id）
+	CustomerID     uint   `json:"customer_id"`                         // 客户ID（conversation_id 为 0 时必填）
 	Content        string `json:"content" binding:"required,max=4000"` // 消息内容（P2：长度上限同 ChatRequest）
 }
 
@@ -1237,6 +1237,7 @@ func AdvisorSendMessage(c *gin.Context) {
 // ============================================================
 // AdvisorTriggerAIReply 手动触发一次 AI 回复建议。
 func AdvisorTriggerAIReply(c *gin.Context) {
+	extendWriteDeadlineForAI(c) // D4：同步 OrchestrateReply 最坏可达 AI 链总预算 110s，延长本连接写截止
 	var req struct {
 		ConversationID uint   `json:"conversation_id" binding:"required"`
 		Content        string `json:"content"` // 可选：指定AI根据什么内容回复，为空则取最近客户消息

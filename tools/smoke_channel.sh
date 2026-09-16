@@ -17,8 +17,8 @@ MPORT="${MOCKWX_PORT:-9099}"
 B="http://localhost:${CPORT}"
 MOCK="http://127.0.0.1:${MPORT}"
 OUTBOX="$(mktemp /tmp/mockwx_out.XXXXXX.jsonl)"
-SLOG="$(mktemp /tmp/chan_server.XXXXXX.log)"
-MLOG="$(mktemp /tmp/mockwx.XXXXXX.log)"
+SLOG="/tmp/smoke_channel_server.log"   # 固定路径：跑完保留，失败可事后排查（原 mktemp 被 cleanup 删除）
+MLOG="/tmp/smoke_channel_mockwx.log"
 
 PASS=0; FAIL=0
 check() { if [ "$2" = "$3" ]; then echo "  PASS  $1 ($3)"; PASS=$((PASS+1)); else echo "  FAIL  $1 期望=$2 实际=$3"; FAIL=$((FAIL+1)); fi; }
@@ -35,9 +35,17 @@ cleanup() {
                     DELETE FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke');
                     DELETE FROM customers WHERE source LIKE 'channel:%' AND source IN (SELECT 'channel:'||id FROM channels WHERE corpid='ww_chan_smoke');
                     DELETE FROM channels WHERE corpid='ww_chan_smoke';" >/dev/null 2>&1
-  rm -f "$OUTBOX" "$SLOG" "$MLOG"
+  rm -f "$OUTBOX" # 日志保留（固定路径），排查用
+  # D5(2026-09-16)：恢复测试租户合并窗口（本脚本为其临时降窗）
+  psql "$DBURL" -c "DELETE FROM system_configs WHERE tenant_id=1 AND key='merge_window_seconds';" >/dev/null 2>&1
 }
 trap cleanup EXIT
+
+# D5(2026-09-16)：通道入站并入合并队列后，入站首条要等合并窗口收批——为租户 1 临时降窗到 3s
+# （起服务前写入，加载器随启动读取），保持本套件既有轮询时限语义；结束 cleanup 删除恢复默认。
+psql "$DBURL" -c "INSERT INTO system_configs (tenant_id,category,key,value,value_type,description,default_value,sort_order)
+  VALUES (1,'reply_speed','merge_window_seconds','3','number','smoke_channel D5: 降窗保时限','25',0)
+  ON CONFLICT (tenant_id,key) DO UPDATE SET value='3';" >/dev/null 2>&1
 
 echo "==== 通道端到端冒烟 @ $B (mock wx @ $MOCK) ===="
 
@@ -142,6 +150,41 @@ AIMSGS=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identi
 check "AI 回复已落库" y "$([ "${AIMSGS:-0}" -ge 1 ] && echo y || echo n)"
 OB=$(psql "$DBURL" -tAc "SELECT status FROM channel_outbound WHERE channel_id=$CID ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
 check "出站行置 sent" "sent" "$OB"
+
+# ---- 四b、D5 合并队列并入断言：连发 3 条只回 1 条（与网页端同语义）----
+echo "---- 四b、通道连发合并只回一条（D5） ----"
+send_cb() { # $1=urlencode content
+  local GC BODY SIG TS NC
+  GC=$(curl -s "$MOCK/__gen_callback?token=tk_smoke_001&aeskey=jWmYm7qr5nMoAUwZRjGtBxmz3KA1tkAj3ykkR6q2B2C&corpid=ww_chan_smoke&content=$1&from=wm_smoke_user_1")
+  BODY=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['body'])" 2>/dev/null)
+  SIG=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['msg_signature'])" 2>/dev/null)
+  TS=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])" 2>/dev/null)
+  NC=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['nonce'])" 2>/dev/null)
+  printf '%s' "$BODY" > "$BF"
+  curl -s -o /dev/null -X POST "$B/api/v1/channel/callback/$CID?msg_signature=$SIG&timestamp=$TS&nonce=$NC" \
+    -H "Content-Type: application/xml" --data-binary "@$BF"
+}
+OB_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+AI_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+send_cb "%E8%BF%99%E8%BD%A6%E6%94%AF%E6%8C%81%E5%BF%AB%E5%85%85%E5%90%97"   # 这车支持快充吗
+send_cb "%E5%90%8E%E5%A4%87%E7%AE%B1%E5%A4%9A%E5%A4%A7"                    # 后备箱多大
+send_cb "%E6%9C%89%E5%BA%A7%E6%A4%85%E5%8A%A0%E7%83%AD%E5%90%97"          # 有座椅加热吗
+got=0
+for i in $(seq 1 25); do
+  OB_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+  [ "${OB_NOW:-0}" -gt "${OB_BASE:-0}" ] && { got=1; break; }
+  sleep 1
+done
+check "连发3条窗口内收到回复" y "$([ "$got" = 1 ] && echo y || echo n)"
+sleep 4 # 让潜在的"逐条回复"尾巴露出来（合并失效时应见 3 条）
+OB_DELTA=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+OB_DELTA=$((OB_DELTA - OB_BASE))
+AI_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+AI_DELTA=$((AI_NOW - AI_BASE))
+check "连发3条恰好只投1条出站" 1 "$([ "$got" = 1 ] && echo "$OB_DELTA" || echo 0)"
+check "连发3条恰好只落1条AI消息" 1 "$([ "$got" = 1 ] && echo "$AI_DELTA" || echo 0)"
+CUST_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
+check "3条客户消息全部落库(历史不丢)" y "$([ "${CUST_NOW:-0}" -ge 4 ] && echo y || echo n)"
 
 # ---- 五、人工锁定：AI 不出声（转人工无感知）----
 echo "---- 五、人工锁定态不自动回复 ----"
