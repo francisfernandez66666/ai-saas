@@ -125,6 +125,25 @@ if [ -n "$ST" ]; then
   fi
 fi
 
+# ---- 8.9 空 VK 通道客户护栏（审计批一 P1-1，2026-09-19）----
+# 背景：channel/identity.go 通道建档客户不带 visitor_key；旧闸 `VisitorKey != "" &&`
+# 前置短路令空 VK 客户对匿名请求完全不设防（任何人可清延迟/锁死人工接管）。
+# 现口径：CheckVisitorKey 空串=拒一切匿名，登录态放行。合成一条空 VK 客户走四路矩阵。
+CID_NVK=$($PSQL "INSERT INTO customers (tenant_id,name,source,status,created_at,updated_at) VALUES (1,'护栏空VK通道客','channel:9',1,now(),now()) RETURNING id" | head -1 | tr -d '[:space:]')
+if [ -n "$CID_NVK" ]; then
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay" -H "Content-Type: application/json" -d "{\"customer_id\":$CID_NVK}")
+  check "空VK客户匿名clear-delay→403(P1-1护栏)" 403 "$CODE"
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/request-human" -H "Content-Type: application/json" -d "{\"customer_id\":$CID_NVK}")
+  check "空VK客户匿名request-human→403(P1-1护栏)" 403 "$CODE"
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay" -H "Authorization: Bearer $ST" -H "Content-Type: application/json" -d "{\"customer_id\":$CID_NVK}")
+  check "空VK客户登录态clear-delay→200" 200 "$CODE"
+  # 登录态 request-human→403：该端点设计上 C 端专用（公开组不挂 OptionalJWTAuth，Bearer 不解析），
+  # 员工转人走 /chat/transfer/human；空 VK 客户据此对登录态同样关死（口径与 clear-delay 有意不同）
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/request-human" -H "Authorization: Bearer $ST" -H "Content-Type: application/json" -d "{\"customer_id\":$CID_NVK}")
+  check "空VK客户登录态request-human→403(C端专用口径)" 403 "$CODE"
+  $PSQL "DELETE FROM customers WHERE id=$CID_NVK" >/dev/null 2>&1
+fi
+
 # ---- 9. 清理：停用测试客户（数据保留供核查，对齐惯例）----
 $PSQL "UPDATE customers SET status=0 WHERE id IN ($CID_A,$CID_B)" >/dev/null 2>&1
 

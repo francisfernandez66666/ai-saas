@@ -447,7 +447,7 @@ export default function Advisor() {
 
       {/* G-20：底部导航栏 aria-label 标注导航用途，aria-current 标记当前激活页签 */}
       <nav aria-label="顾问工作台导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
-        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); (detailIdRef.current = null, setDetailId(null)) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
+        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); detailIdRef.current = null; setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
       </nav>
 
       <Dialog header="编辑客户资料" visible={editOpen} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} confirmBtn="保存">

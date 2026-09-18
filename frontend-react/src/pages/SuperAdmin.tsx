@@ -148,6 +148,12 @@ export default function SuperAdmin() {
   useEffect(() => { loadAgreements() }, [agType])
   useEffect(() => { loadPackQuality() }, [packQualityDays])
 
+  // P2-5 修复(2026-09-19 审计批一)：换套餐弹窗两枚 state 由此前放在角色 early-return
+  // 之后（rules-of-hooks：Hook 不得条件调用）上移至全部 hook 区——非超管渲染 null 时
+  // hooks 仍按固定顺序执行，行为不变。
+  const [planDlg, setPlanDlg] = useState<Tenant | null>(null)
+  const [planOpts, setPlanOpts] = useState<PlanOpt[]>([])
+
   if (localStorage.getItem('role') !== 'super_admin') return null
 
   // 按关键字过滤租户（名称或标识模糊匹配）
@@ -168,8 +174,7 @@ export default function SuperAdmin() {
     load()
   }
   // 换套餐弹窗（商业缺口批 2026-09-16）：席位/客户/部门/AI 配额随套餐快照同步
-  const [planDlg, setPlanDlg] = useState<Tenant | null>(null)
-  const [planOpts, setPlanOpts] = useState<PlanOpt[]>([])
+  // （planDlg/planOpts 两枚 state 已上移至 hook 区，P2-5 修复）
   async function openPlan(t: Tenant) {
     const j = await AUTH('/api/v1/super/plans')
     setPlanOpts((j?.data && j.data.items) || [])

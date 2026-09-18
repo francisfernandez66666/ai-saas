@@ -72,11 +72,18 @@ func registerTenantAuthenticated(v1 *gin.RouterGroup) {
 		strategyGroup.POST("/test", StrategyTest)
 		strategyGroup.GET("/templates", GetTemplateList)
 		strategyGroup.GET("/templates/:id", GetTemplate)
-		strategyGroup.POST("/templates", CreateTemplate)
-		strategyGroup.PUT("/templates/:id", UpdateTemplate)
-		strategyGroup.DELETE("/templates/:id", DeleteTemplate)
 		strategyGroup.GET("/features", GetFeatureList)
 		strategyGroup.GET("/stats/anchors", GetAnchorStats)
+		// P1-2 修复(2026-09-19 审计批一)：模板写三路由此前对全部登录角色（sales/readonly）
+		// 开放且保存即 ReloadData 热生效——低权限可改写全租户 AI 话术。
+		// 收进 AdminRequired 子组（对照同函数 billingAdmin 范式）；GET 读面全员保持（顾问端要读模板）。
+		strategyAdmin := strategyGroup.Group("")
+		strategyAdmin.Use(middleware.AdminRequired())
+		{
+			strategyAdmin.POST("/templates", CreateTemplate)
+			strategyAdmin.PUT("/templates/:id", UpdateTemplate)
+			strategyAdmin.DELETE("/templates/:id", DeleteTemplate)
+		}
 	}
 
 	// 流程引擎

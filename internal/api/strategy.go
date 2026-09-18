@@ -117,8 +117,21 @@ func CreateTemplate(c *gin.Context) {
 		template.RequiredFeatures = toJSON(req.RequiredFeatures)
 	}
 
+	// P1-2 附带(2026-09-19 审计批一)：字符串主键允许客户端语义命名（设计使然），
+	// 但撞键此前直出 500——预检 + 23505 兜底统一 409（跨租户撞键同样拒，不透露归属）
+	var dup int64
+	db.DB.Model(&model.Template{}).Where("id = ?", template.ID).Count(&dup)
+	if dup > 0 {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "模板 ID 已存在，请换一个命名")
+		return
+	}
+
 	result := db.RQ(c).Create(template)
 	if result.Error != nil {
+		if strings.Contains(result.Error.Error(), "23505") {
+			RespErr(c, http.StatusConflict, int(CodeBizErr), "模板 ID 已存在，请换一个命名")
+			return
+		}
 		RespErr(c, http.StatusInternalServerError, 500, "创建失败")
 		return
 	}

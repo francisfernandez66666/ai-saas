@@ -292,7 +292,10 @@ func ClearDelay(c *gin.Context) {
 		return
 	}
 	// 2. 身份防线：真实访客客户必须带一致 visitor_key（或登录态）
-	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+	// P1-1 修复(2026-09-19 审计批一)：旧写法 `customer.VisitorKey != "" &&` 前置短路令空 VK
+	// 客户（微信通道建档客户全部无 VK，channel/identity.go）对匿名请求完全不设防——
+	// 任何人可清延迟/锁死人工接管态。CheckVisitorKey 的空串语义本就是"拒一切匿名"，删短路。
+	if !middleware.CheckVisitorKey(c, customer.VisitorKey) {
 		RespErr(c, http.StatusForbidden, int(CodeForbidden), "访客身份校验失败")
 		return
 	}
@@ -321,7 +324,10 @@ func GuestRequestHuman(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
-	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(c, customer.VisitorKey) {
+	// P1-1 修复(2026-09-19 审计批一)：旧写法 `customer.VisitorKey != "" &&` 前置短路令空 VK
+	// 客户（微信通道建档客户全部无 VK，channel/identity.go）对匿名请求完全不设防——
+	// 任何人可清延迟/锁死人工接管态。CheckVisitorKey 的空串语义本就是"拒一切匿名"，删短路。
+	if !middleware.CheckVisitorKey(c, customer.VisitorKey) {
 		RespErr(c, http.StatusForbidden, int(CodeForbidden), "访客身份校验失败")
 		return
 	}

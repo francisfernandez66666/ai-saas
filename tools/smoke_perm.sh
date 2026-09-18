@@ -95,6 +95,28 @@ check "GET /admin/apikeys (租户作用域无头→400)" 400 "$R"
 R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/apikeys" -H "$AH" -H "X-Tenant-ID: $TID")
 check "GET /admin/apikeys (带X-Tenant-ID→200)" 200 "$R"
 
+# ---- 4.5 审计批一 P1-2 护栏：策略模板写三路角色闸（2026-09-19）----
+# 背景：/strategy/templates POST/PUT/DELETE 此前对全部登录角色开放且保存即 ReloadData——
+# 低权限可改写全租户 AI 话术。现收进 AdminRequired 子组；GET 读面全员保持。
+echo ""; echo "-- P1-2 策略模板写闸 --"
+TPL_ID="perm_abt_$TAG"
+TPL_BODY="{\"id\":\"$TPL_ID\",\"anchor_type\":6,\"name\":\"perm护栏模板\",\"prompt_template\":\"t\",\"status\":0}"
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/strategy/templates" -H "$SH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "$TPL_BODY")
+check "POST /strategy/templates (sales→403)" 403 "$R"
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/strategy/templates" -H "$VH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "$TPL_BODY")
+check "POST /strategy/templates (readonly→403)" 403 "$R"
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/strategy/templates" -H "$DH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "$TPL_BODY")
+check "POST /strategy/templates (dept_admin→403)" 403 "$R"
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/strategy/templates" -H "$AH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "$TPL_BODY")
+check "POST /strategy/templates (超管带租户头→200)" 200 "$R"
+# 撞主键 409（P1-2 附带：原直出 500）
+R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/strategy/templates" -H "$AH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "$TPL_BODY")
+check "POST /strategy/templates (重复ID→409)" 409 "$R"
+R=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$B/api/v1/strategy/templates/$TPL_ID" -H "$AH" -H "X-Tenant-ID: 1")
+check "DELETE /strategy/templates/:id (超管→200 清理)" 200 "$R"
+R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/strategy/templates" -H "$SH" -H "X-Tenant-ID: 1")
+check "GET /strategy/templates (sales→200 读面保持)" 200 "$R"
+
 # ---- 6. 清理：停用测试租户角色账号（部门/租户保留供人工核查，对齐 smoke_org 惯例）----
 $PSQL "UPDATE tenant_users SET status=0 WHERE username IN ('viewer_$TAG','sales_$TAG','dept_$TAG')" >/dev/null
 

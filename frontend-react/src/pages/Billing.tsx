@@ -94,12 +94,17 @@ export default function Billing() {
   /** 并行加载所有数据 */
   function loadAll() { loadQuota(); loadPkgs(); loadOrders() }
 
+  // P2-5 修复(2026-09-19 审计批一)：到期倒计时基准时间改为 state（原渲染期直调
+  // Date.now() 违反 react-hooks/purity——渲染必须是纯函数），随 15s 轮询刷新。
+  const [nowMs, setNowMs] = useState(0)
+
   useEffect(() => {
     // 未登录时跳转登录页
     if (!getToken()) { location.href = '/login'; return }
     loadAll()
+    setNowMs(Date.now())
     // 每 15s 轮询订单与套餐，自动刷新待支付/已到账状态
-    const t = setInterval(() => { loadOrders(); loadQuota() }, 15000)
+    const t = setInterval(() => { loadOrders(); loadQuota(); setNowMs(Date.now()) }, 15000)
     return () => clearInterval(t)
   }, [])
 
@@ -172,7 +177,7 @@ export default function Billing() {
 
       {/* 续费触达 banner（商业缺口批 2026-09-16）：到期/临期/待支付订单三态，此前租户侧对到期零感知 */}
       {quota && (() => {
-        const days = quota.expired_at ? Math.ceil((new Date(quota.expired_at).getTime() - Date.now()) / 86400000) : NaN
+        const days = quota.expired_at && nowMs ? Math.ceil((new Date(quota.expired_at).getTime() - nowMs) / 86400000) : NaN
         const pending = isAdmin ? orders.filter((o) => o.status === 'pending').length : 0
         let banner: { bg: string; bd: string; tx: string } | null = null
         if (quota.status === 'expired') {

@@ -191,6 +191,10 @@ go build -o ai-scrm ./cmd/server >/tmp/test_all_build.log 2>&1
 verdict "go build ./cmd/server" $?
 ( cd frontend-react && npx tsc --noEmit >/tmp/test_all_tsc.log 2>&1 )
 verdict "前端 tsc --noEmit" $?
+# P2-5 修复(2026-09-19 审计批一)：CI 跑 lint:ci 而本地不跑 → "本地绿 CI 红"错位。
+# 0 error 硬门 + warning 棘轮基线（当前 154，只降不升），与 GitHub Actions ci.yml 对齐。
+( cd frontend-react && npm run lint:ci >/tmp/test_all_lint.log 2>&1 )
+verdict "前端 eslint lint:ci（0 error + warning≤基线）" $?
 ( cd frontend-react && npm run build >/tmp/test_all_febuild.log 2>&1 )
 verdict "前端 vite build" $?
 
