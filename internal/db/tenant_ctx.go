@@ -134,6 +134,13 @@ func PQ(c *gin.Context) *gorm.DB {
 	q := DB.WithContext(ctx)
 	if tid > 0 {
 		q = q.Where("tenant_id IN ?", []uint{tid, 0})
+	} else {
+		// P1-4 修复(2026-09-18，AUDIT_VERIFY_2026-09-18)：与 RQ 的 H2 口径对称 fail-closed——
+		// 非超管出现 tid==0（路由漏挂 TenantResolver）绝不退回"全租户+系统预置"全量可见；
+		// 超管无显式 X-Tenant-ID 的平台全局视图与无 role 键内部调用仍按原规则放行
+		if failClosedOnMissingTenant(c) {
+			return q.Where("1 = 0")
+		}
 	}
 	return q
 }

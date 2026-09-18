@@ -332,9 +332,13 @@ func GuestRequestHuman(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "当前没有进行中的对话，请先发送一条消息")
 		return
 	}
+	// P1-2 修复(2026-09-18)：字段级 Updates，只置接管态两列，不整行覆写
 	conv.Mode = "human"
 	conv.IsHumanLocked = true
-	if err := db.RQ(c).Save(&conv).Error; err != nil {
+	if err := db.RQ(c).Model(&conv).Updates(map[string]interface{}{
+		"mode":            "human",
+		"is_human_locked": true,
+	}).Error; err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "转人工失败")
 		return
 	}

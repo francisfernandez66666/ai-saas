@@ -22,10 +22,17 @@ trap 'curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Be
 
 # 0. 前置：超管登录，临时关邮箱验证+放开注册IP限流（对齐 uat.sh 口径，脚本无法收邮件）
 #    修改原因：tenant/signup 邮箱验证批次升级后强制 email_code，脚本契约过期导致入驻 400
+#    2026-09-16 复核批两处加固（根因：全量回归当日 ::1 的 signup 审计累计到 99 条）：
+#    a) 每日上限从 99 改为 0——代码语义 dailyLimit>0 才计数，0=彻底关闭，
+#       99 只是"抬高上限"，当天审计行数一旦累积到 99 仍会 429 并级联挂掉后续 8 项；
+#    b) 开头复位 must_change_password——本脚本是唯一不在起手复位该标记的套件，
+#       服务重启后 seed 会对出厂弱密码账号重新打标，导致下面的超管 PUT 配置被
+#       MustChangePasswordGuard 403 静默吞掉（curl -o /dev/null 看不见），入驻即 400。
+$PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
 AT0=$(curl -s -X POST $B/api/v1/auth/login -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"admin123"}' | python3 -c "import sys,json;print(json.load(sys.stdin)['data']['token'])" 2>/dev/null)
 curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $AT0" -H "Content-Type: application/json" \
-  -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"99"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]'
+  -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"0"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]'
 
 # 1. 入驻新租户
 RESP=$(curl -s -X POST $B/api/v1/tenant/signup -H "Content-Type: application/json" \

@@ -13,6 +13,9 @@ import (
 // buildOptionalRouter 组装带 OptionalJWTAuth 的路由，返回 handler 内读取的上下文快照
 func buildOptionalRouter(t *testing.T) *gin.Engine {
 	t.Helper()
+	// P0-1 收口批(2026-09-18)：JWT 弱密钥守卫改为"非显式 debug/test 即拒启动"，
+	// 本测试未走 testutil.LoadEnv（不加载 .env），须显式声明 test 模式
+	t.Setenv("GIN_MODE", "test")
 	config.LoadConfig() // 初始化全局配置（测试环境 GlobalConfig 为 nil 指针，需先加载）
 	config.GlobalConfig.JWT.Secret = "test-secret-optional-auth"
 	config.GlobalConfig.JWT.ExpireHours = 24

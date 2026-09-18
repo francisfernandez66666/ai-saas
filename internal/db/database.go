@@ -7,7 +7,6 @@ import (
 	"ai-scrm/internal/model"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -31,9 +30,11 @@ func Init() error {
 	// SaaS 化改造：从 SQLite 单文件切换为 PostgreSQL，支持多租户 + 并发写入
 	// J10修复(2026-08-26)：生产(release)降级为 Warn，避免 SQL 日志泄露密码哈希/手机号等 PII；
 	// 非 release 仍输出 Info 便于调试
-	dbLogLevel := logger.Info
-	if os.Getenv("GIN_MODE") == "release" {
-		dbLogLevel = logger.Warn
+	// 复核批 P0-1(2026-09-18)：改为"显式 debug/test 才有 Info"——GIN_MODE 不设时旧口径
+	// 隐式按 debug 全量打 SQL（PII 落日志面），与 mock-pay 同族 fail-open，统一收口。
+	dbLogLevel := logger.Warn
+	if config.IsDevModeConfirmed() {
+		dbLogLevel = logger.Info
 	}
 	DB, err = gorm.Open(postgres.Open(config.GlobalConfig.Database.DSN()), &gorm.Config{
 		// C3(2026-09-12)：包一层脱敏 logger，Info 态 SQL 参数(手机号/身份证/邮箱)掩码后再落盘

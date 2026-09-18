@@ -290,6 +290,23 @@ func WebhookNonceSeen(nonce string) bool {
 	return false
 }
 
+// WebhookNonceRelease 释放已消费的 nonce（P1-7，2026-09-18）。
+// 背景：原实现 nonce 在落账前消费且不可逆——ConfirmOrderByChannel 遇瞬时故障（DB 抖动等）
+// 后 PSP 同 nonce 重推一律 409，钱到不了账形成死局。落账失败路径调用本函数把去重名额还回去，
+// 让重试可再进入；发货安全不受影响（MarkOrderPaid 条件 UPDATE 幂等仍是 fail-closed 兜底）。
+// 注意：仅"基础设施失败"路径释放；验签/归属核对拒绝（403）不释放，避免给探测者反复让路。
+func WebhookNonceRelease(nonce string) {
+	if nonce == "" {
+		return
+	}
+	if redisclient.IsEnabled() {
+		redisclient.Del("billing:webhook:nonce:" + nonce)
+	}
+	webhookNonceMu.Lock()
+	delete(webhookNonces, nonce)
+	webhookNonceMu.Unlock()
+}
+
 // loadGatewayProvider 从系统配置/环境变量装配网关（热加载，缺省环境变量兜底）
 func loadGatewayProvider() GatewayProvider {
 	get := func(sysKey, envKey string) string {

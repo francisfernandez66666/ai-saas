@@ -7,7 +7,7 @@ import { useState, useEffect, useMemo } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken } from '../lib/api'
+import { getToken, authHeaders } from '../lib/api'
 
 // 部门树节点类型（含子节点，递归结构）
 type Dept = { id: number; name: string; depth: number; path: string; user_count: number; children?: Dept[] }
@@ -18,7 +18,10 @@ type User = { id: number; username: string; real_name?: string; role: string; de
 // P0-6 修复(2026-09-09)：原写法 `fetch(url, {method, headers: AUTH()})` 把 `{headers:{...}}`
 // 整个塞进 headers 选项，Authorization 从未发出 → 部门增删改在浏览器里全部 401。
 // 改为一等函数返回完整 RequestInit，调用处用 ...AUTH() 展开。
-const AUTH = (): RequestInit => ({ headers: { Authorization: 'Bearer ' + getToken(), 'Content-Type': 'application/json' } })
+// P1 修复(2026-09-18，AUDIT_VERIFY_2026-09-18)：改用 lib/authHeaders 统一注入——
+// /org/* 是租户作用域路径（P2-15 后端强制显式 X-Tenant-ID），旧版只带 Authorization，
+// super_admin 代管视图整页 400；authHeaders 会按代管租户自动补头。
+const AUTH = (): RequestInit => ({ headers: authHeaders({ 'Content-Type': 'application/json' }) })
 // 当前用户角色（来自 localStorage，决定可执行的部门/成员操作）
 const ROLE = localStorage.getItem('role') || ''
 // 角色中文映射

@@ -47,6 +47,9 @@ export function getToken(): string {
 /** 保存登录 token 到本地存储。 */
 export function setToken(t: string) {
   localStorage.setItem(TOKEN_KEY, t)
+  // P1 修复(2026-09-18)：换新 token 必须作废 /auth/me 60s 缓存——
+  // 否则"登出→换账号登录"在缓存窗口内仍拿旧身份（角色/租户纠偏全部失效）
+  invalidateSession()
 }
 
 /**
@@ -105,7 +108,11 @@ export function logoutAndRedirect() {
 function handleUnauthorized() {
   clearToken()
   // 避免重复跳转（已在登录/注册页时不跳）
-  if (location.pathname !== '/login' && !location.pathname.startsWith('/app/login')) {
+  // P1 修复(2026-09-18)：移动端 SPA（/app/*）401 应回 /app/login 而非桌面 /login，
+  // 旧逻辑一律跳 /login 会把 App 用户甩出移动端路由树
+  if (location.pathname.startsWith('/app')) {
+    if (!location.pathname.startsWith('/app/login')) location.href = '/app/login'
+  } else if (location.pathname !== '/login') {
     location.href = '/login'
   }
 }

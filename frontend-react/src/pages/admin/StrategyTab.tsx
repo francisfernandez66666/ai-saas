@@ -207,6 +207,10 @@ export function StrategyTestTab() {
         emotion: form.emotion,
         silent_duration: Number(form.silent_duration),
       },
+      // P1 修复(2026-09-18，AUDIT_VERIFY_2026-09-18)：策略测试走真实 AI 生成回复，
+      // 后端 GenerateTextWithUsage 总预算 110s，旧版吃 30s 默认超时——慢链路/降级链
+      // 触发时前端先 abort，用户看到"网络异常"而后端其实仍在正常返回。放宽到 120s。
+      timeoutMs: 120000,
     })
     setTesting(false)
     if (j?.code === 0) setOutput(j.data)

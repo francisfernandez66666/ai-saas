@@ -188,47 +188,89 @@ func qrToDataURL(content string) (string, error) {
 	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(png), nil
 }
 
+// WechatNotify 微信 V3 交易回调解密明文中的业务字段。
+// P1-3 扩展(2026-09-18，AUDIT_VERIFY_2026-09-18)：此前只回传 out_trade_no/trade_state，
+// 金额与商户归属（mchid/appid）从未核对——解密成功虽证明持有 APIv3Key，但纵深上仍须
+// 与订单面额分毫比对（对齐 alipay 复核批口径），封堵异常报文/配置错乱按订单面额全额发货。
+type WechatNotify struct {
+	OutTradeNo  string
+	TradeState  string
+	MchID       string
+	AppID       string
+	AmountTotal int64 // amount.total，单位分
+}
+
 // DecryptWechatResource 解密微信 V3 回调 resource（AES-256-GCM，APIv3Key）。
 // 解密成功即证明回调方持有 APIv3Key（平台密钥持有证明）；
 // 官方"平台证书验 Wechatpay-Signature"需商户侧定期拉取平台证书，未配置时以解密为准（安全注释位，
 // 真实商户号接入后建议补平台证书验签防伪造报文）。
-// 返回订单号与交易状态（SUCCESS/NOTPAY/CLOSED/...）。
-func DecryptWechatResource(apiv3Key string, ciphertext, nonce, associatedData string) (outTradeNo, tradeState string, err error) {
+func DecryptWechatResource(apiv3Key string, ciphertext, nonce, associatedData string) (WechatNotify, error) {
 	if apiv3Key == "" {
-		return "", "", errors.New("微信支付 APIv3Key 未配置，无法解密回调")
+		return WechatNotify{}, errors.New("微信支付 APIv3Key 未配置，无法解密回调")
 	}
 	block, err := aes.NewCipher([]byte(apiv3Key))
 	if err != nil {
-		return "", "", fmt.Errorf("APIv3Key 长度非法（须 32 字节）: %w", err)
+		return WechatNotify{}, fmt.Errorf("APIv3Key 长度非法（须 32 字节）: %w", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", "", err
+		return WechatNotify{}, err
 	}
 	ct, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
-		return "", "", fmt.Errorf("回调密文 base64 解码失败: %w", err)
+		return WechatNotify{}, fmt.Errorf("回调密文 base64 解码失败: %w", err)
 	}
 	// 防御（2026-09-15）：GCM 对非 12 字节 nonce 会直接 panic（crypto/cipher 内部断言），
 	// 恶意/畸形回调会把 403 变 500——必须先校验长度 fail-closed
 	if len(nonce) != 12 {
-		return "", "", fmt.Errorf("回调 resource.nonce 长度非法（须 12 字节，实得 %d）", len(nonce))
+		return WechatNotify{}, fmt.Errorf("回调 resource.nonce 长度非法（须 12 字节，实得 %d）", len(nonce))
 	}
 	if len(ct) < 16 {
-		return "", "", errors.New("回调密文过短（不足 GCM tag 长度）")
+		return WechatNotify{}, errors.New("回调密文过短（不足 GCM tag 长度）")
 	}
 	plain, err := gcm.Open(nil, []byte(nonce), ct, []byte(associatedData))
 	if err != nil {
-		return "", "", fmt.Errorf("回调 resource 解密失败（APIv3Key 不匹配或报文被篡改）: %w", err)
+		return WechatNotify{}, fmt.Errorf("回调 resource 解密失败（APIv3Key 不匹配或报文被篡改）: %w", err)
 	}
 	var out struct {
 		OutTradeNo string `json:"out_trade_no"`
 		TradeState string `json:"trade_state"`
+		MchID      string `json:"mchid"`
+		AppID      string `json:"appid"`
+		Amount     struct {
+			Total int64 `json:"total"`
+		} `json:"amount"`
 	}
 	if err := json.Unmarshal(plain, &out); err != nil {
-		return "", "", fmt.Errorf("回调明文 JSON 解析失败: %w", err)
+		return WechatNotify{}, fmt.Errorf("回调明文 JSON 解析失败: %w", err)
 	}
-	return out.OutTradeNo, out.TradeState, nil
+	return WechatNotify{
+		OutTradeNo:  out.OutTradeNo,
+		TradeState:  out.TradeState,
+		MchID:       out.MchID,
+		AppID:       out.AppID,
+		AmountTotal: out.Amount.Total,
+	}, nil
+}
+
+// ValidateWechatNotify 回调归属核对（P1-3，2026-09-18，与 ValidateAlipayNotifyParams 同口径）：
+//   - amount.total 必与订单面额分毫相等且 >0（缺失/为 0 视为畸形报文直接拒）；
+//   - mchid/appid 配置了才比对（本地 mock 端点可能不带这两字段，不强求）——
+//     配置齐备却与实际商户不一致即疑似跨商户伪造，拒绝并回 403。
+func ValidateWechatNotify(n WechatNotify, expectedAppID, expectedMchID string, orderAmountCents int64) error {
+	if n.AmountTotal <= 0 {
+		return errors.New("回调缺少 amount.total，无法核对到账金额")
+	}
+	if n.AmountTotal != orderAmountCents {
+		return fmt.Errorf("通知金额(%d分)与订单金额(%d分)不一致", n.AmountTotal, orderAmountCents)
+	}
+	if expectedMchID != "" && n.MchID != "" && n.MchID != expectedMchID {
+		return fmt.Errorf("通知 mchid(%s) 与配置商户号(%s)不一致", n.MchID, expectedMchID)
+	}
+	if expectedAppID != "" && n.AppID != "" && n.AppID != expectedAppID {
+		return fmt.Errorf("通知 appid(%s) 与配置应用(%s)不一致", n.AppID, expectedAppID)
+	}
+	return nil
 }
 
 // ParseRSAPrivateKey 从 PEM 字节解析商户私钥（兼容 PKCS8/PKCS1——商户平台下载为 PKCS8，历史导出可能 PKCS1）。

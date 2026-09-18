@@ -1091,11 +1091,18 @@ func AdvisorTakeover(c *gin.Context) {
 	}
 
 	// 切换到人工模式并锁定
+	// P1-2 修复(2026-09-18)：整行 Save 改字段级 Updates，避免 stale 覆写并发变更
+	//（接管态、OneID 迁移后的 customer_id 等）；uat §12.2 断言口径不变
 	conversation.Mode = "human"
 	conversation.IsHumanLocked = true
 	conversation.PendingHandoff = false
 	conversation.HandoffNotifiedAt = nil
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+		"mode":                "human",
+		"is_human_locked":     true,
+		"pending_handoff":     false,
+		"handoff_notified_at": nil,
+	})
 
 	log.Printf("[顾问接管] 会话%d已由AI切换到人工模式", conversation.ID)
 
@@ -1192,16 +1199,24 @@ func AdvisorSendMessage(c *gin.Context) {
 	}
 
 	// 确保人工模式
+	// P1-2 修复(2026-09-18)：字段级 Updates——此路径读到会话后 AI 可能已被并发接管/关AI，
+	// 整行 Save 会把对方刚写的列覆写回 stale 值
+	now := time.Now()
+	convUpdates := map[string]interface{}{
+		"is_ai_reply_enabled": false,
+		"last_human_reply_at": &now,
+		"last_message_at":     &now,
+	}
 	if conversation.Mode != "human" {
 		conversation.Mode = "human"
 		conversation.IsHumanLocked = true
+		convUpdates["mode"] = "human"
+		convUpdates["is_human_locked"] = true
 	}
-
-	now := time.Now()
 	conversation.IsAiReplyEnabled = false
 	conversation.LastHumanReplyAt = &now
 	conversation.LastMessageAt = &now
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(convUpdates)
 
 	// 保存人工消息
 	humanMsg := model.Message{
@@ -1330,11 +1345,15 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 	}
 	db.RQ(c).Create(&aiMsg)
 
-	// 更新会话
+	// 更新会话（P1-2 修复 2026-09-18：字段级 Updates，仅刷新最后消息三列）
 	conversation.LastMessageAt = &now
 	conversation.LastTid = strategyOutput.TemplateID
 	conversation.LastAnchorType = strategyOutput.FinalAnchor
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+		"last_message_at":  &now,
+		"last_tid":         strategyOutput.TemplateID,
+		"last_anchor_type": strategyOutput.FinalAnchor,
+	})
 
 	log.Printf("[顾问触发AI回复] 会话%d 客户%d AI回复已生成并保存", conversation.ID, customer.ID)
 

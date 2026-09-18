@@ -431,11 +431,16 @@ func persistOpenAPIAIMessage(c *gin.Context, conv *model.Conversation, customerI
 		log.Printf("[OpenAPI] AI消息落库失败 conv=%d: %v", conv.ID, err)
 		return 0
 	}
+	// P1-2 修复(2026-09-18)：字段级 Updates，仅刷新最后消息三列，不整行覆写
 	now := time.Now()
 	conv.LastMessageAt = &now
 	conv.LastTid = tid
 	conv.LastAnchorType = anchor
-	db.RQ(c).Save(conv)
+	db.RQ(c).Model(conv).Updates(map[string]interface{}{
+		"last_message_at":  &now,
+		"last_tid":         tid,
+		"last_anchor_type": anchor,
+	})
 	return msg.ID
 }
 

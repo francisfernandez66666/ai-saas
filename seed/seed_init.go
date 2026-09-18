@@ -6,6 +6,9 @@ package seed
 
 import (
 	"log"
+	"os"
+
+	"ai-scrm/config"
 )
 
 // 种子数据初始化（seed 包）
@@ -53,7 +56,13 @@ func InitSeedData() {
 	seedModelSpecs()
 	seedCompetitorCompares()
 	seedKnowledgeFragments()
-	seedCustomers()
+	// P0-1 收口批（2026-09-18）：演示客户含模拟 C 端数据，生产（非显式 debug）默认跳过，
+	// 避免真实租户库里混入 fake 客户污染统计/侧边栏视图；本地开发或演示环境可 SEED_DEMO_DATA=true 强制写入
+	if config.IsDevModeConfirmed() || os.Getenv("SEED_DEMO_DATA") == "true" {
+		seedCustomers()
+	} else {
+		log.Println("[seed] 跳过演示客户数据（GIN_MODE 未显式声明为 debug/test；如需写入请设 SEED_DEMO_DATA=true）")
+	}
 
 	log.Println("种子数据初始化完成")
 }

@@ -8,16 +8,18 @@
 package webhook
 
 import (
+	"ai-scrm/config"
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"strings"
 )
 
-// privateTargetAllowed 非 release 环境允许回调打到本机/内网（测试基建依赖）。
+// privateTargetAllowed 显式开发模式允许回调打到本机/内网（测试基建依赖）。
+// 复核批 P0-1(2026-09-18)：旧口径 `GIN_MODE != release`——不设即放行内网靶点，
+// 与 mock-pay 同族 fail-open；改为仅显式 debug/test 放行（未设按严格态）。
 func privateTargetAllowed() bool {
-	return os.Getenv("GIN_MODE") != "release"
+	return config.IsDevModeConfirmed()
 }
 
 // isBlockedIP 判定云元数据/内网探测常用靶点：环回、私网段、链路本地(169.254/16)、组播、0.0.0.0。

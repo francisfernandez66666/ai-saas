@@ -15,12 +15,28 @@ func findCheck(checks []HealthCheck, name string) *HealthCheck {
 	return nil
 }
 
-func TestReadinessDebugSkipped(t *testing.T) {
+// TestReadinessDebugDowngraded 复核批 P0-1(2026-09-18)：debug 不再整块 skipped——
+// 同表评估但 Crit 降 Warn、ready 不被刷红，且首项 runtime_mode 提示部署收口。
+func TestReadinessDebugDowngraded(t *testing.T) {
 	SetDeploymentContext(1, false)
 	defer SetDeploymentContext(1, false)
+	t.Setenv("GIN_MODE", "") // 未显式设置：值非空即视为声明，空串按未设置同族处理
+	t.Setenv("ALLOW_MOCK_PAY", "true")
 	checks := ComputeReadiness()
-	if len(checks) != 1 || checks[0].Name != "skipped" || checks[0].Status != StatusOK {
-		t.Fatalf("debug 模式应只返回一条 skipped/ok，got %+v", checks)
+	if len(checks) < 5 {
+		t.Fatalf("debug 应返回完整评估清单而非占位，got %d 项", len(checks))
+	}
+	if checks[0].Name != "runtime_mode" {
+		t.Fatalf("首项应为 runtime_mode，got %s", checks[0].Name)
+	}
+	for _, c := range checks {
+		if c.Status == StatusCrit {
+			t.Fatalf("debug 模式 Crit 应统一降为 Warn，残留: %+v", c)
+		}
+	}
+	ready, crit, _ := ReadinessSummary(checks)
+	if !ready || crit != 0 {
+		t.Fatalf("debug 降档后应 ready（不刷红）: ready=%v crit=%d", ready, crit)
 	}
 }
 

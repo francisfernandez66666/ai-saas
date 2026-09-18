@@ -3,7 +3,8 @@
 // 属"上线忘开=烧钱/合规裸奔"型配置，靠 DEPLOY_CHECKLIST.md 人肉勾选迟早漏。
 // 本文件把检查单代码化：/status 返回 readiness 分组，运维一眼看到哪项没配好。
 // 设计口径：
-//   - 仅 release 模式逐项评估（debug/本地不评，避免红灯噪音，与 G6 instance_coordination 同款门控）；
+//   - release 逐项评估并按 Crit/Warn 判级；非 release 同表评估但 Crit 降 Warn（2026-09-18 P0-1 批改，
+//     旧"debug 整块不评"恰好在默认 fail-open 组合下自我关闭）；
 //   - crit=资金/合规洞（注册审核未开）；warn=需人工确认的部署项（反代未声明/内容安全仍 shadow 等）；
 //   - 只作展示与冒烟断言，不并入 MaybeAlert 群通知——配置问题重启前会一直红，刷群无意义。
 package metrics
@@ -28,14 +29,31 @@ func readinessCheck(name string, pass bool, value string, level HealthStatus, hi
 }
 
 // ComputeReadiness 生产就绪检查清单。
-// 返回按严重度排序的检查项；debug 模式仅返回一条 skipped。
+// 返回按严重度排序的检查项。
+// 复核批 P0-1(2026-09-18)：非 release 不再整块 skipped——旧行为恰好绕开
+// "GIN_MODE 不设（隐式 debug）+ pay_mode 默认 mock"这套默认组合的检查。
+// 现同表评估，但 Crit 统一降为 Warn 并置顶 runtime_mode 提示（保留"本地联调不刷红"口径）。
 func ComputeReadiness() []HealthCheck {
+	checks := computeReadinessChecks()
 	if !deployIsRelease {
-		return []HealthCheck{{
-			Name: "skipped", Status: StatusOK, Value: "debug", WarnAt: "-", CritAt: "-",
-			Desc: "非 release 模式不评估生产就绪项（本地/联调免打扰）",
-		}}
+		for i := range checks {
+			if checks[i].Status == StatusCrit {
+				checks[i].Status = StatusWarn
+			}
+		}
+		_, explicit := os.LookupEnv("GIN_MODE")
+		checks = append([]HealthCheck{{
+			Name: "runtime_mode", Status: StatusWarn,
+			Value:  map[bool]string{true: "debug(explicit)", false: "debug(GIN_MODE未设置)"}[explicit],
+			WarnAt: "-", CritAt: "-",
+			Desc: "非 release 模式：mock-pay/弱配置守卫按开发姿态。部署前务必显式设 GIN_MODE=release（资金闸按显式模式判定，未设置按严格态）",
+		}}, checks...)
 	}
+	return checks
+}
+
+// computeReadinessChecks R1-R7 生产就绪逐项评估（release 与降级态共用同一张检查表）。
+func computeReadinessChecks() []HealthCheck {
 	cfg := runtimecfg.DefaultSystemConfigService
 	checks := []HealthCheck{}
 

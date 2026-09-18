@@ -327,13 +327,21 @@ func ChatTest(c *gin.Context) {
 
 			// 4. 标记待人工接管，留1轮引导式反问（下一条AI回复时抛）
 			// 顺序：先发确认语→客户继续聊→AI再抛反问句
+			// P1-2 修复(2026-09-18)：字段级 Updates（对齐 chat_main.go 正式链路同段口径），
+			// 整行 Save 会覆写测试期间并发翻转的接管态列
 			conv.PendingHandoff = true
 			conv.GuidedRemainingRounds = 1
 			conv.GuidedDisabled = false
 			now := time.Now()
 			conv.HandoffNotifiedAt = &now
 			conv.LastMessageAt = &now
-			db.RQ(c).Save(&conv)
+			db.RQ(c).Model(&conv).Updates(map[string]interface{}{
+				"pending_handoff":         true,
+				"guided_remaining_rounds": 1,
+				"guided_disabled":         false,
+				"handoff_notified_at":     &now,
+				"last_message_at":         &now,
+			})
 
 			// 5. 丝滑确认回复（预定义模板随机选，不走AI）
 			firstDelay := service.GetStoreVisitFirstDelay()

@@ -174,7 +174,8 @@ const nonce=Array.from(nb,b=>ALPHA[b%ALPHA.length]).join('');
 const key=Buffer.from(process.env.WX_KEY,'utf8');
 const aead=c.createCipheriv('aes-256-gcm',key,Buffer.from(nonce,'utf8'));
 aead.setAAD(Buffer.from('transaction'));
-const plain=JSON.stringify({out_trade_no:process.env.WX_NO,trade_state:'SUCCESS'});
+// P1-3(2026-09-18)：归属核对上线后明文须带 amount.total（WX_AMT 缺省 100 分=订单面额）
+const plain=JSON.stringify({out_trade_no:process.env.WX_NO,trade_state:'SUCCESS',amount:{total:Number(process.env.WX_AMT||'100'),currency:'CNY'}});
 const ct=Buffer.concat([aead.update(plain,'utf8'),aead.final(),aead.getAuthTag()]);
 process.stdout.write(JSON.stringify({resource:{ciphertext:ct.toString('base64'),nonce:nonce,associated_data:'transaction'}}));
 EOF
@@ -199,6 +200,15 @@ H11B=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook
   -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: wn_${WTAG}_$$" \
   -d "$WX_BODY")
 check "wechat回调nonce重放被拒(409)" 409 "$H11B"
+# 11.6 P1-3 归属核对(2026-09-18)：合法密文（持 APIv3Key 可加密）但金额与订单面额不符 → 403 且订单不动
+WB_NO="BO${WTAG}W2"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${WB_NO}',${WT_ID},${PKG},100,'once','wechat','pending',NOW(),NOW())" >/dev/null
+WX_BAD=$(WX_KEY="$WX_KEY" WX_NO="$WB_NO" WX_AMT=1 node "$WORK/wxres.js")
+H11C=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: wn3_${WTAG}_$$" \
+  -d "$WX_BAD")
+check "微信回调金额不符订单面额被拒(403)" 403 "$H11C"
+check "金额不符订单保持pending未发货" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$WB_NO'" | tr -d '[:space:]')"
 
 echo ""
 echo "---- 12. 支付宝当面付 回调（P0-1c）----"

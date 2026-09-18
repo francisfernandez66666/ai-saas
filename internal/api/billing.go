@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 
@@ -145,8 +146,10 @@ func ListBillingOrders(c *gin.Context) {
 // release 构建（GIN_MODE=release）必须显式 ALLOW_MOCK_PAY=true 才开放，否则一律 403。
 // 开发/测试环境不受影响（E2E 冒烟依赖 mock-pay 跑通全链路）。
 func MockPayOrder(c *gin.Context) {
-	if os.Getenv("GIN_MODE") == "release" && os.Getenv("ALLOW_MOCK_PAY") != "true" {
-		RespErr(c, http.StatusForbidden, 403, "生产环境已禁用模拟支付")
+	// 复核批 P0-1(2026-09-18)：闸门从 `Getenv("GIN_MODE")=="release"` 反向判断改为
+	// "显式 debug/test 才放行"——GIN_MODE 不设时旧口径隐式放行 mock 到账=0元白嫖。
+	if !config.IsDevModeConfirmed() && !strings.EqualFold(os.Getenv("ALLOW_MOCK_PAY"), "true") {
+		RespErr(c, http.StatusForbidden, 403, "生产环境已禁用模拟支付（需显式 GIN_MODE=debug 或 ALLOW_MOCK_PAY=true）")
 		return
 	}
 	if billing.GetPayMode() != "mock" {
@@ -438,15 +441,13 @@ func BillingWebhook(c *gin.Context) {
 
 // billingWebhookWechat 微信支付 V3 回调分支。
 // 报文：{resource:{ciphertext, nonce, associated_data}}，HTTP 头 Wechatpay-Timestamp/Wechatpay-Nonce。
+// P1-3/P1-7 修复(2026-09-18)：①nonce 消费移到解密成功之后——畸形/伪造包不再污染去重表；
+// ②解密明文的 amount.total 与订单面额分毫核对、mchid/appid 配置了即比对（对齐 alipay 归属口径）；
+// ③ConfirmOrderByChannel 失败释放 nonce，PSP 同 nonce 重推不再被 409 死锁。
 func billingWebhookWechat(c *gin.Context) {
 	// 时间窗：Wechatpay-Timestamp 为 unix 秒，±5min（复用 C6 窗口校验）
 	if !billing.WebhookTimestampFresh(c.GetHeader("Wechatpay-Timestamp")) {
 		RespErr(c, http.StatusForbidden, 403, "回调时间戳超出有效窗口（±5分钟）")
-		return
-	}
-	nonceHdr := c.GetHeader("Wechatpay-Nonce")
-	if nonceHdr == "" || billing.WebhookNonceSeen(nonceHdr) {
-		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（nonce 已消费）")
 		return
 	}
 	var body struct {
@@ -461,21 +462,42 @@ func billingWebhookWechat(c *gin.Context) {
 		return
 	}
 	apiv3Key := getPayConf("pay_wechat_apiv3_key", "PAY_WECHAT_APIV3_KEY")
-	orderNo, tradeState, err := billing.DecryptWechatResource(apiv3Key, body.Resource.Ciphertext, body.Resource.Nonce, body.Resource.AssociatedData)
+	wxNotify, err := billing.DecryptWechatResource(apiv3Key, body.Resource.Ciphertext, body.Resource.Nonce, body.Resource.AssociatedData)
 	if err != nil {
 		RespErr(c, http.StatusForbidden, 403, err.Error())
 		return
 	}
-	if orderNo == "" {
+	nonceHdr := c.GetHeader("Wechatpay-Nonce")
+	if nonceHdr == "" || billing.WebhookNonceSeen(nonceHdr) {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（nonce 已消费）")
+		return
+	}
+	if wxNotify.OutTradeNo == "" {
 		RespErr(c, http.StatusBadRequest, 400, "回调明文缺少 out_trade_no")
 		return
 	}
-	if tradeState != "SUCCESS" {
-		RespOK(c, "非成功状态，忽略", gin.H{"trade_state": tradeState})
+	if wxNotify.TradeState != "SUCCESS" {
+		RespOK(c, "非成功状态，忽略", gin.H{"trade_state": wxNotify.TradeState})
 		return
 	}
-	order, flowed, err := billing.ConfirmOrderByChannel(orderNo, "wechat")
+	// 归属核对（P1-3）：金额必与订单面额分毫相等；mchid/appid 配置了才比对
+	var payOrder model.BillingOrder
+	if err := db.DB.Where("order_no = ?", wxNotify.OutTradeNo).First(&payOrder).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	if verr := billing.ValidateWechatNotify(wxNotify,
+		getPayConf("pay_wechat_app_id", "PAY_WECHAT_APP_ID"),
+		getPayConf("pay_wechat_mch_id", "PAY_WECHAT_MCH_ID"),
+		int64(payOrder.AmountCents)); verr != nil {
+		log.Printf("[Billing][ERROR] 微信回调参数核对失败 order=%s: %v", wxNotify.OutTradeNo, verr)
+		notify.NotifyGroup(fmt.Sprintf("【支付安全】微信回调参数核对被拒：订单 %s（%v），疑似跨商户伪造到账，请核查", wxNotify.OutTradeNo, verr))
+		RespErr(c, http.StatusForbidden, 403, verr.Error())
+		return
+	}
+	order, flowed, err := billing.ConfirmOrderByChannel(wxNotify.OutTradeNo, "wechat")
 	if err != nil {
+		billing.WebhookNonceRelease(nonceHdr) // P1-7：落账失败把 nonce 还回去，PSP 重推不再 409 死锁
 		RespErr(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
@@ -547,6 +569,7 @@ func billingWebhookAlipay(c *gin.Context) {
 	}
 	order, flowed, cerr := billing.ConfirmOrderByChannel(orderNo, "alipay")
 	if cerr != nil {
+		billing.WebhookNonceRelease(params["notify_id"]) // P1-7：落账失败释放 notify_id，支付宝重推不再 409
 		RespErr(c, http.StatusNotFound, 404, cerr.Error())
 		return
 	}
@@ -617,6 +640,7 @@ func billingWebhookGateway(c *gin.Context, channel string) {
 	}
 	order, flowed, err := billing.ConfirmOrderByChannel(orderNo, channel)
 	if err != nil {
+		billing.WebhookNonceRelease(cb.Nonce) // P1-7：落账失败释放 nonce，网关重推不再 409 死锁
 		RespErr(c, http.StatusNotFound, 404, err.Error())
 		return
 	}
@@ -625,10 +649,12 @@ func billingWebhookGateway(c *gin.Context, channel string) {
 
 // SuperMockWebhook POST /api/v1/super/billing/orders/:id/mock-webhook —— §W 测试资产：
 // 超管代发一次"网关到账回调"（内部直调 ConfirmOrderByChannel，幂等语义与真回调一致）。
-// 双重闸门：非 release 模式 + 订单渠道必须为 mock——生产环境任何情况不可用。
+// 双重闸门：显式开发模式 + 订单渠道必须为 mock——生产环境任何情况不可用。
+// 复核批 P0-1(2026-09-18)：与 MockPayOrder 同口径改读 IsDevModeConfirmed（旧 gin.Mode()
+// 判断在 GIN_MODE 未设时隐式 debug 放行）。
 func SuperMockWebhook(c *gin.Context) {
-	if gin.Mode() == gin.ReleaseMode {
-		RespErr(c, http.StatusForbidden, 403, "生产环境禁用模拟回调")
+	if !config.IsDevModeConfirmed() && !strings.EqualFold(os.Getenv("ALLOW_MOCK_PAY"), "true") {
+		RespErr(c, http.StatusForbidden, 403, "生产环境禁用模拟回调（需显式 GIN_MODE=debug 或 ALLOW_MOCK_PAY=true）")
 		return
 	}
 	oid, ok := PathUintID(c)

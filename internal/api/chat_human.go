@@ -93,6 +93,8 @@ func HumanReply(c *gin.Context) {
 	}
 
 	// 切换到人工模式并锁定
+	// P1-2 修复(2026-09-18)：整行 Save 改字段级 Updates——stale 读改写会覆写并发方
+	// 刚翻转的接管态/OneID 迁移后的 customer_id 等列（chat_main.go 同口径收口批）
 	conversation.Mode = "human"
 	conversation.IsHumanLocked = true
 	conversation.PendingHandoff = false // 人工回复后，清除待接管状态
@@ -100,7 +102,14 @@ func HumanReply(c *gin.Context) {
 	now := time.Now()
 	conversation.LastHumanReplyAt = &now
 	conversation.LastMessageAt = &now
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+		"mode":                "human",
+		"is_human_locked":     true,
+		"pending_handoff":     false,
+		"handoff_notified_at": nil,
+		"last_human_reply_at": &now,
+		"last_message_at":     &now,
+	})
 
 	// 保存人工消息
 	// P1-6 修复：写 SenderID（记录哪位顾问发的，对齐 AdvisorSendMessage 语义）
@@ -243,9 +252,13 @@ func TransferToHuman(c *gin.Context) {
 		return
 	}
 
+	// P1-2 修复(2026-09-18)：字段级 Updates，只翻转接管态三列，不整行覆写
 	conversation.Mode = "human"
 	conversation.IsHumanLocked = true
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+		"mode":            "human",
+		"is_human_locked": true,
+	})
 
 	RespOK(c, "已转人工", conversation)
 }
@@ -272,11 +285,16 @@ func TransferToAI(c *gin.Context) {
 		return
 	}
 
+	// P1-2 修复(2026-09-18)：字段级 Updates，只复位接管态三列（uat §12.2 字节断言口径不变）
 	conversation.Mode = "ai"
 	conversation.IsHumanLocked = false
 	// P1-6 修复：切回 AI 同步复位 IsAiReplyEnabled=true（若此前被锁，恢复 AI 回复；对齐 ToggleAiReply 语义）
 	conversation.IsAiReplyEnabled = true
-	db.RQ(c).Save(&conversation)
+	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+		"mode":                "ai",
+		"is_human_locked":     false,
+		"is_ai_reply_enabled": true,
+	})
 
 	RespOK(c, "已切回AI", conversation)
 }

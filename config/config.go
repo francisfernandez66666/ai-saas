@@ -375,17 +375,20 @@ func LoadConfig() *Config {
 	// P0-8 修复(2026-09-09)：原守卫只拦截 `""` 与一个从未使用的旧默认串，而真实默认值
 	// `change_me_jwt_secret`（config.go:351）与 `.env.example` 占位值都能通过校验——漏网即
 	// 硬编码密钥可伪造 super_admin。现改为：非 debug 且（长度 <32 或命中占位词表）即 Fatal。
-	if GlobalConfig.Server.Mode != "debug" {
-		secret := GlobalConfig.JWT.Secret
-		weakSecret := secret == "" || len(secret) < 32 ||
-			strings.Contains(strings.ToLower(secret), "change_me") ||
-			strings.Contains(strings.ToLower(secret), "changeme") ||
-			strings.Contains(strings.ToLower(secret), "change-me") ||
-			strings.Contains(strings.ToLower(secret), "ai-scrm-secret") ||
-			strings.EqualFold(secret, "secret")
-		if weakSecret {
-			log.Fatalf("[安全] 非 debug 环境下 JWT_SECRET 未配置、过短(<32字符)或仍为默认/占位值，拒绝启动；请在 .env / 部署环境变量中设置强随机密钥")
+	// 复核批 P0-1(2026-09-18)：判定从 `Mode != "debug"` 改读 IsDevModeConfirmed——
+	// GIN_MODE 不设时 Mode 隐式为 debug，原守卫被默认值旁路（与 mock-pay 同族 fail-open）。
+	secret := GlobalConfig.JWT.Secret
+	weakSecret := secret == "" || len(secret) < 32 ||
+		strings.Contains(strings.ToLower(secret), "change_me") ||
+		strings.Contains(strings.ToLower(secret), "changeme") ||
+		strings.Contains(strings.ToLower(secret), "change-me") ||
+		strings.Contains(strings.ToLower(secret), "ai-scrm-secret") ||
+		strings.EqualFold(secret, "secret")
+	if weakSecret {
+		if !IsDevModeConfirmed() {
+			log.Fatalf("[安全] JWT_SECRET 未配置、过短(<32字符)或仍为默认/占位值，且 GIN_MODE 未显式声明为 debug/test——拒绝启动；生产请设强随机密钥，本地开发请在 .env 显式写 GIN_MODE=debug")
 		}
+		log.Printf("[安全提醒] 显式 debug 模式下 JWT_SECRET 仍为弱值（默认/占位/过短）：仅限本地联调，部署前必须更换")
 	}
 	// 安全警告（C2）：生产环境若仍走模拟模式将不会调用真实 AI
 	if GlobalConfig.Server.Mode == "release" && GlobalConfig.AI.MockMode {
@@ -405,6 +408,15 @@ func getEnv(key, defaultValue string) string {
 		return value
 	}
 	return defaultValue
+}
+
+// IsDevModeConfirmed 显式声明的开发姿态：GIN_MODE 被明确设为 debug/test。
+// 复核批 P0-1（2026-09-18）：资金/日志/SSRF 这类闸门此前写 `Getenv("GIN_MODE")=="release"`
+// 反向判断——GIN_MODE 不设即隐式 debug，闸门 fail-open。改为"只有显式 debug 才放行，
+// 未设置一律按严格口径"，本地 .env 与 CI 均显式声明，不受影响。
+func IsDevModeConfirmed() bool {
+	m, ok := os.LookupEnv("GIN_MODE")
+	return ok && (m == "debug" || m == "test")
 }
 
 // getEnvInt 从环境变量读取 int，转换失败或缺失时返回默认值

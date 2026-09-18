@@ -176,7 +176,8 @@ export default function Register() {
           />
           <Label>管理员账号 *</Label>
           <Input value={form.username} onChange={set('username')} placeholder="登录用户名" />
-          <Label>管理员密码 *（至少6位）</Label>
+          {/* P1 修复(2026-09-18)：文案对齐后端 validatePasswordStrength 真实基线（≥8位+字母+数字），旧"至少6位"必然误导用户提交被拒 */}
+          <Label>管理员密码 *（至少8位，须含字母和数字）</Label>
           <Input type="password" value={form.password} onChange={set('password')} />
 
           {/* 邮箱验证模块：平台开启时展示邮箱输入与验证码获取 */}

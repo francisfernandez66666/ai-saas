@@ -129,23 +129,63 @@ func TestWechatRefund_RefundAPI(t *testing.T) {
 	}
 }
 
-// TestDecryptWechatResource 回调解密：APIv3Key AES-GCM 正确解密 / 错误 key 拒绝 / 非 SUCCESS 状态透传
+// TestDecryptWechatResource 回调解密：APIv3Key AES-GCM 正确解密 / 错误 key 拒绝 /
+// P1-3 扩展断言：明文中的 amount.total、mchid、appid 一并透出供归属核对
 func TestDecryptWechatResource(t *testing.T) {
 	apiv3 := strings.Repeat("k", 32)
-	plain, _ := json.Marshal(map[string]string{"out_trade_no": "BO_DEC1", "trade_state": "SUCCESS"})
+	plain, _ := json.Marshal(map[string]interface{}{
+		"out_trade_no": "BO_DEC1",
+		"trade_state":  "SUCCESS",
+		"mchid":        "1900000109",
+		"appid":        "wxtestappid",
+		"amount":       map[string]interface{}{"total": 9900, "currency": "CNY"},
+	})
 	block, _ := aes.NewCipher([]byte(apiv3))
 	gcm, _ := cipher.NewGCM(block)
 	nonce := make([]byte, gcm.NonceSize())
 	_, _ = rand.Read(nonce)
 	ct := gcm.Seal(nil, nonce, plain, []byte("transaction"))
 
-	no, state, err := DecryptWechatResource(apiv3, base64.StdEncoding.EncodeToString(ct), string(nonce), "transaction")
-	if err != nil || no != "BO_DEC1" || state != "SUCCESS" {
-		t.Fatalf("解密应成功 BO_DEC1/SUCCESS，实际 no=%s state=%s err=%v", no, state, err)
+	got, err := DecryptWechatResource(apiv3, base64.StdEncoding.EncodeToString(ct), string(nonce), "transaction")
+	if err != nil || got.OutTradeNo != "BO_DEC1" || got.TradeState != "SUCCESS" {
+		t.Fatalf("解密应成功 BO_DEC1/SUCCESS，实际 %+v err=%v", got, err)
+	}
+	if got.MchID != "1900000109" || got.AppID != "wxtestappid" || got.AmountTotal != 9900 {
+		t.Fatalf("归属字段应完整透出，实际 %+v", got)
 	}
 	// 错误 key → 解密失败
-	if _, _, err = DecryptWechatResource(strings.Repeat("x", 32), base64.StdEncoding.EncodeToString(ct), string(nonce), "transaction"); err == nil {
+	if _, err = DecryptWechatResource(strings.Repeat("x", 32), base64.StdEncoding.EncodeToString(ct), string(nonce), "transaction"); err == nil {
 		t.Fatalf("错误 APIv3Key 应解密失败")
+	}
+}
+
+// TestValidateWechatNotify P1-3 归属核对：金额分毫必对（缺失也拒），
+// mchid/appid 配置了才比对，未配置/明文缺字段放行（mock 端点兼容）
+func TestValidateWechatNotify(t *testing.T) {
+	ok := WechatNotify{OutTradeNo: "BO_V1", TradeState: "SUCCESS", MchID: "1900000109", AppID: "wxapp", AmountTotal: 100}
+	if err := ValidateWechatNotify(ok, "wxapp", "1900000109", 100); err != nil {
+		t.Fatalf("齐备一致应通过: %v", err)
+	}
+	if err := ValidateWechatNotify(ok, "", "", 100); err != nil {
+		t.Fatalf("未配置 mchid/appid 应跳过比对: %v", err)
+	}
+	// 金额不一致（¥0.01 套 ¥1.00 面额）→ 拒
+	if err := ValidateWechatNotify(WechatNotify{AmountTotal: 1}, "", "", 100); err == nil {
+		t.Fatalf("金额不一致必须拒绝")
+	}
+	// 金额缺失（旧版畸形/裁剪报文）→ fail-closed 拒
+	if err := ValidateWechatNotify(WechatNotify{AmountTotal: 0}, "", "", 100); err == nil {
+		t.Fatalf("amount.total 缺失必须拒绝")
+	}
+	if err := ValidateWechatNotify(ok, "", "9999999999", 100); err == nil {
+		t.Fatalf("mchid 不一致必须拒绝")
+	}
+	if err := ValidateWechatNotify(ok, "wxother", "", 100); err == nil {
+		t.Fatalf("appid 不一致必须拒绝")
+	}
+	// 明文缺 mchid（mock 端点）而平台配置了 → 不强求（解密成功已证明持有 APIv3Key）
+	if err := ValidateWechatNotify(WechatNotify{AmountTotal: 100}, "", "1900000109", 100); err != nil {
+		t.Fatalf("明文缺 mchid 且解密已证密钥归属，应放行: %v", err)
 	}
 }
 
@@ -274,4 +314,26 @@ func TestParseRSAKeys_PEM(t *testing.T) {
 // testOrder 构造测试订单（不触 db，仅供 Provider 协议层使用）
 func testOrder(no string, cents int) *model.BillingOrder {
 	return &model.BillingOrder{OrderNo: no, AmountCents: cents}
+}
+
+// TestWebhookNonceRelease P1-7(2026-09-18) 落账失败归还 nonce：
+// 消费→重放拒绝→释放→同 nonce 可再进入（PSP 重推不再 409 死锁）；空 nonce 恒判重放。
+// 本测试走内存轨（单测环境未启用 Redis），与线上 Redis 轨语义一致。
+func TestWebhookNonceRelease(t *testing.T) {
+	nonce := "test_nonce_release_memtrack"
+	if WebhookNonceSeen(nonce) {
+		t.Fatalf("首次消费应判非重放")
+	}
+	if !WebhookNonceSeen(nonce) {
+		t.Fatalf("二次同 nonce 应判重放")
+	}
+	WebhookNonceRelease(nonce)
+	if WebhookNonceSeen(nonce) {
+		t.Fatalf("释放后同 nonce 应可再进入（落账失败重推链路）")
+	}
+	// 空 nonce 一律视为重放（调用方拒 409），释放不应改变该语义
+	WebhookNonceRelease("")
+	if !WebhookNonceSeen("") {
+		t.Fatalf("空 nonce 必须恒判重放")
+	}
 }

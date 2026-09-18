@@ -458,8 +458,54 @@ check "客户active会话数=1(字节级)" 1 "$ACT11"
 DUP11=$(psql "${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm}" \
   -c "INSERT INTO conversations (tenant_id,customer_id,status,mode,channel,created_at,updated_at) VALUES ($UA_ID,$GC_ID,'active','ai','web',NOW(),NOW())" 2>&1 | grep -cE '23505|unique constraint "ux_conv_one_active"')
 check "重复active直插被013索引拒绝(23505)" 1 "$DUP11"
-# 现场清理：本节测试客户及其会话/消息不留库
-$PSQL "DELETE FROM messages WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM conversations WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM customers WHERE id=$GC_ID" >/dev/null 2>&1
+
+echo ""
+echo "== 十二、复核批护栏（2026-09-18，AUDIT_VERIFY_2026-09-18）=="
+# 12.1 mock-pay 归属闸：pay_mode≠mock 时模拟到账必须 403，且字节级确认"订单未到账 +
+#      权益台账零行"双不变。此前 uat 六节只测了"sdk 模式下单报错"与"不存在单 400/404"，
+#      真实 pending 单在非 mock 模式被 mock-pay 打穿（0元白嫖面）从未有断言。
+UAD="Authorization: Bearer $UA_TOKEN"
+curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
+  -d '[{"category":"notify","key":"pay_mode","value":"\"static_qr\""}]' >/dev/null
+R121=$(curl -s -X POST "$B/api/v1/billing/orders" -H "$UAD" -H "X-Tenant-ID: $UA_ID" -H "Content-Type: application/json" \
+  -d "{\"package_id\":$INC_PKG}")
+ORD12=$(echo "$R121" | jget "d['data']['id']")
+check "非mock模式pending单创建成功(12.1)" y "$([ -n "$ORD12" ] && echo y || echo n)"
+MP12=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/orders/mock-pay" -H "$UAD" -H "X-Tenant-ID: $UA_ID" \
+  -H "Content-Type: application/json" -d "{\"order_id\":$ORD12}")
+check "非mock模式mock-pay被拒(403)" 403 "$MP12"
+ST12=$($PSQL "SELECT status FROM billing_orders WHERE id=$ORD12")
+check "被拒后订单仍pending(字节级)" pending "$ST12"
+ENT12=$($PSQL "SELECT count(*) FROM reward_claims WHERE grant_type='order_entitlement' AND ref_id=$ORD12")
+check "被拒后权益台账零行(字节级)" 0 "$ENT12"
+curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
+  -d '[{"category":"notify","key":"pay_mode","value":"\"mock\""}]' >/dev/null
+# 12.2 接管→转回AI 字段级落库断言（chat_human.go:103/248/279 系整行 Save 路径的
+#      回归护栏：列名/翻转语义漂移即抓——P1-2 收口前以行为锁定代防）。
+TK12=$(curl -s -X POST "$B/api/v1/advisor/chat/takeover" -H "$UAD" -H "X-Tenant-ID: $UA_ID" \
+  -H "Content-Type: application/json" -d "{\"conversation_id\":$CV1}" | code)
+check "租户admin接管会话(12.2)" 0 "$TK12"
+COL12=$($PSQL "SELECT mode||'|'||is_human_locked||'|'||pending_handoff FROM conversations WHERE id=$CV1")
+check "接管后三列字节级(human|true|false)" "human|true|false" "$COL12"
+TR12=$(curl -s -X POST "$B/api/v1/chat/transfer/ai" -H "$UAD" -H "X-Tenant-ID: $UA_ID" \
+  -H "Content-Type: application/json" -d "{\"conversation_id\":$CV1}" | code)
+check "转回AI成功(12.2)" 0 "$TR12"
+COL12B=$($PSQL "SELECT mode||'|'||is_human_locked||'|'||is_ai_reply_enabled FROM conversations WHERE id=$CV1")
+check "转回AI三列字节级(ai|false|true)" "ai|false|true" "$COL12B"
+# 12.3 super_admin 无 X-Tenant-ID 打租户作用域路径：必须 400/403，绝不 200 带数据。
+#      （P2-15 白名单口径护栏；前端 Org.tsx 裸 fetch 不带头的体验缺口另见复核文档）
+ORG12=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/org/departments/tree" -H "$AH")
+case "$ORG12" in 400|403) check "超管无租户头打/org被拒(12.3)" y y;; *) check "超管无租户头打/org被拒(实际=$ORG12)" y n;; esac
+# 12.4 访客消息落库字节级回环：/chat/test 报文原文必须与 messages.content 逐字节一致
+#      （chat_main.go:306 Create 不查 .Error——写入面唯一可观测护栏即读回比对）。
+MSG12="复核UAT字节回环$RUN"
+curl -s -o /dev/null -X POST "$B/api/v1/chat/test?visitor_key=$GC_VK" -H "X-Tenant-ID: $UA_ID" \
+  -H "Content-Type: application/json" -d "{\"customer_id\":$GC_ID,\"content\":\"$MSG12\"}"
+sleep 2
+BYTE12=$($PSQL "SELECT count(*) FROM messages WHERE tenant_id=$UA_ID AND customer_id=$GC_ID AND sender_type='customer' AND content='$MSG12'")
+check "访客消息内容DB逐字节一致(12.4)" 1 "$BYTE12"
+# 现场清理：本节+十一测试客户及其会话/消息、12.1 pending 单不留库
+$PSQL "DELETE FROM messages WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM conversations WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELETE FROM customers WHERE id=$GC_ID; DELETE FROM billing_orders WHERE id=$ORD12" >/dev/null 2>&1
 
 echo ""
 echo "== 恢复现场 =="

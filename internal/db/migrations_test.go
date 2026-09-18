@@ -30,6 +30,11 @@ func newTestDB(t *testing.T) *gorm.DB {
 			}
 			dir = filepath.Dir(dir)
 		}
+		// P0-1 收口批(2026-09-18)：CI 无 .env 且 JWT_SECRET 缺省时，显式声明 test 模式
+		// 才能通过弱密钥守卫（守卫语义：GIN_MODE 未显式 debug/test 即拒绝启动）
+		if os.Getenv("GIN_MODE") == "" {
+			t.Setenv("GIN_MODE", "test")
+		}
 		config.LoadConfig()
 		if err := Init(); err != nil {
 			if os.Getenv("CI") != "" {
