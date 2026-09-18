@@ -897,6 +897,7 @@ func CreateFragment(c *gin.Context) {
 		ApplicableModels []string `json:"applicable_models"`
 		Status           int      `json:"status"`
 		Sort             int      `json:"sort"`
+		Visibility       string   `json:"visibility"` // P2-4(批三)：public 才可被匿名端点搜到；缺省 private
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
@@ -912,6 +913,10 @@ func CreateFragment(c *gin.Context) {
 	}
 	if fragment.Status == 0 {
 		fragment.Status = 1
+	}
+	// P2-4(2026-09-19 批三)：可见性只认 public/private 两值，其余一律按默认 private（fail-closed）
+	if req.Visibility == "public" {
+		fragment.Visibility = "public"
 	}
 	fragment.SetTags(req.Tags)
 	fragment.SetApplicableModels(req.ApplicableModels)
@@ -945,6 +950,7 @@ func UpdateFragment(c *gin.Context) {
 		ApplicableModels []string `json:"applicable_models"`
 		Status           int      `json:"status"`
 		Sort             int      `json:"sort"`
+		Visibility       string   `json:"visibility"` // P2-4(批三)：public=进匿名搜索面；private=收回
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")
@@ -971,6 +977,11 @@ func UpdateFragment(c *gin.Context) {
 	}
 	if req.Sort != 0 {
 		fragment.Sort = req.Sort
+	}
+	// P2-4(2026-09-19 批三)：visibility 显式传值才改（private/public 两态互切=公开/收回），
+	// 未传保持行内现值（First 已加载，Save 回写不丢）
+	if req.Visibility == "public" || req.Visibility == "private" {
+		fragment.Visibility = req.Visibility
 	}
 
 	if err := db.RQ(c).Save(&fragment).Error; err != nil {
@@ -1120,6 +1131,9 @@ func GetPublicCompares(c *gin.Context) {
 }
 
 // SearchFragments 搜索知识片段（客户端，租户隔离）
+// P2-4(2026-09-19 批三)：本端点挂公开路由组（routes_public），匿名/伪造租户头皆可打——
+// 收敛为仅返回 visibility=public 片段（迁移014 回填系统预置目录为 public，
+// C 端选车页可用；商家私有话术默认 private 不再整文外泄）。
 func SearchFragments(c *gin.Context) {
 	keyword := c.Query("keyword")
 	category := c.Query("category")
@@ -1131,7 +1145,7 @@ func SearchFragments(c *gin.Context) {
 	}
 
 	tid := db.EffectiveTenantIDFromGin(c)
-	fragments := cache.DefaultKnowledgeCache.SearchFragments(tid, keyword, category, tags)
+	fragments := cache.DefaultKnowledgeCache.SearchFragments(tid, keyword, category, tags, true)
 
 	RespOK(c, "success", fragments)
 }

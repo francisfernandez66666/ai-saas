@@ -531,14 +531,32 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 //   - epoch==0（旧协议回复无配对 epoch/降级路径）：放行投递——宁可极端双发（出站台账可查），不可静默漏发。
 //
 // 返回 true=本调用方负责投递；false=同批同通道已有他人认领。
+//
+// P2-2 修复(2026-09-19 审计批三)：原实现用 TryLock（吞 err），Redis 故障时句柄 nil
+// 被误判为"他人已认领"→ 静默漏发，与本函数自述"宁可双发不可漏发"及 redisclient
+// TryLockE 契约（SetNX 出错禁止按没抢到处理）三方打架。改为 TryLockE 三分支：
+// 拿锁→投；锁被持有→不投；Redis 故障→降级本机 deliveredFor 裁决+warn 指标。
+var tryDeliveryClaim = redisclient.TryLockE   // 测试接缝：单测注入故障/持锁三态
+var claimRedisEnabled = redisclient.IsEnabled // 测试接缝：单测模拟 Redis 开/关两态
+
 func (s *MessageQueueService) ClaimReplyDelivery(tenantID, customerID uint, epoch uint64, channelID uint) bool {
 	if epoch == 0 {
 		return true
 	}
 	k := queueKey(tenantID, customerID)
-	if redisclient.IsEnabled() {
-		h := redisclient.TryLock(fmt.Sprintf("mq:deliver:%s:%d:%d", k, epoch, channelID), 10*time.Minute)
-		return h != nil
+	if claimRedisEnabled() {
+		h, err := tryDeliveryClaim(fmt.Sprintf("mq:deliver:%s:%d:%d", k, epoch, channelID), 10*time.Minute)
+		switch {
+		case err == nil && h != nil:
+			return true // 本机抢到认领权
+		case err == nil:
+			return false // Redis 正常且锁被他人持有：他人投递
+		default:
+			// Redis 故障≠他人已认领：落到下方单机表裁决。故障期跨实例互斥失守，
+			// 极端可双发（出站台账可稽核回溯），但绝不重演静默漏发。
+			log.Printf("[合并队列] 投递认领Redis故障，降级本机裁决(宁双发不漏发) k=%s epoch=%d channel=%d: %v", k, epoch, channelID, err)
+			metrics.IncReplyDeliveryDegrade()
+		}
 	}
 	q := s.getQueue(k)
 	q.mu.Lock()

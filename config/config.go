@@ -71,6 +71,10 @@ type ServerConfig struct {
 	Port     string // 服务端口
 	Mode     string // gin模式: debug/release
 	Replicas int    // G6：声明的部署副本数（可选 env APP_REPLICAS，默认 1）。>1 且未开 Redis 时启动告警
+	// HealthToken P2-4(2026-09-19 批三)：/status/detail 全量体检清单的访问令牌
+	// （env HEALTH_TOKEN）。公开 /status 只剩 status/version/uptime 类无敏感字段；
+	// 未配置=详情端点恒 403（fail-closed），生产部署需暴露给监控时显式设置。
+	HealthToken string
 }
 
 // DatabaseConfig 数据库配置（PostgreSQL）
@@ -243,9 +247,10 @@ var GlobalConfig *Config
 func LoadConfig() *Config {
 	GlobalConfig = &Config{
 		Server: ServerConfig{
-			Port:     getEnv("SERVER_PORT", "8080"),
-			Mode:     getEnv("GIN_MODE", "debug"),
-			Replicas: getEnvInt("APP_REPLICAS", 1),
+			Port:        getEnv("SERVER_PORT", "8080"),
+			Mode:        getEnv("GIN_MODE", "debug"),
+			Replicas:    getEnvInt("APP_REPLICAS", 1),
+			HealthToken: getEnv("HEALTH_TOKEN", ""),
 		},
 		Database: DatabaseConfig{
 			Host:            getEnv("DB_HOST", "localhost"),

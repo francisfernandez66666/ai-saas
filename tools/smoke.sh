@@ -7,7 +7,8 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 # 前置: 服务已启动（./start.sh 或 go run cmd/server/main.go）
 # 覆盖: 租户解析 fail-closed / debug 兜底 / JWT↔Host 一致性 /
 #       超管跨租户显式指定+审计 / C端租户归属 / 基础数据隔离 /
-#       /status readiness 生产就绪探针（2026-09-15 价值批：ready 字段+检查项清单 2 断言）
+#       /status/detail readiness 生产就绪探针（2026-09-15 价值批；P2-4 批三拆分：公开 /status 无清单，
+#       详情端点 X-Health-Token 闸 2 断言）/ 匿名 KB 搜索 visibility 收敛 3 断言（P2-4② 批三）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -204,11 +205,34 @@ echo "---- 七、P1/P2 实时监控+健康检查+WS鉴权 ----"
 ST_STATUS=$(curl -s "$B/status" | jsonget "['data']['status']")
 [ -n "$ST_STATUS" ] && check "状态页返回健康分级(status=$ST_STATUS)" y y || check "状态页返回健康分级" y n
 
-# 生产就绪探针（2026-09-15 增强批）：ready 布尔 + readiness 清单（debug 也应返回 skipped 占位）
-ST_READY=$(curl -s "$B/status" | jsonget "['data']['ready']")
-[ -n "$ST_READY" ] && check "生产就绪探针返回ready=$ST_READY" y y || check "生产就绪探针返回ready" y n
-ST_RNAME=$(curl -s "$B/status" | jsonget "['data']['readiness'][0]['name']")
+# 生产就绪探针：P2-4 拆分(2026-09-19 批三)——公开 /status 只留存活/版本字段，
+# readiness 全量清单挪 /status/detail（X-Health-Token 守卫，未配置=恒403 fail-closed）
+ST_RLEAK=$(curl -s "$B/status" | jsonget "['data'].get('readiness','ABSENT')")
+[ "$ST_RLEAK" = "ABSENT" ] && check "公开/status不再含readiness清单" y y || check "公开/status不再含readiness清单" y n
+ST_H403=$(curl -s -o /dev/null -w "%{http_code}" "$B/status/detail")
+check "无令牌/status/detail被拒(403)" 403 "$ST_H403"
+HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+ST_READY=$(curl -s -H "X-Health-Token: $HT" "$B/status/detail" | jsonget "['data']['ready']")
+[ -n "$ST_READY" ] && check "就绪详情端点带令牌返回ready=$ST_READY" y y || check "就绪详情端点带令牌返回ready" y n
+ST_RNAME=$(curl -s -H "X-Health-Token: $HT" "$B/status/detail" | jsonget "['data']['readiness'][0]['name']")
 [ -n "$ST_RNAME" ] && check "就绪检查项清单非空(首项=$ST_RNAME)" y y || check "就绪检查项清单非空" y n
+
+# P2-4②(2026-09-19 批三)：匿名 /knowledge/fragments/search 只见 visibility=public——
+# 攻击向量即"匿名+伪造 X-Tenant-ID 拖本租户私有片段全文"（TenantResolver 全局解析租户头），
+# admin 新建片段默认 private 匿名带租户头也搜不出；API 置 public 后可搜（C 端目录通道）；收回即再隐
+KMARK="护栏可见性片段$RANDOM"
+KFRAG_ID=$(curl -s -X POST "$B/api/v1/admin/knowledge/fragments" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"category\":\"服务\",\"title\":\"$KMARK\",\"content\":\"内部话术勿外泄$KMARK\"}" | jsonget "['data']['id']")
+klen() { python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d.get('data') or []))" 2>/dev/null; }
+KPRIV=$(curl -s "$B/api/v1/knowledge/fragments/search?keyword=$KMARK" -H "X-Tenant-ID: 1" | klen)
+check "私有片段匿名带租户头0命中(P2-4)" 0 "${KPRIV:-x}"
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/knowledge/fragments/$KFRAG_ID" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{"visibility":"public"}'
+KPUB=$(curl -s "$B/api/v1/knowledge/fragments/search?keyword=$KMARK" -H "X-Tenant-ID: 1" | klen)
+check "置public后匿名可搜(C端目录通道)" 1 "${KPUB:-x}"
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/knowledge/fragments/$KFRAG_ID" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{"visibility":"private"}'
+KBACK=$(curl -s "$B/api/v1/knowledge/fragments/search?keyword=$KMARK" -H "X-Tenant-ID: 1" | klen)
+check "收回private后匿名再0命中" 0 "${KBACK:-x}"
+curl -s -o /dev/null -X DELETE "$B/api/v1/admin/knowledge/fragments/$KFRAG_ID" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
 
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/monitor/health" -H "Authorization: Bearer $TOKEN")
 check "超管健康探测→200" 200 "$CODE"

@@ -343,7 +343,10 @@ func (m *KnowledgeCacheManager) GetComparesByModelAndBrand(tenantID uint, ourMod
 // SearchFragments 搜索知识片段（租户隔离：仅系统预置 + 请求租户私有）
 // 支持关键词、分类、标签三种过滤条件，都是OR关系
 // 简单的内存搜索，数据量不大时足够高效
-func (m *KnowledgeCacheManager) SearchFragments(tenantID uint, keyword string, category string, tags []string) []model.KnowledgeFragment {
+// P2-4(2026-09-19 批三)：新增 publicOnly——公开匿名端点只放 visibility=public 的片段，
+// 商家私有话术（默认 private）不再被 /knowledge/fragments/search 整文拖出；
+// 登录态管理面检索走 DB 路径不经此处，publicOnly=false 保持旧语义。
+func (m *KnowledgeCacheManager) SearchFragments(tenantID uint, keyword string, category string, tags []string, publicOnly bool) []model.KnowledgeFragment {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -353,6 +356,10 @@ func (m *KnowledgeCacheManager) SearchFragments(tenantID uint, keyword string, c
 	for _, frag := range m.fragments {
 		// 租户隔离（P0-4）：只返回系统预置与本租户私有片段
 		if frag.TenantID != 0 && frag.TenantID != tenantID {
+			continue
+		}
+		// 公开面收敛（P2-4）：匿名只见显式 public
+		if publicOnly && frag.Visibility != "public" {
 			continue
 		}
 		// 分类过滤

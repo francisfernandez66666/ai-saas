@@ -595,6 +595,12 @@ func seedKnowledgeFragments() {
 	fragments := SeedIndustry.KnowledgeFragments
 
 	for _, frag := range fragments {
+		// P2-4(2026-09-19 批三)：系统预置目录片段（tenant 0）显式置 public——
+		// 迁移014 的回填只救存量行；新库上 seed 在迁移之后插入，若不显式设
+		// 会按列默认 private 落库，C 端品牌/车型公开目录匿名搜索直接空。
+		if frag.TenantID == 0 {
+			frag.Visibility = "public"
+		}
 		db.DB.Create(&frag)
 	}
 

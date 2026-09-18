@@ -2,7 +2,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Progress, Table, Tag } from 'tdesign-react'
 import type { CrudRow } from '../../hooks/useCrud'
-import { AUTH, getToken } from '../../lib/api'
+import { AUTH } from '../../lib/api'
 import type { CellProps, TableRowData } from '../../types'
 
 type Overview = {
@@ -73,7 +73,9 @@ export function DashboardTab() {
     if (s?.code === 0) setAdvisorStats(s.data || [])
     if (m?.code === 0) setModels(m.data?.models || [])
     const [r, i] = await Promise.all([
-      fetch('/api/v1/advisor/customers?status=&page=1&page_size=8&assigned=all', { headers: { Authorization: 'Bearer ' + getToken() } }).then((x) => x.json()).catch(() => null),
+      // P2-6(2026-09-19 批三)：原裸 fetch 只带 Authorization——super 代管(X-Tenant-ID≠登录租户)
+      // 下 TenantConsistency 400 且 .catch(()=>null) 静默；改走 AUTH 统一头/超时/401 登出
+      AUTH('/api/v1/advisor/customers?status=&page=1&page_size=8&assigned=all'),
       AUTH('/api/v1/customers?page_size=100'),
     ])
     if (r?.code === 0) setRecent(r.data?.list || [])

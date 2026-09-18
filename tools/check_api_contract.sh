@@ -63,7 +63,29 @@ else
   fi
 fi
 
+# ---- 5. 裸 fetch 棘轮只降不升（P2-6，2026-09-19 审计批三）----
+# 统一请求层 lib/api.ts 负责 30s 超时/401 登出/租户头；业务页裸 fetch( 每多一处
+# 就多一个击穿点（DashboardTab 超管代管 400 静默即坐实例）。存量 46 处分批迁移，
+# 此处封新增（对照 .as_any_baseline 模式，下降自动收紧基线）。
+BARE_FETCH=$(grep -rn "fetch(" frontend-react/src --include="*.ts" --include="*.tsx" \
+  --exclude-dir="__tests__" --exclude="*.test.ts" --exclude="*.test.tsx" \
+  | grep -v "apiFetch\|lib/api.ts" | wc -l | tr -d ' ')
+FETCH_BASELINE_FILE="frontend-react/src/.bare_fetch_baseline"
+if [ ! -f "$FETCH_BASELINE_FILE" ]; then
+  echo "$BARE_FETCH" > "$FETCH_BASELINE_FILE"
+  echo "  INFO  裸 fetch 基线已建立: $BARE_FETCH"
+else
+  FETCH_BASELINE=$(tr -d '[:space:]' < "$FETCH_BASELINE_FILE")
+  if [ "$BARE_FETCH" -gt "$FETCH_BASELINE" ]; then
+    echo "  FAIL  裸 fetch 数量上升: $FETCH_BASELINE → ${BARE_FETCH}（新请求请走 apiFetch/AUTH，只降不升）"
+    FAIL=1
+  elif [ "$BARE_FETCH" -lt "$FETCH_BASELINE" ]; then
+    echo "  INFO  裸 fetch 数量下降: $FETCH_BASELINE → ${BARE_FETCH}（基线自动收紧）"
+    echo "$BARE_FETCH" > "$FETCH_BASELINE_FILE"
+  fi
+fi
+
 if [ "$FAIL" = "0" ]; then
-  echo "  PASS  T7 契约检查（golden/类型/路径/any 基线）"
+  echo "  PASS  T7 契约检查（golden/类型/路径/any 基线/裸 fetch 棘轮）"
 fi
 exit $FAIL

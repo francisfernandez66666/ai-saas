@@ -74,6 +74,14 @@ var storeVisitSecondFailTotal uint64
 // IncStoreVisitSecondFail 第二段追问落库失败（重试后放弃）+1
 func IncStoreVisitSecondFail() { atomic.AddUint64(&storeVisitSecondFailTotal, 1) }
 
+// ---- P2-2 回复投递认领降级计数（2026-09-19 审计批三）----
+// replyDeliveryDegradeTotal Redis 故障导致 ClaimReplyDelivery 降级单机裁决的次数。
+// 降级语义=宁双发不漏发（出站台账可稽核），该计数非零即说明多实例互斥已失守，需运维介入。
+var replyDeliveryDegradeTotal uint64
+
+// IncReplyDeliveryDegrade Redis 故障投递认领降级单机裁决 +1（service.ClaimReplyDelivery 调用）
+func IncReplyDeliveryDegrade() { atomic.AddUint64(&replyDeliveryDegradeTotal, 1) }
+
 // ---- G-15 Kafka 消息队列指标（2026-09-11）----
 // 说明：Kafka 是生产环境的消息总线，负责异步事件发布/消费
 // 这三个指标用于监控 Kafka 的健康状态和吞吐量
@@ -393,6 +401,11 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_store_visit_second_fail_total second follow-up persist fail count (after retry)\n"...)
 	b = append(b, "# TYPE ai_scrm_store_visit_second_fail_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_store_visit_second_fail_total %d\n", svsFail)...)
+
+	// ---- P2-2 指标：Redis 故障回复投递认领降级（>0 即多实例互斥失守）----
+	b = append(b, "# HELP ai_scrm_reply_delivery_degrade_total reply delivery claim degraded to local arbitration due to Redis error\n"...)
+	b = append(b, "# TYPE ai_scrm_reply_delivery_degrade_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_reply_delivery_degrade_total %d\n", atomic.LoadUint64(&replyDeliveryDegradeTotal))...)
 
 	// ---- P1-2 指标4：支付成功率 ----
 	pp := atomic.LoadUint64(&paymentPaidTotal)

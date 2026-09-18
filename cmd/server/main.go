@@ -725,11 +725,39 @@ func registerRoutes(r *gin.Engine) {
 		})
 	})
 
-	// ---- Status Page（商业化 M4，免鉴权无敏感信息，借鉴翻译助手三期§3.6）----
+	// ---- Status Page（商业化 M4，借鉴翻译助手三期§3.6）----
+	// P2-4 拆分(2026-09-19 审计批三)：本端点公网免鉴权，旧版直出 readiness 全量清单
+	// （pay_mode/AI_MOCK_MODE/registration_review/TRUSTED_PROXIES 实际取值）＝向攻击者
+	// 公告哪些防线没开。公开面只留无敏感语义的存活/版本字段；全量体检挪 /status/detail。
 	r.GET("/status", func(c *gin.Context) {
-		// P1-4 健康探测：结构化探针 + 阈值告警（crit 越界经企微/钉钉主动通知，带冷却）
+		// P1-4 健康探测：结构化探针 + 阈值告警（crit 越界经企微/钉钉主动通知，带冷却）。
+		// 探测与告警仍在此执行——公开只裁剪响应体，不改探针行为。
 		snap := metrics.ComputeHealth()
 		metrics.MaybeAlert(snap)
+		status := "ok"
+		if snap.HasCrit {
+			status = "crit"
+		} else if snap.HasWarn {
+			status = "warn"
+		}
+		c.JSON(200, gin.H{"code": 0, "data": gin.H{
+			// 版本真源：与 README 更新日志主版本线保持一致，逐批手动 bump（此前 v2.3.0 系历史遗留未同步）
+			"version":    "v2.16.0",
+			"uptime_sec": int(time.Since(startTime).Seconds()),
+			"status":     status,
+			"ok":         snap.DBOK,
+		}})
+	})
+
+	// /status/detail 全量健康+就绪清单：X-Health-Token（env HEALTH_TOKEN）守卫；
+	// 未配置令牌=恒 403（fail-closed，与全站"未设置=严格态"口径一致）。
+	r.GET("/status/detail", func(c *gin.Context) {
+		token := config.GlobalConfig.Server.HealthToken
+		if token == "" || c.GetHeader("X-Health-Token") != token {
+			c.JSON(403, gin.H{"code": 403, "message": "需要 X-Health-Token"})
+			return
+		}
+		snap := metrics.ComputeHealth()
 		status := "ok"
 		if snap.HasCrit {
 			status = "crit"
@@ -744,12 +772,11 @@ func registerRoutes(r *gin.Engine) {
 				}
 			}
 		}
-		// 生产就绪探针（2026-09-15 增强批）：把 DEPLOY_CHECKLIST 里"忘开=烧钱/合规裸奔"
+		// 生产就绪探针（2026-09-15 价值批）：把 DEPLOY_CHECKLIST 里"忘开=烧钱/合规裸奔"
 		// 类开关代码化逐项体检，只展示不群告警（配置红灯重启前会常亮，刷群无意义）
 		readyChecks := metrics.ComputeReadiness()
 		ready, rCrit, rWarn := metrics.ReadinessSummary(readyChecks)
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
-			// 版本真源：与 README 更新日志主版本线保持一致，逐批手动 bump（此前 v2.3.0 系历史遗留未同步）
 			"version":             "v2.16.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
 			"db_ok":               snap.DBOK,
