@@ -93,6 +93,13 @@ fi
 if grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
   echo "  FAIL  G-6: gorm:query_option 废弃 API 残留"; grep -rn --include="*.go" 'gorm:query_option' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
 fi
+# 3.5 开发态谓词防回潮（P2-1，2026-09-19 批二）：安全判定必须走 config.IsDevModeConfirmed()
+#     （GIN_MODE 未设=config 默认严格态），gin.Mode() 未设时隐式 debug——两谓词默认相反，
+#     混用即 fail-open。此前 tenant.go 三处信任代理/本地回退、billing.go mock-webhook 后门
+#     均因此形同虚设，已全部收口；此断言封新增。
+if grep -rn --include="*.go" 'gin\.Mode()' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
+  echo "  FAIL  P2-1: gin.Mode() 谓词残留（应统一 config.IsDevModeConfirmed）"; grep -rn --include="*.go" 'gin\.Mode()' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
+fi
 # 4. D6 盖章护栏（2026-09-16）：db.DB.Create/Save 写租户表必须显式 TenantID——
 #    C7 事故形态（无 ctx 盖章落 0）历史上命中两次（C7、P1-5），接入即第三次被抓现行
 #    （message_queue.go WriteDegradedNotice，已修）。精准模式检测，见脚本头注释。

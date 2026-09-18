@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/redisclient"
@@ -294,7 +295,10 @@ func resolveTenant(c *gin.Context) *model.Tenant {
 	host := normalizeHost(c.Request.Host)
 
 	// 1. 开发模式：允许 X-Tenant-ID Header 指定租户（生产环境忽略，防伪造）
-	if gin.Mode() == gin.DebugMode {
+	// P2-1 修复(2026-09-19 审计批二)：原按 gin.Mode() 判——GIN_MODE 不设时 config 默认
+	// "debug"（config.go:247），生产忘设即接受伪造 X-Tenant-ID 定租户，是 P0-1
+	// "未设置=严格态"收口漏掉的爆炸半径最大一环。改判 IsDevModeConfirmed：显式 debug/test 才放行。
+	if config.IsDevModeConfirmed() {
 		if xt := strings.TrimSpace(c.GetHeader("X-Tenant-ID")); xt != "" {
 			if id, err := strconv.ParseUint(xt, 10, 64); err == nil {
 				if t := loadTenantByID(uint(id)); t != nil {
@@ -317,8 +321,8 @@ func resolveTenant(c *gin.Context) *model.Tenant {
 		}
 	}
 
-	// 4. 本地开发兜底：localhost/127.0.0.1 → 默认租户（仅 debug 模式）
-	if gin.Mode() == gin.DebugMode && isLocalDevHost(host) {
+	// 4. 本地开发兜底：localhost/127.0.0.1 → 默认租户（仅显式 debug，P2-1 同批收口）
+	if config.IsDevModeConfirmed() && isLocalDevHost(host) {
 		return loadDefaultTenant()
 	}
 
@@ -627,9 +631,9 @@ func TenantConsistency() gin.HandlerFunc {
 				"data":    nil,
 			})
 			return
-		case hostID != 0 && tokID != hostID && gin.Mode() == gin.DebugMode && isLocalDevHost(normalizeHost(c.Request.Host)):
+		case hostID != 0 && tokID != hostID && config.IsDevModeConfirmed() && isLocalDevHost(normalizeHost(c.Request.Host)):
 			// 本地开发特例：localhost 无真实域名归属，以登录租户为准刷新上下文，
-			// 使多租户联调可行（生产环境子域名不受影响，仍严格一致性校验）
+			// 使多租户联调可行（生产环境子域名不受影响，仍严格一致性校验；P2-1 同批收口显式 debug 判定）
 			if t := loadTenantByID(tokID); t != nil {
 				applyTenantContext(c, t)
 			}

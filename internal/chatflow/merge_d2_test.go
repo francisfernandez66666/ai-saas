@@ -63,6 +63,21 @@ func TestMergeCustomerByPhoneTxAndCollapseActives(t *testing.T) {
 		t.Fatalf("建消息失败: %v", err)
 	}
 
+	// P1-3 护栏(2026-09-19 批二)：survivor 更新已是字段级 Updates——
+	// 列集外(remark/assigned_user_id)必须不被覆写，列集内(访客 wechat_id 补全)必须正确落库。
+	if err := db.DB.Model(&model.Customer{}).Where("id = ?", survivor.ID).
+		Updates(map[string]interface{}{"remark": "并发备注勿覆", "assigned_user_id": 4242}).Error; err != nil {
+		t.Fatalf("预置 survivor 列失败: %v", err)
+	}
+	guest.WechatID = "wx_guard_p13"
+	// 同手机号跨租户干扰客：锁定读带 tenant_id 谓词，合并绝不能选它当 survivor
+	tid2 := testutil.CreateTenant(t)
+	other := model.Customer{TenantID: tid2, Name: "跨租户同手机号客", Phone: phone, JourneyStage: model.JourneyDelivered, Status: 1}
+	if err := db.DB.Create(&other).Error; err != nil {
+		t.Fatalf("建跨租户干扰客失败: %v", err)
+	}
+	t.Cleanup(func() { db.DB.Delete(&model.Customer{}, other.ID) })
+
 	target := MergeCustomerByPhone(&guest, phone)
 	if target != survivor.ID {
 		t.Fatalf("应返回老客户ID %d，实际 %d", survivor.ID, target)
@@ -77,6 +92,21 @@ func TestMergeCustomerByPhoneTxAndCollapseActives(t *testing.T) {
 	db.DB.First(&s, survivor.ID)
 	if s.JourneyStage != model.JourneyLeadCaptured {
 		t.Errorf("阶段应取更高(lead_captured)，实际 %s", s.JourneyStage)
+	}
+	// P1-3 护栏断言：列集外不覆写 / 列集内正确更新 / 跨租户干扰客未被动
+	if s.Remark != "并发备注勿覆" || s.AssignedUserID != 4242 {
+		t.Errorf("字段级 Updates 列集外不应被合并覆写，实际 remark=%q assigned=%d", s.Remark, s.AssignedUserID)
+	}
+	if s.Name != "老客户" || s.Phone != phone {
+		t.Errorf("name/phone 不应被合并覆写，实际 %s/%s", s.Name, s.Phone)
+	}
+	if s.WechatID != "wx_guard_p13" {
+		t.Errorf("访客 wechat_id 应补全至老客户，实际 %q", s.WechatID)
+	}
+	var untouched model.Customer
+	db.DB.First(&untouched, other.ID)
+	if untouched.Status != 1 || untouched.JourneyStage != model.JourneyDelivered {
+		t.Errorf("跨租户同手机号客不应被选中或改动，实际 status=%d stage=%s", untouched.Status, untouched.JourneyStage)
 	}
 
 	var activeCount int64

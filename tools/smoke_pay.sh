@@ -209,6 +209,29 @@ H11C=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook
   -d "$WX_BAD")
 check "微信回调金额不符订单面额被拒(403)" 403 "$H11C"
 check "金额不符订单保持pending未发货" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$WB_NO'" | tr -d '[:space:]')"
+# 11.7 P2-3(2026-09-19 批二)：nonce 消费后的结构性失败分支须归还 nonce——
+#   不存在订单 404（下单事务未提交、回调先到的竞态）与缺 out_trade_no 400 均非重放攻击，
+#   同 nonce 重推应再次命中同一分支（404/400）而非 409 死锁；403 安全拒绝分支维持不归还。
+WX_NOSUCH=$(WX_KEY="$WX_KEY" WX_NO="BO${WTAG}NOSUCH" node "$WORK/wxres.js")
+WNONCE="wn4_${WTAG}_$$"
+H11D=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WNONCE" \
+  -d "$WX_NOSUCH")
+check "微信回调不存在订单被拒(404)" 404 "$H11D"
+H11E=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WNONCE" \
+  -d "$WX_NOSUCH")
+check "404后nonce已释放同nonce重推不再409(404)" 404 "$H11E"
+WX_EMPTY=$(WX_KEY="$WX_KEY" WX_NO="" node "$WORK/wxres.js")
+WNONCE2="wn5_${WTAG}_$$"
+H11F=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WNONCE2" \
+  -d "$WX_EMPTY")
+check "微信回调缺out_trade_no被拒(400)" 400 "$H11F"
+H11G=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WNONCE2" \
+  -d "$WX_EMPTY")
+check "400后nonce已释放同nonce重推不再409(400)" 400 "$H11G"
 
 echo ""
 echo "---- 12. 支付宝当面付 回调（P0-1c）----"

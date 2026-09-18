@@ -522,6 +522,9 @@ func billingWebhookWechat(c *gin.Context) {
 		return
 	}
 	if wxNotify.OutTradeNo == "" {
+		// P2-3（2026-09-19 批二）：nonce 已在上方消费，报文结构性缺陷（缺 out_trade_no）
+		// 非重放攻击，归还 nonce 让 PSP 修正后可重推，不死锁在 409。
+		billing.WebhookNonceRelease(nonceHdr)
 		RespErr(c, http.StatusBadRequest, 400, "回调明文缺少 out_trade_no")
 		return
 	}
@@ -532,6 +535,9 @@ func billingWebhookWechat(c *gin.Context) {
 	// 归属核对（P1-3）：金额必与订单面额分毫相等；mchid/appid 配置了才比对
 	var payOrder model.BillingOrder
 	if err := db.DB.Where("order_no = ?", wxNotify.OutTradeNo).First(&payOrder).Error; err != nil {
+		// P2-3：订单尚不存在可能是落库竞态（下单事务未提交而回调先到），归还 nonce
+		// 允许 PSP 下一次重推命中；403 安全拒绝分支维持不归还（防重放语义正确）。
+		billing.WebhookNonceRelease(nonceHdr)
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
@@ -661,8 +667,10 @@ func billingWebhookGateway(c *gin.Context, channel string) {
 	key := getPayConf("pay_gateway_key", "PAY_GATEWAY_KEY")
 	// §W 极限收口(2026-09-14)：未配置 pay_gateway_key 时，仅"mock 渠道 + 非 release 模式"
 	// 允许固定开发密钥（本地/E2E 模拟 PSP 到账）；release 一律 503——不给任何渠道开假到账后门。
+	// P2-1 同族收口(2026-09-19 审计批二)：gin.Mode()!="release" 在 GIN_MODE 未设时隐式
+	// debug 放行固定密钥=生产忘设即假到账后门，改判显式 IsDevModeConfirmed。
 	if key == "" {
-		if channel == "mock" && gin.Mode() != gin.ReleaseMode {
+		if channel == "mock" && config.IsDevModeConfirmed() {
 			key = "mock-webhook-dev-key"
 		} else {
 			RespErr(c, http.StatusServiceUnavailable, 503, "支付网关密钥未配置")

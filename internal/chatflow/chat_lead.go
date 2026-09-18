@@ -15,6 +15,7 @@ import (
 	"ai-scrm/internal/service"
 	"ai-scrm/internal/webhook"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ============================================================
@@ -261,24 +263,28 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	// 以访客客户所属租户为锚；跨租户同号客户视为不同自然人
 	tid := guestCustomer.TenantID
 
-	// 查找同手机号的其他客户（排除自己，限定同租户）
-	var existingCustomer model.Customer
-	result := db.DB.Where("phone = ? AND id != ? AND status = 1 AND tenant_id = ?", phone, guestCustomer.ID, tid).First(&existingCustomer)
-	if result.Error != nil {
-		// 没有匹配的老客户，不需要合并
-		return 0
-	}
-
-	log.Printf("[OneID合并] 检测到同手机号老客户: 访客%d → 老客户%d, 手机号=%s, 租户=%d",
-		guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), tid)
-
 	// D2 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：1~9 步收进单事务——旧实现
 	// 9 条独立语句无事务，中途任一条失败即"半合并"脑裂（消息挂老客户、访客仍有效、
 	// identity 指错人），且全部走 db.DB 吞 error 无从感知。失败整体回滚并返回 0
 	// （调用方按"未合并"继续走访客留资流程，数据自洽，宁可不合并不可半合并）。
 	// C7 红线合规：事务内唯一的 Create（customer_tags）已显式设 TenantID，update 全部带 tenant_id 条件。
+	// P1-3 修复(2026-09-19 审计批二)：老客户读取由事务外 db.DB 裸读（读→存窗口 stale 覆写
+	// 并发接管态/顾问分配，且同手机号并发双留资各合并一次产生双胞胎）挪进事务内
+	// FOR UPDATE（对照 billing_refund.go 行锁范式）——读与写之间行锁持有，串行化。
 	var survivorID uint
+	var existingCustomer model.Customer
 	txErr := db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("phone = ? AND id != ? AND status = 1 AND tenant_id = ?", phone, guestCustomer.ID, tid).
+			First(&existingCustomer).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil // 无匹配老客户（含锁等窗口内已被并发合并）：不合并，空转成功
+			}
+			return fmt.Errorf("锁定老客户: %w", err)
+		}
+		survivorID = existingCustomer.ID // 提前登记；失败回滚时整体作废
+		log.Printf("[OneID合并] 检测到同手机号老客户: 访客%d → 老客户%d, 手机号=%s, 租户=%d",
+			guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), tid)
 		// 1.0 G1 收口(2026-09-16C，迁移013 唯一索引 ux_conv_one_active 配套)：迁移归属前
 		// 预收拢双方 active——013 后"同客户多条 active"在 DB 层已不可能，若直接把访客
 		// active 会话改挂到老客户名下会当场撞约束、整个合并事务回滚（OneID 合并反而失效）。
@@ -395,7 +401,18 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 		}
 
 		// 8. 保存老客户更新
-		if err := tx.Save(&existingCustomer).Error; err != nil {
+		// P1-3 修复(2026-09-19 审计批二)：tx.Save 整行覆写改字段级 Updates——
+		// 只写本次合并真正变更的列（标签/T向量/阶段/意向/信任/微信ID/来源），
+		// phone/name/接管态等列即便行锁窗口外被改也不进覆写集合（复核批 9 处收口同族红线，此路径补齐）。
+		if err := tx.Model(&model.Customer{}).Where("id = ? AND tenant_id = ?", existingCustomer.ID, tid).Updates(map[string]interface{}{
+			"tags":          existingCustomer.Tags,
+			"t_vector":      existingCustomer.TVectorJSON, // 列名 t_vector（model/customer.go:45）
+			"journey_stage": existingCustomer.JourneyStage,
+			"intent_score":  existingCustomer.IntentScore,
+			"trust_level":   existingCustomer.TrustLevel,
+			"wechat_id":     existingCustomer.WechatID,
+			"source":        existingCustomer.Source,
+		}).Error; err != nil {
 			return fmt.Errorf("保存老客户: %w", err)
 		}
 
@@ -450,13 +467,15 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 			return fmt.Errorf("收拢active会话: %w", err)
 		}
 
-		survivorID = existingCustomer.ID
 		return nil
 	})
 	if txErr != nil {
 		log.Printf("[OneID合并-告警] 合并事务失败已整体回滚(访客%d→老客户%d,手机号=%s): %v",
 			guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), txErr)
 		return 0
+	}
+	if survivorID == 0 {
+		return 0 // 锁内复查未命中：不合并，后续 CDP/identity 旁路一步都不能跑
 	}
 
 	// 9.5 CDP 锚点重指向（Phase B，2026-08-22）：
