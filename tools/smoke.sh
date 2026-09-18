@@ -10,6 +10,7 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       /status/detail readiness 生产就绪探针（2026-09-15 价值批；P2-4 批三拆分：公开 /status 无清单，
 #       详情端点 X-Health-Token 闸 2 断言）/ 匿名 KB 搜索 visibility 收敛 3 断言（P2-4② 批三）
 #       / E4 话术 A/B 实验字段 CRUD+过滤+校验+字符串PK修口 10 断言（二十二，2026-09-19 增强批）
+#       / E3 全链路 trace_id：响应头回显+入口/队列日志同 trace 贯穿 3 断言（二十三，2026-09-19 增强批）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -525,6 +526,27 @@ check "清理实验模板" 0 "$(curl -s -X DELETE "$B/api/v1/strategy/templates/
 HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" | cut -d= -f2 | tr -d '[:space:]')
 check "readiness含sentry_configured观测位" 1 "$(curl -s "$B/status/detail" -H "X-Health-Token: $HT" | grep -c '"sentry_configured"')"
 check "公开/status不泄露sentry_configured" 0 "$(curl -s "$B/status" | grep -c 'sentry_configured')"
+
+echo "---- 二十三、2026-09-19 增强批：E3 全链路 trace_id 护栏 ----"
+# /chat/test 带客户端 trace：响应头回显 + 同一 trace 串起「入口 slog 行 + 合并队列日志 trace= 片段」
+E3TID="e3probe$(date +%s)"
+if [ -f "$LOGFILE" ]; then
+  E3G=$(curl -s -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{}')
+  E3CID=$(echo "$E3G" | jsonget "['data']['customer_id']")
+  E3KEY=$(echo "$E3G" | jsonget "['data']['visitor_key']")
+  E3MARK=$(wc -c < "$LOGFILE" | tr -d '[:space:]')
+  E3HDR=$(curl -s -o /dev/null -D - --max-time 25 -X POST "$B/api/v1/chat/test?visitor_key=$E3KEY" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+    -H "X-Trace-ID: $E3TID" -d "{\"customer_id\":${E3CID:-1},\"content\":\"在吗\"}")
+  echo "$E3HDR" | grep -qi "^x-trace-id: $E3TID" && check "X-Trace-ID客户端值响应头回显" y y || check "X-Trace-ID客户端值响应头回显" y n
+  sleep 1
+  E3NEW=$(tail -c +$((E3MARK + 1)) "$LOGFILE" 2>/dev/null)
+  E3LINES=$(printf '%s' "$E3NEW" | grep -c "$E3TID")
+  [ "${E3LINES:-0}" -ge 2 ] && check "同一trace贯穿入口+队列日志≥2行(${E3LINES}行)" y y || check "同一trace贯穿入口+队列日志≥2行(实际${E3LINES}行)" y n
+  E3TAGN=$(printf '%s' "$E3NEW" | grep -c "trace=$E3TID")
+  [ "${E3TAGN:-0}" -ge 1 ] && check "合并队列日志带trace=片段" y y || check "合并队列日志带trace=片段" y n
+else
+  check "ai-scrm.log 不存在，跳过E3 trace断言" y y
+fi
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

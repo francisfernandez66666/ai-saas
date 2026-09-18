@@ -16,6 +16,7 @@ import (
 
 	"ai-scrm/internal/channel"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 )
 
@@ -151,6 +152,10 @@ func ChannelCallbackReceive(c *gin.Context) {
 	if in != nil && in.MsgID == "" {
 		sum := sha256.Sum256(body)
 		in.EnvelopeID = "env:" + hex.EncodeToString(sum[:])
+	}
+	if in != nil {
+		// E3(2026-09-19)：回调请求 trace 随消息进 headless worker（合并队列/AI 出站共用同一条链）
+		in.TraceID = middleware.GetTraceID(c)
 	}
 	if err := channel.ProcessInbound(ch, in); err != nil {
 		log.Printf("[通道回调] channel=%d 入站处理失败: %v", ch.ID, err)

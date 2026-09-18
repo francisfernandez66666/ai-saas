@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	"ai-scrm/config"
+	"ai-scrm/internal/logx"
 )
 
 // DefaultGatewayClient AI 网关默认客户端（GatewayURL 非空时装配）
@@ -134,6 +136,11 @@ func (g *GatewayClient) GenerateTextWithUsage(ctx context.Context, messages []Ch
 	if stage != "" {
 		req.Header.Set("X-Stage", stage)
 	}
+	// E3(2026-09-19) 全链路 trace：ctx 有 trace 才带头（无 trace=零行为差）。
+	if t := logx.TraceFrom(ctx); t != "" {
+		req.Header.Set("X-Trace-ID", t)
+		req.Header.Set("traceparent", traceparentFor(t))
+	}
 
 	resp, err := g.http.Do(req)
 	if err != nil {
@@ -168,4 +175,15 @@ func (g *GatewayClient) GenerateTextWithUsage(ctx context.Context, messages []Ch
 		CompletionTokens: gr.Usage.CompletionTokens,
 		TotalTokens:      gr.Usage.TotalTokens,
 	}, nil
+}
+
+// traceparentFor E3(2026-09-19)：把内部 trace 映射成 W3C traceparent 头。
+// trace 可能是客户端自定义串（[a-zA-Z0-9-]），统一 sha256 前 16 字节确定性映射成 32hex
+// trace-id（同 trace 恒定同值，跨服务可关联）；span-id 每次随机 8 字节（一次 LLM 调用
+// 一个 span）；采样位固定 01（本地日志已完整记录）。原始值另经 X-Trace-ID 头无损透传。
+func traceparentFor(trace string) string {
+	sum := sha256.Sum256([]byte(trace))
+	span := make([]byte, 8)
+	_, _ = rand.Read(span)
+	return fmt.Sprintf("00-%x-%x-01", sum[:16], span)
 }

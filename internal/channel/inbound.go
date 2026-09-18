@@ -22,6 +22,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
 
@@ -54,6 +55,10 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	}
 	in.ChannelID = ch.ID
 	in.TenantID = ch.TenantID
+	// E3(2026-09-19)：无回调请求上下文的来源（轮询等）自造 trace，保证 worker 全链路可串
+	if in.TraceID == "" {
+		in.TraceID = logx.NewTraceID()
+	}
 
 	// P1-7 修复(2026-09-15)：MsgID 为空时退用信封摘要作去重锚——旧实现直接放行不抢占，
 	// 抓包重放同一份有效报文可无限触发入站落库+重复 AI 出站（无重发成本）。
@@ -118,6 +123,9 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	inMsgID uint, done func(error), workerStart time.Time) {
 
 	tid := ch.TenantID
+	// E3(2026-09-19)：worker 无 gin 上下文，按入站消息携带的 trace 造 trace-only ctx
+	//（不带取消信号——回调 ack 后连接即断，AI 链不能被其拖死），贯穿队列与 AI 出站。
+	workerCtx := logx.ContextWithTrace(context.Background(), in.TraceID)
 	var workErr error
 	// D8 护栏(2026-09-16B)：release 提升到函数作用域，panic 恢复时必须释放批次——
 	// 旧实现 recover 后直接收尾，processing 锁挂死到 600s 超时自愈，期间 web/通道
@@ -136,7 +144,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	}()
 
 	mergedContent, shouldProcess, reply, mergeWaitDuration, isSimple, mergeCount, epoch :=
-		service.DefaultMessageQueueService.EnqueueAndWait(tid, customerID, in.Content)
+		service.DefaultMessageQueueService.EnqueueAndWait(tid, customerID, in.Content, in.TraceID)
 
 	// 分支 1：简单消息快速通道（不合并；与 web chat_main 简单消息分支同款节奏）
 	if isSimple {
@@ -270,7 +278,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	}
 
 	// 生成 AI 回复（红线：flow→strategy→llm）
-	aiReply := flow.DefaultEngine.OrchestrateReply(&cust, conv.ID, mergedContent, &out, si.DeptIDs)
+	aiReply := flow.DefaultEngine.OrchestrateReply(workerCtx, &cust, conv.ID, mergedContent, &out, si.DeptIDs)
 	if aiReply == "" {
 		release("")
 		return

@@ -18,6 +18,7 @@ import (
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
+	"context"
 	"log"
 	"math/rand"
 	"strings"
@@ -35,9 +36,9 @@ import (
 // Q5 修复(2026-09-12)：统一收口 sanitizeAddress——prompt 铁律与硬编码话术仍可能漏出
 // 敬语「您」（去 AI 味铁律：说"你"不说"您"），出站前做一次替换 + 告警计数作纵深防御。
 // 原多 return 路径的实现整体改名 generateAIReplyInner，此处只包一层清洗。
-func GenerateAIReply(customer *model.Customer, conversationID uint, userInput string,
+func GenerateAIReply(ctx context.Context, customer *model.Customer, conversationID uint, userInput string,
 	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
-	return sanitizeAddress(generateAIReplyInner(customer, conversationID, userInput, strategyOutput, features))
+	return sanitizeAddress(generateAIReplyInner(ctx, customer, conversationID, userInput, strategyOutput, features))
 }
 
 // generateAIReplyInner 生成AI回复（内部实现，含全部提前 return 分支）
@@ -45,7 +46,7 @@ func GenerateAIReply(customer *model.Customer, conversationID uint, userInput st
 // 模拟真人延迟已外移到调用方（思考20-40s + 打字40字/分钟）
 // GenerateAIReply 生成AI回复（P2-B 起签名带 features：引擎特性集由调用方传入，
 // 本包不再反向依赖 engine/strategy，依赖方向收敛为 llm→strategytypes/ai/chatflow）
-func generateAIReplyInner(customer *model.Customer, conversationID uint, userInput string,
+func generateAIReplyInner(ctx context.Context, customer *model.Customer, conversationID uint, userInput string,
 	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
 
 	// 加载会话，检查引导式反问状态
@@ -242,7 +243,7 @@ func generateAIReplyInner(customer *model.Customer, conversationID uint, userInp
 	// 修复：从SystemConfigService读取temperature，后台调参即时生效
 	aiTemp := runtimecfg.SafeCfgFloat("ai_temperature", ai.DefaultClient.Temperature)
 	callStart := time.Now()
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("reply", tenantID, messages, aiTemp)
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(ctx, "reply", tenantID, messages, aiTemp)
 	if err != nil {
 		metrics.IncAIFailure() // P1-2：全模型失败计为 AI 失败（成功率分母）
 		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)

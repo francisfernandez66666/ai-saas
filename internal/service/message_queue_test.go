@@ -275,7 +275,7 @@ func TestP07BatchClosedNoOrphans(t *testing.T) {
 	}
 	chA := make(chan qres, 1)
 	go func() {
-		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第一条内容")
+		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第一条内容", "")
 		chA <- qres{m, p, r, e}
 	}()
 	a := <-chA // ~1s 合并窗口到期返回：此时批次已关账、processing 仍被 A 持有（模拟 AI 生成中）
@@ -285,7 +285,7 @@ func TestP07BatchClosedNoOrphans(t *testing.T) {
 
 	chB := make(chan qres, 1)
 	go func() {
-		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第二条内容")
+		m, p, r, _, _, _, e := svc.EnqueueAndWait(tid, cid, "第二条内容", "")
 		chB <- qres{m, p, r, e}
 	}()
 	time.Sleep(200 * time.Millisecond) // 确保 B 已在关账批次之后入队（旧行为下此刻 B 已挂死等旧回复）

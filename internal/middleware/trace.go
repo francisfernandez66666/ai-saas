@@ -58,6 +58,8 @@ func GetTraceID(c *gin.Context) string {
 // CtxWithTrace 将 gin 请求的 trace 注入 context（P2-4 修复）
 // buildEnvelope(ctx) 从 ctx.Value("trace_id") 读 trace，但 gin c.Set 不进 request.Context()——
 // 此前 MQ 消息的 trace 恒为空串（客户端 X-Trace-ID 链路断）。API 层发布事件改用它串联。
+// E3(2026-09-19)：亦作 LLM 链 ctx 的统一来源（flow/strategy/llm 注释指向此）——
+// 只带 trace、不带请求取消信号（Background 基底），防客户端断连中断计费中的 AI 调用。
 func CtxWithTrace(c *gin.Context) context.Context {
 	ctx := context.Background()
 	if c == nil {

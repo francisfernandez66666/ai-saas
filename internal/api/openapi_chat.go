@@ -187,7 +187,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
 		return
 	}
-	aiReply := flow.DefaultEngine.OrchestrateReply(customer, conversation.ID, userInput, &strategyOutput, nil)
+	aiReply := flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), customer, conversation.ID, userInput, &strategyOutput, nil)
 
 	// 内容安全闸门（C1）：外部渠道出站同样过滤；BLOCK 用退场语替换，绝不下发违规原文
 	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {

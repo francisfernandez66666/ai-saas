@@ -4,6 +4,8 @@ package llm
 import "ai-scrm/internal/billing"
 
 import (
+	"context"
+
 	"ai-scrm/internal/ai"
 )
 
@@ -13,7 +15,7 @@ import (
 func GenerateEvalsText(tenantID uint, messages []ai.ChatMessage, temperature float64) (string, error) {
 	// 网关模式下计费权上收网关（网关侧做 fail-closed 计量），本地跳过自身落账避免重复
 	gatewayMode := ai.DefaultGatewayClient != nil && tenantID != 0
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage("evals", tenantID, messages, temperature)
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(context.Background(), "evals", tenantID, messages, temperature)
 	if err != nil {
 		return "", err
 	}

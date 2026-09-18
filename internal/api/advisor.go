@@ -1315,7 +1315,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
 
 	// 生成AI回复
-	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, userInput, &strategyOutput, service.DeptChainForUser(currentUserID(c)))
+	aiReply := flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), &customer, conversation.ID, userInput, &strategyOutput, service.DeptChainForUser(currentUserID(c)))
 
 	// 内容安全闸门（C1）：顾问触发的AI回复同样出站过滤；BLOCK 则发退场语并关AI等接管
 	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {

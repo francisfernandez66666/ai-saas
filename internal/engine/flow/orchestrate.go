@@ -34,8 +34,8 @@ import (
 //
 //	→ 单线调用策略引擎生成话术 → 返回
 //
-// 输入输出签名与 strategy.GenerateReply 完全一致，调用点零成本切换
-func (e *Engine) OrchestrateReply(customer *model.Customer, conversationID uint, userInput string, out *strategy.StrategyOutput, deptIDs []uint) string {
+// ctx（E3，2026-09-19）：trace-only context，原样下传 strategy.GenerateReply（红线链路不变）。
+func (e *Engine) OrchestrateReply(ctx context.Context, customer *model.Customer, conversationID uint, userInput string, out *strategy.StrategyOutput, deptIDs []uint) string {
 	tid := customer.TenantID
 	oneID := cdp.ResolveOneID(tid, customer.ID)
 
@@ -51,7 +51,7 @@ func (e *Engine) OrchestrateReply(customer *model.Customer, conversationID uint,
 	}
 
 	// 3. 单线调用策略引擎（大脑被动被编排层调用）
-	return strategy.GenerateReply(customer, conversationID, userInput, out, deptIDs)
+	return strategy.GenerateReply(ctx, customer, conversationID, userInput, out, deptIDs)
 }
 
 // fetchTagSummary 带 200ms 超时拉取标签摘要（独立 goroutine + select 兜底）

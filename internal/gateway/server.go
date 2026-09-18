@@ -15,6 +15,7 @@ package gateway
 import "ai-scrm/internal/billing"
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,6 +27,7 @@ import (
 
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -178,8 +180,10 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	}
 
 	// 2. 上游多模型降级生成（网关持有平台厂商 Key）
+	// E3(2026-09-19)：续用调用方 X-Trace-ID（调用本网关须持签名 JWT，属内部可信链路；
+	// 仍做字符白名单防日志注入），trace-only ctx 下传供出站客户端串链。
 	start := time.Now()
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(stage, tenantID, req.Messages, temp)
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(logx.ContextWithTrace(context.Background(), gatewayTrace(c)), stage, tenantID, req.Messages, temp)
 	if err != nil || reply == "" {
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{"message": "上游模型全部不可用: " + errStr(err)},
@@ -313,4 +317,20 @@ func errStr(err error) string {
 		return "未知错误"
 	}
 	return err.Error()
+}
+
+// gatewayTrace E3(2026-09-19)：取调用方 X-Trace-ID 并按白名单校验（^[a-zA-Z0-9-]{8,64}$，
+// 与 middleware.TraceID 同口径），非法返回空串（不写入 ctx 即不出头）。
+func gatewayTrace(c *gin.Context) string {
+	s := c.GetHeader("X-Trace-ID")
+	if len(s) < 8 || len(s) > 64 {
+		return ""
+	}
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' {
+			continue
+		}
+		return ""
+	}
+	return s
 }

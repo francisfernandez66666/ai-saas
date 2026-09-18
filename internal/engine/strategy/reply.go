@@ -6,6 +6,7 @@ import (
 	"ai-scrm/internal/llm"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
+	"context"
 )
 
 // ============================================================
@@ -21,10 +22,12 @@ import (
 // M1 租户隔离修复（2026-08-25）：卖点注入按客户租户过滤后再交 LLM——
 // DefaultEngine.Features() 为全量缓存，不过滤则租户A私有卖点会进入
 // 租户B客户的 prompt（与 Infer 内 FillTemplate 过滤同规则）。
-func GenerateReply(customer *model.Customer, conversationID uint, userInput string, out *StrategyOutput, deptIDs []uint) string {
+// ctx（E3，2026-09-19）：贯穿至 LLM 出口供日志/出站头取 trace，须为不带请求取消信号的
+// trace-only context（middleware.CtxWithTrace），防客户端断连中断计费中的调用链。
+func GenerateReply(ctx context.Context, customer *model.Customer, conversationID uint, userInput string, out *StrategyOutput, deptIDs []uint) string {
 	scope := service.ResolveRecallScope(customer.TenantID, deptIDs)
 	features := featuresForTenant(DefaultEngine.Features(), customer.TenantID, scope)
-	return llm.GenerateAIReply(customer, conversationID, userInput, out, features)
+	return llm.GenerateAIReply(ctx, customer, conversationID, userInput, out, features)
 }
 
 // GenerateEvals 知识库素材 AI 评分出口（架构红线：业务层经策略引擎桥接 llm，

@@ -162,7 +162,7 @@ func TestRouterDegradesOnPrimary429(t *testing.T) {
 		}
 		return "备用答上了", Usage{TotalTokens: 7}, nil
 	})
-	reply, _, model, usage, err := r.GenerateTextForStage("reply", 1, routerMessages(), 0.5)
+	reply, _, model, usage, err := r.GenerateTextForStage(context.Background(), "reply", 1, routerMessages(), 0.5)
 	if err != nil || reply != "备用答上了" || model != "备用模型" {
 		t.Fatalf("应降级到备用模型成功，reply=%q model=%q err=%v", reply, model, err)
 	}

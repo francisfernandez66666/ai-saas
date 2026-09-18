@@ -26,6 +26,9 @@ type InboundMessage struct {
 	IsEvent    bool   // 是否订阅/系统事件（change_contact/follow 等，走 CDP 摄入非对话）
 	EventKey   string // 事件类型键
 	ReceiveID  string // 校验用 corpid/appid（解密 receive_id）
+	// TraceID E3(2026-09-19)：入站回调请求的 trace（回调 handler 注入；轮询等无请求上下文
+	// 的来源由 ProcessInbound 自造）。headless worker 据此贯穿合并队列/AI 出站日志。
+	TraceID string
 }
 
 // SendResult 出站发送结果

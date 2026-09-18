@@ -129,12 +129,14 @@ func InitRouter() {
 // stage_models 配置了该阶段专属模型时优先使用（失败自动回退全局降级链），
 // 并透传 token 用量供 usage_ledger 落账。
 // tenantID 用于网关转发时还原租户做 fail-closed 计量（0=平台内部调用）。
+// ctx（E3，2026-09-19）：总预算 ctx 从传入 parent 派生——调用方须传"仅携带 trace、
+// 不带请求取消信号"的 context（如 middleware.CtxWithTrace），避免客户端断连中断计费中的 AI 链。
 // 返回：回复内容, provider, 模型名, 用量, 错误
-func (r *AIRouter) GenerateTextForStage(stage string, tenantID uint, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
+func (r *AIRouter) GenerateTextForStage(ctx context.Context, stage string, tenantID uint, messages []ChatMessage, temperature float64) (string, string, string, Usage, error) {
 	// C4 修复(2026-09-14)：stage 覆盖尝试与全局降级链共享同一个总预算 deadline——
 	// 旧实现各拿一份完整预算（110s+110s≈220s），违反 D4"2min 硬顶"且可能超上游 chat ctx。
 	budget := r.totalBudget()
-	chainCtx, chainCancel := context.WithTimeout(context.Background(), budget)
+	chainCtx, chainCancel := context.WithTimeout(ctx, budget)
 	defer chainCancel()
 	// 阶段覆盖优先：配置的专属模型先行尝试
 	if provStr, model, ok := ResolveStageModel(stage); ok {

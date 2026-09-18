@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
@@ -467,7 +468,9 @@ skipStoreVisitFastTest:
 	// ---- 消息入队 + 合并窗口等待（和正式接口一致） ----
 	// 第一个拿到处理权的请求负责生成回复，后续请求挂起等待
 	// cachedReply 不再使用（Bug 1 修复后 merged 请求只返回状态标记）
-	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
+	// E3(2026-09-19)：入口结构化日志——trace_id 字段把"入口→合并队列→AI→出站"串成一条链
+	logx.WithTrace(middleware.CtxWithTrace(c)).Info("chat_test 入站", "tenant_id", tenantID, "customer_id", customer.ID)
+	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content, middleware.GetTraceID(c))
 	if isSimple {
 		// H7修复(2026-08-26)：实例内同客户简单消息串行，处理完释放锁
 		defer service.DefaultMessageQueueService.SimpleMessageDone(tenantID, customer.ID)
@@ -775,7 +778,7 @@ skipStoreVisitFastTest:
 
 	// ---- 生成AI回复 ----
 	// 与旧版不同：现在传入真实 conversationID，AI可以获取历史对话上下文
-	aiReply := flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
+	aiReply := flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), &customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
 	// ---- 7.5 内容安全闸门（G8 修复，2026-09-14）----
 	// 免登录测试通道此前缺失此闸：正式对话(chat_main.go)过滤敏感词/违规内容后转人工，

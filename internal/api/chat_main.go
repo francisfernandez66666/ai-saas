@@ -158,29 +158,29 @@ func Chat(c *gin.Context) {
 			}
 		}
 
-			if result.Error != nil {
-				// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
-				conversation = model.Conversation{
-					CustomerID:     customer.ID,
-					AssignedUserID: customer.AssignedUserID,
-					Status:         "active",
-					Mode:           "ai",
-					Channel:        "web",
+		if result.Error != nil {
+			// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
+			conversation = model.Conversation{
+				CustomerID:     customer.ID,
+				AssignedUserID: customer.AssignedUserID,
+				Status:         "active",
+				Mode:           "ai",
+				Channel:        "web",
+			}
+			// G1 收口(2026-09-16C)：013 唯一索引兜底后，Redis 关闭/他路（guest/通道/OpenAPI
+			// 的 EnsureActiveConversation）直插撞车时创建会报约束冲突——复查复用对方那条，
+			// 而非把 500 抛给客户。
+			if cerr := db.RQ(c).Create(&conversation).Error; cerr != nil {
+				if rerr := db.RQ(c).Scopes(db.T(c)).Where("customer_id = ? AND status = ?", customer.ID, "active").
+					Order("updated_at DESC").First(&conversation).Error; rerr != nil {
+					log.Printf("[对话-告警] 冷启动创建失败且复查无果: 客户%d err=%v recheck=%v", customer.ID, cerr, rerr)
+					RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+					return
 				}
-				// G1 收口(2026-09-16C)：013 唯一索引兜底后，Redis 关闭/他路（guest/通道/OpenAPI
-				// 的 EnsureActiveConversation）直插撞车时创建会报约束冲突——复查复用对方那条，
-				// 而非把 500 抛给客户。
-				if cerr := db.RQ(c).Create(&conversation).Error; cerr != nil {
-					if rerr := db.RQ(c).Scopes(db.T(c)).Where("customer_id = ? AND status = ?", customer.ID, "active").
-						Order("updated_at DESC").First(&conversation).Error; rerr != nil {
-						log.Printf("[对话-告警] 冷启动创建失败且复查无果: 客户%d err=%v recheck=%v", customer.ID, cerr, rerr)
-						RespErr(c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
-						return
-					}
-					log.Printf("[对话] 冷启动撞唯一约束，复用并发方会话%d（客户%d）", conversation.ID, customer.ID)
-				} else {
-					log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, customer.ID)
-				}
+				log.Printf("[对话] 冷启动撞唯一约束，复用并发方会话%d（客户%d）", conversation.ID, customer.ID)
+			} else {
+				log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, customer.ID)
+			}
 
 			// 欢迎词已移至独立的 /chat/welcome 接口负责秒回
 			// 此处不再创建欢迎消息，避免欢迎词跟AI回复绑在一起等延迟
@@ -647,7 +647,9 @@ skipStoreVisitFast:
 	// 第一个拿到处理权的请求负责生成回复
 	// 后续请求挂起等待，回复生成后一起返回
 	// 修复：新增isSimple返回值，简单消息直接走快速回复通道
-	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content)
+	// E3(2026-09-19)：入口结构化日志——trace_id 字段把"入口→合并队列→AI→出站"串成一条链
+	logx.WithTrace(middleware.CtxWithTrace(c)).Info("chat 入站", "tenant_id", tenantID, "customer_id", customer.ID)
+	mergedContent, shouldProcess, _, mergeWaitDuration, isSimple, mergeCount, processEpoch := service.DefaultMessageQueueService.EnqueueAndWait(tenantID, customer.ID, req.Content, middleware.GetTraceID(c))
 
 	// 修复：简单消息（"在吗"/"那我撤了"等）直接走快速回复，20-45秒随机延迟
 	if isSimple {
@@ -809,7 +811,7 @@ skipStoreVisitFast:
 					"pending_handoff":     false,
 				})
 				log.Printf("[Chat] 会话%d 顾问超时，自动重开AI回复", conversation.ID)
-				aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
+				aiReply = flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), &customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 			} else {
 				aiReply = ""
 				routeResult = "human_locked_no_ai"
@@ -817,7 +819,7 @@ skipStoreVisitFast:
 			}
 		} else {
 			conversation.Mode = "ai"
-			aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
+			aiReply = flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), &customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 		}
 
 	case strategy.RoutePendingHuman:
@@ -841,7 +843,7 @@ skipStoreVisitFast:
 		// 已留资客户：不重复问留资信息，直接引导到店试驾
 		conversation.Mode = "ai"
 		log.Printf("[对话] 会话%d 询价路由触发，引导到店试驾后出报价", conversation.ID)
-		aiReply = flow.DefaultEngine.OrchestrateReply(&customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
+		aiReply = flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), &customer, conversation.ID, mergedContent, &strategyOutput, service.DeptChainForUser(conversation.AssignedUserID))
 
 	case strategy.RouteHuman:
 		// 直接转人工（硬切，用户有感知）
