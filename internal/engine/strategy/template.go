@@ -7,6 +7,7 @@ import (
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/pkg/utils"
 	"fmt"
+	"hash/fnv"
 	"strings"
 )
 
@@ -29,7 +30,7 @@ type RecalledTemplate struct {
 }
 
 // Step4_RecallTemplate 话术模板召回
-// 输入：选定的锚类型、客户标签、客户T向量
+// 输入：选定的锚类型、客户标签、客户T向量、客户ID（E4 实验分桶用，0=无法分桶退确定性最高分）
 // 输出：最佳匹配的话术模板
 //
 // 召回逻辑：
@@ -37,11 +38,14 @@ type RecalledTemplate struct {
 //  2. 再按标签匹配度排序
 //  3. 再按适用条件（意向分范围、车型等）过滤
 //  4. 取综合得分最高的
+//  5. E4：最高分若落在实验组（ab_group 非空）且组内有并列 variant，
+//     按 fnv32(customerID|ab_group) % 权重和 稳定分桶择一（同一客户恒定同组）
 func Step4_RecallTemplate(
 	anchorType int,
 	customerTags []string,
 	tVector [32]float64,
 	templates []model.Template,
+	customerID uint,
 ) (*model.Template, float64) {
 
 	// 候选模板列表
@@ -110,7 +114,59 @@ func Step4_RecallTemplate(
 		}
 	}
 
+	// E4 实验分桶：最高分落在实验组且组内有同分并列 variant 时，按客户稳定哈希择一；
+	// 未设实验组（现状绝大多数）走不到这里的多分支——零漂移
+	best = pickABVariant(best, candidates, customerID)
+
 	return best.Template, best.Similarity
+}
+
+// pickABVariant 在最高分候选中做 A/B 分桶（E4，2026-09-19 增强批）
+// 规则：
+//   - best 不参与实验（AbGroup 空）或组内无同分 variant → 原样返回（零漂移）
+//   - variant 权重和 <= 0 → 确定性返回 best（视为未配置分流）
+//   - 否则 bucket = fnv32("customerID|ab_group") % 权重和，按候选顺序累计权重落桶
+//     同一客户在同一实验组内永远命中同一 variant（跨进程稳定，不依赖 map 序/随机数）
+func pickABVariant(best RecalledTemplate, candidates []RecalledTemplate, customerID uint) RecalledTemplate {
+	group := best.Template.AbGroup
+	if group == "" {
+		return best
+	}
+
+	var variants []RecalledTemplate
+	var totalWeight int
+	for _, c := range candidates {
+		if c.Template.AbGroup == group && c.MatchScore == best.MatchScore {
+			variants = append(variants, c)
+			if c.Template.AbWeight > 0 {
+				totalWeight += c.Template.AbWeight
+			}
+		}
+	}
+	if len(variants) < 2 || totalWeight <= 0 {
+		return best
+	}
+
+	bucket := int(abHashBucket(customerID, group) % uint32(totalWeight))
+	cum := 0
+	for _, v := range variants {
+		if v.Template.AbWeight <= 0 {
+			continue // 权重 0 = 只作对照备份，不吃分流流量
+		}
+		cum += v.Template.AbWeight
+		if bucket < cum {
+			return v
+		}
+	}
+	return best // 理论不可达（bucket < totalWeight），兜底
+}
+
+// abHashBucket 稳定分桶哈希：fnv32a 跨进程/跨版本确定，勿换成带 seed 的哈希
+func abHashBucket(customerID uint, group string) uint32 {
+	h := fnv.New32a()
+	// fnv 的 Write 对内存 buffer 永不返回 error，忽略 errcheck 误报
+	_, _ = fmt.Fprintf(h, "%d|%s", customerID, group)
+	return h.Sum32()
 }
 
 // calcTagMatchScore 计算标签匹配分数

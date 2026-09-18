@@ -15,7 +15,7 @@ const ANCHOR_OPTS: FieldSpec['options'] = [
   { label: '5 稀缺', value: 5 },
   { label: '6 代价自担', value: 6 },
 ]
-const STATUS_OPTS = [{ label: '启用', value: 1 }, { label: '停用', value: 0 }]
+const STATUS_OPTS = [{ label: '启用', value: 1 }, { label: '停用', value: 0 }, { label: '草稿（不进召回）', value: 2 }]
 const ANCHOR_NAMES = ['不抛', '同类/场景', '拆解', '对比', '损失', '稀缺', '代价自担']
 
 /** 把锚点编号转换为策略中文名称。 */
@@ -40,6 +40,8 @@ const TEMPLATE_ALL_FIELDS: FieldSpec[] = [
   { key: 'required_features', label: '所需卖点', type: 'list' },
   { key: 'priority', label: '优先级', type: 'number' },
   { key: 'status', label: '状态', type: 'number' },
+  { key: 'ab_group', label: '实验组' },
+  { key: 'ab_weight', label: '分流权重', type: 'number' },
 ]
 
 type PackTemplateStat = {
@@ -97,6 +99,7 @@ export function StrategyTemplateTab() {
       { key: 'anchor_type', label: '锚类型', options: ANCHOR_OPTS },
       { key: 'category', label: '分类' },
       { key: 'status', label: '状态', options: STATUS_OPTS },
+      { key: 'ab_group', label: '实验组(E4)' },
     ]}
     columns={[
       { colKey: 'id', title: 'ID', width: 150 },
@@ -104,6 +107,7 @@ export function StrategyTemplateTab() {
       { colKey: 'anchor_type', title: '锚', width: 110, cell: (p: CellProps) => <Tag theme="primary">{anchorLabel(Number(p.row.anchor_type))}</Tag> },
       { colKey: 'category', title: '分类', width: 120 },
       { colKey: 'prompt_template', title: '抛话术', ellipsis: true },
+      { colKey: 'ab_group', title: '实验组', width: 110, cell: (p: CellProps) => (p.row.ab_group ? <Tag theme="warning">{String(p.row.ab_group)} · {Number(p.row.ab_weight || 0)}</Tag> : <span className="text-xs text-gray-400">-</span>) },
       { colKey: 'priority', title: '优先级', width: 90 },
       { colKey: 'usage_count', title: '使用次数', width: 100 },
       { colKey: 'pack_effect', title: '包效果', width: 190, cell: (p: CellProps) => <PackEffectCell row={p.row} stats={packStats} /> },
@@ -118,7 +122,9 @@ export function StrategyTemplateTab() {
       { key: 'min_intent', label: '最低意向', type: 'number', defaultValue: 0 },
       { key: 'max_intent', label: '最高意向', type: 'number', defaultValue: 1 },
       { key: 'priority', label: '优先级', type: 'number', defaultValue: 5 },
-      { key: 'status', label: '状态', type: 'number', defaultValue: 1 },
+      { key: 'status', label: '状态', type: 'select', options: STATUS_OPTS, defaultValue: 1 },
+      { key: 'ab_group', label: '实验组名', placeholder: 'E4：同组 variant 按客户稳定分桶，留空不参与实验' },
+      { key: 'ab_weight', label: '分流权重', type: 'number', defaultValue: 0 },
       { key: 'trigger_tags', label: '触发标签', type: 'list' },
       { key: 'required_tags', label: '必含标签', type: 'list' },
       { key: 'applicable_models', label: '适用车型', type: 'list' },

@@ -395,6 +395,7 @@ afterAnchorSelection:
 			input.CustomerTags,
 			input.TVector,
 			tenantTemplates,
+			input.CustomerID, // E4：实验分桶按客户稳定哈希，0=退确定性最高分
 		)
 
 		if template != nil {

@@ -66,6 +66,8 @@ export function boolToInt(v: unknown): number {
 
 /** 把启用/停用状态渲染为彩色标签。 */
 export function statusTag(row: CrudRow) {
+  // E4（2026-09-19）：话术模板 status=2 为草稿（不进召回池），其余实体数值 2 无既有语义
+  if (Number(row.status) === 2 && typeof row.status === 'number') return <Tag theme="warning">草稿</Tag>
   const active = Number(row.status) === 1 || row.status === true || row.status === 'active'
   return <Tag theme={active ? 'success' : 'default'}>{active ? '启用' : '停用'}</Tag>
 }

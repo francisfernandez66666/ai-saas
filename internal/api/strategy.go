@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -46,6 +47,10 @@ func GetTemplateList(c *gin.Context) {
 		keyword := "%" + req.Keyword + "%"
 		query = query.Where("name LIKE ? OR prompt_template LIKE ?", keyword, keyword)
 	}
+	// E4（2026-09-19 增强批）：实验组视图——同组 variant 连同各自包效果一起列出，前端对照接钩/留资
+	if req.AbGroup != "" {
+		query = query.Where("ab_group = ?", req.AbGroup)
+	}
 
 	var total int64
 	query.Count(&total)
@@ -66,10 +71,12 @@ func GetTemplateList(c *gin.Context) {
 
 // GetTemplate 获取话术模板详情
 func GetTemplate(c *gin.Context) {
-	id := c.Param("id") // 注意：Template 主键为字符串（语义化ID），此处分类型校验无意义，维持字符串查询
+	// E4 冒烟捕获（2026-09-19）：Template 主键为字符串，First(&t, id) 会把非数字串
+	// 当裸 SQL 条件拼进 WHERE（42703→恒404）。与 DeleteTemplate 2026-08-25 修口对齐，显式 Where。
+	id := c.Param("id")
 
 	var template model.Template
-	result := db.PQ(c).First(&template, id)
+	result := db.PQ(c).Where("id = ?", id).First(&template)
 	if result.Error != nil {
 		RespErr(c, http.StatusNotFound, 404, "模板不存在")
 		return
@@ -99,6 +106,18 @@ func CreateTemplate(c *gin.Context) {
 		Priority:       req.Priority,
 		Status:         req.Status,
 	}
+	// E4：实验组名/权重归一（越界一律拒 400，负权重进分桶会污染累计和）
+	// 长度按 rune 计（PG varchar(50) 语义是字符，中文组名合法——承接残项批①教训）
+	if utf8.RuneCountInString(req.AbGroup) > 50 {
+		RespErr(c, http.StatusBadRequest, 400, "ab_group 超长（≤50 字符）")
+		return
+	}
+	if req.AbWeight < 0 || req.AbWeight > 100 {
+		RespErr(c, http.StatusBadRequest, 400, "ab_weight 须在 0-100 之间")
+		return
+	}
+	template.AbGroup = req.AbGroup
+	template.AbWeight = req.AbWeight
 
 	// JSON字段
 	if len(req.TriggerTags) > 0 {
@@ -144,10 +163,12 @@ func CreateTemplate(c *gin.Context) {
 
 // UpdateTemplate 更新话术模板
 func UpdateTemplate(c *gin.Context) {
-	id := c.Param("id") // 注意：Template 主键为字符串（语义化ID），维持字符串查询
+	// E4 冒烟捕获（2026-09-19）：字符串主键禁用 First(&t, id)——非数字串被 GORM 当裸
+	// 条件拼 SQL（42703→恒404），改显式 Where（同 GetTemplate/DeleteTemplate 口径）
+	id := c.Param("id")
 
 	var template model.Template
-	result := db.RQ(c).First(&template, id)
+	result := db.RQ(c).Where("id = ?", id).First(&template)
 	if result.Error != nil {
 		RespErr(c, http.StatusNotFound, 404, "模板不存在")
 		return
@@ -169,6 +190,17 @@ func UpdateTemplate(c *gin.Context) {
 	template.HookTemplate = req.HookTemplate
 	template.Priority = req.Priority
 	template.Status = req.Status
+	// E4：实验字段与 Create 同口径校验（前端表单回传全字段，置空 ab_group 即退出实验）
+	if utf8.RuneCountInString(req.AbGroup) > 50 {
+		RespErr(c, http.StatusBadRequest, 400, "ab_group 超长（≤50 字符）")
+		return
+	}
+	if req.AbWeight < 0 || req.AbWeight > 100 {
+		RespErr(c, http.StatusBadRequest, 400, "ab_weight 须在 0-100 之间")
+		return
+	}
+	template.AbGroup = req.AbGroup
+	template.AbWeight = req.AbWeight
 
 	if len(req.TriggerTags) > 0 {
 		template.TriggerTags = toJSON(req.TriggerTags)

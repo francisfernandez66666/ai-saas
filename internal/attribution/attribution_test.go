@@ -2,6 +2,7 @@
 package attribution
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -172,5 +173,68 @@ func TestScoreAndAlertPackQuality(t *testing.T) {
 	}
 	if len(alerts) != 1 || alertPack != "auto_rox" || alertMsg == "" {
 		t.Fatalf("unexpected alerts=%v pack=%q msg=%q", alerts, alertPack, alertMsg)
+	}
+}
+
+// TestStatsAbGroupFilter 覆盖 E4 实验对照聚合：JOIN templates 按 ab_group 过滤，
+// 组外模板与未参与实验模板的归因行不进结果（2026-09-19 增强批）
+func TestStatsAbGroupFilter(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	base := uint(time.Now().UnixNano() % 1000000000)
+	group := fmt.Sprintf("exp_t_%d", base)
+	idA := fmt.Sprintf("tpl_ab_a_%d", base)
+	idB := fmt.Sprintf("tpl_ab_b_%d", base)
+	idPlain := fmt.Sprintf("tpl_ab_plain_%d", base)
+
+	tpls := []model.Template{
+		{ID: idA, TenantID: tid, AnchorType: 2, Status: 1, PromptTemplate: "a", AbGroup: group, AbWeight: 50},
+		{ID: idB, TenantID: tid, AnchorType: 2, Status: 1, PromptTemplate: "b", AbGroup: group, AbWeight: 50},
+		{ID: idPlain, TenantID: tid, AnchorType: 2, Status: 1, PromptTemplate: "p"},
+	}
+	for i := range tpls {
+		if err := db.DB.Create(&tpls[i]).Error; err != nil {
+			t.Fatalf("create template %d: %v", i, err)
+		}
+	}
+	attrs := []model.ReplyAttribution{
+		{TenantID: tid, MessageID: base + 1, ConversationID: base, CustomerID: base + 1, TemplateID: idA, Hooked: true},
+		{TenantID: tid, MessageID: base + 2, ConversationID: base, CustomerID: base + 1, TemplateID: idA, Hooked: true},
+		{TenantID: tid, MessageID: base + 3, ConversationID: base, CustomerID: base + 1, TemplateID: idB},
+		{TenantID: tid, MessageID: base + 4, ConversationID: base, CustomerID: base + 1, TemplateID: idPlain, LeadCaptured: true},
+	}
+	for i := range attrs {
+		if err := db.DB.Create(&attrs[i]).Error; err != nil {
+			t.Fatalf("create attribution %d: %v", i, err)
+		}
+	}
+
+	qtid := tid
+	rows, err := Stats(StatFilter{TenantID: &qtid, AbGroup: group, Days: 1})
+	if err != nil {
+		t.Fatalf("stats by ab_group: %v", err)
+	}
+	seen := map[string]int64{}
+	for _, r := range rows {
+		seen[r.TemplateID] = r.SampleCount
+	}
+	if len(rows) != 2 || seen[idA] != 2 || seen[idB] != 1 {
+		t.Fatalf("实验组聚合应只含两个 variant: %+v", rows)
+	}
+	// 不带 ab_group 的旧口径调用不受影响（含组外模板行）
+	all, err := Stats(StatFilter{TenantID: &qtid, Days: 1})
+	if err != nil {
+		t.Fatalf("stats unfiltered: %v", err)
+	}
+	var plainFound bool
+	for _, r := range all {
+		if r.TemplateID == idPlain {
+			plainFound = true
+		}
+	}
+	if !plainFound {
+		t.Fatalf("无过滤口径应仍含未参与实验模板: %+v", all)
 	}
 }

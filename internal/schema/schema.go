@@ -221,6 +221,7 @@ type TemplateListRequest struct {
 	Category   string `form:"category"`    // 注释：分类
 	Status     int    `form:"status"`      // 注释：状态
 	Keyword    string `form:"keyword"`     // 注释：关键词
+	AbGroup    string `form:"ab_group"`    // 注释：按 A/B 实验组过滤（E4，空=不过滤）
 }
 
 // CreateTemplateRequest 创建话术模板请求
@@ -240,7 +241,9 @@ type CreateTemplateRequest struct {
 	HookFields       []string `json:"hook_fields"`                        // 注释：钩采集字段
 	RequiredFeatures []string `json:"required_features"`                  // 注释：所需卖点
 	Priority         int      `json:"priority"`                           // 注释：优先级
-	Status           int      `json:"status"`                             // 注释：状态
+	Status           int      `json:"status"`                             // 注释：状态（1=启用 0=停用 2=草稿）
+	AbGroup          string   `json:"ab_group"`                           // 注释：A/B 实验组名（空=不参与，E4）
+	AbWeight         int      `json:"ab_weight"`                          // 注释：组内分流权重（E4）
 }
 
 // ============================================================

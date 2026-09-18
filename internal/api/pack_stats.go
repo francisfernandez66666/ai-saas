@@ -25,6 +25,7 @@ func parseStatFilter(c *gin.Context, tid *uint) attribution.StatFilter {
 		PackCode:    c.Query("pack_code"),
 		PackVersion: c.Query("pack_version"),
 		TemplateID:  c.Query("template_id"),
+		AbGroup:     c.Query("ab_group"), // E4：话术实验组对照视图
 		Days:        days,
 	}
 }

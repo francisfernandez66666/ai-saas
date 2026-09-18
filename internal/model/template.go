@@ -62,13 +62,19 @@ type Template struct {
 	// RequiredFeatures 需要的卖点feature_id列表(JSON数组)，用于动态填充
 	RequiredFeatures string `gorm:"type:text" json:"required_features"` // 所需卖点
 
+	// ---- 实验（E4，2026-09-19 增强批）----
+	// AbGroup A/B 实验组名；空串=不参与实验（召回行为与旧版逐字节一致）。
+	// 同组内多模板视为同触发条件的 variant，按客户稳定哈希 + AbWeight 分桶择一
+	AbGroup  string `gorm:"size:50;default:''" json:"ab_group"`
+	AbWeight int    `gorm:"default:0" json:"ab_weight"` // 组内分流权重（0-100 建议；全 0 回退确定性最高分）
+
 	// ---- 元数据 ----
 	// DepartmentID 部门维度（三级包架构 2026-08-26）：NULL=租户级（行业/企业包物化）；
 	// 非空=部门专属（部门包物化），仅该部门链上的顾问语境可见
 	DepartmentID *uint     `gorm:"index" json:"department_id"`   // 部门ID
 	Priority     int       `gorm:"default:0" json:"priority"`    // 优先级，越大越优先
 	UsageCount   int       `gorm:"default:0" json:"usage_count"` // 使用次数
-	Status       int       `gorm:"default:1" json:"status"`      // 状态: 1-启用 0-禁用
+	Status       int       `gorm:"default:1" json:"status"`      // 状态: 1-启用 0-禁用 2-草稿（E4：引擎 LoadData 只加载 1，草稿天然不进召回池）
 	Version      string    `gorm:"size:20" json:"version"`       // 版本号
 	CreatedAt    time.Time `json:"created_at"`                   // 创建时间
 	UpdatedAt    time.Time `json:"updated_at"`                   // 更新时间

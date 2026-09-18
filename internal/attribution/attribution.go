@@ -181,6 +181,7 @@ type StatFilter struct {
 	PackCode    string
 	PackVersion string
 	TemplateID  string
+	AbGroup     string // E4（2026-09-19）：按话术实验组过滤（JOIN templates），空=不过滤
 	Days        int
 }
 
@@ -215,6 +216,12 @@ func Stats(f StatFilter, gdb ...*gorm.DB) ([]model.PackTemplateStat, error) {
 	}
 	if f.TemplateID != "" {
 		q = q.Where("r.template_id = ?", f.TemplateID)
+	}
+	// E4 实验对照：只在按组过滤时 JOIN templates——组名在模板表（归因行只记 template_id），
+	// 不带 ab_group 的既有调用（SyncPackStats/看板）SQL 形态零变化
+	if f.AbGroup != "" {
+		q = q.Joins("JOIN templates t ON t.id = r.template_id").
+			Where("t.ab_group = ?", f.AbGroup)
 	}
 	if f.Days > 0 {
 		q = q.Where("r.created_at >= ?", time.Now().AddDate(0, 0, -f.Days))
