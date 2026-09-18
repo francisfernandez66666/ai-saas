@@ -62,8 +62,11 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	v1.POST("/chat/welcome", middleware.IPRateLimit("chat_welcome", 30, time.Minute), Welcome)
 	// 聊天历史（OptionalJWTAuth：有 Bearer 注入身份放行 B 端，匿名走 visitor_key 校验 C 端不变）
 	v1.GET("/chat/history", middleware.OptionalJWTAuth(), GetChatHistory)
-	// 延迟清零（顾问/管理员"立即回复"）：IP 限流 + handler 内双重归属校验
-	v1.POST("/chat/clear-delay", middleware.IPRateLimit("chat_clear_delay", 30, time.Minute), ClearDelay)
+	// 延迟清零（顾问/管理员"立即回复"）：IP 限流 + handler 内双重归属校验。
+	// 浏览器实测批(2026-09-18)：补 OptionalJWTAuth——本路由在 v1.Use(JWTAuth) 之前注册，
+	// 登录态 Bearer 此前从不解析 → CheckVisitorKey 拿不到 user_id，顾问对真实访客客户
+	// （VisitorKey 非空）点"立即回复"必 403（§八-6 UI 实测捕获）。匿名 C 端 visitor_key 路径不变。
+	v1.POST("/chat/clear-delay", middleware.OptionalJWTAuth(), middleware.IPRateLimit("chat_clear_delay", 30, time.Minute), ClearDelay)
 	// E3：C 端"找人工"（访客身份自证，限流防刷）
 	v1.POST("/chat/request-human", middleware.IPRateLimit("chat_req_human", 20, time.Minute), GuestRequestHuman)
 	// 支付网关异步回调（免登录，服务端到服务端）：必须注册在 v1.Use(JWTAuth) 之前，
