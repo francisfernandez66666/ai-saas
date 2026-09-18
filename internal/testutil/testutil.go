@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"ai-scrm/config"
@@ -19,6 +20,44 @@ import (
 
 	"github.com/joho/godotenv"
 )
+
+// ============================================================
+// DB 跳过计数（§八-7 零测试包基建批，2026-09-18）
+//
+// 背景：SetupTestDB 在本地 DB 不可用时走 t.Skipf——"无 DB 也能跑纯逻辑测试"的
+// 哲学没错，但副作用是 `go test ./...` 全绿里可能藏着"整包 DB 用例一个没跑"，
+// 静默绿无人发现（历史上 P2-82 就是为此在 CI 侧改成 Fatal）。
+// 本计数把"跳过了多少"变成显式输出：各测试包加
+//
+//	func TestMain(m *testing.M) { os.Exit(testutil.RunMain(m)) }
+//
+// 即可在 m.Run() 结束后往 stderr 打一行跳过条数（N=0 时不打，避免噪音）。
+// 两个分支分别计数：skip（本地降级）与 fatal（CI 阻断），便于区分"本地没跑"
+// 和"CI 里真炸"两种形态。
+// ============================================================
+var (
+	dbSkipCount  atomic.Int64 // 本地 DB 不可用被 Skip 的 DB 用例数
+	dbFatalCount atomic.Int64 // CI 下 DB 不可用被 Fatal 的 DB 用例数
+)
+
+// SkipStats 返回本测试二进制内 SetupTestDB 的两个分支计数。
+// skipped=本地 DB 不可用被跳过的用例数，fatal=CI 下 DB 不可用被判失败的用例数。
+func SkipStats() (skipped int64, fatal int64) {
+	return dbSkipCount.Load(), dbFatalCount.Load()
+}
+
+// RunMain 供 TestMain 调用的统一出口：跑完用例后把 DB 跳过计数打到 stderr。
+// 只在 N>0 时输出（零跳过是常态，不制造噪音）；返回值交给 os.Exit。
+func RunMain(m *testing.M) int {
+	code := m.Run()
+	skipped, fatal := SkipStats()
+	if skipped > 0 || fatal > 0 {
+		fmt.Fprintf(os.Stderr,
+			"[testutil] 本测试二进制跳过 %d 个 DB 用例（DB 不可用）；CI 侧 Fatal %d 个\n",
+			skipped, fatal)
+	}
+	return code
+}
 
 // SetupTestDB 初始化测试用 DB 连接。
 // 行为：向上查找项目根 .env 并加载 → config.LoadConfig()（填充 GlobalConfig，否则 db.Init panic）
@@ -30,6 +69,7 @@ import (
 //   - 本包刻意不 import service（避免 service 测试包反向依赖形成 import cycle）；
 //     依赖 DefaultSystemConfigService 的测试（如计费/配额）需在 SetupTestDB 后自行
 //     调用 runtimecfg.InitSystemConfigService()（同包测试可直接调用）。
+//   - 两个分支都进包级计数（见 SkipStats/RunMain），配 TestMain 即可显式暴露跳过量
 func SetupTestDB(t *testing.T) {
 	t.Helper()
 	loadRootEnv()
@@ -39,8 +79,10 @@ func SetupTestDB(t *testing.T) {
 		// 原 t.Skipf 会让 DB 依赖测试"静默绿"（无脑跳过），CI 里无法暴露真缺陷。
 		// 本地开发保留 Skip 哲学（无 DB 也能跑纯逻辑测试）。GitHub Actions 会设 CI=true。
 		if os.Getenv("CI") != "" || os.Getenv("GITHUB_ACTIONS") == "true" {
+			dbFatalCount.Add(1)
 			t.Fatalf("DB 不可用（CI 环境）：%v", err)
 		}
+		dbSkipCount.Add(1)
 		t.Skipf("DB 不可用，跳过 DB 依赖测试: %v", err)
 	}
 }

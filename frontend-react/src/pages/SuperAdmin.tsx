@@ -6,6 +6,9 @@ import { useBrand } from '../lib/branding'
 import { AUTH, apiJSON, logoutAndRedirect } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
 import { MonitorTab } from './super/MonitorTab'
+// §八-6 平台运营 UI 批：发票受理 + 行业包上架/共享管理（独立 Tab 组件，按需挂载）
+import { InvoiceTab } from './super/InvoiceTab'
+import { PackTab } from './super/PackTab'
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
 const { Header, Aside, Content } = Layout
@@ -288,10 +291,14 @@ export default function SuperAdmin() {
             <MenuGroup title="平台管理">
               <MenuItem value="tenants">租户管理</MenuItem>
               <MenuItem value="packages">AI 商业包</MenuItem>
+              {/* §八-6：包上架/共享管理（区别于 AI 商业包 packages，此处是行业包 .aipack 目录） */}
+              <MenuItem value="industry_packs">行业包管理</MenuItem>
               <MenuItem value="pack_quality">包质量</MenuItem>
               <MenuItem value="cost">模型成本核算</MenuItem>
               <MenuItem value="feedbacks">用户反馈</MenuItem>
               <MenuItem value="pending">待确认收款</MenuItem>
+              {/* §八-6：发票受理（requested→issued/voided 人工闭环） */}
+              <MenuItem value="invoices">发票受理</MenuItem>
               <MenuItem value="audit">审计日志</MenuItem>
               <MenuItem value="agreements">协议签署</MenuItem>
               <MenuItem value="branding">品牌定制（白标）</MenuItem>
@@ -302,6 +309,9 @@ export default function SuperAdmin() {
         <Content style={{ padding: '20px 24px', minWidth: 0 }}>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
             {view === 'monitor' && <MonitorTab />}
+            {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
+            {view === 'invoices' && <InvoiceTab />}
+            {view === 'industry_packs' && <PackTab />}
             {view === 'tenants' && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>

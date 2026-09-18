@@ -187,6 +187,9 @@ export interface Cust {
   journey_stage?: string
   assigned_user_name?: string
   conv_mode?: string
+  // §八-6 C 块(2026-09-18)：待接管标记——/advisor/customers 现未下发该列（Conversation 上有声明），
+  // 前端仅当数据真带 true 时渲染徽标；后端补齐列表列后自动生效，勿在前端造值
+  pending_handoff?: boolean
   last_message?: string
   last_message_at?: string
   updated_at?: string

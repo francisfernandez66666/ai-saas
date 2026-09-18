@@ -4,8 +4,16 @@
 package testutil
 
 import (
+	"os"
 	"testing"
 )
+
+// TestMain 统一出口（§八-7 防静默绿，2026-09-18）：基座自身的两个 DB 用例被跳过时也要说话——
+// 否则「testutil 全绿」恰恰可能是「本地根本没连上库」，而这正是它要防的场景。
+// 这里直接调本包的 RunMain（同包无 import 环，不必像 model 那样走外部测试包）。
+func TestMain(m *testing.M) {
+	os.Exit(RunMain(m))
+}
 
 // TestCreateTenantReuseSameID 覆盖 CreateTenantReuseSameID 相关行为与边界。
 func TestCreateTenantReuseSameID(t *testing.T) {

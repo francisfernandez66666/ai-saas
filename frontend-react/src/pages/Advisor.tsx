@@ -7,6 +7,8 @@ import { useBrand } from '../lib/branding'
 import { AUTH, getToken, logoutAndRedirect } from '../lib/api'
 import { useAdvisorWS } from '../lib/realtime'
 import { collectFreshMessages } from '../lib/chat'
+// §八-6 D 块：企微侧边栏 JS-SDK 按需装配（失败只告警，不阻断渲染）
+import { setupWecomJsSdk } from '../lib/wecomJsSdk'
 import { Msg, Cust, Detail } from '../types'
 
 // 顾问工作台接口前缀
@@ -39,6 +41,9 @@ export default function Advisor() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [convId, setConvId] = useState<number | null>(null)
   const [aiOn, setAiOn] = useState(true)
+  // §八-6 C 块：当前会话模式（ai/human）——驱动「转回 AI」按钮可见性；
+  // 进详情随会话同步，接管/转回操作后就地翻转（避免整页重拉）
+  const [convMode, setConvMode] = useState('')
   const [testDrives, setTestDrives] = useState<any[]>([])
   const [followups, setFollowups] = useState<any[]>([])
   const [quota, setQuota] = useState<any>(null)
@@ -61,6 +66,8 @@ export default function Advisor() {
   const [tdForm, setTdForm] = useState<Record<string, string>>({ scheduled_at: '', model_name: '', contact_name: '', contact_phone: '', location: '', note: '', status: 'pending' })
   const [chanCtx, setChanCtx] = useState<any>(null)
   const [chanKey, setChanKey] = useState<{ corpid: string; external_userid: string } | null>(null)
+  // §八-6 D 块：侧边栏 JS-SDK 装配结果（null=未启动/进行中，仅侧边栏卡片展示一行小字）
+  const [jsSdkOk, setJsSdkOk] = useState<boolean | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
   // P2-84 修复：已展示消息 ID 集合——轮询从"全量替换"改"只追加新消息"（对齐 Client 已修语义）
   const localIds = useRef<Set<string>>(new Set())
@@ -84,6 +91,8 @@ export default function Advisor() {
     const external_userid = q.get('external_userid') || ''
     if (!corpid || !external_userid) return
     setChanKey({ corpid, external_userid })
+    // §八-6 D 块：侧边栏上下文带 corpid，并列装配企微 JS-SDK（内部全兜底，失败只 warn）
+    setupWecomJsSdk(corpid).then(setJsSdkOk)
     const j = await AUTH(`/api/v1/channel/wecom/context?corpid=${encodeURIComponent(corpid)}&external_userid=${encodeURIComponent(external_userid)}`)
     if (j?.code === 0 && j.data?.customer_id) {
       setChanCtx(j.data)
@@ -114,6 +123,8 @@ export default function Advisor() {
       convIdNow = conv ? conv.id : null
       setConvId(convIdNow)
       setAiOn(conv ? conv.is_ai_reply_enabled !== false : true)
+      // §八-6 C 块：同步会话接管态（mode=human 或被人工锁都按"人工"呈现，驱动转回按钮）
+      setConvMode(conv ? (conv.mode === 'human' || conv.is_human_locked ? 'human' : 'ai') : '')
     }
     loadChat(id); loadTestDrives(id); loadRecommend(id, convIdNow)
   }
@@ -214,8 +225,26 @@ export default function Advisor() {
   async function takeover() {
     if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
     const j = await AUTH(API + '/chat/takeover', { method: 'POST', body: { conversation_id: convId } })
-    if (j.code === 0) { MessagePlugin.success('已接管，AI 暂停自动回复'); setAiOn(false) }
+    if (j.code === 0) { MessagePlugin.success('已接管，AI 暂停自动回复'); setAiOn(false); setConvMode('human') }
     else MessagePlugin.error(j?.message || '接管失败')
+  }
+  // §八-6 C 块：转回 AI（仅人工态显示）——成功后恢复自动回复并刷新聊天；
+  // 无会话/失败的提示约定参照 takeover
+  async function transferBackAI() {
+    if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
+    const j = await AUTH('/api/v1/chat/transfer/ai', { method: 'POST', body: { conversation_id: convId } })
+    if (j.code === 0) {
+      MessagePlugin.success('已转回 AI，自动回复恢复')
+      setAiOn(true); setConvMode('ai')
+      if (detailId) loadChat(detailId)
+    } else MessagePlugin.error(j?.message || '转回失败')
+  }
+  // §八-6 C 块：立即回复（解除合并窗口延迟）——后端入参是 customer_id（非 conversation_id）
+  async function clearDelay() {
+    if (!detailId) return
+    const j = await AUTH('/api/v1/chat/clear-delay', { method: 'POST', body: { customer_id: detailId } })
+    if (j.code === 0) MessagePlugin.success('已解除延迟，消息将立即发出')
+    else MessagePlugin.error(j?.message || '操作失败')
   }
   // 提交用户反馈（产品建议/吐槽），走 /api/v1/feedback
   async function submitFeedback() {
@@ -272,6 +301,8 @@ export default function Advisor() {
                     <span style={{ fontSize: 14, fontWeight: 500 }}>{H(l.name)}</span>
                     <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: (STAGE_COLORS[l.journey_stage || ''] || 'bg-gray-100') + ' ' + (STAGE_COLORS[l.journey_stage || ''] ? '' : 'text-gray-500') }}>{STAGE_LABELS[l.journey_stage || ''] || l.journey_stage || '-'}</span>
                     {l.conv_mode === 'human' && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#dbeafe', color: '#1d4ed8' }}>人工</span>}
+                    {/* §八-6 C 块：待接管徽标——列表接口当前未下发该列，仅在数据真带 pending_handoff=true 时渲染（勿造字段） */}
+                    {l.pending_handoff === true && <Tag size="small" theme="warning">待接管</Tag>}
                   </div>
                   <p style={{ fontSize: 12, color: '#a0aec0', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.last_message || '暂无消息'}</p>
                 </div>
@@ -326,6 +357,10 @@ export default function Advisor() {
                   <div><span style={{ color: '#a0aec0' }}>企业微信ID</span><div style={{ wordBreak: 'break-all' }}>{chanCtx.external_userid || chanKey?.external_userid || '-'}</div></div>
                   <div><span style={{ color: '#a0aec0' }}>接待成员</span><div>{chanCtx.staff_id || '-'}</div></div>
                 </div>
+                {/* §八-6 D 块：JS-SDK 装配状态一行小字（null=未装配完成不显示；失败不阻断侧边栏功能） */}
+                {jsSdkOk !== null && (
+                  <div style={{ fontSize: 11, color: '#a0aec0', marginTop: 8 }}>企微上下文：{jsSdkOk ? '已就绪' : '不可用（非企微环境可忽略）'}</div>
+                )}
                 {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).length > 0 && (
                   <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
                     {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).map((x: string) => <span key={x} style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, background: '#f1f5f9', color: '#475569' }}>{x}</span>)}
@@ -386,8 +421,12 @@ export default function Advisor() {
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
                 <b style={{ fontSize: 13 }}>聊天记录</b>
                 <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                  {/* §八-6 C 块：立即回复——解除合并窗口延迟，积压消息马上发出（有会话时常驻的轻量按钮） */}
+                  {convId != null && <button onClick={clearDelay} title="解除等待，让积压消息立即发出" style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568' }}>立即回复</button>}
                   {/* E2：一键接管对话（AI 暂停），与自动回复开关联动 */}
                   <button onClick={takeover} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: '#fff', color: 'var(--pri)' }}>接管</button>
+                  {/* §八-6 C 块：转回 AI——仅人工接管态显示，恢复自动回复并刷新聊天 */}
+                  {convMode === 'human' && <button onClick={transferBackAI} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: 'var(--pri)', color: '#fff' }}>转回 AI</button>}
                   {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
                   <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
                 </div>

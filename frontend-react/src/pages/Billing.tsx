@@ -17,7 +17,8 @@ type Pkg = { id: number; p_type: string; name: string; price_cents: number; desc
 // 订阅订单类型（我的订单列表）
 // E1 修复(2026-09-14)：补 qr_content/refund_requested/invoice_status——后端一直下发，
 // 前端旧版不渲染收款码（static_qr 模式下用户根本看不到码）
-type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string; refund_amount_cents?: number; refunded_at?: string }
+// §八-6(2026-09-18)：补 invoice_no——/billing/orders Select 白名单已含该列，issued 行展示发票号
+type Order = { id: number; order_no: string; amount_cents: number; original_amount_cents?: number; package_name?: string; channel?: string; status: string; manual_confirm?: boolean; created_at: string; qr_content?: string; refund_requested?: boolean; invoice_status?: string; invoice_no?: string; refund_amount_cents?: number; refunded_at?: string }
 
 // 收银台接口鉴权头（保留给个别需要手拼 header 的调用点）
 const AUTH = (): { headers: Record<string, string> } => ({ headers: { Authorization: "Bearer " + getToken() } })
@@ -252,7 +253,7 @@ export default function Billing() {
                 }}>退款</button>}
                 {/* E9：发票按钮——弹表单收集抬头/税号/邮箱（旧版硬编码"AI-SCRM服务费"且无税号位） */}
                 {o.invoice_status === 'issued'
-                  ? <span style={{ color: '#276749', fontSize: 12 }}>发票已开具</span>
+                  ? <span style={{ color: '#276749', fontSize: 12 }}>发票已开具{o.invoice_no ? `（${o.invoice_no}）` : ''}</span>
                   : o.invoice_status === 'requested'
                     ? <span style={{ color: '#975a16', fontSize: 12 }}>发票开具中</span>
                     : <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {

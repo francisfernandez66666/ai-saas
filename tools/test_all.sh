@@ -103,9 +103,69 @@ verdict "G-6 防回潮断言" $G6_FAIL
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... >/tmp/test_all_vet.log 2>&1
 verdict "go vet ./..." $?
-go test -cover ./... >/tmp/test_all_go.log 2>&1
-verdict "go test ./...（覆盖率见下方）" $?
+# §八-7(2026-09-18) 防"静默绿"：go test 改跑 -json 单次采集，再由内联 python 拆成两份：
+#   1) /tmp/test_all_go.log   —— 原文本视图（PASS/FAIL 判定与下方 grep 完全不变）
+#   2) skip 明细统计         —— 逐包累加 "Action":"skip" 用例数并打到汇总区
+#   背景：SetupTestDB 连不上库时 t.Skipf，整包 DB 用例可以一个不跑而 go test ./... 全绿，
+#   文本日志里 --- SKIP 被 tail -20 截掉后无人发现。-json 是单次运行，不额外增加一遍全量耗时。
+GO_TEST_RC=0
+go test -json -cover ./... >/tmp/test_all_go.json 2>&1 || GO_TEST_RC=$?
+SKIP_SUMMARY="$(python3 - /tmp/test_all_go.json /tmp/test_all_go.log <<'PY'
+import json, sys, collections
+
+src, dst = sys.argv[1], sys.argv[2]
+texts = []                      # 文本视图（原 go test 输出逐行还原）
+seen = set()                    # (package, test) 去重：skip 事件可能重复
+per_pkg = collections.Counter()
+total = 0
+
+with open(src, encoding="utf-8", errors="replace") as fh:
+    for raw in fh:
+        line = raw.rstrip("\n")
+        if not line.startswith("{"):
+            # 非 JSON 行（go 命令级报错、panic 前的裸输出）原样保留，别把日志弄丢
+            if line:
+                texts.append(line)
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            if line:
+                texts.append(line)
+            continue
+        out = ev.get("Output")
+        if out is not None:
+            texts.extend(out.rstrip("\n").split("\n"))
+        if ev.get("Action") == "skip" and ev.get("Test"):
+            key = (ev.get("Package", ""), ev.get("Test", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            total += 1
+            per_pkg[ev.get("Package", "?")] += 1
+
+with open(dst, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(texts) + ("\n" if texts else ""))
+
+print(total)
+for pkg, n in sorted(per_pkg.items(), key=lambda kv: (-kv[1], kv[0])):
+    print("  ⚠ %s 跳过 %d 个用例" % (pkg, n))
+PY
+)"
+SKIP_TOTAL="${SKIP_SUMMARY%%$'\n'*}"
+case "$SKIP_TOTAL" in
+  ''|*[!0-9]*) SKIP_TOTAL=0 ;;  # python 异常退出时降级为 0，不影响既有 PASS/FAIL 总账
+esac
+verdict "go test ./...（覆盖率见下方）" $GO_TEST_RC
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
+# 跳过统计（§八-7）：非零必须显式报警，DB 不可用时"全绿"不再是可信信号
+if [ "$SKIP_TOTAL" -gt 0 ]; then
+  echo "⚠ 本地跳过 ${SKIP_TOTAL} 个用例（含 -short/DB 不可用），明细："
+  printf '%s\n' "${SKIP_SUMMARY#*$'\n'}"
+  echo "  （CI 侧同样用例走 t.Fatal 而非 Skip，见 internal/testutil）"
+else
+  echo "✓ 零跳过（go test 无用例被 skip）"
+fi
 
 # D5 配套(2026-09-16B)：核心并发包 -race 抽查——合并队列/实时 Hub 是双发/挂死类
 # 缺陷高发区，此前 CI 无 race 检测器，解锁读共享字段（D5）长期隐身。

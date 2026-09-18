@@ -649,9 +649,11 @@ func main() {
 		//   - frame-src Turnstile widget 以 iframe 渲染；frame-ancestors 与 X-Frame-Options 同语义（防嵌他站）。
 		//   - img-src data: https: http:：static_qr 收款码支持外链/内网图片（Billing.tsx <img>）。
 		//   - connect-src ws:/wss:：/api/v1/ws/* 同源 WS 升级（旧浏览器 'self' 不含 ws 协议，显式放行）。
+		//   - script-src https://res.wx.qq.com（§八-6 D 块，2026-09-18）：企微侧边栏 jweixin-1.6.0.js 按需注入
+		//     （lib/wecomJsSdk.ts，仅顾问带 corpid 上下文时加载）；放行范围仅此主机，不放通配。
 		c.Header("Content-Security-Policy",
 			"default-src 'self'; "+
-				"script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; "+
+				"script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://res.wx.qq.com; "+
 				"style-src 'self' 'unsafe-inline'; "+
 				"img-src 'self' data: https: http:; "+
 				"font-src 'self' data:; "+
