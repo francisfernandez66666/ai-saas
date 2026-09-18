@@ -46,3 +46,6 @@ BENCH_*
 
 # 通道冒烟 mockwx 运行产物（出站消息台账，非源码）
 mockwx_outbox.jsonl
+
+# test_all.sh 编排器 flock 锁文件（运行期产物，非源码）
+.test_all.lock

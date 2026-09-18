@@ -451,5 +451,28 @@ check "sales打pack状态路由→403" 403 "$PK403"
 CSP=$(curl -sI "$B/" | grep -i "^content-security-policy" | tr -d '\r')
 check "CSP定点放行res.wx.qq.com" y "$(echo "$CSP" | grep -q 'https://res.wx.qq.com' && echo y || echo n)"
 
+echo "---- 二十一、2026-09-19 残项收口批：超管退款受理队列护栏 ----"
+# B7 双轨退款平台审批位（列表+驳回路由行为）；执行退款走 PSP 真出款不在 smoke 触碰，
+# 用合成订单验证 队列可见→驳回清标记→出队→重复驳回409 全链，结束即删。
+RR403=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
+check "sales打退款申请队列→403" 403 "$RR403"
+RLIST=$(curl -s "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $TOKEN")
+check "退款队列 code=0 且 data 为数组" y "$(echo "$RLIST" | python3 -c "import sys,json;d=json.load(sys.stdin);print('y' if d.get('code')==0 and isinstance(d.get('data'),list) else 'n')" 2>/dev/null)"
+RF_NO="BORF$RANDOM$RANDOM"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,refund_requested,created_at,updated_at) VALUES ('$RF_NO',1,1,9900,'monthly','manual','paid',true,NOW(),NOW()) RETURNING id" >/tmp/smoke_rf_id.txt 2>/dev/null
+RF_OID=$(grep -Eo '^[0-9]+$' /tmp/smoke_rf_id.txt | head -1)
+RLIST2=$(curl -s "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $TOKEN")
+check "合成退款申请单出现在队列且带 order_no/amount_cents 契约键" y "$(echo "$RLIST2" | grep -q "\"$RF_NO\"" && echo "$RLIST2" | grep -q '"amount_cents"' && echo y || echo n)"
+RJ1=$(curl -s -X POST "$B/api/v1/super/billing/orders/${RF_OID:-0}/refund/reject" -H "Authorization: Bearer $TOKEN")
+check "驳回退款申请→code=0" 0 "$(echo "$RJ1" | jsonget "['code']")"
+check "驳回后 refund_requested 落库为 false" f "$($PSQL "SELECT refund_requested FROM billing_orders WHERE order_no='$RF_NO'" | tr -d '\r\n ')"
+RLIST3=$(curl -s "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $TOKEN")
+check "驳回后订单出队" n "$(echo "$RLIST3" | grep -q "$RF_NO" && echo y || echo n)"
+RJ2=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/billing/orders/${RF_OID:-0}/refund/reject" -H "Authorization: Bearer $TOKEN")
+check "重复驳回无申请单→409" 409 "$RJ2"
+RJ404=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/billing/orders/999999/refund/reject" -H "Authorization: Bearer $TOKEN")
+check "驳回不存在订单→404" 404 "$RJ404"
+$PSQL "DELETE FROM billing_orders WHERE order_no='$RF_NO'" >/dev/null 2>&1
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

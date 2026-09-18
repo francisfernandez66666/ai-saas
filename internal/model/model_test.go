@@ -1,8 +1,7 @@
 // §八-7 零测试包最小单测（2026-09-18）：model 是全项目最底层的"不变量来源"，此前零测试。
 // 本批只测纯函数/纯方法（无 DB、无网络），钉死四类现状：
-//  1. User 角色谓词：RoleSales == RoleUser == "user"，而 IsSales() 判的是字面量 "sales"——
-//     存量角色改名后 IsSales 对 "user" 恒 false。**这是隐性不一致，本测试如实固化现状并标注，
-//     不改产品代码**（改了要连带核对 middleware/handler 全部调用点，属产品决策）；
+//  1. User 角色谓词：曾混用字面量致 IsSales 对 RoleUser("user") 恒 false（隐性不一致）。
+//     残项收口(2026-09-19)：谓词已统一判常量并保留旧字面量兼容分支，本测试钉死统一后语义；
 //  2. Customer 旅程闸门 HasArrived（价格管控）/CanPromote（促单），以及 T 向量：
 //     BuildBaseTVector 必须忽略已存 TVectorJSON（防标签权重反复叠加滚偏），
 //     GetTVector 坏 JSON 回落基准值、超长向量截断到 32 维；
@@ -51,11 +50,10 @@ func TestUserRolePredicatesPinCurrentBehavior(t *testing.T) {
 		t.Errorf("【现状漂移】RoleSales 别名已随 P1-32 收敛为 %q（不再是字面量 \"sales\"），"+
 			"若又变回 \"sales\" 说明角色体系回退，本文件下方谓词表需一并复核", model.RoleUser)
 	}
-	// 【隐性不一致·现状固化】RoleSales==RoleUser=="user"，但 IsSales() 判的是字面量 "sales"，
-	// 因此对别名角色 IsSales() 恒为 false。产品代码未改，这里把现状钉死：
-	// 将来若把 IsSales 改成判 RoleSales，本断言会失败，提醒调用点（middleware/handler）必须同步核对。
-	if (&model.User{Role: model.RoleSales}).IsSales() {
-		t.Errorf("【现状】Role=RoleSales(%q) 时 IsSales() 应为 false，实际为 true：说明 IsSales 已改为判常量，需复核全部调用点", model.RoleSales)
+	// 【残项收口 2026-09-19】IsSales 已改为判常量 RoleUser + 旧字面量兼容：
+	// 别名角色（"user"）与迁移前存量（"sales"）都必须为 true。
+	if !(&model.User{Role: model.RoleSales}).IsSales() {
+		t.Errorf("Role=RoleSales(%q) 时 IsSales() 应为 true（谓词统一后），实际 false：检查谓词是否回退为判字面量 \"sales\"", model.RoleSales)
 	}
 
 	cases := []struct {
@@ -68,7 +66,7 @@ func TestUserRolePredicatesPinCurrentBehavior(t *testing.T) {
 	}{
 		{role: model.RoleSuperAdmin, admin: true, superAdmin: true},
 		{role: model.RoleTenantAdmin, admin: true, tenantAdmin: true},
-		{role: model.RoleUser}, // 【隐性不一致】新角色名 "user"：IsSales() 返回 false
+		{role: model.RoleUser, sales: true}, // 【谓词统一】新角色名 "user" 即销售：IsSales() true
 		{role: "sales", sales: true},
 		{role: model.RoleDeptAdmin}, // 部门管理员：IsAdmin() 不含 dept_admin，三个谓词全 false
 		{role: model.RoleReadOnly, readOnly: true},
@@ -356,10 +354,15 @@ func TestConversationStateDoubleWrite(t *testing.T) {
 		jsonState.LastTid != saved.LastTid || jsonState.CurrentStage != saved.CurrentStage {
 		t.Errorf("StateJSON 与入参不一致: %+v vs %+v", jsonState, saved)
 	}
-	// 3) GetState 读回：JSON 仅覆盖 HookRate，其余以列为准
+	// 3) GetState 读回：HookRate 恒以列为准（残项收口 2026-09-19，stale JSON 不再覆盖）
 	got := conv.GetState()
 	if got.Attempts != 4 || got.HookCount != 3 || !almostEq(got.HookRate, 0.75) {
 		t.Errorf("GetState 读回异常: %+v", got)
+	}
+	// 3.1) 列与 JSON 不一致时（JSON 为历史快照/只改列未同步），必须按列实时计算，忽略 JSON 值
+	stale := &model.Conversation{Attempts: 4, HookCount: 1, StateJSON: `{"attempts":4,"hook_count":1,"hook_rate":0.9}`}
+	if r := stale.GetState().HookRate; !almostEq(r, 0.25) {
+		t.Errorf("stale JSON HookRate 覆盖未修复：期望列算 0.25，实际 %v", r)
 	}
 
 	// 4) IncrementAttempts：列自增 + JSON 同步（不除零）
@@ -380,19 +383,17 @@ func TestConversationStateDoubleWrite(t *testing.T) {
 			t.Errorf("零接钩时 HookRate 应为 0，实际 %v", r.HookRate)
 		}
 	}
-	// 5) RecordHook 后接钩率的【现状·缺陷】：StateJSON 的 hook_rate 一旦 >0，
-	//    GetState 就用它覆盖按列重算的值（合并方向是"JSON 覆盖列"），而 RecordHook 自己
-	//    又会把这次算出的值写回 JSON——于是接钩率被永久锁在第一次 RecordHook 算出的 1/3，
-	//    即使已接钩 2 次也不回升。本测试如实固化该现状（不改产品代码），
-	//    真实值应为 2/3：修复时需把 GetState 的 JSON 覆盖分支改为"仅补空不覆盖"。
+	// 5) RecordHook 后接钩率（残项收口 2026-09-19）：曾固化缺陷——StateJSON hook_rate>0
+	//    覆盖按列重算值，接钩率被永久锁在首次 RecordHook 的 1/3。
+	//    现 GetState 已删 JSON 覆盖分支、恒按列计算，两次接钩真实值 2/3 正确回升。
 	inc.RecordHook()
 	inc.RecordHook()
 	got2 := inc.GetState()
 	if got2.HookCount != 2 || got2.Attempts != 3 {
 		t.Errorf("RecordHook 后列值异常: %+v", got2)
 	}
-	if !almostEq(got2.HookRate, 1.0/3.0) {
-		t.Errorf("【现状】接钩率被旧 StateJSON 锁死，应读到首次 RecordHook 落盘的 1/3，实际 %v", got2.HookRate)
+	if !almostEq(got2.HookRate, 2.0/3.0) {
+		t.Errorf("接钩率应按列实时计算为 2/3，实际 %v（若回退到 1/3 说明 JSON 覆盖分支复活）", got2.HookRate)
 	}
 
 	// 6) 脏 JSON：非法 StateJSON 不得让 GetState panic，且列值仍生效
@@ -401,10 +402,10 @@ func TestConversationStateDoubleWrite(t *testing.T) {
 	if d.Attempts != 5 || d.HookCount != 1 || !almostEq(d.HookRate, 0.2) {
 		t.Errorf("坏 StateJSON 下应按列计算，实际 %+v", d)
 	}
-	// 7) JSON 里的 HookRate>0 会覆盖列算出的值（现状：允许人工回填历史接钩率）
+	// 7) StateJSON 里的旧 HookRate 不再覆盖列算值（残项收口 2026-09-19：以列为准）
 	override := &model.Conversation{Attempts: 1, HookCount: 0, StateJSON: `{"attempts":1,"hook_count":0,"hook_rate":0.9}`}
-	if r := override.GetState(); !almostEq(r.HookRate, 0.9) {
-		t.Errorf("【现状】StateJSON 的 hook_rate>0 应覆盖列算值，实际 %v", r.HookRate)
+	if r := override.GetState(); r.HookRate != 0 {
+		t.Errorf("列算应为 0（0/1），StateJSON 的 0.9 不得覆盖，实际 %v", r.HookRate)
 	}
 	// 8) UpdateSilentDuration：无最后消息时间时不得改动已存时长
 	ts := &model.Conversation{}

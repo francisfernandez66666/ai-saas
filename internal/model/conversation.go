@@ -88,16 +88,9 @@ func (c *Conversation) GetState() SessionState {
 	} else {
 		state.HookRate = 0
 	}
-	// 如果有JSON状态，合并
-	if c.StateJSON != "" {
-		var jsonState SessionState
-		if err := json.Unmarshal([]byte(c.StateJSON), &jsonState); err == nil {
-			// 用JSON中的值覆盖（如果有）
-			if jsonState.HookRate > 0 {
-				state.HookRate = jsonState.HookRate
-			}
-		}
-	}
+	// 残项收口(2026-09-19)：不再用 StateJSON 里的 HookRate 覆盖——SaveState 双写时
+	// 列与 JSON 同源，但存在只改列未同步 JSON（或 JSON 为历史快照）的路径，
+	// stale JSON 值会盖掉实时计算结果。HookRate 恒以 Attempts/HookCount 列为准。
 	return state
 }
 

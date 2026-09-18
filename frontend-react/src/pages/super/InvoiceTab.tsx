@@ -1,8 +1,8 @@
 // 发票受理 Tab（§八-6 平台运营 UI 批，2026-09-18）：超管人工受理租户的发票申请。
 // 依赖接口（仅 super_admin，平台路径无需 X-Tenant-ID）：
 //   GET  /api/v1/super/invoices?status=requested|issued|voided（上限 200 条）
-//   POST /api/v1/super/invoices/:order_id/issue {invoice_no}（仅 requested→issued）
-//   POST /api/v1/super/invoices/:order_id/void（非空状态置 voided，租户可重提）
+//   POST /api/v1/super/invoices/:id/issue {invoice_no}（仅 requested→issued；2026-09-18 冒烟批由 :order_id 统一为 :id）
+//   POST /api/v1/super/invoices/:id/void（非空状态置 voided，租户可重提）
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Input, Select, Table, Tag, MessagePlugin } from 'tdesign-react'
 import { AUTH } from '../../lib/api'

@@ -118,7 +118,9 @@ func Open(data []byte, keys *Keys) (*PackContent, error) {
 	if keys == nil || keys.Private == nil || keys.Public == nil {
 		return nil, errors.New("Open 需要完整密钥对（验签公钥+解封私钥）")
 	}
-	if len(data) < 4+len(data[4:8]) || string(data[:4]) != Magic {
+	// 残项收口(2026-09-19)：先判容器最小长度再取头部——原写法 data[4:8] 在 len(data)<8 时
+	// 直接 slice out of range panic（§八-7 测试批登记的 <8 字节崩溃路径），须先守卫再解析。
+	if len(data) < 8 || string(data[:4]) != Magic {
 		return nil, errors.New("非 .aipack 容器或格式版本不符")
 	}
 	off := 4

@@ -14,6 +14,7 @@ import (
 	"math/big"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -52,8 +53,10 @@ type changePasswordReq struct {
 
 // validatePasswordStrength 密码强度：≥8位且同时含字母和数字
 // UAT定稿(2026-08-26)：注册与改密共用同一强度基线；弱密码一律拒绝
+// 实测批残项收口(2026-09-19)：长度改按 rune 计数——原 len() 按字节判定，
+// 中文/emoji 密码 3 个字符合 9 字节却只有 3 位，误放行弱密码。
 func validatePasswordStrength(pwd string) error {
-	if len(pwd) < 8 {
+	if utf8.RuneCountInString(pwd) < 8 {
 		return fmt.Errorf("密码至少8位且同时包含字母和数字")
 	}
 	var hasLetter, hasDigit bool

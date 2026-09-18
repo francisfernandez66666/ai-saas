@@ -8,6 +8,7 @@ import type { TableRowData, CellProps } from '../types'
 import { MonitorTab } from './super/MonitorTab'
 // §八-6 平台运营 UI 批：发票受理 + 行业包上架/共享管理（独立 Tab 组件，按需挂载）
 import { InvoiceTab } from './super/InvoiceTab'
+import { RefundTab } from './super/RefundTab'
 import { PackTab } from './super/PackTab'
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
@@ -299,6 +300,8 @@ export default function SuperAdmin() {
               <MenuItem value="pending">待确认收款</MenuItem>
               {/* §八-6：发票受理（requested→issued/voided 人工闭环） */}
               <MenuItem value="invoices">发票受理</MenuItem>
+              {/* 残项收口批 2026-09-19：B7 退款平台审批位（执行/驳回） */}
+              <MenuItem value="refunds">退款受理</MenuItem>
               <MenuItem value="audit">审计日志</MenuItem>
               <MenuItem value="agreements">协议签署</MenuItem>
               <MenuItem value="branding">品牌定制（白标）</MenuItem>
@@ -311,6 +314,7 @@ export default function SuperAdmin() {
             {view === 'monitor' && <MonitorTab />}
             {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
             {view === 'invoices' && <InvoiceTab />}
+            {view === 'refunds' && <RefundTab />}
             {view === 'industry_packs' && <PackTab />}
             {view === 'tenants' && (
               <>

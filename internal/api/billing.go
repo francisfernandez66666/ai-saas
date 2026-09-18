@@ -313,6 +313,55 @@ func SuperRefundOrder(c *gin.Context) {
 	RespOK(c, "退款执行完成（权益已回收）", o)
 }
 
+// SuperListRefundRequests GET /api/v1/super/billing/refund-requests —— 超管退款申请队列（B7 闭环，2026-09-19 残项收口）
+// 口径：refund_requested=true 且 status='paid'——MarkOrderRefunded 只从 paid 流转，
+// 其余状态（refunded/closed 等）的申请行不进工作队列，避免超管点了必 409。
+func SuperListRefundRequests(c *gin.Context) {
+	var rows []model.BillingOrder
+	if err := db.DB.Where("refund_requested = true AND status = 'paid'").Order("id DESC").Limit(200).Find(&rows).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "查询失败")
+		return
+	}
+	list := make([]gin.H, 0, len(rows))
+	for _, o := range rows {
+		list = append(list, gin.H{
+			"order_id": o.ID, "order_no": o.OrderNo, "tenant_id": o.TenantID,
+			"package_id": o.PackageID, "amount_cents": o.AmountCents,
+			"channel": o.Channel, "period": o.Period, "paid_at": o.PaidAt,
+		})
+	}
+	RespOK(c, "ok", list)
+}
+
+// SuperRejectRefund POST /api/v1/super/billing/orders/:id/refund/reject —— 驳回退款申请（不出款，仅清申请标记）
+// 字段级 Update 防整行覆写；驳回留审计，租户可在条件满足后重新申请。
+func SuperRejectRefund(c *gin.Context) {
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	var order model.BillingOrder
+	if err := db.DB.First(&order, oid).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "订单不存在")
+		return
+	}
+	if !order.RefundRequested {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "该订单没有待处理的退款申请")
+		return
+	}
+	if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", oid).Update("refund_requested", false).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		return
+	}
+	tid := uint(0)
+	if order.TenantID != nil {
+		tid = *order.TenantID
+	}
+	writeOrderAudit(c, tid, "super_order_refund_reject", &order)
+	order.RefundRequested = false
+	RespOK(c, "已驳回退款申请", order)
+}
+
 // ============================================================
 // §W 发票管理（平台侧，2026-09-14）：资质未到位，走"租户申请→超管人工开具→回录发票号"极限闭环。
 // ============================================================

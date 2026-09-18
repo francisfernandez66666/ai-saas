@@ -54,27 +54,32 @@ func (User) TableName() string {
 	return "tenant_users"
 }
 
+// 角色谓词统一判常量（残项收口 2026-09-19）：此前各谓词混用字面量，
+// IsSales 只认 "sales" 而存量已迁为 RoleUser("user")，改名后恒 false——隐性不一致。
+// 本组谓词生产代码零调用点（权限判定各自走 role 字符串比较），改动仅收敛语义；
+// 旧字面量（"admin"/"sales"）保留兼容分支，存量数据不清也能判对。
+
 // IsSuperAdmin 是否超级管理员
 func (u *User) IsSuperAdmin() bool {
-	return u.Role == "super_admin"
+	return u.Role == RoleSuperAdmin
 }
 
 // IsTenantAdmin 是否租户管理员
 func (u *User) IsTenantAdmin() bool {
-	return u.Role == "tenant_admin"
+	return u.Role == RoleTenantAdmin
 }
 
-// IsAdmin 是否管理员（兼容旧检查：超级管理员或租户管理员）
+// IsAdmin 是否管理员（兼容旧检查：超级管理员或租户管理员，"admin" 为迁移前旧字面量）
 func (u *User) IsAdmin() bool {
-	return u.Role == "admin" || u.Role == "super_admin" || u.Role == "tenant_admin"
+	return u.Role == RoleSuperAdmin || u.Role == RoleTenantAdmin || u.Role == "admin"
 }
 
-// IsSales 是否销售
+// IsSales 是否销售（RoleSales 是 RoleUser 的兼容别名；"sales" 为迁移前旧字面量）
 func (u *User) IsSales() bool {
-	return u.Role == "sales"
+	return u.Role == RoleUser || u.Role == "sales"
 }
 
 // IsReadOnly 是否只读
 func (u *User) IsReadOnly() bool {
-	return u.Role == "readonly"
+	return u.Role == RoleReadOnly
 }

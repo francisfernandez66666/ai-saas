@@ -936,6 +936,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/super/billing/refund-requests",
+      "group": "super",
+      "handler": "SuperListRefundRequests",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/super/feedbacks",
       "group": "super",
       "handler": "SuperFeedbackList",
@@ -1990,6 +2000,16 @@
       "path": "/api/v1/super/billing/orders/:id/refund",
       "group": "super",
       "handler": "SuperRefundOrder",
+      "auth": [
+        "jwt",
+        "super_admin"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/billing/orders/:id/refund/reject",
+      "group": "super",
+      "handler": "SuperRejectRefund",
       "auth": [
         "jwt",
         "super_admin"

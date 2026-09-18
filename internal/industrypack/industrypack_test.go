@@ -324,6 +324,22 @@ func TestOpenRejectsTamperedAndForeign(t *testing.T) {
 	if _, err := Open([]byte("XXXX................"), keys1()); err == nil {
 		t.Errorf("错误魔数应被拒")
 	}
+	// 4.1) 超短容器（<8 字节）：必须报错而非 slice 越界 panic
+	// （残项收口 2026-09-19：原头部判断 data[4:8] 对短输入直接崩溃，PackTab 上传入口可被外部触发）
+	for _, n := range []int{0, 1, 4, 5, 7} {
+		short := make([]byte, n)
+		copy(short, Magic)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%d 字节容器 panic 未修复: %v", n, r)
+				}
+			}()
+			if _, err := Open(short, keys1()); err == nil {
+				t.Errorf("%d 字节容器应报错", n)
+			}
+		}()
+	}
 	// 5) 密钥不全：Build/Open 都要求完整密钥对
 	if _, err := Build(dir, m, &Keys{Public: &packKey1.PublicKey}); err == nil {
 		t.Errorf("Build 缺私钥应报错")

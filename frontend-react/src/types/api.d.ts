@@ -101,6 +101,7 @@ export interface ApiRoutes {
   "GET /api/v1/strategy/templates/:id": unknown
   "GET /api/v1/super/agreements": unknown
   "GET /api/v1/super/audit-logs": unknown
+  "GET /api/v1/super/billing/refund-requests": unknown
   "GET /api/v1/super/feedbacks": unknown
   "GET /api/v1/super/invoices": unknown
   "GET /api/v1/super/materials": unknown
@@ -211,6 +212,7 @@ export interface ApiRoutes {
   "POST /api/v1/strategy/test": unknown
   "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
   "POST /api/v1/super/billing/orders/:id/refund": unknown
+  "POST /api/v1/super/billing/orders/:id/refund/reject": unknown
   "POST /api/v1/super/feedbacks/resolve": unknown
   "POST /api/v1/super/invoices/:id/issue": unknown
   "POST /api/v1/super/invoices/:id/void": unknown

@@ -23,6 +23,8 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.GET("/orders/pending", SuperPendingOrders)
 		super.POST("/orders/:id/confirm", SuperConfirmOrder)
 		super.POST("/billing/orders/:id/refund", SuperRefundOrder)       // B7 双轨退款：平台审批落点
+		super.POST("/billing/orders/:id/refund/reject", SuperRejectRefund) // 驳回退款申请（仅清标记，2026-09-19 退款受理批）
+		super.GET("/billing/refund-requests", SuperListRefundRequests)     // 超管退款申请工作队列（2026-09-19 退款受理批）
 		super.POST("/billing/orders/:id/mock-webhook", SuperMockWebhook) // §W 测试资产：模拟网关到账回调（非 release + mock 渠道双闸门）
 		// §W 发票极限闭环：申请列表 + 人工开具回录 + 作废（资质到位前不接税控）
 		// 冒烟护栏批(2026-09-18)修复：参数名原为 :order_id，但 handler 走 PathUintID（只读
