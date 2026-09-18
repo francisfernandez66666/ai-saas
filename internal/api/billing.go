@@ -341,7 +341,7 @@ func SuperListInvoices(c *gin.Context) {
 	RespOK(c, "ok", gin.H{"list": list, "total": len(list)})
 }
 
-// SuperIssueInvoice POST /api/v1/super/invoices/:order_id/issue {invoice_no}
+// SuperIssueInvoice POST /api/v1/super/invoices/:id/issue {invoice_no}
 // 人工开票后回录发票号：requested→issued。
 func SuperIssueInvoice(c *gin.Context) {
 	oid, ok := PathUintID(c)
@@ -364,7 +364,7 @@ func SuperIssueInvoice(c *gin.Context) {
 	RespOK(c, "发票已开具", o)
 }
 
-// SuperVoidInvoice POST /api/v1/super/invoices/:order_id/void
+// SuperVoidInvoice POST /api/v1/super/invoices/:id/void
 // 作废发票（开错/退票）：→voided，租户可重新申请。
 func SuperVoidInvoice(c *gin.Context) {
 	oid, ok := PathUintID(c)

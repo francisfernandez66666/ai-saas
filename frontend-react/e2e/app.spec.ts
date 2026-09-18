@@ -103,8 +103,10 @@ test('chat test endpoint responds', async ({ request }) => {
   const r = await request.post(`${BASE}/api/v1/chat/test`, {
     data: { content: '你好' },
   });
-  // Endpoint may return 403 (visitor auth required) or 200
-  expect([200, 403]).toContain(r.status());
+  // Endpoint may return 403 (visitor auth required) or 200；
+  // 429 也属正常响应：test_all 顺序跑八套 E2E 时同源 ::1 的 chat_test IP 桶可能已满，
+  // 限流生效本身即证明端点在位（单跑复现 403，整跑偶发 429，见 2026-09-18 实测批）。
+  expect([200, 403, 429]).toContain(r.status());
 });
 
 // 10. Strategy test endpoint works

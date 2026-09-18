@@ -212,8 +212,8 @@ export interface ApiRoutes {
   "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
   "POST /api/v1/super/billing/orders/:id/refund": unknown
   "POST /api/v1/super/feedbacks/resolve": unknown
-  "POST /api/v1/super/invoices/:order_id/issue": unknown
-  "POST /api/v1/super/invoices/:order_id/void": unknown
+  "POST /api/v1/super/invoices/:id/issue": unknown
+  "POST /api/v1/super/invoices/:id/void": unknown
   "POST /api/v1/super/materials/:id/evals": unknown
   "POST /api/v1/super/materials/:id/review": unknown
   "POST /api/v1/super/orders/:id/confirm": unknown

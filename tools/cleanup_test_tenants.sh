@@ -9,14 +9,27 @@ APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
 
 # 匹配测试租户前缀（含进程后缀，如 uata79365 / unit_test_tenant 复用 code；e2e 来自 smoke_saas
-# 与调试脚本 e2e-<随机> 形态，统一用 e2e% 兜住，合法租户不会以 e2e 起头）
-PATTERNS=("uat%" "perm%" "rfd%" "chan_smoke%" "unit_test_tenant%" "rls_a%" "rls_b%" "e2e%")
+# 与调试脚本 e2e-<随机> 形态，统一用 e2e% 兜住，合法租户不会以 e2e 起头）。
+# 以 ~ 开头的条目按 POSIX 正则匹配（build_where 转 code ~ '...'），其余按 LIKE 前缀。
+# 2026-09-18 实测批扩充：单测租户 code 形如 p<pid>x<hex>_unit_test_tenant/_exp_soon（前缀并非
+# unit_test_tenant，旧模式永远追不上），以及 uat/smoke/调试脚本历年遗留的 dpa/uindg/inv/px 等族。
+PATTERNS=(
+  "uat%" "perm%" "rfd%" "chan_smoke%" "unit_test_tenant%" "rls_a%" "rls_b%" "e2e%"
+  "dpa%" "uindg%" "uinde%" "dlimit%" "verifytest%" "invitedemo%" "rlttest%" "b2btest%"
+  "trd%" "ref%" "dbg-%" "revtest"
+  "~^p[0-9]+x[0-9a-f]+_(unit_test_tenant|exp_soon)$"
+  "~^(ind|edu|dup|rec|man|inv[0-9]*|px|pp|pw|id[ab]|nt|t)[0-9]+$"
+)
 
 build_where() {
   local i=0 cond=""
   for p in "${PATTERNS[@]}"; do
     [ $i -gt 0 ] && cond="$cond OR "
-    cond="${cond}code LIKE '$p'"
+    if [ "${p:0:1}" = "~" ]; then
+      cond="${cond}code ~ '${p:1}'"
+    else
+      cond="${cond}code LIKE '$p'"
+    fi
     i=$((i+1))
   done
   echo "$cond"
@@ -63,4 +76,16 @@ psql "$DBURL" -c "DELETE FROM tenants WHERE id IN ($IDS);" >/dev/null 2>&1
 # 长期不跑单测的环境残留由此兜底——仅回收无任何订单引用的测试包，绝不触碰真实在售包）
 STALE_PKGS=$(psql "$DBURL" -tAc "DELETE FROM packages WHERE code LIKE 'ut\_%' AND id NOT IN (SELECT COALESCE(package_id,0) FROM billing_orders WHERE package_id IS NOT NULL) RETURNING id;" 2>/dev/null | grep -c . || true)
 echo "已回收陈旧 ut_* 测试包 $STALE_PKGS 个。"
+# 行业包残留回收（2026-09-18 实测批，/super 行业包管理页首跑暴露）：
+#   rls_ind  为 db RLS 单测每次新建（无唯一约束），education 为 uat/dbg 脚本每次裸 INSERT——
+#   两类都会无限累积。回收口径：被任何绑定引用的行永不删；education 额外保留最新一条
+#   （uat 选包按 id DESC 取 active，删旧留新不改行为）。
+STALE_IPACKS=$(psql "$DBURL" -tAc "
+  DELETE FROM industry_packs ip
+  WHERE ip.code IN ('rls_ind','education')
+    AND ip.id NOT IN (SELECT pack_id FROM tenant_pack_bindings WHERE pack_id IS NOT NULL)
+    AND ip.id NOT IN (SELECT pack_id FROM dept_pack_bindings WHERE pack_id IS NOT NULL)
+    AND NOT (ip.code='education' AND ip.id = (SELECT max(id) FROM industry_packs WHERE code='education'))
+  RETURNING ip.id;" 2>/dev/null | grep -c . || true)
+echo "已回收残留行业包 $STALE_IPACKS 个（rls_ind/education 未引用重复行）。"
 echo "已清理 $CNT 个测试租户及其级联数据。"

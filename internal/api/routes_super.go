@@ -25,9 +25,11 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.POST("/billing/orders/:id/refund", SuperRefundOrder)       // B7 双轨退款：平台审批落点
 		super.POST("/billing/orders/:id/mock-webhook", SuperMockWebhook) // §W 测试资产：模拟网关到账回调（非 release + mock 渠道双闸门）
 		// §W 发票极限闭环：申请列表 + 人工开具回录 + 作废（资质到位前不接税控）
+		// 冒烟护栏批(2026-09-18)修复：参数名原为 :order_id，但 handler 走 PathUintID（只读
+		// c.Param("id")）→ 两路由自合入起恒 400「ID 非法」，smoke 第二十节首跑捕获；统一 :id 口径。
 		super.GET("/invoices", SuperListInvoices)
-		super.POST("/invoices/:order_id/issue", SuperIssueInvoice)
-		super.POST("/invoices/:order_id/void", SuperVoidInvoice)
+		super.POST("/invoices/:id/issue", SuperIssueInvoice)
+		super.POST("/invoices/:id/void", SuperVoidInvoice)
 		super.GET("/packages", SuperPackageList)
 		super.POST("/packages", SuperPackageCreate)
 		super.PUT("/packages/:id", SuperPackageUpdate)

@@ -2,7 +2,8 @@
 # ============================================================
 # G-3 /chat/history 身份防线负向断言（T2 重写 2026-09-12）
 # 覆盖：正确 VK→200 / 错误 VK→403 / 匿名无 VK→403 / A 的 VK 访问 B→403 /
-#       登录态数据范围门禁（sales 访问他人客户→403，P1-15）/ 超管全量可读
+#       登录态数据范围门禁（sales 访问他人客户→403，P1-15）/ 超管全量可读 /
+#       /chat/clear-delay 身份闸四路矩阵+跨租户404（2026-09-18 浏览器实测批护栏，ace130d）
 # 契约同步说明（旧脚本 1/6 全灭根因）：
 #   - /chat/test 升级后强制 visitor_key（A1-A4 契约收口），旧脚本裸调 → 客户根本没建成，
 #     后续全部拿 customer_id='' 打出 400。现改经 /chat/guest 建客户（响应信封 data.*）。
@@ -89,6 +90,38 @@ if [ -n "$ST" ]; then
     # 反证：超管可读同一会话（证明 403 源于数据范围而非路径不存在）
     ROK=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/conversations/$CONV_A/messages" -H "Authorization: Bearer $AT" -H "X-Tenant-ID: 1")
     check "超管读同一会话→200(反证)" 200 "$ROK"
+  fi
+fi
+
+# ---- 8.8 /chat/clear-delay 身份闸（浏览器实测批 2026-09-18 护栏，commit ace130d）----
+# 根因回放：该路由在公开组注册（v1.Use(JWTAuth) 之前），修复前 Bearer 从不解析 →
+# CheckVisitorKey 拿不到 user_id → 顾问对真实访客客户（VK 非空）点"立即回复"必 403。
+# 现挂 OptionalJWTAuth：登录态注入身份放行 B 端；匿名 C 端仍走 visitor_key 自证；
+# 且登录态 RQ 带租户作用域，跨租户 customer_id 由"全表命中"收口为 404。
+if [ -n "$ST" ]; then
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay" \
+    -H "Authorization: Bearer $ST" -H "Content-Type: application/json" \
+    -d "{\"customer_id\":$CID_A}")
+  check "登录态clear-delay无VK→200(修复回归护栏)" 200 "$CODE"
+  # 匿名错误 VK → 403（C 端自证路径不因修复放宽）
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay?visitor_key=fake_key_abcdef123456" \
+    -H "Content-Type: application/json" -d "{\"customer_id\":$CID_A}")
+  check "clear-delay匿名错误VK→403" 403 "$CODE"
+  # 匿名无 VK → 403
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay" \
+    -H "Content-Type: application/json" -d "{\"customer_id\":$CID_A}")
+  check "clear-delay匿名无VK→403" 403 "$CODE"
+  # 匿名正确 VK → 200
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay?visitor_key=$VK_A" \
+    -H "Content-Type: application/json" -d "{\"customer_id\":$CID_A}")
+  check "clear-delay匿名正确VK→200" 200 "$CODE"
+  # 跨租户负向：sales1(tenant 1) 打他租户客户 → 404（RQ 租户作用域生效；本机库无第二租户客户则跳过）
+  CID_X=$($PSQL "SELECT id FROM customers WHERE tenant_id<>1 AND visitor_key<>'' ORDER BY id LIMIT 1" | tr -d '[:space:]')
+  if [ -n "$CID_X" ]; then
+    CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/clear-delay" \
+      -H "Authorization: Bearer $ST" -H "Content-Type: application/json" \
+      -d "{\"customer_id\":$CID_X}")
+    check "clear-delay跨租户→404(作用域收紧)" 404 "$CODE"
   fi
 fi
 

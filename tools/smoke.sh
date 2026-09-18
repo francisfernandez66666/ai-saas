@@ -413,5 +413,43 @@ $PSQL "DELETE FROM billing_orders WHERE order_no='$ORD_NO'" >/dev/null 2>&1
 CODE_AFTER=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/auth/email/code" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
 check "未吊销 sales token 打 email/code 不被误伤(非401)" n "$(echo "$CODE_AFTER" | grep -q '^401$' && echo y || echo n)"
 
+echo "---- 二十、2026-09-18 批二 §八-6 平台运营 UI 依赖端点护栏 ----"
+# 背景：InvoiceTab/PackTab 两个新纯前端 Tab 直连 /super/invoices* 与 /super/packs* PUT 路由
+# （PUT 曾因契约脚本 METHOD 提取盲区漏检，此处以行为断言补位）+ 角色负向。
+INVLIST=$(curl -s "$B/api/v1/super/invoices?status=requested" -H "Authorization: Bearer $TOKEN")
+check "super发票列表 code=0 且含 order_id/invoice_status 契约键" y "$(echo "$INVLIST" | grep -q '"code":0' && echo "$INVLIST" | grep -q '"order_id"' && echo "$INVLIST" | grep -q '"invoice_status"' && echo y || echo n)"
+INVC403=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/invoices" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
+check "sales打super发票列表→403" 403 "$INVC403"
+# 发票状态机全回环（合成订单，结束即删）：requested→issued→voided
+INV_NO="BOINV$RANDOM$RANDOM"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,invoice_status,invoice_requested,invoice_title,created_at,updated_at) VALUES ('$INV_NO',1,1,9900,'once','manual','paid','requested',true,'冒烟测试公司',NOW(),NOW()) RETURNING id" >/tmp/smoke_inv_id.txt 2>/dev/null
+INV_OID=$(grep -Eo '^[0-9]+$' /tmp/smoke_inv_id.txt | head -1)
+INV_ISSUE=$(curl -s -X POST "$B/api/v1/super/invoices/${INV_OID:-0}/issue" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"invoice_no":"TESTINV-SMOKE-001"}')
+check "发票回录issue→issued且带发票号" issued "$(echo "$INV_ISSUE" | jsonget "['data']['invoice_status']")"
+INV_VOID=$(curl -s -X POST "$B/api/v1/super/invoices/${INV_OID:-0}/void" -H "Authorization: Bearer $TOKEN")
+check "发票作废→voided" voided "$(echo "$INV_VOID" | jsonget "['data']['invoice_status']")"
+INV_NO400=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/invoices/${INV_OID:-0}/issue" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{}')
+check "issue缺invoice_no→400" 400 "$INV_NO400"
+$PSQL "DELETE FROM billing_orders WHERE order_no='$INV_NO'" >/dev/null 2>&1
+# 行业包上架/下架 PUT（PackTab 主链路）：取第一个 active 包做 disabled→active 往返，秒复原
+PKID=$(curl -s "$B/api/v1/super/packs?page_size=200" -H "Authorization: Bearer $TOKEN" | python3 -c "import sys,json;d=json.load(sys.stdin);rows=d.get('data') or [];rows=rows if isinstance(rows,list) else (rows.get('list') or []);print(next((str(r['id']) for r in rows if r.get('status')=='active'),''))" 2>/dev/null)
+if [ -n "$PKID" ]; then
+  PUTOFF=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/$PKID/status" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"status":"disabled"}')
+  check "pack PUT status disabled 路由可达→200" 200 "$PUTOFF"
+  PUTON=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/$PKID/status" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"status":"active"}')
+  check "pack PUT status 复原active→200" 200 "$PUTON"
+else
+  check "pack列表存在active包(往返前置)" y n
+fi
+PKBAD=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/999999/status" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"status":"active"}')
+check "pack状态改不存在包→404" 404 "$PKBAD"
+PK403=$(curl -s -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/1/status" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{"status":"active"}')
+check "sales打pack状态路由→403" 403 "$PK403"
+# 侧边栏 JS-SDK 部署前提：CSP script-src 定点放行 res.wx.qq.com（通配/漏配即装配必被拦）
+CSP=$(curl -sI "$B/" | grep -i "^content-security-policy" | tr -d '\r')
+check "CSP定点放行res.wx.qq.com" y "$(echo "$CSP" | grep -q 'https://res.wx.qq.com' && echo y || echo n)"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1
