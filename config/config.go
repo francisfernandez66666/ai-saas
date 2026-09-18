@@ -75,6 +75,9 @@ type ServerConfig struct {
 	// （env HEALTH_TOKEN）。公开 /status 只剩 status/version/uptime 类无敏感字段；
 	// 未配置=详情端点恒 403（fail-closed），生产部署需暴露给监控时显式设置。
 	HealthToken string
+	// SentryDSN E2(2026-09-19 增强批)：Sentry/GlitchTip 上报地址（env SENTRY_DSN）。
+	// 空=完全不初始化 SDK，/client-errors 自建通道行为零变化（双轨共存）。
+	SentryDSN string
 }
 
 // DatabaseConfig 数据库配置（PostgreSQL）
@@ -251,6 +254,7 @@ func LoadConfig() *Config {
 			Mode:        getEnv("GIN_MODE", "debug"),
 			Replicas:    getEnvInt("APP_REPLICAS", 1),
 			HealthToken: getEnv("HEALTH_TOKEN", ""),
+			SentryDSN:   getEnv("SENTRY_DSN", ""),
 		},
 		Database: DatabaseConfig{
 			Host:            getEnv("DB_HOST", "localhost"),

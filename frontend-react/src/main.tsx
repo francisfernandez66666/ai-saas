@@ -6,11 +6,14 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App'
 import { BrandingProvider } from './lib/branding'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { installGlobalErrorHandlers } from './lib/errorReport'
+import { installGlobalErrorHandlers, sentryBridge } from './lib/errorReport'
 import 'tdesign-react/es/style/index.css'
 import './index.css'
 
 installGlobalErrorHandlers()
+// E2(2026-09-19)：VITE_SENTRY_DSN 配置时才拉 Sentry chunk（内置全局 error/unhandledrejection
+// 采集）；未配置 sentryBridge() 返回 null，本行等价 no-op，主轨 /client-errors 不变
+void sentryBridge()
 
 // 应用入口：挂载 React 根节点，外层包 BrowserRouter（路由）与 BrandingProvider（按域名拉取租户白标）
 // ErrorBoundary 兜底渲染异常，避免整页白屏

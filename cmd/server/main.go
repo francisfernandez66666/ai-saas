@@ -47,6 +47,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/getsentry/sentry-go"
+	sentrygin "github.com/getsentry/sentry-go/gin"
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 )
@@ -631,6 +633,25 @@ func main() {
 	}
 
 	// 10. 注册中间件
+	// E2(2026-09-19 增强批)：Sentry/GlitchTip 双轨错误上报。SENTRY_DSN 未配置=SDK 完全不初始化，
+	// slog+/client-errors 既有链路零漂移；Repanic=true 让位外层 gin.Recovery 渲染响应（形态不变），
+	// WaitForDelivery=false 保证上报异步不拖慢请求。
+	if dsn := strings.TrimSpace(config.GlobalConfig.Server.SentryDSN); dsn != "" {
+		if err := sentry.Init(sentry.ClientOptions{
+			Dsn:         dsn,
+			Release:     "ai-scrm@v2.16.0",
+			Environment: config.GlobalConfig.Server.Mode,
+			// 采样与面包屑用 SDK 默认；PII 红线：不采集请求 body（默认即关），
+			// 错误消息里的手机号由后端既有脱敏在入日志前完成，Sentry 只见已净化文本
+			SendDefaultPII: false,
+		}); err != nil {
+			log.Printf("[E2] Sentry 初始化失败，降级为既有通道: %v", err)
+		} else {
+			r.Use(sentrygin.New(sentrygin.Options{Repanic: true, WaitForDelivery: false}))
+			defer sentry.Flush(2 * time.Second)
+			log.Printf("[E2] Sentry 错误上报已启用（release=ai-scrm@v2.16.0）")
+		}
+	}
 	// 顺序：CORS → TenantResolver（全局，fail-closed）
 	// 登录态路由在各分组再挂 JWTAuth → TenantConsistency 完成租户一致性裁决
 	r.Use(middleware.CORS())

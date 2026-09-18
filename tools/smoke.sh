@@ -9,6 +9,7 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       超管跨租户显式指定+审计 / C端租户归属 / 基础数据隔离 /
 #       /status/detail readiness 生产就绪探针（2026-09-15 价值批；P2-4 批三拆分：公开 /status 无清单，
 #       详情端点 X-Health-Token 闸 2 断言）/ 匿名 KB 搜索 visibility 收敛 3 断言（P2-4② 批三）
+#       / E4 话术 A/B 实验字段 CRUD+过滤+校验+字符串PK修口 10 断言（二十二，2026-09-19 增强批）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -497,6 +498,33 @@ check "重复驳回无申请单→409" 409 "$RJ2"
 RJ404=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/billing/orders/999999/refund/reject" -H "Authorization: Bearer $TOKEN")
 check "驳回不存在订单→404" 404 "$RJ404"
 $PSQL "DELETE FROM billing_orders WHERE order_no='$RF_NO'" >/dev/null 2>&1
+
+echo "---- 二十二、2026-09-19 增强批：E4 话术 A/B 实验字段护栏 ----"
+# 召回分桶数学在单测（template_ab_test.go 8 例）；此处守 CRUD 契约与过滤/校验位
+ABG="smoke_ab_$RANDOM"
+ABA="tpl_smoke_a_${RANDOM}${RANDOM}"
+ACRT=$(curl -s -X POST "$B/api/v1/strategy/templates" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"id\":\"$ABA\",\"name\":\"冒烟实验A\",\"anchor_type\":2,\"prompt_template\":\"话术A\",\"status\":2,\"ab_group\":\"$ABG\",\"ab_weight\":60}")
+check "创建实验草稿→code=0 且 ab_group 回显" "$ABG" "$(echo "$ACRT" | jsonget "['data']['ab_group']" 2>/dev/null)"
+check "草稿 status=2 契约回显" 2 "$(echo "$ACRT" | jsonget "['data']['status']" 2>/dev/null)"
+check "ab_weight 越界→400" 400 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/strategy/templates" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"id\":\"${ABA}x\",\"name\":\"越界\",\"anchor_type\":2,\"prompt_template\":\"x\",\"ab_weight\":120}")"
+check "ab_weight 负数→400" 400 "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/strategy/templates" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"id\":\"${ABA}n\",\"name\":\"负权\",\"anchor_type\":2,\"prompt_template\":\"x\",\"ab_weight\":-1}")"
+ABLIST=$(curl -s "$B/api/v1/strategy/templates?ab_group=$ABG" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "列表按实验组过滤恰命中1条" 1 "$(echo "$ABLIST" | python3 -c "import sys,json;d=json.load(sys.stdin);print(len(d['data']['list']))" 2>/dev/null)"
+ABSTAT=$(curl -s "$B/api/v1/admin/packs/stats?ab_group=$ABG" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | jsonget "['code']" 2>/dev/null)
+check "实验组对照统计端点 code=0" 0 "$ABSTAT"
+AUPD=$(curl -s -X PUT "$B/api/v1/strategy/templates/$ABA" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"id\":\"$ABA\",\"name\":\"冒烟实验A\",\"anchor_type\":2,\"prompt_template\":\"话术A\",\"status\":1,\"ab_group\":\"\",\"ab_weight\":0}")
+check "PUT 置空实验组=退出实验" 0 "$(echo "$AUPD" | jsonget "['code']" 2>/dev/null)"
+check "退出实验后 status 发布为 1" 1 "$(curl -s "$B/api/v1/strategy/templates/$ABA" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | jsonget "['data']['status']" 2>/dev/null)"
+check "退出实验后 ab_group 落库清空" y "$($PSQL "SELECT CASE WHEN ab_group='' THEN 'y' ELSE 'n' END FROM templates WHERE id='$ABA'" | tr -d '\r\n ')"
+check "清理实验模板" 0 "$(curl -s -X DELETE "$B/api/v1/strategy/templates/$ABA" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | jsonget "['code']" 2>/dev/null)"
+# E2 双轨观测位：readiness 增 sentry_configured（未配置只展示不红灯），且不在公开 /status 泄露
+HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" | cut -d= -f2 | tr -d '[:space:]')
+check "readiness含sentry_configured观测位" 1 "$(curl -s "$B/status/detail" -H "X-Health-Token: $HT" | grep -c '"sentry_configured"')"
+check "公开/status不泄露sentry_configured" 0 "$(curl -s "$B/status" | grep -c 'sentry_configured')"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

@@ -1,6 +1,54 @@
 // C6 前端异常采集：轻量自建上报，不引入商业 SDK。
 // 采样规则：同一错误指纹只上报一次；普通错误 10% 采样；登录态/关键路由错误优先全量。
+// E2(2026-09-19 增强批)：可选 Sentry/GlitchTip 双轨——仅当构建期注入 VITE_SENTRY_DSN 才
+// 动态 import @sentry/react；未配置时本文件行为与旧版逐字节一致（/client-errors 单轨兜底）。
 import { TOKEN_KEY } from './api';
+
+/** Sentry 懒加载桥：DSN 未设直接短路，SDK chunk 不进首屏、加载/初始化失败静默吞掉 */
+let sentryPromise: Promise<unknown> | null = null
+export function sentryBridge(): Promise<unknown> | null {
+  const dsn = (import.meta.env.VITE_SENTRY_DSN as string | undefined) || ''
+  if (!dsn) return null
+  if (!sentryPromise) {
+    sentryPromise = import('@sentry/react')
+      .then((Sentry) => {
+        Sentry.init({
+          dsn,
+          release: (import.meta.env.VITE_APP_VERSION as string | undefined) || 'dev',
+          // PII 红线：不采集默认 PII（IP/UA 附着头），异常文本经 sanitizeMessage 脱敏
+          sendDefaultPii: false,
+          beforeSend: (event) => {
+            if (event.message) event.message = sanitizeMessage(event.message)
+            for (const ex of event.exception?.values ?? []) {
+              if (ex.value) ex.value = sanitizeMessage(ex.value)
+            }
+            return event
+          },
+        })
+        return Sentry
+      })
+      .catch(() => null) // 离线/被 CSP 拦等场景：主轨 /client-errors 不受影响
+  }
+  return sentryPromise
+}
+
+/** 把异常送到 Sentry 轨（DSN 未配置时为 no-op），与 C6 自建轨并行双写 */
+export function reportToSentry(err: unknown): void {
+  const p = sentryBridge()
+  if (!p) return
+  void p.then((Sentry) => {
+    const mod = Sentry as { captureException?: (e: unknown) => void } | null
+    mod?.captureException?.(err)
+  })
+}
+
+/** C6 上报文本脱敏：手机号/visitor_key/token 截断，Sentry 与自建轨共用同一口径 */
+export function sanitizeMessage(msg: string): string {
+  return msg
+    .replace(/(1[3-9]\d)\d{4}(\d{4})/g, '$1****$2')
+    .replace(/(visitor_key|token)=([^&\s"']+)/gi, '$1=***')
+}
+
 export type ClientErrorPayload = {
   message: string;
   stack: string;

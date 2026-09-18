@@ -1,6 +1,6 @@
 // C6 前端异常边界：捕获 React 子树渲染错误，兜底展示并上报，避免整页白屏无痕迹。
 import { Component, type ErrorInfo, type ReactNode } from 'react';
-import { reportClientError } from '../lib/errorReport';
+import { reportClientError, reportToSentry } from '../lib/errorReport';
 
 type Props = { children: ReactNode; fallback?: ReactNode };
 type State = { error?: Error };
@@ -14,6 +14,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   componentDidCatch(error: Error, info: ErrorInfo): void {
     void reportClientError(error, window.location.pathname, info.componentStack || '');
+    // E2 双轨：被边界拦下的渲染错误不会触发 window.onerror（Sentry 全局钩子看不见），
+    // 显式补报 Sentry 轨；DSN 未配置时 reportToSentry 为 no-op
+    reportToSentry(error)
   }
 
   render(): ReactNode {

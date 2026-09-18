@@ -57,6 +57,16 @@ func computeReadinessChecks() []HealthCheck {
 	cfg := runtimecfg.DefaultSystemConfigService
 	checks := []HealthCheck{}
 
+	// E2(2026-09-19 增强批)：Sentry/GlitchTip 双轨观测位。未配置≠未就绪——
+	// /client-errors 自建通道仍在岗，故恒 OK 只作展示，不计 warn 红灯
+	sentryOn := os.Getenv("SENTRY_DSN") != ""
+	checks = append(checks, HealthCheck{
+		Name: "sentry_configured", Status: StatusOK,
+		Value:  map[bool]string{true: "configured", false: "unset"}[sentryOn],
+		WarnAt: "-", CritAt: "-",
+		Desc: "Sentry/GlitchTip 错误上报双轨观测位；未配置时 /client-errors 自建通道兜底",
+	})
+
 	// R1 注册审核开关：出厂 false=注册即送真实 AI 额度（防薅红线），生产必开
 	reviewOn := false
 	if cfg != nil {
