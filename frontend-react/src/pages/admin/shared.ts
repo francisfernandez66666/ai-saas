@@ -9,8 +9,10 @@ export type Cfg = {
   default_value?: string
 }
 
+/** 后台菜单单项：k 为 Tab 键，link 为路由路径（空表示仅锚点分组） */
 export type MenuItemDef = { k: string; label: string; link?: string }
 
+/** 后台菜单分组（左侧栏一节的标题 + 条目列表） */
 export type MenuGroupDef = { title: string; items: MenuItemDef[] }
 
 // MENU_GROUPS 后台正式菜单分组定义（k 为 Tab 键、link 为路由路径，link 空表示仅锚点分组）
@@ -54,4 +56,5 @@ export const MENU_GROUPS: MenuGroupDef[] = [
   },
 ]
 
+/** 系统配置分类下拉口径（与后端 config category 枚举对齐，顺序即展示顺序） */
 export const CONFIG_CATS = ['reply_speed', 'strategy', 'mental_stage', 'ai_chain', 'billing', 'notify']

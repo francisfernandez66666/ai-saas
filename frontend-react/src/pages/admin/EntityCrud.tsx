@@ -5,8 +5,10 @@ import { Button, Dialog, Input, InputNumber, MessagePlugin, Select, Switch, Tabl
 import { useCrud, type CrudRow } from '../../hooks/useCrud'
 import type { CellProps, TableRowData } from '../../types'
 
+/** 下拉选项（Select/筛选器共用形态） */
 export type Option = { label: string; value: string | number }
 
+/** 弹窗表单字段 spec：type 决定控件形态，list/json 为多行文本录入的序列化类型 */
 export type FieldSpec = {
   key: string
   label: string
@@ -17,12 +19,14 @@ export type FieldSpec = {
   defaultValue?: any
 }
 
+/** 列表筛选器 spec：key 对应查询参数名，options 缺省时由调用方注入枚举 */
 export type FilterSpec = {
   key: string
   label: string
   options?: Option[]
 }
 
+/** EntityCrud 面板入参：base 为 REST 前缀（列表/详情/增删改共用），createFields/editFields 决定弹窗表单 */
 export type EntityCrudProps = {
   base: string
   title: string

@@ -49,6 +49,7 @@ export function sanitizeMessage(msg: string): string {
     .replace(/(visitor_key|token)=([^&\s"']+)/gi, '$1=***')
 }
 
+/** C6 异常上报请求体（对应后端 /client-errors 契约），字段均已脱敏 */
 export type ClientErrorPayload = {
   message: string;
   stack: string;

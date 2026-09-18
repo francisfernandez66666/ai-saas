@@ -5,6 +5,7 @@ import { reportClientError, reportToSentry } from '../lib/errorReport';
 type Props = { children: ReactNode; fallback?: ReactNode };
 type State = { error?: Error };
 
+/** React 异常边界：子树渲染错误经 componentDidCatch 补报（reportClientError+Sentry），展示 fallback 或默认兜底页 */
 export class ErrorBoundary extends Component<Props, State> {
   state: State = {};
 

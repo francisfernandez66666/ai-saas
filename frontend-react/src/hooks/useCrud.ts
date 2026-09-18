@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AUTH } from '../lib/api'
 
+/** CRUD 行数据宽松形态：后端各列表字段不一，单元格渲染按列 spec 取值 */
 export type CrudRow = Record<string, any>
 
+/** useCrud 可选项：分页/筛选/自动加载/列表 URL 构造器（默认 base?page=&page_size= 口径） */
 export type UseCrudOptions = {
   pageSize?: number
   initialFilters?: Record<string, any>

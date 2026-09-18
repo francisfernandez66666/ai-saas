@@ -532,12 +532,14 @@ export interface PackStatRow {
   avg_eval_score?: number
 }
 
+/** 包质量统计响应：list 为包/模板维度效果行，sample_min 为出数门槛，total_samples 为总样本量 */
 export interface PackStatsResp {
   list: PackStatRow[]
   sample_min: number
   total_samples?: number
 }
 
+/** 通道接入视图（F11）：凭据仅回显掩码列，明文只在创建响应中出现一次 */
 export interface ChannelView {
   id: number
   type: string
@@ -553,16 +555,19 @@ export interface ChannelView {
   created_at: string
 }
 
+/** 通道列表响应信封 */
 export interface ChannelListResp {
   list: ChannelView[]
 }
 
+/** 创建通道响应：plaintext 为凭据明文一次性回显，callback_url 为微信回调地址 */
 export interface CreateChannelResp {
   channel: ChannelView
   plaintext?: { secret?: string; token?: string; encoding_aes_key?: string }
   callback_url?: string
 }
 
+/** 通道出站消息视图：status 走 pending/sent/dead 状态机，retries+next_retry_at 驱动指数退避 */
 export interface OutboundView {
   id: number
   tenant_id: number
@@ -580,6 +585,7 @@ export interface OutboundView {
   updated_at: string
 }
 
+/** 出站消息列表响应信封 */
 export interface OutboundListResp {
   list: OutboundView[]
 }
