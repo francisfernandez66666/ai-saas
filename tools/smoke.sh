@@ -11,6 +11,7 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       详情端点 X-Health-Token 闸 2 断言）/ 匿名 KB 搜索 visibility 收敛 3 断言（P2-4② 批三）
 #       / E4 话术 A/B 实验字段 CRUD+过滤+校验+字符串PK修口 10 断言（二十二，2026-09-19 增强批）
 #       / E3 全链路 trace_id：响应头回显+入口/队列日志同 trace 贯穿 3 断言（二十三，2026-09-19 增强批）
+#       / E9 KB 检索重排：kb_rerank 键播种+开关往返+客户端未配置 fail-open 5 断言（二十四，2026-09-19 增强二批）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -547,6 +548,22 @@ if [ -f "$LOGFILE" ]; then
 else
   check "ai-scrm.log 不存在，跳过E3 trace断言" y y
 fi
+
+echo "---- 二十四、2026-09-19 增强二批：E9 KB 检索重排护栏 ----"
+# 重排数学/补漏/fail-open 在单测（rerank_test.go 12 例）；此处守默认键播种 + 热开关往返 + 行为零差
+RCHK1=$($PSQL "SELECT count(*) FROM system_configs WHERE \"key\"='kb_rerank' AND tenant_id=0 AND value='false'" 2>/dev/null | tr -d '[:space:]')
+check "kb_rerank 默认关已播种" 1 "$RCHK1"
+RCHK2=$($PSQL "SELECT count(*) FROM system_configs WHERE \"key\"='kb_rerank_candidates' AND tenant_id=0 AND value='8'" 2>/dev/null | tr -d '[:space:]')
+check "kb_rerank_candidates 默认8已播种" 1 "$RCHK2"
+RCRT=$(curl -s -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"kb_rerank","value":"true"}]')
+check "kb_rerank 热开关可打开(code=0)" 0 "$(echo "$RCRT" | jsonget "['code']" 2>/dev/null)"
+# 开关开但客户端未配置：检索必须 fail-open 正常返回（零行为差，绝不 5xx）
+RSRCH=$(curl -s "$B/api/v1/knowledge/fragments/search?q=越野&tenant_id=1" -H "X-Tenant-ID: 1")
+check "rerank开关开+客户端未配置检索仍code=0(fail-open)" 0 "$(echo "$RSRCH" | jsonget "['code']" 2>/dev/null)"
+RCBK=$(curl -s -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"kb_rerank","value":"false"}]')
+check "kb_rerank 开关恢复关闭" 0 "$(echo "$RCBK" | jsonget "['code']" 2>/dev/null)"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

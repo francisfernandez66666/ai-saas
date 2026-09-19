@@ -71,6 +71,8 @@ func InitEmbeddingClient() {
 	cfg := config.GlobalConfig.AI
 	// D3：即使 embedding 端点未配置，也尽量让 pgvector schema 就位；向量列存在但不写不会破坏主链路。
 	EnsurePgvector()
+	// E9：重排客户端独立装配（可与向量并存，也可单独配置），随向量初始化同点触发
+	InitRerankClient()
 	if cfg.EmbeddingURL == "" {
 		DefaultEmbeddingClient = nil
 		log.Println("[向量检索] 未配置 EMBEDDING_API_URL，回退纯关键词检索")

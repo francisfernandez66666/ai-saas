@@ -353,9 +353,16 @@ func SearchTenantKnowledge(tenantID uint, userInput string, limit int) []model.K
 	if limit <= 0 {
 		limit = 3
 	}
+	// E9 重排：对已按混合分排序的完整命中集做远端重排（仅取前 kb_rerank_candidates 条改序，
+	// 不改集合、不丢片段）；客户端未启用/开关关/调用失败一律 fail-open 原序。
+	frags := make([]model.KnowledgeFragment, 0, len(hits))
+	for _, h := range hits {
+		frags = append(frags, h.frag)
+	}
+	frags = applyRerank(userInput, frags)
 	out := make([]model.KnowledgeFragment, 0, limit)
-	for i := 0; i < len(hits) && i < limit; i++ {
-		out = append(out, hits[i].frag)
+	for i := 0; i < len(frags) && i < limit; i++ {
+		out = append(out, frags[i])
 	}
 	return out
 }

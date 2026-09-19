@@ -159,6 +159,11 @@ type AIConfig struct {
 	EmbeddingModel string // Embedding 模型名（缺省 text-embedding-3-small）
 	EmbeddingDim   int    // 向量维度（pgvector 列定长，须与 EmbeddingModel 输出维度一致，缺省1536）
 
+	// ---- E9 KB 检索重排 Rerank（2026-09-19 增强批）：配置即点亮，未配置/失败回退原序 ----
+	RerankURL   string // Rerank 端点（如硅基流动 /v1/rerank），非空启用重排客户端
+	RerankKey   string // Rerank 端点鉴权（Bearer），空则复用 EmbeddingKey
+	RerankModel string // Rerank 模型名（缺省 BAAI/bge-reranker-v2-m3）
+
 	// ---- 模拟真人打字 ----
 	// 为什么需要？AI秒回太机械，模拟打字延迟更像真人
 	SimulateTyping bool    // 是否开启模拟打字延迟
@@ -309,6 +314,10 @@ func LoadConfig() *Config {
 			EmbeddingKey:   getEnv("EMBEDDING_API_KEY", ""),
 			EmbeddingModel: getEnv("EMBEDDING_MODEL", "text-embedding-3-small"),
 			EmbeddingDim:   getEnvInt("EMBEDDING_DIM", 1536), // pgvector 列定长维度
+			// E9 KB 检索重排 Rerank（2026-09-19 增强批）
+			RerankURL:   getEnv("RERANK_API_URL", ""),
+			RerankKey:   getEnv("RERANK_API_KEY", ""),
+			RerankModel: getEnv("RERANK_MODEL", "BAAI/bge-reranker-v2-m3"),
 			// 模拟真人打字配置
 			SimulateTyping: getEnvBool("AI_SIMULATE_TYPING", true),  // 默认开启，更像真人
 			TypingSpeed:    getEnvFloat("AI_TYPING_SPEED", 4.0),     // 4字/秒，接近真人打字速度

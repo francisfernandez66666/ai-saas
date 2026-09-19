@@ -122,6 +122,9 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// D3(2026-09-13)：KB 向量检索热开关。关闭时不请求 embedding、不走 pgvector；pgvector 不可用时仍回退旧路径。
 	{Category: "knowledge", Key: "kb_vector_search", Value: "true", ValueType: "bool", Description: "KB向量检索开关(pgvector近邻+embedding余弦混合；关闭回退关键词检索)", DefaultValue: "true", SortOrder: 2},
+	// E9(2026-09-19 增强批)：KB 检索重排二段。默认关（需配置 RERANK_API_URL 才有意义）；失败/超时 fail-open 原序。
+	{Category: "knowledge", Key: "kb_rerank", Value: "false", ValueType: "bool", Description: "KB检索重排开关(混合打分top候选送交叉编码器rerank重排序；失败回退原序；须配置RERANK_API_URL)", DefaultValue: "false", SortOrder: 3},
+	{Category: "knowledge", Key: "kb_rerank_candidates", Value: "8", ValueType: "number", Description: "KB重排候选数(送rerank的top-N候选上限，控制时延与配额)", DefaultValue: "8", SortOrder: 4},
 	// 注册试用包额度：新租户注册自动发放 free 包时的 AI 调用次数
 	{Category: "billing", Key: "trial_ai_calls", Value: "500", ValueType: "number", Description: "注册试用包AI调用次数(次)", DefaultValue: "500", SortOrder: 4},
 	// ---- 支付网关 sdk 配置（2026-08-31 UAT 修复）----

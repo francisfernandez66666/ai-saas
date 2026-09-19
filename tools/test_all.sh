@@ -238,7 +238,7 @@ for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$P
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（130 项，含 2026-09-19 批二/三+E4/E2/E3 护栏 §二十~二十三）"
+step "E2E 层：smoke.sh（135 项，含 2026-09-19 批二/三+E4/E2/E3/E9 护栏 §二十~二十四）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 24 项）"
