@@ -286,6 +286,39 @@ func IncrWithTTL(key string, ttl time.Duration) int64 {
 	return n
 }
 
+// SetNXEx 仅当键不存在时写入（带 TTL），返回是否写入成功。
+// P0-1 配套(2026-09-20)：UsageSink 跨实例共享影子余额的 seed 竞争用。
+func SetNXEx(key, value string, ttl time.Duration) bool {
+	if !IsEnabled() {
+		return false
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	ok, err := rdb.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false
+	}
+	return ok
+}
+
+// DecrByWithTTL 原子扣减并保证键带 TTL（键缺失时以 0 起算后补 TTL 语义不可靠，
+// 调用方应先 seed）。返回值 + 是否成功；Redis 不可用/异常返回 (0,false)。
+// P0-1 配套(2026-09-20)：UsageSink 影子余额多实例共享扣减（DECRBY）。
+func DecrByWithTTL(key string, delta int64, ttl time.Duration) (int64, bool) {
+	if !IsEnabled() {
+		return 0, false
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	n, err := rdb.DecrBy(ctx, key, delta).Result()
+	if err != nil {
+		return 0, false
+	}
+	// 每次扣减都续 TTL：影子是缓存不是账本，活跃租户不应因 TTL 掉 seed 竞争
+	_ = rdb.Expire(ctx, key, ttl).Err()
+	return n, true
+}
+
 // LPushLeftPush 左侧推入列表（跨实例消息转交）
 func LPush(key, value string) {
 	if !IsEnabled() {

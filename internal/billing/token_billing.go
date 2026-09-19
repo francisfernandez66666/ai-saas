@@ -120,62 +120,69 @@ func DeductTokensActual(tenantID uint, tokens int64) error {
 		return nil
 	}
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		// P2-2 RLS热路径接入：事务内激活租户行级隔离（RLS_ENABLED=true 时 DB 强制收敛）
-		if r := db.SetTenantRLS(tx, tenantID); r.Error != nil {
-			return r.Error
-		}
-		var t model.Tenant
-		// GORM v2 行锁：clause.Locking{Strength:"UPDATE"}（v1 的 gorm:query_option 在 v2 已失效，2026-09-09 审计修复）
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Select("id, free_token_balance, free_token_expires_at, monthly_token_quota, monthly_token_used, token_balance").
-			First(&t, tenantID).Error; err != nil {
-			return err
-		}
-		now := time.Now()
-		freeAvail := int64(0)
-		if t.FreeTokenExpiresAt == nil || t.FreeTokenExpiresAt.After(now) {
-			freeAvail = t.FreeTokenBalance
-		} else if t.FreeTokenBalance > 0 {
-			t.FreeTokenBalance = 0 // 已过期：顺手清零避免僵尸余额
-		}
-		r := DeductResult{}
-		r.FromFree = minInt64(freeAvail, tokens)
-		rem := tokens - r.FromFree
-		if rem > 0 {
-			monthlyAvail := t.MonthlyTokenQuota - t.MonthlyTokenUsed
-			if monthlyAvail < 0 {
-				monthlyAvail = 0
-			}
-			r.FromMonthly = minInt64(monthlyAvail, rem)
-			rem -= r.FromMonthly
-		}
-		if rem > 0 {
-			r.FromBalance = minInt64(t.TokenBalance, rem)
-			rem -= r.FromBalance
-		}
-		total := r.FromFree + r.FromMonthly + r.FromBalance
-		if total <= 0 {
-			log.Printf("[TokenBilling] 租户%d 三桶均无余额，本次 %d tokens 未扣（欠账留痕）", tenantID, tokens)
-			return nil // 不产生负余额；前置检查本应拦截，此处兜底
-		}
-		res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
-			"free_token_balance": t.FreeTokenBalance - r.FromFree,
-			"monthly_token_used": t.MonthlyTokenUsed + r.FromMonthly,
-			"token_balance":      t.TokenBalance - r.FromBalance,
-		})
-		if res.Error != nil {
-			return res.Error
-		}
-		if rem > 0 {
-			log.Printf("[TokenBilling] 租户%d 余额不足欠账 %d tokens（建议触发充值触达）", tenantID, rem)
-		}
-		log.Printf("[TokenBilling] 扣减完成 tenant=%d tokens=%d [%s]", tenantID, tokens, r)
-		return nil
+		return deductTokensInTx(tx, tenantID, tokens)
 	})
 	if err != nil {
 		log.Printf("[TokenBilling] 扣减失败 tenant=%d tokens=%d: %v", tenantID, tokens, err)
 		return err
 	}
+	return nil
+}
+
+// deductTokensInTx 三桶扣减事务本体（P0-1 重构，2026-09-20 审计批）：
+// 从 DeductTokensActual 抽出，供 UsageSink"挂账行核销 + 扣减"同事务复用——
+// 行锁在事务内先锁租户，保证与挂账 DELETE 的原子配对（崩溃不会双扣/漏扣）。
+func deductTokensInTx(tx *gorm.DB, tenantID uint, tokens int64) error {
+	// P2-2 RLS热路径接入：事务内激活租户行级隔离（RLS_ENABLED=true 时 DB 强制收敛）
+	if r := db.SetTenantRLS(tx, tenantID); r.Error != nil {
+		return r.Error
+	}
+	var t model.Tenant
+	// GORM v2 行锁：clause.Locking{Strength:"UPDATE"}（v1 的 gorm:query_option 在 v2 已失效，2026-09-09 审计修复）
+	if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+		Select("id, free_token_balance, free_token_expires_at, monthly_token_quota, monthly_token_used, token_balance").
+		First(&t, tenantID).Error; err != nil {
+		return err
+	}
+	now := time.Now()
+	freeAvail := int64(0)
+	if t.FreeTokenExpiresAt == nil || t.FreeTokenExpiresAt.After(now) {
+		freeAvail = t.FreeTokenBalance
+	} else if t.FreeTokenBalance > 0 {
+		t.FreeTokenBalance = 0 // 已过期：顺手清零避免僵尸余额
+	}
+	r := DeductResult{}
+	r.FromFree = minInt64(freeAvail, tokens)
+	rem := tokens - r.FromFree
+	if rem > 0 {
+		monthlyAvail := t.MonthlyTokenQuota - t.MonthlyTokenUsed
+		if monthlyAvail < 0 {
+			monthlyAvail = 0
+		}
+		r.FromMonthly = minInt64(monthlyAvail, rem)
+		rem -= r.FromMonthly
+	}
+	if rem > 0 {
+		r.FromBalance = minInt64(t.TokenBalance, rem)
+		rem -= r.FromBalance
+	}
+	total := r.FromFree + r.FromMonthly + r.FromBalance
+	if total <= 0 {
+		log.Printf("[TokenBilling] 租户%d 三桶均无余额，本次 %d tokens 未扣（欠账留痕）", tenantID, tokens)
+		return nil // 不产生负余额；前置检查本应拦截，此处兜底
+	}
+	res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
+		"free_token_balance": t.FreeTokenBalance - r.FromFree,
+		"monthly_token_used": t.MonthlyTokenUsed + r.FromMonthly,
+		"token_balance":      t.TokenBalance - r.FromBalance,
+	})
+	if res.Error != nil {
+		return res.Error
+	}
+	if rem > 0 {
+		log.Printf("[TokenBilling] 租户%d 余额不足欠账 %d tokens（建议触发充值触达）", tenantID, rem)
+	}
+	log.Printf("[TokenBilling] 扣减完成 tenant=%d tokens=%d [%s]", tenantID, tokens, r)
 	return nil
 }
 

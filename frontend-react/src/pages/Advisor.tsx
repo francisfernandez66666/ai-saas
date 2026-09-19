@@ -335,7 +335,10 @@ export default function Advisor() {
       )}
 
       {/* 客户详情 */}
-      {detailId != null && view === 'home' && (
+      {/* P0-3 修复(2026-09-20)：原 `view === 'home'` 闸导致从「我的/统计」等 Tab 点开
+          客户时 detailId 已设但详情不渲染（点了没反应）。详情本身是 fixed 全屏覆盖层，
+          任意 Tab 下都应显示，返回按钮只清 detailId 不动 view */}
+      {detailId != null && (
         <div style={{ position: 'fixed', inset: 0, background: '#f5f7fa', zIndex: 20, maxWidth: 480, margin: '0 auto' }}>
           <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             {/* G-20：aria-label 标注返回按钮，辅助技术可识别导航操作 */}

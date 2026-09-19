@@ -108,8 +108,10 @@ export default function Org() {
   function openDept(mode: string, id?: number | null, name?: string) {
     setDlg({ mode, id, title: mode === 'add' ? (id ? '新建子部门' : '新建根部门') : mode === 'rename' ? '重命名部门' : '移动部门到…' })
     setFName(name || '')
-    // 疑点：setFParent(id ? null : null) 恒为 null，新建子部门时未预置父部门，用户需手动在下拉里选父级
-    setFParent(id ? null : null)
+    // P0-2 修复(2026-09-20)：原 `id ? null : null` 恒为 null——"＋子"新建子部门时
+    // 父级下拉不预置来源部门，用户需手动重选。仅 add 模式预置 id 为父级；
+    // move/rename 的 id 是"被操作部门"，预置会把自己当自己父亲（成环），必须置空
+    setFParent(mode === 'add' ? (id ?? null) : null)
   }
 
   /**

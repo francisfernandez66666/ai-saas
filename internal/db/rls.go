@@ -69,6 +69,7 @@ var rlsTenantTables = []string{
 	// ---- 用量/审计表 ----
 	"usage_records",     // 用量记录表（旧版）
 	"usage_ledger",      // 用量台账表（M3 计费底座）
+	"usage_flush_retry", // 计量扣减挂账表（P0-1，2026-09-20 审计批）
 	"tenant_audit_logs", // 租户审计日志表
 
 	// ---- G-14 补齐：组织/身份/API/流程/标签/行业包相关表 ----
