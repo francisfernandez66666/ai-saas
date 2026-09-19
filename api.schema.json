@@ -824,6 +824,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/openapi/spec",
+      "group": "openapi",
+      "handler": "OpenAPIGetSpec",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/org/departments/tree",
       "group": "org",
       "handler": "GetDepartmentTree",

@@ -44,7 +44,7 @@ export function OpenApiTab() {
   return (
     <div>
       <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex items-center justify-between">
-        <div style={{ fontSize: 13, color: '#6b7280' }}>开放 API 基地址：<code className="bg-gray-100 px-2 py-0.5 rounded">/openapi/v1</code>，鉴权：<code className="bg-gray-100 px-2 py-0.5 rounded">Bearer sk_xxx</code>。停用即时生效。</div>
+        <div style={{ fontSize: 13, color: '#6b7280' }}>开放 API 基地址：<code className="bg-gray-100 px-2 py-0.5 rounded">/openapi/v1</code>，鉴权：<code className="bg-gray-100 px-2 py-0.5 rounded">Bearer sk_xxx</code>。停用即时生效。<a href="/docs/api" target="_blank" rel="noreferrer" style={{ color: 'var(--pri)', marginLeft: 8 }}>查看接口文档 →</a></div>
         <Button theme="primary" onClick={() => setShowCreate(true)}>+ 签发新 Key</Button>
       </div>
       {showCreate && (

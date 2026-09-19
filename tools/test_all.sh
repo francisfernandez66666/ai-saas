@@ -238,7 +238,7 @@ for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$P
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（135 项，含 2026-09-19 批二/三+E4/E2/E3/E9 护栏 §二十~二十四）"
+step "E2E 层：smoke.sh（140 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 24 项）"
@@ -259,7 +259,7 @@ step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全 
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 40 项，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
-step "E2E 层：playwright 真浏览器 E2E（10 项，D3 修复：孤儿套件接门禁）"
+step "E2E 层：playwright 真浏览器 E2E（11 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染）"
 # 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。
 # 无 chromium 缓存时 SKIP（不 FAIL——离线机器不该被下载卡死），CI e2e job 已显式安装。
 case "$(uname)" in Darwin) PW_CACHE="$HOME/Library/Caches/ms-playwright";; *) PW_CACHE="$HOME/.cache/ms-playwright";; esac

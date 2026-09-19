@@ -15,6 +15,14 @@ if ! go run ./cmd/apidump -out api.schema.json -check > /dev/null; then
   FAIL=1
 fi
 
+# ---- 1.5 E10 开放面规格 golden：spec 与代码同源 + 路由清单双向核对 ----
+# openapi.spec.json 由 cmd/apidump -format openapi 生成（内部核对 /openapi/v1 真实路由 ↔ spec paths，
+# 新增端点漏文档 / 文档写了未注册端点都会在这里 FAIL），运行时端点与 golden 共用同一构建函数。
+if ! go run ./cmd/apidump -format openapi -out openapi.spec.json -check > /dev/null; then
+  echo "  FAIL  openapi.spec.json 与规格代码/路由清单不一致（请跑 go run ./cmd/apidump -format openapi -out openapi.spec.json）"
+  FAIL=1
+fi
+
 # ---- 2. 前端类型漂移 ----
 TMP_API_TS=$(mktemp)
 trap 'rm -f "$TMP_API_TS"' EXIT

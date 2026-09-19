@@ -89,6 +89,7 @@ export interface ApiRoutes {
   "GET /api/v1/knowledge/fragments/search": unknown
   "GET /api/v1/knowledge/models": unknown
   "GET /api/v1/knowledge/models/:id": unknown
+  "GET /api/v1/openapi/spec": unknown
   "GET /api/v1/org/departments/tree": unknown
   "GET /api/v1/org/users": unknown
   "GET /api/v1/packages": unknown

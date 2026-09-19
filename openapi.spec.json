@@ -1,0 +1,351 @@
+{
+  "components": {
+    "securitySchemes": {
+      "BearerKey": {
+        "bearerFormat": "sk_",
+        "description": "API Key（后台「系统管理 → API Key」签发，明文仅返回一次）。权限位：customer.read / cdp.read / chat.write / all",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "AI-SCRM 对外数据与对话能力。鉴权：`Authorization: Bearer sk_...`（后台「API Key」签发，最小权限，按 Key 限流 60 次/分钟）。\n\n读端点统一返回 `{code, message, data}` 信封（code=0 成功）；`/chat/completions` 为 OpenAI chat/completions 兼容结构。\n\n错误码：400 参数非法 / 401 Key 无效或吊销 / 403 权限不足或租户不可用 / 404 资源不存在或跨租户 / 429 触发限流。",
+    "title": "AI-SCRM 开放 API（租户面）",
+    "version": "v1"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/cdp/profiles/{one_id}": {
+      "get": {
+        "description": "权限 cdp.read。返回 CDP 画像视图（姓名/标签已脱敏）；不存在与他租户统一 404 防枚举。",
+        "parameters": [
+          {
+            "description": "OneID 标识",
+            "in": "path",
+            "name": "one_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "统一信封",
+                  "properties": {
+                    "code": {
+                      "description": "0=成功，非0=业务错误",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "业务数据，形态见各端点"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "画像视图"
+          },
+          "404": {
+            "description": "画像不存在（含跨租户）"
+          }
+        },
+        "summary": "OneID 客户画像"
+      }
+    },
+    "/chat/completions": {
+      "post": {
+        "description": "权限 chat.write。复用站内全链路（策略推理/硬边界/留资捕获/内容安全/计费同池）。会话归属由 external_user_id(+session_id) 服务端映射；stream=true 走 SSE 逐帧，末尾 [DONE]。到店倾向+手机号会触发留资并分配顾问。",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "channel": "douyin",
+                "external_user_id": "douyin_8823",
+                "messages": [
+                  {
+                    "content": "你们越野版落地价多少？",
+                    "role": "user"
+                  }
+                ],
+                "model": "ai-scrm",
+                "session_id": "s-2026-001"
+              },
+              "schema": {
+                "properties": {
+                  "channel": {
+                    "description": "渠道标识 douyin/tiktok/taobao...，默认 openapi",
+                    "type": "string"
+                  },
+                  "external_user_id": {
+                    "description": "渠道侧用户 ID（必填，租户内映射为客户）",
+                    "type": "string"
+                  },
+                  "messages": {
+                    "description": "OpenAI 消息数组，取最后一条 role=user 作为本轮输入",
+                    "items": {
+                      "properties": {
+                        "content": {
+                          "type": "string"
+                        },
+                        "role": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "model": {
+                    "description": "模型名（透传回显，默认 ai-scrm）",
+                    "type": "string"
+                  },
+                  "session_id": {
+                    "description": "渠道会话 ID（可选，隔离同一用户多轮会话）",
+                    "type": "string"
+                  },
+                  "stream": {
+                    "description": "true=SSE 流式，false=全量 JSON",
+                    "type": "boolean"
+                  }
+                },
+                "required": [
+                  "messages",
+                  "external_user_id"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "choices": [
+                    {
+                      "finish_reason": "stop",
+                      "index": 0,
+                      "message": {
+                        "content": "越野版现在有置换补贴，方便留个电话帮您锁优惠吗？",
+                        "role": "assistant"
+                      }
+                    }
+                  ],
+                  "id": "chatcmpl-20260919120000.000000000",
+                  "model": "ai-scrm",
+                  "object": "chat.completion",
+                  "usage": {
+                    "completion_tokens": 24,
+                    "prompt_tokens": 12,
+                    "total_tokens": 36
+                  }
+                }
+              },
+              "text/event-stream": {
+                "description": "SSE 逐帧，末帧 data: [DONE]"
+              }
+            },
+            "description": "OpenAI chat.completion（choices[0].message.content + usage 估算 token 数）；stream=true 为 chat.completion.chunk SSE 帧序列"
+          },
+          "400": {
+            "description": "external_user_id 缺失或 messages 无用户内容"
+          },
+          "429": {
+            "description": "Key 维度限流 60 次/分钟"
+          }
+        },
+        "summary": "AI 销售对话（OpenAI 兼容）"
+      }
+    },
+    "/customers": {
+      "get": {
+        "description": "权限 customer.read。手机号默认脱敏（mask=false 显式关闭），跨租户数据天然不可见。附 balance 余额对账视图。",
+        "parameters": [
+          {
+            "description": "页码，默认 1",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": "1",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "每页条数 1~100，默认 20",
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": "20",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "姓名/手机号模糊搜索",
+            "in": "query",
+            "name": "keyword",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "旅程阶段过滤（如 ai_connected/lead_captured）",
+            "in": "query",
+            "name": "journey_stage",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "手机号脱敏，默认 true；传 false 出明文",
+            "in": "query",
+            "name": "mask",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "统一信封",
+                  "properties": {
+                    "code": {
+                      "description": "0=成功，非0=业务错误",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "业务数据，形态见各端点"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "total/page/page_size/list[]（id,name,phone,journey_stage,interest_model,source,assigned_user_id,created_at）+ balance（quota_remaining/ai_call_balance/billing_enforced）"
+          }
+        },
+        "summary": "客户列表"
+      }
+    },
+    "/customers/{id}/conversations": {
+      "get": {
+        "description": "权限 customer.read。返回该客户最近 20 条会话、每条最多 200 条消息（sender_type/content/created_at）。他租户客户 ID 一律 404。",
+        "parameters": [
+          {
+            "description": "客户 ID",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "统一信封",
+                  "properties": {
+                    "code": {
+                      "description": "0=成功，非0=业务错误",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "业务数据，形态见各端点"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "customer_id/name/journey_stage/conversations[]（conversation_id,status,message_count,messages[]）+ balance"
+          },
+          "404": {
+            "description": "客户不存在或跨租户"
+          }
+        },
+        "summary": "客户会话与消息"
+      }
+    },
+    "/usage": {
+      "get": {
+        "description": "权限 all。按日返回 usage_records 汇总（date/metric/value），用于客户侧自助对账。",
+        "parameters": [
+          {
+            "description": "回看天数 1~365，默认 30",
+            "in": "query",
+            "name": "days",
+            "required": false,
+            "schema": {
+              "default": "30",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "description": "统一信封",
+                  "properties": {
+                    "code": {
+                      "description": "0=成功，非0=业务错误",
+                      "type": "integer"
+                    },
+                    "data": {
+                      "description": "业务数据，形态见各端点"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "data 为 [{date,metric,value}] 数组"
+          }
+        },
+        "summary": "用量对账"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerKey": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "当前实例",
+      "url": "/openapi/v1"
+    }
+  ]
+}

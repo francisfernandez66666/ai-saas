@@ -12,6 +12,7 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / E4 话术 A/B 实验字段 CRUD+过滤+校验+字符串PK修口 10 断言（二十二，2026-09-19 增强批）
 #       / E3 全链路 trace_id：响应头回显+入口/队列日志同 trace 贯穿 3 断言（二十三，2026-09-19 增强批）
 #       / E9 KB 检索重排：kb_rerank 键播种+开关往返+客户端未配置 fail-open 5 断言（二十四，2026-09-19 增强二批）
+#       / E10 租户 OpenAPI 文档站：spec 端点可用+结构完整+内部面零泄露+缓存头 5 断言（二十五，2026-09-19 增强二批）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -564,6 +565,23 @@ check "rerank开关开+客户端未配置检索仍code=0(fail-open)" 0 "$(echo "
 RCBK=$(curl -s -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
   -H "Content-Type: application/json" -d '[{"key":"kb_rerank","value":"false"}]')
 check "kb_rerank 开关恢复关闭" 0 "$(echo "$RCBK" | jsonget "['code']" 2>/dev/null)"
+
+echo "---- 二十五、2026-09-19 增强二批：E10 租户 OpenAPI 文档站护栏 ----"
+# 规格内容↔真实路由双向一致由契约层守护（apidump -format openapi）；此处守端点可用、结构完整、内部面零泄露
+SPEC_FILE=$(mktemp)
+SPEC_HTTP=$(curl -s -o "$SPEC_FILE" -w '%{http_code}' "$B/api/v1/openapi/spec")
+check "GET /api/v1/openapi/spec 公开免登录 200" 200 "$SPEC_HTTP"
+grep -q '"openapi": "3.0.3"' "$SPEC_FILE" && grep -q '"/chat/completions"' "$SPEC_FILE" && grep -q '"/cdp/profiles/{one_id}"' "$SPEC_FILE" \
+  && check "spec 为 OpenAPI3 且含核心端点" y y || check "spec 为 OpenAPI3 且含核心端点" y n
+# 攻击面红线：租户面文档绝不含 /admin、/super 内部路径
+grep -q '/admin\|/super' "$SPEC_FILE" && check "spec 内部面零泄露(/admin|/super 0 命中)" y n || check "spec 内部面零泄露(/admin|/super 0 命中)" y y
+rm -f "$SPEC_FILE"
+SPEC_HDR=$(curl -s -D - -o /dev/null "$B/api/v1/openapi/spec" | tr -d '\r')
+echo "$SPEC_HDR" | grep -qi 'Cache-Control: public, max-age=60' && check "spec 响应带公共缓存头(60s)" y y || check "spec 响应带公共缓存头(60s)" y n
+check "spec 端点返回裸 OpenAPI JSON(非信封)" y "$(python3 -c "
+import json,urllib.request
+d=json.load(urllib.request.urlopen('$B/api/v1/openapi/spec'))
+print('y' if 'paths' in d and 'code' not in d else 'n')" 2>/dev/null)"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

@@ -59,7 +59,7 @@ function walk(dir) {
 }
 
 // 前端常见的"前缀常量"（API = '/api/v1' 再拼具体路径），本身不是端点
-const BASE_PREFIXES = new Set(['/', '/api', '/api/v1', '/openapi', '/api/v1/admin', '/api/v1/advisor', '/api/v1/super', '/api/v1/org', '/api/v1/cdp', '/api/v1/tenant', '/api/v1/auth', '/api/v1/privacy'])
+const BASE_PREFIXES = new Set(['/', '/api', '/api/v1', '/openapi', '/openapi/v1', '/api/v1/admin', '/api/v1/advisor', '/api/v1/super', '/api/v1/org', '/api/v1/cdp', '/api/v1/tenant', '/api/v1/auth', '/api/v1/privacy'])
 
 // 提取源码里出现的 /api/v1、/openapi、/ws 路径字面量（含模板串起始部分）
 const PATH_RE = /['"`](\/(?:api\/v1|openapi|health|status|metrics|ws)[^'"`\s]*)/g

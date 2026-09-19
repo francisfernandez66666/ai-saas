@@ -43,7 +43,7 @@ type Schema struct {
 func main() {
 	out := flag.String("out", "api.schema.json", "输出文件，- 表示 stdout")
 	check := flag.Bool("check", false, "与已有文件做字节级 diff，不一致则退出码 1")
-	format := flag.String("format", "schema", "schema|paths")
+	format := flag.String("format", "schema", "schema|paths|openapi")
 	flag.Parse()
 
 	content, err := buildContent(*format)
@@ -82,6 +82,43 @@ func buildContent(format string) (string, error) {
 			fmt.Fprintf(&b, "%s %s\n", r.Method, r.Path)
 		}
 		return b.String(), nil
+	}
+	if format == "openapi" {
+		// E10 防漂移：golden 与运行时规格同源（api.BuildOpenAPISpecJSON），
+		// 并双向核对真实 /openapi/v1 路由 ↔ spec paths（新增端点漏文档当场 FAIL）
+		specBytes, err := api.BuildOpenAPISpecJSON()
+		if err != nil {
+			return "", err
+		}
+		var spec struct {
+			Paths map[string]map[string]any `json:"paths"`
+		}
+		if err := json.Unmarshal(specBytes, &spec); err != nil {
+			return "", err
+		}
+		routeKeys := map[string]bool{}
+		for _, r := range routes {
+			if strings.HasPrefix(r.Path, "/openapi/v1/") {
+				routeKeys[r.Method+" "+ginToSpecPath(strings.TrimPrefix(r.Path, "/openapi/v1"))] = true
+			}
+		}
+		specKeys := map[string]bool{}
+		for path, ops := range spec.Paths {
+			for method := range ops {
+				specKeys[strings.ToUpper(method)+" "+path] = true
+			}
+		}
+		for k := range routeKeys {
+			if !specKeys[k] {
+				return "", fmt.Errorf("spec 缺少端点文档: %s（routes_openapi.go 已注册）", k)
+			}
+		}
+		for k := range specKeys {
+			if !routeKeys[k] {
+				return "", fmt.Errorf("spec 含未注册端点: %s（路由清单中不存在，疑似内部面泄露或文档漂移）", k)
+			}
+		}
+		return string(specBytes), nil
 	}
 	if format != "schema" {
 		return "", fmt.Errorf("未知 format: %s", format)
@@ -137,6 +174,17 @@ func collectRoutes() ([]Route, error) {
 }
 
 var funcSuffixRe = regexp.MustCompile(`-fm$`)
+
+// ginToSpecPath 把 gin 路径参数（:id）转成 OpenAPI 模板（{id}），用于 spec↔路由清单核对
+func ginToSpecPath(p string) string {
+	segs := strings.Split(p, "/")
+	for i, s := range segs {
+		if strings.HasPrefix(s, ":") {
+			segs[i] = "{" + strings.TrimPrefix(s, ":") + "}"
+		}
+	}
+	return strings.Join(segs, "/")
+}
 
 // funcName 从 Gin 函数指针文本中解析 handler 名称。
 func funcName(raw string) string {
@@ -197,7 +245,8 @@ func authOf(path string) []string {
 		strings.HasPrefix(path, "/api/v1/knowledge/"), strings.HasPrefix(path, "/api/v1/client-errors"), strings.HasPrefix(path, "/api/v1/privacy/deletion-request"),
 		strings.HasPrefix(path, "/api/v1/auth/login"), strings.HasPrefix(path, "/api/v1/auth/register"), strings.HasPrefix(path, "/api/v1/auth/register-config"),
 		strings.HasPrefix(path, "/api/v1/auth/email-code"), strings.HasPrefix(path, "/api/v1/auth/reset-password"), strings.HasPrefix(path, "/api/v1/auth/verify-reset-code"),
-		strings.HasPrefix(path, "/api/v1/tenant/signup"), strings.HasPrefix(path, "/api/v1/tenant/check-code"):
+		strings.HasPrefix(path, "/api/v1/tenant/signup"), strings.HasPrefix(path, "/api/v1/tenant/check-code"),
+		strings.HasPrefix(path, "/api/v1/openapi/spec"): // E10 开放面规格：静态子集零租户数据，公开（注册在 JWTAuth 之前，口径与代码一致）
 		add("public")
 	default:
 		add("jwt")

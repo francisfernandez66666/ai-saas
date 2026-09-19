@@ -28,6 +28,8 @@ const Billing = lazy(() => import('./pages/Billing'))
 const Org = lazy(() => import('./pages/Org'))
 /** 定价页懒加载入口。 */
 const Pricing = lazy(() => import('./pages/Pricing'))
+/** 开放 API 文档站懒加载入口（E10，公开页）。 */
+const ApiDocs = lazy(() => import('./pages/ApiDocs'))
 /** 移动端工作台首页懒加载入口。 */
 const AppHome = lazy(() => import('./pages/AppHome'))
 /** 移动端邀请页懒加载入口。 */
@@ -118,6 +120,8 @@ export default function App() {
       <Route path="/org" element={<ProtectedRoute><Org /></ProtectedRoute>} />
       {/* 定价页：展示套餐（plan）与 AI 商业包（package） */}
       <Route path="/pricing" element={<Pricing />} />
+      {/* 开放 API 文档站（E10）：渲染后端 OpenAPI 规格，免登录对外可见 */}
+      <Route path="/docs/api" element={<ApiDocs />} />
       {/* /app 嵌套布局路由：移动端工作台，AppLayout 统一做登录态守卫与顶栏 */}
       <Route path="/app" element={<AppLayout />}>
         {/* /app 首页：卡片入口导航至对话/顾问台/收银台/邀请/设置 */}

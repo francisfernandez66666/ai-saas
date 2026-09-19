@@ -122,3 +122,10 @@ test('strategy test endpoint responds', async ({ request }) => {
   const j = await r.json();
   expect(j).toHaveProperty('code');
 });
+
+// 11. E10 开放 API 文档站：/docs/api 免登录渲染后端规格（端点卡片真实出现，非空壳）
+test('openapi docs page renders endpoints from spec', async ({ page }) => {
+  await page.goto('/docs/api');
+  await expect(page.getByText('AI-SCRM 开放 API')).toBeVisible({ timeout: 10000 });
+  await expect(page.getByText('/chat/completions').first()).toBeVisible({ timeout: 10000 });
+});

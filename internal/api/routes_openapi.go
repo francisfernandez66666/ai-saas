@@ -24,3 +24,9 @@ func registerOpenAPI(r *gin.Engine) {
 		openapi.POST("/chat/completions", middleware.RequirePerm(middleware.PermChatWrite), OpenAPIChatCompletions)
 	}
 }
+
+// registerOpenAPIDoc E10（2026-09-19）：租户开放面规格端点，公开挂 /api/v1（注册须在 v1.Use(JWTAuth) 之前）。
+// 内容仅 /openapi/v1 子集静态规格，无任何租户数据，公开无泄露面。
+func registerOpenAPIDoc(v1 *gin.RouterGroup) {
+	v1.GET("/openapi/spec", OpenAPIGetSpec)
+}

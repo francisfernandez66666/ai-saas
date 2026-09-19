@@ -109,6 +109,7 @@ export default function Index() {
         {/* 底部导航：各功能入口链接 */}
         <div style={{ marginTop: 48, display: 'flex', gap: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
           <a className="nav-link" href="/pricing">套餐定价</a>
+          <a className="nav-link" href="/docs/api">开放 API 文档</a>
           <a className="nav-link" href="/billing">订阅收银台</a>
           <a className="nav-link" href="/login">登录工作台</a>
           <a className="nav-link" href="/admin">管理后台</a>

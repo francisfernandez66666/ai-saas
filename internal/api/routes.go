@@ -32,6 +32,7 @@ func RegisterRoutes(r *gin.Engine) {
 	registerWSAndCollector(r, v1)
 	registerAuthPublic(v1)
 	registerOpenAPI(r)
+	registerOpenAPIDoc(v1) // E10 开放面规格（公开，须在 v1.Use(JWTAuth) 之前）
 	registerChatPublic(v1)
 	registerAdvisor(v1)
 	registerSuper(v1)
