@@ -66,6 +66,12 @@ export default function Advisor() {
   const [tdForm, setTdForm] = useState<Record<string, string>>({ scheduled_at: '', model_name: '', contact_name: '', contact_phone: '', location: '', note: '', status: 'pending' })
   const [chanCtx, setChanCtx] = useState<any>(null)
   const [chanKey, setChanKey] = useState<{ corpid: string; external_userid: string } | null>(null)
+  // P1-9 零UI补齐(2026-09-20)：跨会话历史时间线——GET /conversations/:id/messages 此前前端零消费者，
+  // 详情底部聊天记录只看当前会话，历史会话内容无处可查。点行展开该会话全量消息（≤200 条，后端 ASC）
+  const [tlConv, setTlConv] = useState<number | null>(null)
+  const [tlMsgs, setTlMsgs] = useState<Msg[]>([])
+  // P1-9：客户满意度评分入口（POST /feedback/rating，登录态按 customer_id 记录 1-5 分+评语，后端限 5 次/天/人+客户）
+  const [rate, setRate] = useState<{ score: number; comment: string }>({ score: 0, comment: '' })
   // §八-6 D 块：侧边栏 JS-SDK 装配结果（null=未启动/进行中，仅侧边栏卡片展示一行小字）
   const [jsSdkOk, setJsSdkOk] = useState<boolean | null>(null)
   const chatRef = useRef<HTMLDivElement>(null)
@@ -126,6 +132,8 @@ export default function Advisor() {
       // §八-6 C 块：同步会话接管态（mode=human 或被人工锁都按"人工"呈现，驱动转回按钮）
       setConvMode(conv ? (conv.mode === 'human' || conv.is_human_locked ? 'human' : 'ai') : '')
     }
+    // P1-9：切客户重置时间线展开态与评分草稿（防上一客户的消息/分数串显）
+    setTlConv(null); setTlMsgs([]); setRate({ score: 0, comment: '' })
     loadChat(id); loadTestDrives(id); loadRecommend(id, convIdNow)
   }
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
@@ -141,6 +149,20 @@ export default function Advisor() {
   }
   // 拉取客户试驾单列表
   async function loadTestDrives(id: number) { const j = await AUTH(API + '/test-drives?customer_id=' + id); setTestDrives(j.data || []) }
+  // P1-9 零UI补齐(2026-09-20)：展开/收起某历史会话的消息时间线（同会话再点收起；换会话清空重拉）
+  async function toggleTimeline(cid: number) {
+    if (tlConv === cid) { setTlConv(null); setTlMsgs([]); return }
+    setTlConv(cid); setTlMsgs([])
+    const j = await AUTH('/api/v1/conversations/' + cid + '/messages')
+    if (j?.code === 0) setTlMsgs(j.data || [])
+  }
+  // P1-9：提交客户满意度评分（1-5 必选；后端限同人同客户 5 次/天，超限 429 由 AUTH toastError 提示）
+  async function submitRating() {
+    if (!detailId) return
+    if (rate.score < 1) { MessagePlugin.warning('先选 1-5 分'); return }
+    const j = await AUTH('/api/v1/feedback/rating', { method: 'POST', body: { customer_id: detailId, rating: rate.score, comment: rate.comment } })
+    if (j?.code === 0) { MessagePlugin.success('评分已提交'); setRate({ score: 0, comment: '' }) }
+  }
   // 人工发送消息：调用顾问端 chat/send 接口，成功后追加到本地消息列表
   async function send() {
     if (!input.trim() || !detailId) return
@@ -437,6 +459,47 @@ export default function Advisor() {
               <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {msgs.map((m, i) => <div key={i} style={{ alignSelf: m.sender_type === 'human' ? 'flex-end' : 'flex-start', background: m.sender_type === 'human' ? 'var(--pri)' : m.sender_type === 'ai' ? '#ecfdf5' : '#f1f5f9', color: m.sender_type === 'human' ? '#fff' : '#1f2937', padding: '8px 12px', borderRadius: 10, maxWidth: '80%', fontSize: 13 }}>{m.content}</div>)}
               </div>
+            </div>
+            {/* P1-9 零UI补齐(2026-09-20)：跨会话历史时间线——点开某会话拉 /conversations/:id/messages 全量回看 */}
+            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
+              <b style={{ fontSize: 13 }}>历史会话</b>
+              {(detail?.conversations || []).length === 0 && <div style={{ color: '#a0aec0', marginTop: 6, fontSize: 12 }}>暂无历史会话</div>}
+              {(detail?.conversations || []).map((cv) => (
+                <div key={cv.id}>
+                  <div onClick={() => toggleTimeline(cv.id)} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
+                    <span style={{ flex: 1 }}>会话 #{cv.id}
+                      <span style={{ color: '#a0aec0' }}> · {cv.channel || 'web'} · {cv.status === 'active' ? '进行中' : cv.status === 'closed' ? '已结束' : cv.status || '-'}</span>
+                      {cv.last_message_at ? <span style={{ color: '#a0aec0' }}> · {new Date(cv.last_message_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span> : null}
+                    </span>
+                    <span style={{ color: 'var(--pri)', fontSize: 12 }}>{tlConv === cv.id ? '收起' : '展开'}</span>
+                  </div>
+                  {tlConv === cv.id && (
+                    <div style={{ margin: '6px 0 2px', padding: '8px 10px', background: '#f8fafc', borderRadius: 8, maxHeight: 240, overflowY: 'auto' }}>
+                      {tlMsgs.length === 0 && <span style={{ color: '#a0aec0', fontSize: 12 }}>无消息</span>}
+                      {tlMsgs.map((m, i) => (
+                        <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
+                          <span style={{ color: m.sender_type === 'human' ? '#4338ca' : m.sender_type === 'ai' ? '#047857' : '#64748b' }}>
+                            [{m.sender_type === 'human' ? '顾问' : m.sender_type === 'ai' ? 'AI' : m.sender_type === 'customer' ? '客户' : m.sender_type}]
+                          </span>{' '}{m.content}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            {/* P1-9：客户满意度评分（POST /feedback/rating，登录态记录，后端限 5 次/天/人+客户） */}
+            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
+              <b style={{ fontSize: 13 }}>满意度评分</b>
+              <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
+                {[1, 2, 3, 4, 5].map((n) => (
+                  <button key={n} onClick={() => setRate((r) => ({ ...r, score: n }))} aria-label={n + ' 分'}
+                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 20, color: n <= rate.score ? '#f59e0b' : '#d1d5db' }}>★</button>
+                ))}
+                <span style={{ color: '#a0aec0', fontSize: 12 }}>{rate.score ? rate.score + ' 分' : '未评分'}</span>
+              </div>
+              <Textarea value={rate.comment} onChange={(v) => setRate((r) => ({ ...r, comment: v }))} placeholder="评语（可选）" autosize={{ minRows: 2 }} style={{ marginTop: 8 }} />
+              <Button size="small" theme="primary" variant="outline" onClick={submitRating} style={{ marginTop: 8 }}>提交评分</Button>
             </div>
           </div>
           <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', padding: 10, display: 'flex', gap: 8 }}>

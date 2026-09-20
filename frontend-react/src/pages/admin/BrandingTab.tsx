@@ -1,7 +1,8 @@
 // 品牌定制 Tab（F1 从 Admin.tsx 拆出）：租户白标配置。
+// P1-7 迁移(2026-09-20 审计批)：裸 fetch → lib/api AUTH（超时/401 登出/断网兜底统一）。
 import { useEffect, useState } from 'react'
 import { Button, Input } from 'tdesign-react'
-import { authHeaders } from '../../lib/api'
+import { AUTH } from '../../lib/api'
 
 type BrandForm = {
   custom_domain: string; brand_name: string; brand_link: string; logo_url: string;
@@ -16,8 +17,8 @@ export function BrandingTab() {
   useEffect(() => {
     // A2 修复(2026-09-14)：旧实现读 public 接口——按 Host 解析租户，管理员在平台域操作时
     // 拿到平台默认（恒空表单），保存把空串写回 → 白标配置被清。改走登录态本租户读取端点。
-    fetch('/api/v1/admin/tenant/branding', { headers: authHeaders() })
-      .then((r) => r.json()).then((j) => {
+    AUTH('/api/v1/admin/tenant/branding')
+      .then((j) => {
         const b: Record<string, unknown> = (j && j.code === 0 && j.data) ? j.data : {}
         const v: BrandForm = {
           custom_domain: (b.custom_domain as string) || '',
@@ -29,7 +30,7 @@ export function BrandingTab() {
           secondary_color: (b.secondary_color as string) || '',
         }
         setF(v); setLoaded(v)
-      }).catch(() => {})
+      })
   }, [])
   async function save() {
     setMsg('保存中...')
@@ -47,13 +48,9 @@ export function BrandingTab() {
       if (cur !== old) payload[k] = cur
     }
     if (Object.keys(payload).length === 0) { setMsg('无改动'); return }
-    const res = await fetch('/api/v1/admin/tenant/branding', {
-      method: 'PUT',
-      headers: authHeaders({ 'Content-Type': 'application/json' }),
-      body: JSON.stringify(payload),
-    })
-    const j = await res.json()
-    setMsg(j.code === 0 ? '✅ 已保存，刷新页面即可看到效果' : '❌ ' + (j.message || '保存失败'))
+    // AUTH 失败已 toastError；保存结果仍写回页内 msg 横幅（成功/失败都可见）
+    const j = await AUTH('/api/v1/admin/tenant/branding', { method: 'PUT', body: payload })
+    setMsg(j?.code === 0 ? '✅ 已保存，刷新页面即可看到效果' : '❌ ' + (j?.message || '保存失败'))
   }
   // 渲染一个白标配置文本输入项（label + 受控 Input，绑定到 form 的某字段）
   const field = (k: keyof BrandForm, label: string, ph: string) => (

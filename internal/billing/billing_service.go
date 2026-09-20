@@ -225,12 +225,20 @@ func VerifyGatewaySign(key, orderNo, status, sign string) bool {
 // ============================================================
 
 // VerifyGatewaySignV2 新版回调验签（timestamp 为 unix 秒字符串）
-func VerifyGatewaySignV2(key, orderNo, status, timestamp, nonce, sign string) bool {
+// P1-2 修复(2026-09-20 审计批)：签名串扩为 `order_no|status|timestamp|nonce|amount_cents`
+// ——旧四段串不含金额，共享密钥方（聚合网关）配错或被劫持可用 ¥0.01 实付按订单面额
+// 全额发货。amountCents 传空 = 调用方显式声明存量兼容模式（gateway_webhook_amount_required
+// =false 时才允许），否则 handler 直接拒。与微信 V3/支付宝分支的金额归属核对同口径。
+func VerifyGatewaySignV2(key, orderNo, status, timestamp, nonce, amountCents, sign string) bool {
 	if key == "" || sign == "" || timestamp == "" || nonce == "" {
 		return false
 	}
+	base := orderNo + "|" + status + "|" + timestamp + "|" + nonce
+	if amountCents != "" {
+		base += "|" + amountCents
+	}
 	mac := hmac.New(sha256.New, []byte(key))
-	mac.Write([]byte(orderNo + "|" + status + "|" + timestamp + "|" + nonce))
+	mac.Write([]byte(base))
 	return hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(sign))
 }
 

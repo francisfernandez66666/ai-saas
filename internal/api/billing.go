@@ -649,6 +649,7 @@ func billingWebhookGateway(c *gin.Context, channel string) {
 		TradeStatus string `json:"trade_status"` // TRADE_SUCCESS / SUCCESS
 		Timestamp   string `json:"timestamp"`    // C6：unix 秒（参与签名，±5min 窗口）
 		Nonce       string `json:"nonce"`        // C6：随机串（防重放，Redis/内存去重）
+		AmountCents *int64 `json:"amount_cents"` // P1-2(2026-09-20)：实付金额（分），参与签名+归属核对
 		Sign        string `json:"sign"`
 	}
 	if err := c.ShouldBindJSON(&cb); err != nil {
@@ -683,9 +684,44 @@ func billingWebhookGateway(c *gin.Context, channel string) {
 		RespErr(c, http.StatusForbidden, 403, "回调时间戳超出有效窗口（±5分钟）")
 		return
 	}
-	if !billing.VerifyGatewaySignV2(key, orderNo, cb.TradeStatus, cb.Timestamp, cb.Nonce, cb.Sign) {
+	// P1-2 修复(2026-09-20 审计批)：amount_cents 必带且参与签名。缺失=结构性失败（未消费
+	// nonce，无需归还）；仅平台热开关 gateway_webhook_amount_required=false 放行存量
+	// 聚合商（readiness 会亮 warn 催办收口）。
+	amountStr := ""
+	if cb.AmountCents != nil {
+		if *cb.AmountCents < 0 {
+			RespErr(c, http.StatusForbidden, 403, "回调金额非法")
+			return
+		}
+		amountStr = strconv.FormatInt(*cb.AmountCents, 10)
+	}
+	amountRequired := true
+	if runtimecfg.DefaultSystemConfigService != nil {
+		amountRequired = runtimecfg.DefaultSystemConfigService.GetBoolForTenant(0, "gateway_webhook_amount_required", true)
+	}
+	if amountStr == "" && amountRequired {
+		RespErr(c, http.StatusForbidden, 403, "缺少 amount_cents（回调金额必传且参与签名）")
+		return
+	}
+	if !billing.VerifyGatewaySignV2(key, orderNo, cb.TradeStatus, cb.Timestamp, cb.Nonce, amountStr, cb.Sign) {
 		RespErr(c, http.StatusForbidden, 403, "签名校验失败")
 		return
+	}
+	// P1-2：验签通过后、消费 nonce 前做金额归属核对——回调金额必须与订单面额分毫相等。
+	// 不符 = 聚合网关配错/被劫持拿小额套面额发货：403 拒 + 群告警、订单不动；nonce 此时
+	// 尚未消费无需归还（报文确定性失败，重推同样 403——与微信金额不符 403+订单不动口径一致）。
+	if cb.TradeStatus == "TRADE_SUCCESS" || cb.TradeStatus == "SUCCESS" {
+		var ord model.BillingOrder
+		if err := db.DB.Select("order_no", "amount_cents").Where("order_no = ?", orderNo).First(&ord).Error; err == nil {
+			if amountStr != "" && int64(ord.AmountCents) != *cb.AmountCents {
+				log.Printf("[BillingWebhook][ERROR] 网关回调金额不符 order=%s 回调=%d分 订单=%d分（拒收，订单不动）",
+					orderNo, *cb.AmountCents, ord.AmountCents)
+				notify.NotifyGroup(fmt.Sprintf("【资金告警】支付网关回调金额与订单面额不符：%s 回调 %d 分 ≠ 订单 %d 分，已拒收，请核查聚合网关配置",
+					orderNo, *cb.AmountCents, ord.AmountCents))
+				RespErr(c, http.StatusForbidden, 403, "回调金额与订单不符")
+				return
+			}
+		}
 	}
 	if billing.WebhookNonceSeen(cb.Nonce) {
 		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（nonce 已消费）")

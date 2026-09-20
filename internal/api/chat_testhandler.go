@@ -159,12 +159,10 @@ func ChatTest(c *gin.Context) {
 		if tagErr == nil && len(autoTags) > 0 {
 			log.Printf("[测试接口-硬边界] 客户%d自动打标: %v", customer.ID, autoTags)
 		}
-		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复）。
-		// P0-9 修复(2026-09-15)：与 chat_main 的 D5 修复同口径携带当前代际——旧实现
-		// epoch=0 绕过硬卫（SetReply 的 `epoch != 0 &&` fencing 判断），在途批次生成
-		// 期间被离题话术提前释放处理锁 → 新批与仍在跑 AI 的旧处理者并行 = 双回复双计费。
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID,
-			service.DefaultMessageQueueService.CurrentEpoch(tenantID, customer.ID), reply)
+		// P1-1 修复(2026-09-20 审计批)：与 chat_main 硬边界同口径改纯旁路直答——旧实现
+		// 携带当前代际 SetReply 会提前唤醒在途批次的等待者（离题话术顶掉实质回复），
+		// 且批次处理者已烧掉的 AI 成本返回后被 fencing 丢弃 = 双扣 + 错位。
+		// 旁路：本请求直接落库+直答返回，队列不动；在途批次照常送达真实回复。
 		RespOK(c, "success", gin.H{
 			"conversation_id":    conv.ID,
 			"ai_reply":           reply,

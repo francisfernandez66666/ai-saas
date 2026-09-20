@@ -41,11 +41,22 @@ export default function Login() {
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const { res, json } = await apiJSON<ApiResp<AuthResult>>('/api/v1/auth/login', {
-      method: 'POST',
-      body: JSON.stringify(login),
-    })
-    setLoading(false)
+    // P1-6 修复(2026-09-20 审计批)：try/finally 兜底——apiJSON 网络层失败虽已归一为
+    // {res:null,json:null}，仍防任何意外抛错让按钮永久 loading（断网提交后页面卡死）。
+    let res: Response | null
+    let json: ApiResp<AuthResult> | null
+    try {
+      ;({ res, json } = await apiJSON<ApiResp<AuthResult>>('/api/v1/auth/login', {
+        method: 'POST',
+        body: JSON.stringify(login),
+      }))
+    } finally {
+      setLoading(false)
+    }
+    if (!res) {
+      MessagePlugin.error('网络异常，登录请求未发出，请检查网络后重试')
+      return
+    }
     if (json?.code !== 0) {
       MessagePlugin.error(json?.message || '登录失败')
       return
@@ -91,11 +102,15 @@ export default function Login() {
       return
     }
     setLoading(true)
-    const { json } = await apiJSON('/api/v1/auth/change-password', {
-      method: 'POST',
-      body: JSON.stringify({ old_password: change.old_password, new_password: change.new_password }),
-    })
-    setLoading(false)
+    let json: ApiResp<unknown> | null
+    try {
+      json = (await apiJSON('/api/v1/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ old_password: change.old_password, new_password: change.new_password }),
+      })).json as ApiResp<unknown> | null
+    } finally {
+      setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
+    }
     if (json?.code !== 0) {
       MessagePlugin.error(json?.message || '修改失败')
       return
@@ -112,12 +127,16 @@ export default function Login() {
   async function doResetRequest(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const { json } = await apiJSON('/api/v1/auth/reset-password', {
-      method: 'POST',
-      body: JSON.stringify({ username: reset.username, contact: reset.contact }),
-    })
-    setLoading(false)
-    MessagePlugin.info(json?.message || '')
+    let json: ApiResp<unknown> | null
+    try {
+      json = (await apiJSON('/api/v1/auth/reset-password', {
+        method: 'POST',
+        body: JSON.stringify({ username: reset.username, contact: reset.contact }),
+      })).json as ApiResp<unknown> | null
+    } finally {
+      setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
+    }
+    MessagePlugin.info(json?.message || (json ? '' : '网络异常，发送失败'))
     if (json?.code === 0) {
       setMode('resetConfirm')
     }
@@ -130,12 +149,16 @@ export default function Login() {
   async function doResetConfirm(e: React.FormEvent) {
     e.preventDefault()
     setLoading(true)
-    const { json } = await apiJSON('/api/v1/auth/verify-reset-code', {
-      method: 'POST',
-      body: JSON.stringify({ username: reset.username, code: reset.code, new_password: reset.new_password }),
-    })
-    setLoading(false)
-    MessagePlugin.info(json?.message || '')
+    let json: ApiResp<unknown> | null
+    try {
+      json = (await apiJSON('/api/v1/auth/verify-reset-code', {
+        method: 'POST',
+        body: JSON.stringify({ username: reset.username, code: reset.code, new_password: reset.new_password }),
+      })).json as ApiResp<unknown> | null
+    } finally {
+      setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
+    }
+    MessagePlugin.info(json?.message || (json ? '' : '网络异常，提交失败'))
     if (json?.code === 0) setTimeout(() => (location.href = '/login'), 900)
   }
 

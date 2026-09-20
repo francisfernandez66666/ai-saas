@@ -2,7 +2,8 @@
 # ============================================================
 # §W 支付回调验签 + 防重放 E2E（C6 资金安全收口，2026-09-14）
 # 聚焦 uat.sh 未覆盖的到账回调核心安全边界：
-#   BillingWebhook HMAC-SHA256 V2 口径（order_no|status|timestamp|nonce）
+#   BillingWebhook HMAC-SHA256 V2 口径（order_no|status|timestamp|nonce|amount_cents，
+#   金额段 P1-2 2026-09-20 起必带必验）
 #   + ±5min 时间窗 + nonce 去重 + 渠道一致性 + 幂等，以及 mock-webhook 测试资产路由。
 # 用法: ./tools/smoke_pay.sh 9090
 # 前置: 本地非 release 模式（pay_gateway_key 未配置时 mock 渠道回落固定开发密钥）。
@@ -37,22 +38,23 @@ trap '
 # 清空 pay_gateway_key 触发 mock 渠道回落开发密钥（仅非 release）
 $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='pay_gateway_key'" >/dev/null 2>&1
 
-# ---- 2. 造两条同租户 mock 渠道 pending 订单（金额无关，测回调+幂等+防重放）----
+# ---- 2. 造两条同租户 mock 渠道 pending 订单（面额 100 分，回调五段签名带金额）----
 PKG=$($PSQL "SELECT id FROM packages WHERE code='booster_1000' AND enabled ORDER BY id LIMIT 1" | tr -d '[:space:]')
 ORD1_NO="BO${TAG}X01"; ORD2_NO="BO${TAG}X02"
 $PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${ORD1_NO}',${UB_ID},${PKG},100,'once','mock','pending',NOW(),NOW()),('${ORD2_NO}',${UB_ID},${PKG},100,'once','mock','pending',NOW(),NOW())" >/dev/null
 echo "  测试订单: $ORD1_NO / $ORD2_NO (tenant $UB_ID, channel mock)"
 
-# 计算签名的小工具：sign=HMAC_SHA256(DEV_KEY, "order_no|status|timestamp|nonce") hex（与 VerifyGatewaySignV2 对齐）
-sign(){ python3 -c "import hmac,hashlib;print(hmac.new(b'$DEV_KEY', b'$1|$2|$3|$4', hashlib.sha256).hexdigest())"; }
+# 计算签名的小工具：sign=HMAC_SHA256(DEV_KEY, "order_no|status|timestamp|nonce|amount_cents") hex
+#（与 VerifyGatewaySignV2 五段口径对齐；P1-2 2026-09-20：金额入签，小额实付套面额发货封堵）
+sign(){ python3 -c "import hmac,hashlib;print(hmac.new(b'$DEV_KEY', b'$1|$2|$3|$4|$5', hashlib.sha256).hexdigest())"; }
 
 TS=$(date +%s)
 NONCE1="n1_${TAG}_$$"
-SIG1=$(sign "$ORD1_NO" "TRADE_SUCCESS" "$TS" "$NONCE1")
+SIG1=$(sign "$ORD1_NO" "TRADE_SUCCESS" "$TS" "$NONCE1" "100")
 
-# ---- 3. 合法回调 → 到账 + 权益发放 ----
+# ---- 3. 合法回调（金额一致，五段签名）→ 到账 + 权益发放 ----
 R3=$(curl -s -X POST "$B/api/v1/billing/webhook/mock" -H "Content-Type: application/json" \
-  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS\",\"nonce\":\"$NONCE1\",\"sign\":\"$SIG1\"}")
+  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS\",\"nonce\":\"$NONCE1\",\"amount_cents\":100,\"sign\":\"$SIG1\"}")
 FLOWED=$(echo "$R3" | jget "d['data'].get('flowed')")
 CODE3=$(echo "$R3" | jget "d.get('code')")
 ST1=$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD1_NO'" | tr -d '[:space:]')
@@ -62,22 +64,22 @@ check "订单转 paid" paid "$ST1"
 
 # ---- 4. C6 防重放：同一 nonce 二次回调 → 409（即便签名合法、时间新鲜）----
 H4=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/mock" -H "Content-Type: application/json" \
-  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS\",\"nonce\":\"$NONCE1\",\"sign\":\"$SIG1\"}")
+  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS\",\"nonce\":\"$NONCE1\",\"amount_cents\":100,\"sign\":\"$SIG1\"}")
 check "重复 nonce 回调被拒(409)" 409 "$H4"
 check "重放不二次改状态(仍paid)" paid "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD1_NO'" | tr -d '[:space:]')"
 
 # ---- 5. C6 篡改签名 → 403 ----
 TS2=$(date +%s); NONCE2="n2_${TAG}_$$"
-BADSIG=$(sign "$ORD1_NO" "TRADE_SUCCESS" "$TS2" "wrong_nonce_not_matching")
+BADSIG=$(sign "$ORD1_NO" "TRADE_SUCCESS" "$TS2" "wrong_nonce_not_matching" "100")
 H5=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/mock" -H "Content-Type: application/json" \
-  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS2\",\"nonce\":\"$NONCE2\",\"sign\":\"deadbeef${BADSIG:8}\"}")
+  -d "{\"order_no\":\"$ORD1_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS2\",\"nonce\":\"$NONCE2\",\"amount_cents\":100,\"sign\":\"deadbeef${BADSIG:8}\"}")
 check "篡改签名回调被拒(403)" 403 "$H5"
 
 # ---- 6. C6 过期时间戳（超 ±5min）→ 403，即便签名按该旧戳正确 ----
 OLD_TS=$((TS2 - 600)); NONCE3="n3_${TAG}_$$"
-SIGOLD=$(sign "$ORD2_NO" "TRADE_SUCCESS" "$OLD_TS" "$NONCE3")
+SIGOLD=$(sign "$ORD2_NO" "TRADE_SUCCESS" "$OLD_TS" "$NONCE3" "100")
 H6=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/mock" \
-  -d "{\"order_no\":\"$ORD2_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$OLD_TS\",\"nonce\":\"$NONCE3\",\"sign\":\"$SIGOLD\"}")
+  -d "{\"order_no\":\"$ORD2_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$OLD_TS\",\"nonce\":\"$NONCE3\",\"amount_cents\":100,\"sign\":\"$SIGOLD\"}")
 check "过期时间戳回调被拒(403)" 403 "$H6"
 check "过期回调不改单状态(仍pending)" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD2_NO'" | tr -d '[:space:]')"
 
@@ -88,23 +90,49 @@ check "缺 timestamp/nonce 回调被拒(403)" 403 "$H7"
 
 # ---- 8. 合法回调第二单（不同 nonce，新鲜戳）→ 到账，验证非单笔偶发 ----
 TS3=$(date +%s); NONCE4="n4_${TAG}_$$"
-SIG4=$(sign "$ORD2_NO" "TRADE_SUCCESS" "$TS3" "$NONCE4")
+SIG4=$(sign "$ORD2_NO" "TRADE_SUCCESS" "$TS3" "$NONCE4" "100")
 R8=$(curl -s -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/mock" \
-  -d "{\"order_no\":\"$ORD2_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS3\",\"nonce\":\"$NONCE4\",\"sign\":\"$SIG4\"}")
+  -d "{\"order_no\":\"$ORD2_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS3\",\"nonce\":\"$NONCE4\",\"amount_cents\":100,\"sign\":\"$SIG4\"}")
 check "第二单合法回调到账" paid "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD2_NO'" | tr -d '[:space:]')"
 check "第二单 flowed=true" True "$(echo "$R8" | jget "d['data'].get('flowed')")"
+
+# ---- 8.5 P1-2 金额归属(2026-09-20 审计批)：缺金额拒 / 小额实付套面额拒且订单不动 / 一致放行 ----
+# 造两笔 mock 单（面额均 100 分）
+ORD5_NO="BO${TAG}X05"; ORD6_NO="BO${TAG}X06"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${ORD5_NO}',${UB_ID},${PKG},100,'once','mock','pending',NOW(),NOW()),('${ORD6_NO}',${UB_ID},${PKG},100,'once','mock','pending',NOW(),NOW())" >/dev/null
+# 8.5.1 缺 amount_cents（旧四段报文）→ 403，订单不动（gateway_webhook_amount_required 默认 true）
+TS85=$(date +%s); NONCE85="n85_${TAG}_$$"
+SIG85=$(python3 -c "import hmac,hashlib;print(hmac.new(b'$DEV_KEY', b'$ORD5_NO|TRADE_SUCCESS|$TS85|$NONCE85', hashlib.sha256).hexdigest())")
+H85=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/mock" \
+  -d "{\"order_no\":\"$ORD5_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS85\",\"nonce\":\"$NONCE85\",\"sign\":\"$SIG85\"}")
+check "P1-2 回调缺金额被拒(403)" 403 "$H85"
+check "P1-2 缺金额回调订单不动(仍pending)" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD5_NO'" | tr -d '[:space:]')"
+# 8.5.2 五段签名合法但回调金额 1 分 ≠ 订单面额 100 分 → 403 + 群告警口径（¥0.01 套面额发货封堵）
+TS86=$(date +%s); NONCE86="n86_${TAG}_$$"
+SIG86=$(sign "$ORD6_NO" "TRADE_SUCCESS" "$TS86" "$NONCE86" "1")
+H86=$(curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/mock" \
+  -d "{\"order_no\":\"$ORD6_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS86\",\"nonce\":\"$NONCE86\",\"amount_cents\":1,\"sign\":\"$SIG86\"}")
+check "P1-2 回调金额与订单面额不符被拒(403)" 403 "$H86"
+check "P1-2 金额不符订单不动(仍pending)" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD6_NO'" | tr -d '[:space:]')"
+# 8.5.3 金额一致（100 分）→ 放行到账
+TS87=$(date +%s); NONCE87="n87_${TAG}_$$"
+SIG87=$(sign "$ORD6_NO" "TRADE_SUCCESS" "$TS87" "$NONCE87" "100")
+H87=$(curl -s -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/mock" \
+  -d "{\"order_no\":\"$ORD6_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS87\",\"nonce\":\"$NONCE87\",\"amount_cents\":100,\"sign\":\"$SIG87\"}" | jget "d.get('code')")
+check "P1-2 金额一致回调放行(code=0)" 0 "$H87"
+check "P1-2 金额一致订单转paid" paid "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD6_NO'" | tr -d '[:space:]')"
 
 # ---- 9. 渠道一致性：订单 channel=mock，却投 wechat 渠道回调 → 应被拒（防跨渠道冒领到账）----
 TS4=$(date +%s); NONCE5="n5_${TAG}_$$"
 # 先造第三单
 ORD3_NO="BO${TAG}X03"
 $PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${ORD3_NO}',${UB_ID},${PKG},100,'once','mock','pending',NOW(),NOW())" >/dev/null
-SIG5=$(sign "$ORD3_NO" "TRADE_SUCCESS" "$TS4" "$NONCE5")
+SIG5=$(sign "$ORD3_NO" "TRADE_SUCCESS" "$TS4" "$NONCE5" "100")
 R9=$(curl -s -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/wechat" \
-  -d "{\"order_no\":\"$ORD3_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS4\",\"nonce\":\"$NONCE5\",\"sign\":\"$SIG5\"}")
+  -d "{\"order_no\":\"$ORD3_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS4\",\"nonce\":\"$NONCE5\",\"amount_cents\":100,\"sign\":\"$SIG5\"}")
 # P0-1b 后 wechat 分支走 V3 协议：无 Wechatpay-Timestamp 头 → 403（gateway 式 JSON 报文直接被时间窗闸拒）
 H9=$(echo "$R9" >/dev/null; curl -s -o /dev/null -w "%{http_code}" -H "Content-Type: application/json" -X POST "$B/api/v1/billing/webhook/wechat" \
-  -d "{\"order_no\":\"$ORD3_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS4\",\"nonce\":\"$NONCE5\",\"sign\":\"$SIG5\"}")
+  -d "{\"order_no\":\"$ORD3_NO\",\"trade_status\":\"TRADE_SUCCESS\",\"timestamp\":\"$TS4\",\"nonce\":\"$NONCE5\",\"amount_cents\":100,\"sign\":\"$SIG5\"}")
 check "wechat渠道拒gateway式报文(403)" 403 "$H9"
 ST3=$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ORD3_NO'" | tr -d '[:space:]')
 check "跨渠道回调不放行到账(mock单仍pending)" pending "$ST3"
@@ -119,7 +147,7 @@ check "mock-webhook 路由已注册且到账" 0 "$MW_CODE"
 check "mock-webhook 订单转 paid" paid "$MW_ST"
 
 # ---- 清理测试订单 ----
-$PSQL "DELETE FROM billing_orders WHERE order_no IN ('$ORD1_NO','$ORD2_NO','$ORD3_NO','$ORD4_NO')" >/dev/null 2>&1
+$PSQL "DELETE FROM billing_orders WHERE order_no IN ('$ORD1_NO','$ORD2_NO','$ORD3_NO','$ORD4_NO','$ORD5_NO','$ORD6_NO')" >/dev/null 2>&1
 echo "  [cleanup] 测试订单已回收"
 
 # ============================================================
@@ -273,6 +301,16 @@ H12=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/
   -H "Content-Type: application/x-www-form-urlencoded" --data "$ALI_FORM_BAD")
 check "篡改通知金额被拒(403)" 403 "$H12"
 echo "  [cleanup] 一次性租户 $WT_ID 由 trap 级联回收"
+
+echo ""
+echo "---- 13. P1-3(2026-09-20 审计批) webhook 面 IP 限流：连打超限 429 ----"
+# 本段刻意放在全部到账用例之后：打爆 psp_webhook 桶（60/min/IP）不影响前面断言，
+# 60s 窗口自然重置，后续脚本不再触 /billing/webhook。
+WH_LAST=""
+for i in $(seq 1 65); do
+  WH_LAST=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/billing/webhook/mock" -H "Content-Type: application/json" -d '{}')
+done
+check "webhook 连打65次超限(429)" 429 "$WH_LAST"
 
 echo ""
 echo "==== smoke_pay 结果: PASS=$PASS FAIL=$FAIL ===="

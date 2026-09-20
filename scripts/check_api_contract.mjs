@@ -124,15 +124,31 @@ if (methodMismatch.size) {
 }
 
 // 反向清单：BE 有路由但 FE 零引用（报告不 fail——许多是超管/OpenAPI/回调端点，前端本就不调）
+// P1-9(2026-09-20 审计批二)：显式白名单化——以下 7 条经评估"有意无前端消费面"，
+// 从反向清单剔除并在此登记理由；清单外的新增孤儿仍会出现在 INFO 里提示评估。
+// 若白名单条目日后被前端真实引用，会打 STALE 提示清理（防腐化）。
+const REVERSE_WHITELIST = {
+  'GET /api/v1/strategy/features': '特征清单供策略引擎调试/契约核对；StrategyTab 经模板编辑器维护特征键，只读聚合端点有意不做 UI',
+  'GET /api/v1/strategy/stats/anchors': '锚点统计走 /super/packs/stats 与 D9 包质量视图，此裸聚合端点为 API 备查面',
+  'GET /api/v1/strategy/templates/:id': '模板编辑器基于列表端点整行编辑，单模板 GET 仅 OpenAPI/脚本用途',
+  'POST /api/v1/admin/config/init': '配置初始化/回滚是灾难恢复动作，刻意只留 CLI/超管接口，防管理页误触清配置',
+  'POST /api/v1/admin/config/rollback': '同上（回滚）；ConfigPanel 仅 PUT 保存，恢复链路走 tools/ 脚本与超管流程',
+  'GET /api/v1/advisor/list': '与在用 /advisor/customers 列表口径重复，前端零消费属实（后端收敛候选，批三 P2 评估删除或合并）',
+  'GET /api/v1/advisor/followups': '前端实为常量拼接消费（Advisor.tsx `API + \'/followups\'`），PATH_RE 只认完整字面量故提取不到——登记为提取器盲区而非真孤儿',
+}
 const reverse = []
 for (const [path, { methods }] of entries) {
   for (const meth of methods) {
     if (!referenced.has(`${meth} ${path}`)) reverse.push(`${meth} ${path}`)
   }
 }
-if (reverse.length) {
-  console.log(`  INFO  BE有/FE无（${reverse.length} 条，回调/超管/OpenAPI 属正常，暂不 fail）`)
-  for (const r of reverse.sort()) console.log('    ' + r)
+const shown = reverse.filter((r) => !REVERSE_WHITELIST[r])
+if (shown.length) {
+  console.log(`  INFO  BE有/FE无（${shown.length} 条，回调/超管/OpenAPI 属正常，暂不 fail；另有白名单 ${Object.keys(REVERSE_WHITELIST).length} 条见脚本注释）`)
+  for (const r of shown.sort()) console.log('    ' + r)
+}
+for (const key of Object.keys(REVERSE_WHITELIST)) {
+  if (referenced.has(key)) console.log(`  INFO  STALE 反向白名单条目已被前端引用，可从 REVERSE_WHITELIST 移除：${key}`)
 }
 
 process.exit(fail)

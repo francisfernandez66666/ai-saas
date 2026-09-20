@@ -78,7 +78,8 @@ export default function ApiDocs() {
   useEffect(() => {
     // 规格端点返回裸 OpenAPI JSON（无 code 信封），apiJSON 只负责解析不判业务码
     apiJSON<Spec>('/api/v1/openapi/spec').then(({ res, json }) => {
-      if (!res.ok || !json || !json.paths) { setErr('文档规格加载失败，请刷新重试'); return }
+      // P1-6(2026-09-20)：apiJSON 网络层失败归一为 res=null（不再 reject），res 判空先行
+      if (!res || !res.ok || !json || !json.paths) { setErr('文档规格加载失败，请刷新重试'); return }
       setSpec(json)
     }).catch(() => setErr('网络异常，文档加载失败'))
   }, [])

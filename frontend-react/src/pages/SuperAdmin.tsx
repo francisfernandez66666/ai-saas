@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
+import { useIsMobile } from '../hooks/useMedia'
 import { AUTH, apiJSON, logoutAndRedirect } from '../lib/api'
 import type { TableRowData, CellProps } from '../types'
 import { MonitorTab } from './super/MonitorTab'
@@ -10,6 +11,8 @@ import { MonitorTab } from './super/MonitorTab'
 import { InvoiceTab } from './super/InvoiceTab'
 import { RefundTab } from './super/RefundTab'
 import { PackTab } from './super/PackTab'
+// P1-9 零UI补齐批（2026-09-20）：素材审核——/super/materials 三端点此前前端零消费者
+import { MaterialsTab } from './super/MaterialsTab'
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
 const { Header, Aside, Content } = Layout
@@ -19,6 +22,24 @@ const { MenuItem, MenuGroup } = Menu
 const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', rating: '满意度', other: '其他', client_error: '前端异常' }
 // TYPE_NAMES 商业包类型码 → 中文名（包管理列表列渲染）
 const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
+
+// P1-10(2026-09-20)：平台管理菜单单一数据源——桌面 Aside Menu 与窄屏顶栏下拉共用，防两处漂移
+const SUPER_MENUS: { k: string; label: string }[] = [
+  { k: 'tenants', label: '租户管理' },
+  { k: 'packages', label: 'AI 商业包' },
+  { k: 'industry_packs', label: '行业包管理' }, // 区别于 AI 商业包 packages，此处是行业包 .aipack 目录
+  { k: 'pack_quality', label: '包质量' },
+  { k: 'cost', label: '模型成本核算' },
+  { k: 'feedbacks', label: '用户反馈' },
+  { k: 'materials', label: '素材审核' }, // P1-9：KB 素材池人工评审（通过/拒绝/AI评分）
+  { k: 'pending', label: '待确认收款' },
+  { k: 'invoices', label: '发票受理' }, // requested→issued/voided 人工闭环
+  { k: 'refunds', label: '退款受理' }, // B7 退款平台审批位（执行/驳回）
+  { k: 'audit', label: '审计日志' },
+  { k: 'agreements', label: '协议签署' },
+  { k: 'branding', label: '品牌定制（白标）' },
+  { k: 'monitor', label: '平台健康监控' },
+]
 
 // 租户摘要行（超管租户列表）
 type Tenant = { id: number; name: string; code: string; plan_name?: string; used_customers: number; max_customers?: number; status: string; created_at: string; max_users?: number; used_users?: number; plan_id?: number }
@@ -45,6 +66,8 @@ export default function SuperAdmin() {
   const brand = useBrand()
   // 当前超管用户名（来自 localStorage）
   const [me, setMe] = useState(localStorage.getItem('username') || '-')
+  // P1-10(2026-09-20)：窄屏折叠左侧 Aside 为顶栏下拉
+  const isMobile = useIsMobile(900)
   // 租户搜索关键字
   const [kw, setKw] = useState('')
   // 租户列表
@@ -292,35 +315,34 @@ export default function SuperAdmin() {
         </div>
       </Header>
       <Layout>
+        {isMobile ? (
+          /* P1-10(2026-09-20)：窄屏（≤900px）折叠左栏为顶栏下拉，与桌面菜单同一数据源 SUPER_MENUS */
+          <div style={{ width: '100%', background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '8px 12px' }}>
+            <select value={view} onChange={(e) => setView((e.target as HTMLSelectElement).value)} aria-label="平台管理菜单" style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
+              <optgroup label="平台管理">
+                {SUPER_MENUS.map((m) => <option key={m.k} value={m.k}>{m.label}</option>)}
+              </optgroup>
+            </select>
+          </div>
+        ) : (
         <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
           <Menu value={view} onChange={(v) => setView(v as string)} style={{ borderRight: 'none' }}>
             <MenuGroup title="平台管理">
-              <MenuItem value="tenants">租户管理</MenuItem>
-              <MenuItem value="packages">AI 商业包</MenuItem>
-              {/* §八-6：包上架/共享管理（区别于 AI 商业包 packages，此处是行业包 .aipack 目录） */}
-              <MenuItem value="industry_packs">行业包管理</MenuItem>
-              <MenuItem value="pack_quality">包质量</MenuItem>
-              <MenuItem value="cost">模型成本核算</MenuItem>
-              <MenuItem value="feedbacks">用户反馈</MenuItem>
-              <MenuItem value="pending">待确认收款</MenuItem>
-              {/* §八-6：发票受理（requested→issued/voided 人工闭环） */}
-              <MenuItem value="invoices">发票受理</MenuItem>
-              {/* 残项收口批 2026-09-19：B7 退款平台审批位（执行/驳回） */}
-              <MenuItem value="refunds">退款受理</MenuItem>
-              <MenuItem value="audit">审计日志</MenuItem>
-              <MenuItem value="agreements">协议签署</MenuItem>
-              <MenuItem value="branding">品牌定制（白标）</MenuItem>
-              <MenuItem value="monitor">平台健康监控</MenuItem>
+              {SUPER_MENUS.map((m) => (
+                <MenuItem key={m.k} value={m.k}>{m.label}</MenuItem>
+              ))}
             </MenuGroup>
           </Menu>
         </Aside>
-        <Content style={{ padding: '20px 24px', minWidth: 0 }}>
+        )}
+        <Content style={{ padding: isMobile ? 12 : '20px 24px', minWidth: 0 }}>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
             {view === 'monitor' && <MonitorTab />}
             {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
             {view === 'invoices' && <InvoiceTab />}
             {view === 'refunds' && <RefundTab />}
             {view === 'industry_packs' && <PackTab />}
+            {view === 'materials' && <MaterialsTab />}
             {view === 'tenants' && (
               <>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 10, flexWrap: 'wrap' }}>

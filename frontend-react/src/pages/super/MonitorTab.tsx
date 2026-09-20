@@ -1,9 +1,10 @@
 // 平台健康监控 Tab（F3，2026-09-14）：/super/monitor/health 可视化。
 // 此前健康快照（ComputeHealth）仅 /status JSON 与 Prometheus 文本，超管后台无渲染页；
 // 补此页把 DB/合并队列/24h 严重事件/goroutine/实例协调/死信积压等探针按 ok/warn/crit 分级呈现。
+// P1-7 迁移(2026-09-20 审计批)：裸 fetch → lib/api AUTH（网络异常归一 code:-1 信封，不再抛错）。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Tag } from 'tdesign-react'
-import { authHeaders } from '../../lib/api'
+import { AUTH } from '../../lib/api'
 
 type HealthCheck = { name: string; status: 'ok' | 'warn' | 'crit'; value: string; warn_at: string; crit_at: string; desc: string }
 type Snapshot = { db_ok: boolean; checks: HealthCheck[]; has_crit: boolean; has_warn: boolean }
@@ -19,16 +20,11 @@ export function MonitorTab() {
   const load = useCallback(async () => {
     setLoading(true)
     setErr('')
-    try {
-      const r = await fetch('/api/v1/super/monitor/health', { headers: authHeaders() })
-      const j = await r.json()
-      if (j.code === 0) setSnap(j.data)
-      else setErr(j.message || '加载失败')
-    } catch {
-      setErr('网络异常，健康快照加载失败')
-    } finally {
-      setLoading(false)
-    }
+    // AUTH 内部已兜网络异常（code:-1），此处无需 try/catch
+    const j = await AUTH('/api/v1/super/monitor/health')
+    if (j?.code === 0) setSnap(j.data)
+    else setErr(j?.message || '加载失败')
+    setLoading(false)
   }, [])
   useEffect(() => { load() }, [load])
   // 30s 自动刷新（低频哨兵）

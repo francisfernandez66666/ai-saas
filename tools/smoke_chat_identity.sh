@@ -147,5 +147,14 @@ fi
 # ---- 9. 清理：停用测试客户（数据保留供核查，对齐惯例）----
 $PSQL "UPDATE customers SET status=0 WHERE id IN ($CID_A,$CID_B)" >/dev/null 2>&1
 
+# ---- 10. P1-3(2026-09-20 审计批) /chat/history 公开面 IP 限流：连打超限 429 ----
+# 刻意放全脚本最后：打爆 chat_history 桶（30/min/IP）不回踩本脚本前序断言，
+# 60s 窗口自然重置，后续 smoke 套件不再触 /chat/history。
+HIST_LAST=""
+for i in $(seq 1 35); do
+  HIST_LAST=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/chat/history?customer_id=$CID_A&visitor_key=$VK_A")
+done
+check "chat/history 连打35次超限(429)" 429 "$HIST_LAST"
+
 echo ""; echo "==== G-3 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

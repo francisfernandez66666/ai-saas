@@ -82,6 +82,13 @@ R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "$DH")
 check "GET /super/tenants (dept_admin→403)" 403 "$R"
 R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/config" -H "$DH")
 check "GET /admin/config (dept_admin→403)" 403 "$R"
+# P1-8 契约钉桩(2026-09-20 审计批)：收银台下单/读单走 AdminRequired（只认 super/tenant_admin/admin），
+# 前端 AppLayout「收银台」入口集合同步去掉 dept_admin——dept_admin 看不到入口的后端依据即此 403。
+R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/billing/orders" -H "$DH")
+check "GET /billing/orders (dept_admin→403，收银台 AdminRequired 口径)" 403 "$R"
+# 对照正向：dept_admin 属组织管理岗，/org 面（OrgManageRequired）应放行——收口只针对 AdminRequired 集
+R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/org/departments/tree" -H "$DH")
+check "GET /org/departments/tree (dept_admin→200，org 面照常)" 200 "$R"
 R=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/org/users" -H "$SH" -H "Content-Type: application/json" \
   -d "{\"username\":\"x2_$TAG\",\"password\":\"X1234567!\",\"role\":\"user\",\"department_id\":$DEPT_ID}")
 check "POST /org/users (user→403)" 403 "$R"

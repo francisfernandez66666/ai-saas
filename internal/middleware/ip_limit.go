@@ -2,7 +2,9 @@
 package middleware
 
 import (
+	"crypto/sha256"
 	"crypto/subtle"
+	"encoding/hex"
 	"net/http"
 	"strconv"
 	"sync"
@@ -51,33 +53,58 @@ var (
 func IPRateLimit(bucket string, limit int, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		key := bucket + ":" + strconv.FormatUint(uint64(EffectiveTenantID(c)), 10) + ":" + c.ClientIP()
+		rateLimitAllow(c, key, limit, window)
+	}
+}
 
-		// ---- Redis 全局轨：多副本共享计数 ----
-		// IncrWithTTL 在未启用时返回 0（不会进此分支）、INCR 异常时也返回 0 → 降级内存，限流不裸奔。
-		if redisclient.IsEnabled() {
-			if n := redisclient.IncrWithTTL("rl:"+key, window); n > 0 {
-				if n > int64(limit) {
-					c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-						"code":    429,
-						"message": "请求太频繁，请稍后再试",
-					})
-					return
-				}
-				c.Next()
+// KeyRateLimit 按请求头值维度限流（P1-3 2026-09-20 审计批）：
+// window 窗口内每个 header 取值最多 limit 次；header 缺失回落 IP 维度。
+// 用于服务端到服务端入口（如 /collector 的 X-Collector-Key）——调用方是固定聚合服务，
+// 按 IP 计数会被其出口 NAT 汇聚误伤/放宽，按密钥维度才与真实配额一致。
+// 头值不落明文进 Redis 键（sha256 前 8 字节），防日志/键空间泄露密钥。
+func KeyRateLimit(bucket string, limit int, window time.Duration, header string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id := c.GetHeader(header)
+		if id != "" {
+			sum := sha256.Sum256([]byte(id))
+			id = hex.EncodeToString(sum[:8])
+		} else {
+			id = "ip:" + c.ClientIP()
+		}
+		key := bucket + ":" + strconv.FormatUint(uint64(EffectiveTenantID(c)), 10) + ":" + id
+		rateLimitAllow(c, key, limit, window)
+	}
+}
+
+// rateLimitAllow Redis 优先、内存兜底的计数裁决 + 超限 429 终止（IPRateLimit/KeyRateLimit 共用）。
+func rateLimitAllow(c *gin.Context, key string, limit int, window time.Duration) {
+	// ---- Redis 全局轨：多副本共享计数 ----
+	// IncrWithTTL 在未启用时返回 0（不会进此分支）、INCR 异常时也返回 0 → 降级内存，限流不裸奔。
+	if redisclient.IsEnabled() {
+		if n := redisclient.IncrWithTTL("rl:"+key, window); n > 0 {
+			if n > int64(limit) {
+				abort429(c)
 				return
 			}
-		}
-
-		// ---- 内存兜底轨：Redis 未启用/异常时的单实例语义 ----
-		if memoryIncrLimit(key, limit, window) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"code":    429,
-				"message": "请求太频繁，请稍后再试",
-			})
+			c.Next()
 			return
 		}
-		c.Next()
 	}
+
+	// ---- 内存兜底轨：Redis 未启用/异常时的单实例语义 ----
+	if memoryIncrLimit(key, limit, window) {
+		abort429(c)
+		return
+	}
+	c.Next()
+}
+
+// abort429 统一限流响应
+func abort429(c *gin.Context) {
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
+		"code":    429,
+		"message": "请求太频繁，请稍后再试",
+	})
 }
 
 // memoryIncrLimit 进程内固定窗口计数：返回 true=已超限。

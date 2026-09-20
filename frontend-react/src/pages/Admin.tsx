@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Button, Layout, Menu, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, setToken, logoutAndRedirect, authHeaders, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
+import { useIsMobile } from '../hooks/useMedia'
+import { getToken, setToken, logoutAndRedirect, AUTH, apiJSON, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
 import { AuditTab } from './admin/AuditTab'
 import { BrandingTab } from './admin/BrandingTab'
 import { ChannelsTab } from './admin/ChannelsTab'
@@ -42,6 +43,8 @@ export default function Admin() {
   const [loginErr, setLoginErr] = useState('')
   const [all, setAll] = useState<Cfg[]>([])
   const [edits, setEditsState] = useState<Record<string, string>>({})
+  // P1-10(2026-09-20)：窄屏（≤900px）折叠左侧 Aside，菜单降为顶栏全宽下拉，390px 手机三台可达
+  const isMobile = useIsMobile(900)
   // 受控编辑某个配置项的草稿值（不即时提交，存到 edits 待保存）
   const setEdits = (k: string, v: string) => setEditsState((s) => ({ ...s, [k]: v }))
   // E4 修复(2026-09-14)：super_admin 访问租户作用域路径须显式 X-Tenant-ID（后端 tenant.go:462 强制，
@@ -52,14 +55,12 @@ export default function Admin() {
   const [impTenant, setImpTenant] = useState(getImpersonateTenant())
   const [tenants, setTenants] = useState<{ id: number; name: string; code?: string }[]>([])
   const [impReload, setImpReload] = useState(0) // 切换租户后强制各 Tab 重挂载刷新
-  // 超管代管用：拉取平台全部租户（名称/标识）填充「代管租户」选择器；失败静默
+  // 超管代管用：拉取平台全部租户（名称/标识）填充「代管租户」选择器
+  // P1-7 迁移(2026-09-20)：裸 fetch → apiJSON（超时/断网归一 res:null，不抛错）；选择器失败仍静默留空，故不走会 toast 的 AUTH
   async function loadTenants() {
-    try {
-      const r = await fetch('/api/v1/super/tenants', { headers: authHeaders() })
-      const j = await r.json()
-      const list: Array<{ id: number; name?: string; company_name?: string; code?: string }> = j?.data?.list || j?.data || []
-      setTenants(Array.isArray(list) ? list.map((t) => ({ id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code })) : [])
-    } catch { /* 超管列表拉取失败静默，选择器空 */ }
+    const { json: j } = await apiJSON('/api/v1/super/tenants')
+    const list: Array<{ id: number; name?: string; company_name?: string; code?: string }> = j?.data?.list || j?.data || []
+    setTenants(Array.isArray(list) ? list.map((t) => ({ id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code })) : [])
   }
   // 选定代管租户：写入全局注入键 + 本地态 + 自增 impReload 强制各 Tab 重挂载刷新
   function pickTenant(id: string) {
@@ -69,16 +70,17 @@ export default function Admin() {
   }
 
   // 管理员登录：带租户码换 token；命中首登强改密标记则跳登录页改密，否则进后台并加载配置
+  // P1-7 迁移(2026-09-20)：裸 fetch → apiJSON（断网/超时归一 {res:null,json:null} 不再抛错），
+  // 错误仍写回页内 loginErr 横幅（登录失败属预期分支，不走 AUTH 的全局 toast）
   async function doLogin(e: React.FormEvent) {
     e.preventDefault()
     setLoginErr('')
-    const res = await fetch('/api/v1/auth/login', {
+    const { res, json: j } = await apiJSON('/api/v1/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password, tenant_code: tenantCode }),
     })
-    const j = await res.json()
-    if (j.code !== 0) { setLoginErr(j.message || '登录失败'); return }
+    if (!res) { setLoginErr('网络异常，登录请求未发出，请检查网络后重试'); return }
+    if (j?.code !== 0) { setLoginErr(j?.message || '登录失败'); return }
     setToken(j.data.token)
     localStorage.setItem('role', j.data.user.role)
     localStorage.setItem('username', j.data.user.username)
@@ -91,10 +93,10 @@ export default function Admin() {
   }
 
   // 拉取全部系统配置项，回填展示值与编辑草稿
+  // P1-7 迁移(2026-09-20)：走 AUTH 统一鉴权/超时；失败仅 toastError，保留旧草稿不清空
   async function loadAll() {
-    const r = await fetch('/api/v1/admin/config', { headers: { Authorization: 'Bearer ' + getToken() } })
-    const j = await r.json()
-    if (j.code === 0) {
+    const j = await AUTH('/api/v1/admin/config')
+    if (j?.code === 0) {
       setAll(j.data || [])
       const e: Record<string, string> = {}
       ;(j.data || []).forEach((c: Cfg) => (e[c.key] = c.value))
@@ -105,20 +107,15 @@ export default function Admin() {
   useEffect(() => { if (logged && isSuper) loadTenants() }, [logged])
 
   // 保存配置：string 类型 JSON 序列化、其余原样，整表 PUT 后热加载
+  // P1-7 迁移(2026-09-20)：裸 fetch → AUTH（body 传数组自动序列化；失败由 toastError 统一提示，不再手拼 error）
   async function saveAll() {
     const updates = all.map((c) => {
       const v = edits[c.key] ?? c.value
       if (c.value_type === 'string') return { key: c.key, value: JSON.stringify(v) }
       return { key: c.key, value: String(v) }
     })
-    const res = await fetch('/api/v1/admin/config', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + getToken() },
-      body: JSON.stringify(updates),
-    })
-    const j = await res.json()
-    if (j.code === 0) { MessagePlugin.success('配置已保存并热加载'); loadAll() }
-    else MessagePlugin.error('保存失败: ' + (j.message || ''))
+    const j = await AUTH('/api/v1/admin/config', { method: 'PUT', body: updates })
+    if (j?.code === 0) { MessagePlugin.success('配置已保存并热加载'); loadAll() }
   }
   // 恢复全部配置为默认值（不可撤销，二次确认）
   async function resetAll() {
@@ -169,6 +166,13 @@ export default function Admin() {
     if (item.link) { location.href = item.link; return }
     setTab(item.k)
   }
+  const pickMobileMenu = (k: string) => {
+    if (k === 'super_link') { location.href = '/super'; return }
+    for (const g of MENU_GROUPS) {
+      const it = g.items.find((x) => x.k === k)
+      if (it) { onMenuClick(it); return }
+    }
+  }
 
   return (
     <Layout style={{ minHeight: '100vh', background: '#f5f7fa' }}>
@@ -197,6 +201,23 @@ export default function Admin() {
         </div>
       </Header>
       <Layout>
+        {isMobile ? (
+          /* P1-10：窄屏顶栏菜单——原生 select + optgroup 复用 MENU_GROUPS 同一数据源，选择即切 Tab */
+          <div style={{ width: '100%', background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '8px 12px' }}>
+            <select value={tab} onChange={(e) => pickMobileMenu((e.target as HTMLSelectElement).value)} aria-label="管理菜单" style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
+              {MENU_GROUPS.filter((g) => g.items.length > 0).map((g) => (
+                <optgroup key={g.title} label={g.title}>
+                  {g.items.map((it) => <option key={it.k} value={it.k}>{it.label}</option>)}
+                </optgroup>
+              ))}
+              {role === 'super_admin' && (
+                <optgroup label="平台级">
+                  <option value="super_link">平台超管后台</option>
+                </optgroup>
+              )}
+            </select>
+          </div>
+        ) : (
         <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
           <Menu value={tab} onChange={(v) => setTab(v as string)} style={{ borderRight: 'none' }}>
             {MENU_GROUPS.map((g) => (
@@ -213,7 +234,8 @@ export default function Admin() {
             )}
           </Menu>
         </Aside>
-        <Content style={{ padding: '20px 24px', minWidth: 0 }}>
+        )}
+        <Content style={{ padding: isMobile ? 12 : '20px 24px', minWidth: 0 }}>
           <div style={{ maxWidth: 1100, margin: '0 auto' }}>
             {(() => {
               const isPlatformTab = CONFIG_CATS.includes(tab) || tab === 'super_link'

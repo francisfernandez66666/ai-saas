@@ -61,7 +61,9 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	// 会话欢迎接口（免登录，独立秒回，无AI处理）：IP 限流堵 DB 写放大
 	v1.POST("/chat/welcome", middleware.IPRateLimit("chat_welcome", 30, time.Minute), Welcome)
 	// 聊天历史（OptionalJWTAuth：有 Bearer 注入身份放行 B 端，匿名走 visitor_key 校验 C 端不变）
-	v1.GET("/chat/history", middleware.OptionalJWTAuth(), GetChatHistory)
+	// P1-3 修复(2026-09-20 审计批)：补 IP 限流 30/min——此前公开面无频控，
+	// customer_id 枚举探测与 DB 读放大零成本（正常前端轮询远低于该阈值）。
+	v1.GET("/chat/history", middleware.OptionalJWTAuth(), middleware.IPRateLimit("chat_history", 30, time.Minute), GetChatHistory)
 	// 延迟清零（顾问/管理员"立即回复"）：IP 限流 + handler 内双重归属校验。
 	// 浏览器实测批(2026-09-18)：补 OptionalJWTAuth——本路由在 v1.Use(JWTAuth) 之前注册，
 	// 登录态 Bearer 此前从不解析 → CheckVisitorKey 拿不到 user_id，顾问对真实访客客户
@@ -71,12 +73,16 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	v1.POST("/chat/request-human", middleware.IPRateLimit("chat_req_human", 20, time.Minute), GuestRequestHuman)
 	// 支付网关异步回调（免登录，服务端到服务端）：必须注册在 v1.Use(JWTAuth) 之前，
 	// 回调不携带用户 JWT，安全性靠 HMAC 验签（挂鉴权组内会被 401 拦截导致永远无法到账）。
-	v1.POST("/billing/webhook/:channel", BillingWebhook)
+	// P1-3 修复(2026-09-20 审计批)：补 60/min IP 限流——验签保完整性但不保可用性，
+	// 无限流时伪造签名重放可无限烧 nonce 去重表/DB 查询；正常 PSP 重试远低于该阈值。
+	v1.POST("/billing/webhook/:channel", middleware.IPRateLimit("psp_webhook", 60, time.Minute), BillingWebhook)
 }
 
 // registerKnowledgePublic 客户端知识库公开查询接口（免鉴权）。
+// P1-3 修复(2026-09-20 审计批)：整组挂 60/min IP 限流——匿名检索面此前无频控，
+// 关键词枚举可拖库式试探品牌/车型/片段数据。
 func registerKnowledgePublic(v1 *gin.RouterGroup) {
-	knowledge := v1.Group("/knowledge")
+	knowledge := v1.Group("/knowledge", middleware.IPRateLimit("knowledge_public", 60, time.Minute))
 	{
 		knowledge.GET("/brands", GetPublicBrands)
 		knowledge.GET("/models", GetPublicModels)

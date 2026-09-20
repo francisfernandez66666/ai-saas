@@ -1,7 +1,7 @@
 // 客户线索 Tab（F1/F10）：阶段筛选、列表、详情抽屉、编辑、打标、导出。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Drawer, Input, InputNumber, MessagePlugin, Select, Tag, Textarea } from 'tdesign-react'
-import { apiFetch, AUTH, getToken } from '../../lib/api'
+import { apiFetch, AUTH } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import type { CrudRow } from '../../hooks/useCrud'
 import type { TableRowData } from '../../types'
@@ -55,6 +55,13 @@ export function CustomersTab() {
   const [form, setForm] = useState<Record<string, any>>({})
   const [tagForm, setTagForm] = useState<string[]>([])
   const [tagOptions, setTagOptions] = useState<{ label: string; value: string }[]>([])
+  // P1-9(2026-09-20)：抽屉打开时经 GET /customers/:id/tags 拉取的权威标签行（含 tag_id，供差量提交与单标直删）
+  const [custTags, setCustTags] = useState<TableRowData[]>([])
+  // P1-9：历史会话面板（GET /customers/:id/conversations）与单会话消息时间线（GET /conversations/:id/messages）
+  const [convs, setConvs] = useState<TableRowData[]>([])
+  const [showConvs, setShowConvs] = useState(false)
+  const [openConv, setOpenConv] = useState<number | null>(null)
+  const [convMsgs, setConvMsgs] = useState<TableRowData[]>([])
   const [users, setUsers] = useState<{ label: string; value: number }[]>(USER_OPTS)
   const [saving, setSaving] = useState(false)
   const [createVisible, setCreateVisible] = useState(false)
@@ -76,17 +83,22 @@ export function CustomersTab() {
   useEffect(() => {
     ;(async () => {
       const [t, u] = await Promise.all([AUTH('/api/v1/admin/tags?page_size=200'), AUTH('/api/v1/org/users')])
-      if (t?.code === 0) setTagOptions((t.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.name) })))
+      // P1-9(2026-09-20)：选项 value 从标签名改为标签 ID——POST /customers/:id/tags 契约是 tag_ids，
+      // 名称仍留在 label 里展示；旧的 PUT /advisor/customer/:id/tags（按名覆盖）保留给移动端工作台
+      if (t?.code === 0) setTagOptions((t.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.id) })))
       if (u?.code === 0) setUsers([...USER_OPTS, ...(u.data || []).map((x: CrudRow) => ({ label: x.real_name || x.username || `用户${x.id}`, value: Number(x.id) }))])
     })()
   }, [])
 
-  // 打开客户详情抽屉，并重置试驾/聊天面板展开态
+  // 打开客户详情抽屉，并重置试驾/聊天/会话面板展开态；P1-9 详情成功后拉权威标签（含 tag_id）
   async function openDetail(id: number) {
     const r = await apiFetch(`/api/v1/advisor/customer/${id}`)
     const j = await r.json().catch(() => null)
     if (j?.code === 0) {
       setDetail(j.data); setDrawer(true); setShowTd(false); setShowChat(false); setTestDrives([]); setChat([])
+      setShowConvs(false); setOpenConv(null); setConvMsgs([])
+      const tg = await AUTH(`/api/v1/customers/${id}/tags`)
+      setCustTags(tg?.code === 0 ? (tg.data || []) : [])
     } else MessagePlugin.error('获取详情失败')
   }
 
@@ -105,11 +117,24 @@ export function CustomersTab() {
     setChat(j?.code === 0 ? (j.data || []) : []); setShowChat(true)
   }
 
+  // P1-9：展开/收起历史会话列表（GET /customers/:id/conversations，最近 50 条，每次展开重拉）
+  async function loadConvs() {
+    if (showConvs) { setShowConvs(false); setOpenConv(null); setConvMsgs([]); return }
+    const cid = detail?.customer?.id
+    const j = await AUTH(`/api/v1/customers/${cid}/conversations`)
+    setConvs(j?.code === 0 ? (j.data || []) : []); setShowConvs(true)
+  }
+  // P1-9：展开某条会话的消息时间线（GET /conversations/:id/messages，ASC ≤200 条），再次点击收起
+  async function toggleConv(id: number) {
+    if (openConv === id) { setOpenConv(null); setConvMsgs([]); return }
+    setOpenConv(id); setConvMsgs([])
+    const j = await AUTH(`/api/v1/conversations/${id}/messages`)
+    if (j?.code === 0) setConvMsgs(j.data || [])
+  }
+
   // 用当前详情预填编辑表单并打开编辑弹窗
   function openEdit() {
-    const c = detail?.customer
-  // 聊天发送方中文名/颜色与编辑表单受控更新的小工具
- || {}
+    const c = detail?.customer || {}
     setForm({
       name: c.name || '',
       phone: c.phone || '',
@@ -167,25 +192,48 @@ export function CustomersTab() {
     }
   }
 
-  // 打开标签编辑器：以详情现有标签预填
+  // 打开标签编辑器：以权威标签（custTags，含 tag_id）预填选中项
   function openTagEditor() {
-    setTagForm((detail?.tags || []).map((t: CrudRow) => String(t.tag_name)).filter(Boolean))
+    setTagForm(custTags.map((t: CrudRow) => String(t.tag_id)).filter(Boolean))
     setTagVisible(true)
   }
 
-  // 提交客户标签覆盖式更新，成功后重开详情并刷新列表
+  // P1-9(2026-09-20)：标签覆盖式编辑改为差量提交——新增走 POST /customers/:id/tags {tag_ids}，
+  // 移除逐个走 DELETE /customers/:id/tags/:tag_id（旧 PUT 按名覆盖仅移动端保留）
   async function submitTags() {
     if (!detail?.customer?.id) return
     setSaving(true)
-    const j = await AUTH(`/api/v1/advisor/customer/${Number(detail.customer.id)}/tags`, {
-      method: 'PUT',
-      body: { tags: tagForm },
-    })
+    const cid = Number(detail.customer.id)
+    const cur = custTags.map((t: CrudRow) => String(t.tag_id))
+    const adds = tagForm.filter((x) => !cur.includes(x)).map(Number)
+    const dels = cur.filter((x) => !tagForm.includes(x))
+    let ok = true
+    if (adds.length > 0) {
+      const j = await AUTH(`/api/v1/customers/${cid}/tags`, { method: 'POST', body: { tag_ids: adds } })
+      if (j?.code !== 0) ok = false
+    }
+    for (const tid of dels) {
+      const j = await AUTH(`/api/v1/customers/${cid}/tags/${tid}`, { method: 'DELETE' })
+      if (j?.code !== 0) ok = false
+    }
     setSaving(false)
-    if (j?.code === 0) {
+    if (ok) {
       MessagePlugin.success('标签已更新')
       setTagVisible(false)
-      await openDetail(Number(detail.customer.id))
+      await openDetail(cid)
+      await load()
+    }
+  }
+
+  // P1-9：抽屉标签 chip 直删（DELETE /customers/:id/tags/:tag_id），成功后刷新详情与列表
+  async function removeTag(tagId: number) {
+    if (!detail?.customer?.id) return
+    if (!(await confirmDialog('确认移除该标签？', '移除标签'))) return
+    const cid = Number(detail.customer.id)
+    const j = await AUTH(`/api/v1/customers/${cid}/tags/${tagId}`, { method: 'DELETE' })
+    if (j?.code === 0) {
+      MessagePlugin.success('标签已移除')
+      await openDetail(cid)
       await load()
     }
   }
@@ -213,7 +261,8 @@ export function CustomersTab() {
       setCreateVisible(false)
       setCreate({ name: '', phone: '', city: '', interest_model: '', budget: 0, source: 'manual', assigned_user_id: 0, remark: '' })
       await load()
-    } else MessagePlugin.error(j?.message || '创建失败')
+    }
+    // AUTH 失败已内置 toastError，此处不再手动报错防双弹（P1-7 口径）
   }
 
   // 删除客户线索（二次确认；会话历史按合规保留），成功后关抽屉刷新
@@ -224,10 +273,11 @@ export function CustomersTab() {
       MessagePlugin.success('已删除')
       setDrawer(false)
       await load()
-    } else MessagePlugin.error(j?.message || '删除失败')
+    }
   }
 
   const c = detail?.customer
+  // 聊天发送方中文名/颜色与编辑表单受控更新的小工具
   const who = (t: string) => (t === 'customer' ? '客户' : t === 'ai' ? 'AI' : t === 'human' ? '人工' : '系统')
   const wcolor = (t: string) => (t === 'customer' ? 'text-blue-600' : t === 'ai' ? 'text-green-600' : 'text-orange-600')
   const setField = (k: string, v: any) => setForm((s) => ({ ...s, [k]: v }))
@@ -290,7 +340,8 @@ export function CustomersTab() {
               <div><span className="text-xs text-gray-400">阶段</span><p className="text-sm">{STAGE_LABELS[c.journey_stage] || c.journey_stage || '-'}</p></div>
               <div><span className="text-xs text-gray-400">顾问</span><p className="text-sm">{detail.assigned_user_name || (c.assigned_user_id > 0 ? '顾问' + c.assigned_user_id : '未分配')}</p></div>
             </div>
-            <div><span className="text-xs text-gray-400">标签</span><div className="mt-1 flex flex-wrap gap-1">{(detail.tags || []).map((t: TableRowData, i: number) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)} {(detail.tags || []).length === 0 && <span className="text-xs text-gray-300">暂无</span>}</div></div>
+            {/* P1-9：标签改用权威 custTags（GET /customers/:id/tags），chip 带 × 直删 */}
+            <div><span className="text-xs text-gray-400">标签</span><div className="mt-1 flex flex-wrap gap-1">{(custTags.length ? custTags : (detail.tags || [])).map((t: TableRowData, i: number) => <Tag key={i} theme="primary" variant="light" closable={custTags.length > 0 && !!t.tag_id} onClose={() => t.tag_id && void removeTag(Number(t.tag_id))}>{t.tag_name}</Tag>)} {(custTags.length ? custTags : (detail.tags || [])).length === 0 && <span className="text-xs text-gray-300">暂无</span>}</div></div>
             <div><span className="text-xs text-gray-400">备注</span><p className="text-sm text-gray-600 mt-1">{c.remark || '-'}</p></div>
             <div className="pt-2 border-t border-gray-100">
               <Button size="small" theme="success" variant="outline" onClick={() => void loadTd()}>{showTd ? '🚗 隐藏试驾单' : '🚗 查看试驾单'}</Button>
@@ -310,6 +361,29 @@ export function CustomersTab() {
                 {showChat && chat.length === 0 && <div className="text-gray-400">暂无聊天记录</div>}
                 {chat.map((m, i) => <div key={i}><span className={`${wcolor(m.sender_type)} font-medium`}>[{who(m.sender_type)}]</span> {m.content}</div>)}
               </div>
+            </div>
+            {/* P1-9：历史会话时间线——会话列表（GET /customers/:id/conversations）+ 点开单会话消息（GET /conversations/:id/messages） */}
+            <div className="pt-2 border-t border-gray-100">
+              <Button size="small" theme="primary" variant="outline" onClick={() => void loadConvs()}>{showConvs ? '🗂 隐藏历史会话' : '🗂 查看历史会话'}</Button>
+              {showConvs && (
+                <div className="mt-2 space-y-1">
+                  {convs.length === 0 && <div className="text-gray-400 text-xs">暂无历史会话</div>}
+                  {convs.map((cv) => (
+                    <div key={cv.id} className="bg-gray-50 rounded-lg border border-gray-100">
+                      <div className="flex items-center justify-between px-2 py-1.5 cursor-pointer" onClick={() => void toggleConv(Number(cv.id))}>
+                        <span className="text-xs text-gray-600">会话 #{cv.id} · {cv.channel || 'web'} · {cv.status === 'active' ? '进行中' : cv.status === 'closed' ? '已关闭' : cv.status || '-'}</span>
+                        <span className="text-[10px] text-gray-400">{openConv === cv.id ? '收起' : '展开'}</span>
+                      </div>
+                      {openConv === cv.id && (
+                        <div className="max-h-40 overflow-y-auto px-2 pb-2 text-xs space-y-1">
+                          {convMsgs.length === 0 && <div className="text-gray-400">暂无消息</div>}
+                          {convMsgs.map((m, i) => <div key={i}><span className={`${wcolor(m.sender_type)} font-medium`}>[{who(m.sender_type)}]</span> {m.content}</div>)}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         )}

@@ -3,8 +3,17 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PrivacyTab } from '../PrivacyTab'
 
+// P1-7 迁移(2026-09-20)：组件改走 lib/api AUTH——mock 层同步换成 AUTH 实现，
+// 内部仍调全局 fetch（由各用例 stubGlobal 提供），保留 URL/请求头断言能力
 vi.mock('../../../lib/api', () => ({
-  authHeaders: () => ({ Authorization: 'Bearer test-token' }),
+  AUTH: async (url: string, opts: { method?: string; body?: unknown } = {}) => {
+    const r = await fetch(url, {
+      method: opts.method || 'GET',
+      headers: { Authorization: 'Bearer test-token' },
+      ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+    })
+    return r.json()
+  },
 }))
 vi.mock('../../../lib/confirm', () => ({
   confirmDialog: () => Promise.resolve(false),

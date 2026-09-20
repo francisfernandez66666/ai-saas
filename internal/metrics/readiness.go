@@ -52,7 +52,7 @@ func ComputeReadiness() []HealthCheck {
 	return checks
 }
 
-// computeReadinessChecks R1-R7 生产就绪逐项评估（release 与降级态共用同一张检查表）。
+// computeReadinessChecks R1-R8 生产就绪逐项评估（release 与降级态共用同一张检查表）。
 func computeReadinessChecks() []HealthCheck {
 	cfg := runtimecfg.DefaultSystemConfigService
 	checks := []HealthCheck{}
@@ -102,6 +102,16 @@ func computeReadinessChecks() []HealthCheck {
 	checks = append(checks, readinessCheck("allow_mock_pay", !allowMockPay,
 		map[bool]string{true: "true", false: "false"}[allowMockPay], StatusCrit,
 		"ALLOW_MOCK_PAY=true 且 release：mock-pay 模拟到账端点对 admin 开放=0 元白嫖洞，请移除该环境变量"))
+
+	// R8 网关回调金额归属（P1-2，2026-09-20 审计批）：gateway_webhook_amount_required
+	// 关掉=存量聚合商兼容放行无金额回调，共享密钥方错配/被劫持可按订单面额全额发货，资金敞口
+	amtRequired := true
+	if cfg != nil {
+		amtRequired = cfg.GetBoolForTenant(0, "gateway_webhook_amount_required", true)
+	}
+	checks = append(checks, readinessCheck("gateway_webhook_amount", amtRequired,
+		map[bool]string{true: "required", false: "compat(legacy)"}[amtRequired], StatusWarn,
+		"gateway_webhook_amount_required=false：网关回调缺金额兼容放行，尽快让聚合商升级五段签名并回开严格态"))
 
 	// R4 反向代理声明：未配置=不信任任何 XFF（直连安全），但反代部署漏配会让限流按代理 IP 聚合
 	tp := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES"))

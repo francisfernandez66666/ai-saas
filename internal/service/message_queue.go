@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -54,6 +55,11 @@ type CustomerQueue struct {
 	lastReplyAt      time.Time        // 最近回复时间（判断是否是本次合并的回复）
 	mergeCount       int              // 当前合并批次已合并几条
 	simpleProcessing bool             // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
+	// P1-4 配套(2026-09-20 审计批)：simple 锁的持有时点与代次令牌。
+	// simpleSince 供看门狗判定持锁时长；simpleToken 每次接管递增，看门狗只复位
+	// "自己那次接管"（防误伤后续正常持有者），SimpleMessageDone 语义不变。
+	simpleSince time.Time
+	simpleToken uint64
 	deadlineExpired  bool             // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
 	currentBatch     uint64           // 当前批次ID，每次新批次递增，防止跨批次消息混合
 	// batchClosed P0-7 修复(2026-09-15)：批次"关账"标志。waitForMerge 收集完本批消息后
@@ -72,6 +78,15 @@ type CustomerQueue struct {
 	// 否则微信侧双发/全漏。Redis 模式走 SetNX 跨实例认领（见 ClaimReplyDelivery）。
 	deliveredFor map[string]bool
 }
+
+// simpleLockTimeout P1-4(2026-09-20)：简单消息串行锁的看门狗阈值。
+// 常态由 AI 110s 总预算封顶（回复生成完即 SimpleMessageDone），180s 仍不释放
+// 只可能是处理 goroutine 真挂死（非 panic 路径，recover 兜不住）——
+// 到点复位并广播，防该客户简单消息通道永久静默。包级变量便于单测缩短窗口。
+var simpleLockTimeout = 180 * time.Second
+
+// simpleWatchdogFired P1-4：看门狗复位累计次数（WARN 计数口径，重启清零）
+var simpleWatchdogFired atomic.Int64
 
 // getProcessingLockTimeout 获取processing锁超时时间
 // 修复 C5：改为从后台配置读取(processing_lock_timeout)，无需发版即可调节
@@ -136,6 +151,21 @@ func (s *MessageQueueService) SimpleMessageDone(tenantID uint, customerID uint) 
 	q.mu.Lock()
 	q.simpleProcessing = false
 	q.cond.Signal()
+	q.mu.Unlock()
+}
+
+// simpleWatchdog P1-4(2026-09-20)：simple 锁看门狗复位体——仅当"锁仍被持有且代次
+// 令牌与自己登记的一致"才复位（旧持有者已正常释放、新持有者接管时令牌已递增，不误伤）。
+// 独立成方法便于确定性单测（不依赖 AfterFunc 时序）。
+func (s *MessageQueueService) simpleWatchdog(k string, token uint64) {
+	q := s.getQueue(k)
+	q.mu.Lock()
+	if q.simpleProcessing && q.simpleToken == token {
+		log.Printf("[合并队列][WARN] 客户%s 简单消息锁持有 %.0fs 未释放（处理协程疑似挂死），看门狗复位（累计触发 %d 次）",
+			k, time.Since(q.simpleSince).Seconds(), simpleWatchdogFired.Add(1))
+		q.simpleProcessing = false
+		q.cond.Broadcast()
+	}
 	q.mu.Unlock()
 }
 
@@ -246,8 +276,17 @@ func (s *MessageQueueService) EnqueueAndWait(tenantID uint, customerID uint, con
 			q.cond.Wait()
 		}
 		q.simpleProcessing = true
+		// P1-4 修复(2026-09-20)：simple 锁此前无超时自愈——自愈扫描只清 processing，
+		// 等待段 `for q.simpleProcessing { Wait }` 无时限。处理 goroutine 真挂死
+		// （非 panic，recover 兜不住）时该客户简单消息永久静默。接管时记时点 +
+		// 一次性看门狗：超 simpleLockTimeout 仍持锁即复位并广播；令牌比对保证
+		// 只复位"自己那次接管"，不误伤后续正常持有者。
+		q.simpleSince = time.Now()
+		q.simpleToken++
+		token := q.simpleToken
 		locked = false
 		q.mu.Unlock()
+		time.AfterFunc(simpleLockTimeout, func() { s.simpleWatchdog(k, token) })
 		log.Printf("[合并队列] 客户%s 简单消息快速通道: %q%s", k, logx.Safe(content, 40), traceTag(traceID))
 		return content, true, "", 0, true, 1, 0
 	}

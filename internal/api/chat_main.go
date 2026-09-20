@@ -366,11 +366,12 @@ func Chat(c *gin.Context) {
 			CreatedAt:      time.Now(),
 		}
 		db.RQ(c).Create(&offTopicMsg)
-		// 唤醒队列中可能等待的其他请求（硬边界为立即权威回复）。
-		// D5 修复(2026-09-14)：携带当前代际而非 epoch=0——旧实现绕过 fencing，
-		// 在途批次的等待者会被离题话术错误唤醒、处理锁被提前释放（新批二次接管=双回复）。
-		service.DefaultMessageQueueService.SetReply(tenantID, customer.ID,
-			service.DefaultMessageQueueService.CurrentEpoch(tenantID, customer.ID), reply)
+		// P1-1 修复(2026-09-20 审计批)：改纯旁路直答，不再调 SetReply 注入队列。
+		// 旧行为（D5/P0-9 携带当前代际 SetReply）仍有双缺陷：在途批次的等待者被离题话术
+		// 提前唤醒（实质问题被顶掉），而批次处理者的真实 AI 调用照常烧完成本——其返回后
+		// 若新批已接管（epoch++）被 fencing 丢弃，同客户双扣 AI + 错位回复。
+		// 旁路语义：本次请求直接落库+直答返回；在途批次原样继续，其等待者收原批真实回复
+		// （两条回复按各自请求自然分达，与"双投"方案一致）；无在途批次时不污染 lastReply。
 		RespOK(c, "success", gin.H{
 			"conversation_id": conversation.ID,
 			"ai_reply":        reply,

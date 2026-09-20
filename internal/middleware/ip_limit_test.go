@@ -149,3 +149,37 @@ func TestMemoryRateLimit_FallbackWhenRedisDisabled(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyRateLimit_HeaderDimension P1-3(2026-09-20)：KeyRateLimit 按请求头值分桶——
+// 同 Key 超限 429、换 Key 独立计数不误伤、缺头回落 IP 维度。
+func TestKeyRateLimit_HeaderDimension(t *testing.T) {
+	resetIPLimitState(t)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.Use(func(c *gin.Context) { c.Request.RemoteAddr = "7.7.7.7:5678"; c.Next() })
+	r.GET("/kl", KeyRateLimit("utkey", 2, time.Minute, "X-Test-Key"), func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"code": 0})
+	})
+	hit := func(key string) int {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/kl", nil)
+		if key != "" {
+			req.Header.Set("X-Test-Key", key)
+		}
+		r.ServeHTTP(w, req)
+		return w.Code
+	}
+	if hit("kA") != 200 || hit("kA") != 200 {
+		t.Fatalf("Key A 前两次应放行")
+	}
+	if hit("kA") != 429 {
+		t.Fatalf("Key A 第三次应 429")
+	}
+	if hit("kB") != 200 {
+		t.Fatalf("换 Key B 独立计数应放行（同 IP 不得连带）")
+	}
+	// 缺头回落 IP 维度：与 kA/kB 桶都不同，同样独立
+	if hit("") != 200 {
+		t.Fatalf("缺头回落 IP 桶应放行")
+	}
+}

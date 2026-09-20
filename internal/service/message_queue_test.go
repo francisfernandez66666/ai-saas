@@ -160,6 +160,78 @@ func TestSimpleMessageDone(t *testing.T) {
 	svc.SimpleMessageDone(1, 100)
 }
 
+// TestSimpleLockWatchdog P1-4 回归(2026-09-20)：简单消息串行锁持有者挂死不释放时，
+// 看门狗须在 simpleLockTimeout 内复位并广播，后到请求不得永久静默。
+func TestSimpleLockWatchdog(t *testing.T) {
+	old := simpleLockTimeout
+	simpleLockTimeout = 120 * time.Millisecond
+	defer func() { simpleLockTimeout = old }()
+
+	svc := NewMessageQueueService()
+	// 第一条简单消息接管处理权后"挂死"（故意不调 SimpleMessageDone）
+	_, sp1, _, _, isSimple1, _, _ := svc.EnqueueAndWait(77, 9001, "在吗", "")
+	if !sp1 || !isSimple1 {
+		t.Fatalf("第一条简单消息应立即接管: shouldProcess=%v isSimple=%v", sp1, isSimple1)
+	}
+	firedBefore := simpleWatchdogFired.Load()
+
+	acquired := make(chan bool, 1)
+	go func() {
+		_, sp2, _, _, _, _, _ := svc.EnqueueAndWait(77, 9001, "好的", "")
+		acquired <- sp2
+	}()
+	select {
+	case ok := <-acquired:
+		if !ok {
+			t.Fatal("看门狗复位后第二条应成功接管简单锁")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("第二条简单消息永久阻塞——看门狗未复位 simple 锁")
+	}
+	if got := simpleWatchdogFired.Load(); got <= firedBefore {
+		t.Fatalf("看门狗计数未递增: before=%d after=%d", firedBefore, got)
+	}
+	svc.SimpleMessageDone(77, 9001)
+}
+
+// TestSimpleWatchdogTokenGuard P1-4 确定性单测：看门狗只复位登记令牌匹配的接管，
+// 旧持有者已释放、新持有者接管（令牌已递增）时不得误伤。
+func TestSimpleWatchdogTokenGuard(t *testing.T) {
+	svc := NewMessageQueueService()
+	k := queueKey(77, 9100)
+	q := svc.getQueue(k)
+	q.mu.Lock()
+	q.simpleProcessing = true
+	q.simpleToken = 5 // 当前持有者是第 5 次接管
+	q.mu.Unlock()
+
+	// 旧代际（第 4 次接管）的看门狗迟到：令牌不符 → 不复位
+	svc.simpleWatchdog(k, 4)
+	q.mu.Lock()
+	held := q.simpleProcessing
+	q.mu.Unlock()
+	if !held {
+		t.Fatal("令牌不符时看门狗误复位了新持有者的锁")
+	}
+	// 当代际看门狗到期：复位 + 计数
+	before := simpleWatchdogFired.Load()
+	svc.simpleWatchdog(k, 5)
+	q.mu.Lock()
+	held = q.simpleProcessing
+	q.mu.Unlock()
+	if held {
+		t.Fatal("令牌相符时看门狗应复位挂死的简单锁")
+	}
+	if simpleWatchdogFired.Load() != before+1 {
+		t.Fatalf("看门狗计数应 +1: before=%d", before)
+	}
+	// 幂等：锁已释放后再触发不重复计数
+	svc.simpleWatchdog(k, 5)
+	if simpleWatchdogFired.Load() != before+1 {
+		t.Fatal("已释放的锁不应重复触发计数")
+	}
+}
+
 // TestSetReply 测试回复设置（P1-19：epoch 代际校验——无队列/epoch=0 不应 panic）
 func TestSetReply(t *testing.T) {
 	svc := NewMessageQueueService()

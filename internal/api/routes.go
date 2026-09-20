@@ -65,7 +65,9 @@ func registerWSAndCollector(r *gin.Engine, v1 *gin.RouterGroup) {
 		v1.GET("/ws/client", WSClient)
 	}
 	// 数据飞轮聚合接收端（P2 collector，自有 X-Collector-Key 鉴权，独立于 JWT）
-	r.POST("/api/v1/collector", CollectorReceive)
+	// P1-3 修复(2026-09-20 审计批)：按 Key 维度 300/min 限流（缺头回落 IP）——
+	// 批量事件写入口此前无任何频控，密钥泄露即可无限写放大。
+	r.POST("/api/v1/collector", middleware.KeyRateLimit("collector", 300, time.Minute, "X-Collector-Key"), CollectorReceive)
 }
 
 // wsHandshakeLimit 读取 WS 握手限流阈值（env），非法/负值回退默认并告警。

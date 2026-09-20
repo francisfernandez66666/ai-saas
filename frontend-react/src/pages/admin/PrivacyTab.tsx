@@ -1,9 +1,10 @@
 // PIPL 删除请求管理 Tab（F1，2026-09-14）：C2 合规链最后一公里。
 // 后端 /admin/privacy/deletion-requests 早已存在（列表 + 手动执行），但前端零消费者——
 // 商家无法在页面查看/推进客户删除请求，只能等 15 天日批。此处补齐：筛选 + 列表 + 立即执行。
+// P1-7 迁移(2026-09-20 审计批)：裸 fetch → lib/api AUTH（网络异常归一为 code:-1 信封，页内错误横幅仍保留）。
 import { useEffect, useState } from 'react'
 import { Button, Table, Tag } from 'tdesign-react'
-import { authHeaders } from '../../lib/api'
+import { AUTH } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import type { CellProps } from '../../types'
 
@@ -34,24 +35,19 @@ export function PrivacyTab() {
   const [err, setErr] = useState('')
   async function load() {
     setErr('')
-    try {
-      const q = new URLSearchParams({ page: '1', page_size: '100' })
-      if (status) q.set('status', status)
-      const r = await fetch('/api/v1/admin/privacy/deletion-requests?' + q.toString(), { headers: authHeaders() })
-      const j = await r.json()
-      if (j.code === 0) setRows(j.data.list || [])
-      else setErr(j.message || '加载失败')
-    } catch {
-      setErr('网络异常，删除请求列表加载失败')
-    }
+    const q = new URLSearchParams({ page: '1', page_size: '100' })
+    if (status) q.set('status', status)
+    // AUTH 网络异常返回 {code:-1,...} 信封，不再抛错，故无需 try/catch
+    const j = await AUTH('/api/v1/admin/privacy/deletion-requests?' + q.toString())
+    if (j?.code === 0) setRows(j.data.list || [])
+    else setErr(j?.message || '加载失败')
   }
   useEffect(() => { load() }, [status])
   async function execute(id: number) {
     if (!(await confirmDialog('将对该主体的消息/客户/CDP 资料做匿名化处理（断内容列，保留行数与数值统计）。此操作不可撤销。', '立即执行删除请求'))) return
-    const r = await fetch(`/api/v1/admin/privacy/deletion-requests/${id}/execute`, { method: 'POST', headers: authHeaders() })
-    const j = await r.json()
-    if (j.code === 0) load()
-    else setErr(j.message || '执行失败')
+    const j = await AUTH(`/api/v1/admin/privacy/deletion-requests/${id}/execute`, { method: 'POST' })
+    if (j?.code === 0) load()
+    else setErr(j?.message || '执行失败')
   }
   const cols = [
     { colKey: 'id', title: 'ID', width: 70 },

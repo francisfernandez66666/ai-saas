@@ -45,14 +45,16 @@ export default function AppLayout() {
   )
 
   // G-23：角色过滤——根据 localStorage 中存储的用户角色判断权限级别
-  // 管理员角色（super_admin/tenant_admin/admin/dept_admin）可看到全部导航菜单
+  // P1-8 修复(2026-09-20 审计批)：原把 dept_admin 计入 isAdmin，但后端 AdminRequired
+  // （auth.go，收银台下单/支付等 /admin 接口）只认 super_admin/tenant_admin/admin——
+  // 部门管理员看得见入口、点进去全 403。前端与后端同集合，入口不再误导。
   // E5 修复(2026-09-14)：旧实现顾问台/邀请仅 isAdmin——sales 在移动端看不到本岗位核心工作台，
   // 与桌面 redirectByRole(sales→/advisor) 自相矛盾。按后端实际权限分级：
   //   顾问台：所有登录成员（含 sales，后端 /advisor/* 工作台接口本就是销售岗）
   //   邀请：所有登录成员（referral info/records/qrcode 为只读个人资产，P1-42 已放开非管理员）
   //   收银台：仅管理岗（下单/支付需 AdminRequired，sales 进去也是 403）
   const role = localStorage.getItem('role') || ''
-  const isAdmin = ['super_admin', 'tenant_admin', 'admin', 'dept_admin'].includes(role)
+  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(role)
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f6fa' }}>

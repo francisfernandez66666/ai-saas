@@ -7,23 +7,16 @@ import { useState, useEffect, useMemo } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { getToken, authHeaders } from '../lib/api'
+import { AUTH, getToken } from '../lib/api'
 
 // 部门树节点类型（含子节点，递归结构）
 type Dept = { id: number; name: string; depth: number; path: string; user_count: number; children?: Dept[] }
 // 组织架构成员类型
 type User = { id: number; username: string; real_name?: string; role: string; department_id?: number; dept_name?: string; status: number }
 
-// 组织架构接口鉴权头
-// P0-6 修复(2026-09-09)：原写法 `fetch(url, {method, headers: AUTH()})` 把 `{headers:{...}}`
-// 整个塞进 headers 选项，Authorization 从未发出 → 部门增删改在浏览器里全部 401。
-// 改为一等函数返回完整 RequestInit，调用处用 ...AUTH() 展开。
-// P1 修复(2026-09-18，AUDIT_VERIFY_2026-09-18)：改用 lib/authHeaders 统一注入——
-// /org/* 是租户作用域路径（P2-15 后端强制显式 X-Tenant-ID），旧版只带 Authorization，
-// super_admin 代管视图整页 400；authHeaders 会按代管租户自动补头。
-const AUTH = (): RequestInit => ({ headers: authHeaders({ 'Content-Type': 'application/json' }) })
-// 当前用户角色（来自 localStorage，决定可执行的部门/成员操作）
-const ROLE = localStorage.getItem('role') || ''
+// P1-7 迁移(2026-09-20 审计批)：本页原以裸 fetch + 本地 authHeaders 包装发请求——
+// 无超时/401 登出/断网兜底，网络异常整页静默失败。统一改走 lib/api AUTH：
+// 自动注入鉴权与代管租户头（P2-15/X-Tenant-ID 语义不变），失败经 toastError 轻提示。
 // 角色中文映射
 const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_admin: '租户管理员', dept_admin: '部门管理员', user: '成员', readonly: '只读' }
 
@@ -36,6 +29,10 @@ const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_ad
  */
 export default function Org() {
   const brand = useBrand()
+  // P1-8 修复(2026-09-20 审计批)：角色原在模块顶层一次性读 localStorage——SPA 内换账号
+  // 不重新加载模块、verifySession 服务端纠偏回写后也不生效，按钮按旧角色显隐。
+  // 改在组件渲染时读取（当前用户角色，决定可执行的部门/成员操作），路由重进即拿最新值
+  const ROLE = localStorage.getItem('role') || ''
   // 部门树数据
   const [tree, setTree] = useState<Dept[]>([])
   // 部门平铺列表（用于父部门下拉与成员部门名映射）
@@ -61,9 +58,8 @@ export default function Org() {
    * 平铺列表用于：父部门下拉选择、成员部门名映射
    */
   async function loadTree() {
-    const r = await fetch('/api/v1/org/departments/tree', AUTH())
-    const j = await r.json()
-    const t = j.data || []
+    const j = await AUTH('/api/v1/org/departments/tree')
+    const t = j?.data || []
     setTree(t)
     // 递归展平部门树
     const flat: Dept[] = []
@@ -78,9 +74,8 @@ export default function Org() {
    * 若已选中部门则只显示该部门成员（前端筛选）
    */
   async function loadUsers() {
-    const r = await fetch('/api/v1/org/users', AUTH())
-    const j = await r.json()
-    let list: User[] = j.data || []
+    const j = await AUTH('/api/v1/org/users')
+    let list: User[] = j?.data || []
     if (sel) list = list.filter((x) => x.department_id === sel)
     setUsers(list)
   }
@@ -119,13 +114,13 @@ export default function Org() {
    */
   async function submitDept() {
     const name = fName.trim()
-    // P0-6 修复：headers 不能整体当 headers 传，必须 ...AUTH() 展开，否则 Authorization 丢失导致 401
-    let r
-    if (dlg?.mode === 'add') r = await fetch('/api/v1/org/departments', { method: 'POST', ...AUTH(), body: JSON.stringify({ name, parent_id: fParent }) })
-    else if (dlg?.mode === 'rename') r = await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ name }) })
-    else if (dlg?.mode === 'move') r = await fetch('/api/v1/org/departments/' + dlg.id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ new_parent_id: fParent }) })
-    const j = r ? await r.json() : null
-    if (j && j.code !== 0) { MessagePlugin.error(j.message || '操作失败'); return }
+    // P1-7 迁移(2026-09-20)：改走 AUTH（object body 自动序列化+toastError 统一提示），
+    // 故删除手动的 MessagePlugin.error——否则业务失败会弹两次
+    let j: { code?: number } | undefined
+    if (dlg?.mode === 'add') j = await AUTH('/api/v1/org/departments', { method: 'POST', body: { name, parent_id: fParent } })
+    else if (dlg?.mode === 'rename') j = await AUTH('/api/v1/org/departments/' + dlg.id, { method: 'PUT', body: { name } })
+    else if (dlg?.mode === 'move') j = await AUTH('/api/v1/org/departments/' + dlg.id, { method: 'PUT', body: { new_parent_id: fParent } })
+    if (j && j.code !== 0) return
     setDlg(null); loadTree()
   }
 
@@ -135,8 +130,9 @@ export default function Org() {
    */
   async function delDept(id: number) {
     if (!(await confirmDialog('删除该空部门？'))) return
-    const r = await fetch('/api/v1/org/departments/' + id, { method: 'DELETE', ...AUTH() })
-    const j = await r.json(); MessagePlugin[j.code === 0 ? 'success' : 'error'](j.message || '删除失败'); if (j.code === 0) loadTree()
+    // 业务失败由 AUTH 内 toastError 提示，此处只在成功时补成功提示
+    const j = await AUTH('/api/v1/org/departments/' + id, { method: 'DELETE' })
+    if (j?.code === 0) { MessagePlugin.success(j.message || '已删除'); loadTree() }
   }
 
   /**
@@ -144,8 +140,8 @@ export default function Org() {
    * 仅管理员类角色可见此按钮
    */
   async function toggleU(id: number, st: number) {
-    const r = await fetch('/api/v1/org/users/' + id, { method: 'PUT', ...AUTH(), body: JSON.stringify({ status: st === 1 ? 0 : 1 }) })
-    const j = await r.json(); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败')
+    // 失败提示由 AUTH 的 toastError 统一处理，成功后仍刷新列表回显真实状态
+    await AUTH('/api/v1/org/users/' + id, { method: 'PUT', body: { status: st === 1 ? 0 : 1 } })
     loadUsers()
   }
 
@@ -157,9 +153,9 @@ export default function Org() {
    * 成功后关闭弹窗并刷新成员与部门树（更新成员计数）
    */
   async function submitUser() {
-    const r = await fetch('/api/v1/org/users', { method: 'POST', ...AUTH(), body: JSON.stringify(u) })
-    const j = await r.json(); MessagePlugin[j.code === 0 ? 'success' : 'error'](j.message || '新增失败')
-    if (j.code === 0) { setUserDlg(false); loadUsers(); loadTree() }
+    // 失败提示由 AUTH 的 toastError 统一处理，此处只在成功时补成功提示并刷新
+    const j = await AUTH('/api/v1/org/users', { method: 'POST', body: u })
+    if (j?.code === 0) { MessagePlugin.success(j.message || '新增成功'); setUserDlg(false); loadUsers(); loadTree() }
   }
 
   // 未登录时不渲染

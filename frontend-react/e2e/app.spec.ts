@@ -77,6 +77,8 @@ test('protected route redirects to login', async ({ page }) => {
 });
 
 // 7. Auth me returns user info
+// P1-11 修复(2026-09-20 审计批二)：原 `if (meRes.ok())` 条件断言——非 200 时整段跳过假绿。
+// 登录前置（adminToken 回环）已保证凭据有效，/auth/me 必 200，断言无条件化。
 test('auth me returns user info after login', async ({ request }) => {
   const token = await adminToken(request);
   expect(token).toBeTruthy();
@@ -84,12 +86,10 @@ test('auth me returns user info after login', async ({ request }) => {
   const meRes = await request.get(`${BASE}/api/v1/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
+  expect(meRes.ok()).toBeTruthy();
   const meBody = await meRes.json();
-  expect(meBody).toHaveProperty('code');
-  if (meRes.ok()) {
-    expect(meBody.code).toBe(0);
-    expect(meBody.data?.username).toBe('admin');
-  }
+  expect(meBody.code).toBe(0);
+  expect(meBody.data?.username).toBe('admin');
 });
 
 // 8. Health check endpoint
@@ -128,4 +128,53 @@ test('openapi docs page renders endpoints from spec', async ({ page }) => {
   await page.goto('/docs/api');
   await expect(page.getByText('AI-SCRM 开放 API')).toBeVisible({ timeout: 10000 });
   await expect(page.getByText('/chat/completions').first()).toBeVisible({ timeout: 10000 });
+});
+
+// 12-14. P1-10(2026-09-20 审计批二)：桌面管理台三台 390px 窄屏可达性
+// 断言口径：①固定 200px 左栏（.t-layout__aside）在窄屏消失，折叠为顶栏下拉菜单；
+// ②整页横向滚动宽度不超视口（防内容炸版，表格横滚应局限在 .t-table__content 内）；
+// ③下拉切 Tab 真实联动（/admin 选"回复速度"出配置动作条）。
+async function seedDesktopLogin(page: import('@playwright/test').Page, request: APIRequestContext) {
+  const token = await adminToken(request);
+  // addInitScript 在每次导航前注入登录三键（与真实登录后的 localStorage 形态一致）
+  await page.addInitScript(([t]) => {
+    localStorage.setItem('scrm_auth_token', t);
+    localStorage.setItem('role', 'super_admin');
+    localStorage.setItem('username', 'admin');
+  }, [token]);
+}
+
+test.describe('P1-10 390px 桌面三台可达', () => {
+  test.use({ viewport: { width: 390, height: 844 } });
+
+  test('/admin 折叠为顶栏下拉并可切 Tab', async ({ page, request }) => {
+    await seedDesktopLogin(page, request);
+    await page.goto('/admin');
+    const menu = page.locator('select[aria-label="管理菜单"]');
+    await expect(menu).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.t-layout__aside')).toHaveCount(0);
+    await menu.selectOption('reply_speed');
+    // 配置类 Tab 无租户作用域限制，选中后渲染底部动作条
+    await expect(page.getByText('延迟归零')).toBeVisible({ timeout: 10000 });
+    const sw = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(sw).toBeLessThanOrEqual(392);
+  });
+
+  test('/super 折叠为顶栏下拉', async ({ page, request }) => {
+    await seedDesktopLogin(page, request);
+    await page.goto('/super');
+    await expect(page.locator('select[aria-label="平台管理菜单"]')).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('.t-layout__aside')).toHaveCount(0);
+    const sw = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(sw).toBeLessThanOrEqual(392);
+  });
+
+  test('/org 双栏降单栏不炸版', async ({ page, request }) => {
+    await seedDesktopLogin(page, request);
+    await page.goto('/org');
+    await expect(page.getByRole('heading', { name: '部门树' })).toBeVisible({ timeout: 10000 });
+    // 成员表 min-w-[560px] 被 overflow-x-auto 包裹，页面级横滚仍应锁在 390
+    const sw = await page.evaluate(() => document.documentElement.scrollWidth);
+    expect(sw).toBeLessThanOrEqual(392);
+  });
 });

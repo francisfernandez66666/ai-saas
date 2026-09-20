@@ -149,6 +149,7 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "pay_alipay_public_key", Value: "\"\"", ValueType: "string", Description: "支付宝平台公钥PEM(异步通知验签用,开放平台加签方式页下载)", DefaultValue: "\"\"", SortOrder: 26},
 	{Category: "billing", Key: "pay_alipay_notify_url", Value: "\"\"", ValueType: "string", Description: "支付宝异步通知地址(如https://域名/api/v1/billing/webhook/alipay)", DefaultValue: "\"\"", SortOrder: 27},
 	{Category: "billing", Key: "pay_alipay_seller_id", Value: "\"\"", ValueType: "string", Description: "支付宝商户seller_id(可选,配置后异步通知强制核对归属商户)", DefaultValue: "\"\"", SortOrder: 28},
+	{Category: "billing", Key: "gateway_webhook_amount_required", Value: "true", ValueType: "bool", Description: "P1-2(2026-09-20)：通用支付网关回调amount_cents必传且参与签名+订单金额核对(false=存量聚合商兼容放行,readiness亮warn)", DefaultValue: "true", SortOrder: 29},
 
 	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
 	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
@@ -212,6 +213,7 @@ var PlatformLevelKeys = map[string]bool{
 	"pay_gateway_app_id":               true, // UAT修复(2026-08-31)：支付网关应用ID(平台级)
 	"pay_gateway_key":                  true, // UAT修复(2026-08-31)：支付网关验签密钥(平台级)——不入租户覆盖层，否则 webhook 验签永远失败
 	"pay_gateway_notify_url":           true, // UAT修复(2026-08-31)：支付网关异步通知地址(平台级)
+	"gateway_webhook_amount_required":  true, // P1-2(2026-09-20)：回调金额强校验开关(平台级)——租户可关=资金闸失守
 	"pay_provider":                     true, // P0-1(2026-09-15)：sdk模式渠道分发(平台级)——租户改它等于改全站收款方式
 	"pay_wechat_app_id":                true, // P0-1(2026-09-15)：微信支付凭证(平台级,含私钥/apiv3key 敏感项,绝不入租户层)
 	"pay_wechat_mch_id":                true,

@@ -196,11 +196,20 @@ export async function apiFetch(url: string, opts: ApiRequestInit = {}): Promise<
  * @returns 包含 Response 和解析后 JSON 的对象
  */
 /** 发起 JSON API 请求并返回 data；错误码会转成前端异常。 */
+// P1-6 修复(2026-09-20 审计批)：网络层失败（断网/DNS/abort）不再向上 reject——
+// 统一返回 {res:null, json:null} 口径（同 AUTH 的 E6 网络兜底语义），
+// 调用方 setLoading(false)/判错逻辑单线化，不再因 unhandled rejection 卡死在 loading。
 export async function apiJSON<T = any>(
   url: string,
   opts: ApiRequestInit = {},
-): Promise<{ res: Response; json: T }> {
-  const res = await apiFetch(url, opts)
+): Promise<{ res: Response | null; json: T | null }> {
+  let res: Response
+  try {
+    res = await apiFetch(url, opts)
+  } catch {
+    // apiFetch 抛错仅剩网络层/超时一种（4xx/5xx 是正常 Response）——归一为空结果
+    return { res: null, json: null }
+  }
   const json = (await res.json().catch(() => null)) as T
   return { res, json }
 }
@@ -234,20 +243,17 @@ export async function AUTH<T = any>(
   // E6 修复(2026-09-14)：网络异常/超时不再让 AUTH reject——旧行为下调用方
   // `const j = await AUTH(...); j.code` 直接踩 unhandled rejection → 白屏。
   // 统一兜底成 {code:-1, message} 错误信封，让调用方的 `if (j.code === 0)` 正常走 else 分支。
-  let json: T
-  try {
-    const r = await apiJSON<T>(url, {
-      method: opts.method || 'GET',
-      headers: opts.headers,
-      body: opts.body ? JSON.stringify(opts.body) : undefined,
-      timeoutMs: opts.timeoutMs, // P1-13：长任务可显式放宽/关闭超时
-    })
-    json = r.json
-  } catch {
-    json = { code: -1, message: '网络异常，请稍后重试' } as unknown as T
-  }
+  // P1-6 配套(2026-09-20)：apiJSON 已把网络层失败归一为 {res:null, json:null}（不再 throw），
+  // 故按 res 是否为空区分"网络异常"与"响应解析失败"两种兜底文案。
+  const { res, json: parsed } = await apiJSON<T>(url, {
+    method: opts.method || 'GET',
+    headers: opts.headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+    timeoutMs: opts.timeoutMs, // P1-13：长任务可显式放宽/关闭超时
+  })
+  let json: T = parsed
   if (!json || typeof (json as any).code !== 'number') {
-    json = { code: -1, message: '响应解析失败' } as unknown as T
+    json = { code: -1, message: res ? '响应解析失败' : '网络异常，请稍后重试' } as unknown as T
   }
   toastError(json) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
   return json

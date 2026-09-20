@@ -1,6 +1,8 @@
 // 邀请推广 Tab（F1 从 Admin.tsx 拆出）：邀请码、链接、二维码与余额概览。
+// P1-7 迁移(2026-09-20 审计批)：信息接口走 AUTH；二维码是图片 blob 不能走 JSON 层，
+// 改走 apiFetch（保留原始 Response，统一获得超时/鉴权头/401 处理）。
 import { useEffect, useState } from 'react'
-import { authHeaders, getToken } from '../../lib/api'
+import { AUTH, apiFetch } from '../../lib/api'
 import type { TableRowData } from '../../types'
 
 /** 邀请推广 Tab：展示邀请码、奖励规则和推荐记录。 */
@@ -9,15 +11,13 @@ export function ReferralTab() {
   const [qr, setQr] = useState('')
   // E6 修复(2026-09-14)：加载失败给错误态而非永久"加载中"
   const [err, setErr] = useState('')
-  // 拉取当前用户的邀请奖励信息（E6：非 0 码/网络异常落错误态，不再永久"加载中"）
+  // 拉取当前用户的邀请奖励信息（E6：非 0 码/网络异常落错误态，不再永久"加载中"；AUTH 网络异常归一 code:-1）
   const load = () => {
     setErr('')
-    fetch('/api/v1/advisor/referral/info', { headers: authHeaders() }).then((r) => r.json()).then((j) => { if (j?.code === 0) setInfo(j.data); else setErr(j?.message || '加载失败') }).catch(() => setErr('网络异常，加载失败'))
+    void AUTH('/api/v1/advisor/referral/info').then((j) => { if (j?.code === 0) setInfo(j.data); else setErr(j?.message || '加载失败') })
     ;(async () => {
       try {
-        const res = await fetch('/api/v1/advisor/referral/qrcode?size=280', {
-          headers: getToken() ? authHeaders() : {},
-        })
+        const res = await apiFetch('/api/v1/advisor/referral/qrcode?size=280')
         if (!res.ok) return
         const blob = await res.blob()
         setQr(URL.createObjectURL(blob))

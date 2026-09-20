@@ -583,5 +583,22 @@ import json,urllib.request
 d=json.load(urllib.request.urlopen('$B/api/v1/openapi/spec'))
 print('y' if 'paths' in d and 'code' not in d else 'n')" 2>/dev/null)"
 
+echo "---- 二十六、2026-09-20 审计批 P1-3：公开面 IP/Key 限流护栏 ----"
+# 各面连打超限必 429（本段刻意放在最后：打爆的是各自独立桶，且其后脚本不再触这些端点；
+# 60s 窗口自然重置，勿在其它脚本前置依赖这些端点）
+KNOW_LAST=""
+for i in $(seq 1 65); do
+  KNOW_LAST=$(curl -s -o /dev/null -w '%{http_code}' "$B/api/v1/knowledge/brands?tenant_id=1")
+done
+check "knowledge 连打65次超限(429)" 429 "$KNOW_LAST"
+COLL_LAST=""
+for i in $(seq 1 305); do
+  COLL_LAST=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key" -d '[]')
+done
+check "collector 连打305次超限(429)" 429 "$COLL_LAST"
+# collector 限流按 Key 维度：换 Key 不受上一个桶影响（回落放行至鉴权层 401）
+COLL_B=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key_other" -d '[]')
+check "collector 换Key不误伤(401未授权而非429)" 401 "$COLL_B"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1
