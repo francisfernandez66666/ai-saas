@@ -5,16 +5,19 @@
 package privacy
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"time"
 
 	"gorm.io/gorm"
 
+	"ai-scrm/config"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 )
@@ -24,6 +27,21 @@ const DefaultGrace = 15 * 24 * time.Hour
 
 // anonPrefix 匿名化后内容列前缀（幂等标志：已带前缀的内容列不再二次哈希）
 const anonPrefix = "anon:"
+
+// anonSaltDomain 域分隔盐：与 pkg/crypto 的密钥派生同源不同用，防密钥跨场景互换
+const anonSaltDomain = "|scrm-anon/v1"
+
+// anonHash P2-5 修复(2026-09-20 批三)：内容列匿名化由无盐 sha256 改为**租户级盐 HMAC-SHA256**。
+// 无盐哈希可被反推——聊天短句（手机号/常客套语）枚举比对即可还原原文，且同文本跨租户哈希相同，
+// 平台侧可横向关联不同租户的同一人。现密钥派生自 JWT 签名密钥+域盐+tenant_id：
+// 跨租户同文本哈希互异；密钥不入库， rainbow 表成本不可行。幂等判定仍只看 anon: 前缀，换密钥后
+// 旧 anon: 值不会被二次处理（本就是不可逆态）。
+func anonHash(tenantID uint, content string) string {
+	secret := config.GlobalConfig.JWT.Secret
+	mac := hmac.New(sha256.New, []byte(secret+anonSaltDomain+"|"+strconv.FormatUint(uint64(tenantID), 10)))
+	mac.Write([]byte(content))
+	return anonPrefix + hex.EncodeToString(mac.Sum(nil))
+}
 
 // ErrAlreadyPending 同主体已有 pending 请求，重复受理幂等返回原请求（由调用方决定 200/409 语义）
 var ErrAlreadyPending = errors.New("已有待处理的删除请求")
@@ -169,8 +187,7 @@ func anonymizeCustomer(tx *gorm.DB, tenantID, customerID uint) error {
 		if m.Content == "" || strings.HasPrefix(m.Content, anonPrefix) {
 			continue
 		}
-		sum := sha256.Sum256([]byte(m.Content))
-		newContent := anonPrefix + hex.EncodeToString(sum[:])
+		newContent := anonHash(tenantID, m.Content)
 		if err := tx.Model(&model.Message{}).Where("id = ?", m.ID).Update("content", newContent).Error; err != nil {
 			return err
 		}
@@ -185,8 +202,7 @@ func anonymizeCustomer(tx *gorm.DB, tenantID, customerID uint) error {
 		if m.Content == "" || strings.HasPrefix(m.Content, anonPrefix) {
 			continue
 		}
-		sum := sha256.Sum256([]byte(m.Content))
-		newContent := anonPrefix + hex.EncodeToString(sum[:])
+		newContent := anonHash(tenantID, m.Content)
 		if err := tx.Table("messages_archive").Where("id = ?", m.ID).Update("content", newContent).Error; err != nil {
 			return err
 		}
@@ -211,6 +227,21 @@ func anonymizeCustomer(tx *gorm.DB, tenantID, customerID uint) error {
 		}).Error; err != nil {
 		return err
 	}
+	// 4. P2-5 修复(2026-09-20 批三)：OneID 身份锚点表（phone/wechat 原值）——旧版漏覆盖，
+	//    客户行使删除权后手机号仍留在 customer_identities，OneID 还能凭它把"已删"客户合并回来。
+	//    置 'anon:<行id>'：行保留（审计计数不失真）、(tenant,type,value) 唯一索引不撞（逐行带 id 天然互异）、
+	//    二次执行同值幂等。
+	if err := tx.Model(&model.CustomerIdentity{}).Where("tenant_id = ? AND customer_id = ?", tenantID, customerID).
+		Where("identity_value NOT LIKE ?", anonPrefix+"%").
+		UpdateColumn("identity_value", gorm.Expr("concat('anon:', id::text)")).Error; err != nil {
+		return err
+	}
+	// 5. 通道侧身份（external_userid/openid 是渠道内可识别锚点）：同法逐行匿名，StaffID 是顾问侧信息不动
+	if err := tx.Model(&model.ChannelIdentity{}).Where("tenant_id = ? AND customer_id = ?", tenantID, customerID).
+		Where("external_id NOT LIKE ?", anonPrefix+"%").
+		UpdateColumn("external_id", gorm.Expr("concat('anon:', id::text)")).Error; err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -226,9 +257,12 @@ func anonymizeUser(tx *gorm.DB, tenantID, userID uint) error {
 }
 
 // truncate 按 rune 安全截断字符串到 n 个字符。
+// P2-5 修复(2026-09-20 批三)：旧实现注释称 rune 安全实为 s[:n] 字节切——中文错误信息被拦腰
+// 截成非法 UTF-8 落库/出接口。改为按码点计数。
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n]
+	return string(r[:n])
 }

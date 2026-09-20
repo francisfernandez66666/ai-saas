@@ -286,7 +286,7 @@ export function CustomersTab() {
     <div>
       <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
         <span className="text-sm text-gray-500">筛选阶段：</span>
-        <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} className="px-3 py-2 border rounded-lg text-sm">
+        <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} aria-label="客户阶段筛选" className="px-3 py-2 border rounded-lg text-sm">
           {STATUS_OPTS.map((s) => <option key={s} value={s}>{s === '' ? '全部' : (STAGE_LABELS[s] || s)}</option>)}
         </select>
         <Button theme="primary" onClick={() => setCreateVisible(true)}>+ 新建线索</Button>

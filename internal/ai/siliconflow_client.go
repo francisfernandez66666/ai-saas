@@ -93,6 +93,34 @@ func InitSiliconFlowClient() {
 	}
 }
 
+// DeepSeekDefaultClient DeepSeek 官网直连客户端（P1-5→批三，2026-09-20）。
+// 协议与硅基流动同为 OpenAI 兼容，直接复用 SiliconFlowClient 实现，仅密钥/端点/模型独立——
+// 降级链由此获得真正跨供应商第三路：硅基流动平台整体故障（宕机/余额耗尽）时仍可出话。
+var DeepSeekDefaultClient *SiliconFlowClient
+
+// InitDeepSeekClient 初始化 DeepSeek 直连客户端（server 与 gateway 两处装配，同 InitSiliconFlowClient 挂载点）
+func InitDeepSeekClient() {
+	cfg := config.GlobalConfig.AI.DeepSeek
+	enabled := cfg.APIKey != ""
+	DeepSeekDefaultClient = &SiliconFlowClient{
+		APIKey:      cfg.APIKey,
+		BaseURL:     cfg.BaseURL,
+		ModelName:   cfg.Model,
+		MaxTokens:   cfg.MaxTokens,
+		Temperature: cfg.Temperature,
+		MaxRetries:  1, // 与硅基流动同口径：最多重试1次，失败快速降级/上抛
+		Enabled:     enabled,
+		httpClient: &http.Client{
+			Timeout: 60 * time.Second,
+		},
+	}
+	if enabled {
+		log.Printf("[DeepSeek] 第三供应商客户端初始化完成, 模型: %s", cfg.Model)
+	} else {
+		log.Printf("[DeepSeek] 未配置 DEEPSEEK_API_KEY，第三路不装配（降级链维持原状）")
+	}
+}
+
 // SetModel 动态切换模型名
 func (c *SiliconFlowClient) SetModel(modelName string) {
 	if modelName != "" && modelName != c.ModelName {

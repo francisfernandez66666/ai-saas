@@ -5,8 +5,10 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"ai-scrm/config"
+	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -25,6 +27,34 @@ var (
 	seenCollectorIDs = make(map[string]struct{})
 	seenCollectorCap = 1_000_000
 )
+
+// collectorSeenTTL P2-6(2026-09-20 批三)：Redis 幂等键保留期——重推窗口（微信侧分钟级/
+// 采集端小时级批重试）远小于此值，7 天后同 ID 再报视为新事件可接受。
+const collectorSeenTTL = 7 * 24 * time.Hour
+
+// claimCollectorEvent P2-6 修复(2026-09-20 批三)：幂等去重从"仅本机内存 map"升为 Redis 双轨——
+// 旧实现在进程重启后全量失忆、多副本各有一套 seen 表，同一事件重投/打到另一副本即二次落库。
+// 返回 true=本事件为新（已认领）。Redis 出错退回内存表兜底（与 ClaimReplyDelivery 同口径：
+// 故障≠他人已认领，宁可依赖单机去重也不能整批拒收）。
+func claimCollectorEvent(id string) bool {
+	if redisclient.IsEnabled() {
+		acquired, err := redisclient.SetNXExE("coll:seen:"+id, "1", collectorSeenTTL)
+		if err == nil {
+			return acquired
+		}
+		log.Printf("[Collector] Redis 幂等键写入失败，降级内存去重: %v", err)
+	}
+	seenMu.Lock()
+	defer seenMu.Unlock()
+	if _, dup := seenCollectorIDs[id]; dup {
+		return false
+	}
+	seenCollectorIDs[id] = struct{}{}
+	if len(seenCollectorIDs) > seenCollectorCap {
+		seenCollectorIDs = make(map[string]struct{})
+	}
+	return true
+}
 
 /*
 CollectorReceive 数据飞轮聚合接收端
@@ -66,26 +96,19 @@ func CollectorReceive(c *gin.Context) {
 		return
 	}
 	accepted := 0
-	seenMu.Lock()
 	var fresh []service.CollectorEvent
 	for _, ev := range req.Events {
 		// 事件 ID 为空时自动生成随机 ID
 		if ev.ID == "" {
 			ev.ID = service.RandEventID()
 		}
-		// 幂等去重：已存在的事件 ID 直接跳过
-		if _, dup := seenCollectorIDs[ev.ID]; dup {
+		// 幂等去重：P2-6 起走 Redis 双轨认领（重启/多副本不再失忆）
+		if !claimCollectorEvent(ev.ID) {
 			continue
-		}
-		seenCollectorIDs[ev.ID] = struct{}{}
-		// 超出容量上限时整体重置（近似 LRU，避免内存泄漏）
-		if len(seenCollectorIDs) > seenCollectorCap {
-			seenCollectorIDs = make(map[string]struct{})
 		}
 		accepted++
 		fresh = append(fresh, ev)
 	}
-	seenMu.Unlock()
 	// P1-11 修复(2026-09-09)：接收端不再只做内存去重计数——把去重后的事件持久化到
 	// kb_feedback_materials 素材池（走既有 evals 审核流），对外"数据飞轮聚合接收端"真正闭环。
 	ingested, ingestErr := service.IngestCollectorEvents(fresh)

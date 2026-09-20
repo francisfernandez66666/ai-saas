@@ -3,6 +3,8 @@
 import { useEffect, useState } from 'react'
 import { Button, Input } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+// P2-14(2026-09-20 批三)：平台出厂品牌名哨兵收敛到 lib/branding 常量，改默认名不再两处漂移
+import { PLATFORM_DEFAULT_BRAND } from '../../lib/branding'
 
 type BrandForm = {
   custom_domain: string; brand_name: string; brand_link: string; logo_url: string;
@@ -22,7 +24,7 @@ export function BrandingTab() {
         const b: Record<string, unknown> = (j && j.code === 0 && j.data) ? j.data : {}
         const v: BrandForm = {
           custom_domain: (b.custom_domain as string) || '',
-          brand_name: b.brand_name && b.brand_name !== '跨山 LexCross' ? String(b.brand_name) : '',
+          brand_name: b.brand_name && b.brand_name !== PLATFORM_DEFAULT_BRAND ? String(b.brand_name) : '',
           brand_link: (b.brand_link as string) || '',
           logo_url: (b.logo_url as string) || '',
           favicon_url: (b.favicon_url as string) || '',

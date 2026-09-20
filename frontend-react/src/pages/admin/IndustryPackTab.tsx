@@ -1,7 +1,10 @@
 // F6 行业包/租户绑定管理：查看当前绑定、两级行业/企业包绑定、部门包绑定。
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, Select, Table, Tag } from 'tdesign-react'
+import { Button, MessagePlugin, Select, Table, Tag } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+// P2-15(2026-09-20 批三)：原生弹窗 12 处统一替换为 MessagePlugin/confirmDialog，
+// 与管理台其余破坏性操作确认口径一致（原生弹窗样式割裂且阻塞主线程）
+import { confirmDialog } from '../../lib/confirm'
 import type { CellProps, TableRowData } from '../../types'
 
 type Pack = {
@@ -228,7 +231,7 @@ export default function IndustryPackTab() {
   }, [displayRows])
 
   const bind = async () => {
-    if (!industryPackId) { window.alert('请选择行业包'); return }
+    if (!industryPackId) { MessagePlugin.warning('请选择行业包'); return }
     setSaving(true)
     const body: Record<string, any> = { industry_pack_id: Number(industryPackId) }
     if (enterprisePackId) body.enterprise_pack_id = Number(enterprisePackId)
@@ -236,14 +239,12 @@ export default function IndustryPackTab() {
     setSaving(false)
     if (j?.code === 0) {
       await Promise.all([loadCurrent(), loadIndustries(), loadDepts()])
-      window.alert(j.message || '已绑定')
-    } else {
-      window.alert(j?.message || '绑定失败')
-    }
+      MessagePlugin.success(j.message || '已绑定')
+    }        // 失败提示由 AUTH toastError 统一处理（P2-15/P1-7：防双弹）
   }
 
   const unbind = async () => {
-    if (!window.confirm('确认解绑当前租户的行业包和企业包？该操作会清除已物化的包内容。')) return
+    if (!(await confirmDialog('该操作会清除已物化的包内容。', '确认解绑当前租户的行业包和企业包？'))) return
     setSaving(true)
     const j = await AUTH('/api/v1/admin/packs/unbind', { method: 'POST' })
     setSaving(false)
@@ -251,14 +252,12 @@ export default function IndustryPackTab() {
       setEnterprisePackId('')
       setDeptPackId('')
       await loadAll()
-      window.alert(j.message || '已解绑')
-    } else {
-      window.alert(j?.message || '解绑失败')
-    }
+      MessagePlugin.success(j.message || '已解绑')
+    }        // 失败提示由 AUTH toastError 统一处理（P2-15/P1-7：防双弹）
   }
 
   const bindDept = async () => {
-    if (!deptId || !deptPackId) { window.alert('请选择部门和部门包'); return }
+    if (!deptId || !deptPackId) { MessagePlugin.warning('请选择部门和部门包'); return }
     setSaving(true)
     const j = await AUTH('/api/v1/admin/packs/bind-dept', {
       method: 'POST',
@@ -268,14 +267,12 @@ export default function IndustryPackTab() {
     if (j?.code === 0) {
       setDeptPackId('')
       await loadCurrent()
-      window.alert(j.message || '部门包已绑定')
-    } else {
-      window.alert(j?.message || '部门包绑定失败')
-    }
+      MessagePlugin.success(j.message || '部门包已绑定')
+    }        // 失败提示由 AUTH toastError 统一处理（P2-15/P1-7：防双弹）
   }
 
   const unbindDept = async (departmentId: number) => {
-    if (!window.confirm('确认解绑该部门包？')) return
+    if (!(await confirmDialog('解绑后该部门成员将回落租户级包。', '确认解绑该部门包？'))) return
     setSaving(true)
     const j = await AUTH('/api/v1/admin/packs/unbind-dept', {
       method: 'POST',
@@ -284,10 +281,8 @@ export default function IndustryPackTab() {
     setSaving(false)
     if (j?.code === 0) {
       await loadCurrent()
-      window.alert(j.message || '已解绑')
-    } else {
-      window.alert(j?.message || '解绑失败')
-    }
+      MessagePlugin.success(j.message || '已解绑')
+    }        // 失败提示由 AUTH toastError 统一处理（P2-15/P1-7：防双弹）
   }
 
   return (

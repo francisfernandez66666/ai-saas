@@ -136,6 +136,17 @@ type SiliconFlowConfig struct {
 	Temperature float64 // 采样温度
 }
 
+// DeepSeekConfig DeepSeek 官网直连配置（OpenAI 兼容协议）
+// P1-5→批三(2026-09-20)：第三家独立供应商——旧降级链主力/备源同挂 SiliconFlow 平台（仅跨模型），
+// 硅基流动整体故障时全链同灭；补 DeepSeek 官方直连做真正跨供应商第三路。
+type DeepSeekConfig struct {
+	APIKey      string  // DEEPSEEK_API_KEY（空=该路不装配）
+	BaseURL     string  // API基础URL，默认 https://api.deepseek.com
+	Model       string  // 模型名称，默认 deepseek-chat
+	MaxTokens   int     // 最大输出token数
+	Temperature float64 // 采样温度
+}
+
 // AIConfig AI模型配置
 type AIConfig struct {
 	APIKey      string            // 智谱API Key（兼容旧字段）
@@ -144,6 +155,7 @@ type AIConfig struct {
 	MockMode    bool              // 是否模拟模式（不调用真实AI）
 	Zhipu       ZhipuConfig       // 智谱GLM详细配置
 	SiliconFlow SiliconFlowConfig // 硅基流动配置（跨平台备用）
+	DeepSeek    DeepSeekConfig    // DeepSeek 官网直连（第三独立供应商，P1-5→批三）
 
 	// ---- AI 网关（云端枢纽）：本地部署/SaaS实例统一转发，持有平台厂商Key ----
 	// 启用后本进程不直接持有厂商Key，所有reply阶段请求经网关转发（持有平台Key出网）
@@ -303,6 +315,13 @@ func LoadConfig() *Config {
 				ModelBackup: getEnv("SILICONFLOW_MODEL_BACKUP", "deepseek-ai/DeepSeek-V4-Flash"),
 				MaxTokens:   getEnvInt("SILICONFLOW_MAX_TOKENS", 1024),
 				Temperature: getEnvFloat("SILICONFLOW_TEMPERATURE", 0.7),
+			},
+			DeepSeek: DeepSeekConfig{
+				APIKey:      getEnv("DEEPSEEK_API_KEY", ""),
+				BaseURL:     getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"),
+				Model:       getEnv("DEEPSEEK_MODEL", "deepseek-chat"),
+				MaxTokens:   getEnvInt("DEEPSEEK_MAX_TOKENS", 1024),
+				Temperature: getEnvFloat("DEEPSEEK_TEMPERATURE", 0.7),
 			},
 			// AI网关（云端枢纽）：本地部署无厂商Key时统一转发
 			GatewayURL:    getEnv("LLM_GATEWAY_URL", ""),

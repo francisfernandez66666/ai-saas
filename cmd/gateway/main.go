@@ -55,6 +55,7 @@ func main() {
 	// 5. AI 客户端与路由（网关持有平台厂商 Key，负责多模型降级出网）
 	ai.InitClient()
 	ai.InitSiliconFlowClient()
+	ai.InitDeepSeekClient() // P1-5→批三：第三独立供应商（未配 Key 空转）
 	ai.InitRouter()
 	service.InitEmbeddingClient()
 

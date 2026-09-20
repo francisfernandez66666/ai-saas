@@ -31,6 +31,7 @@ type ModelProvider string
 // ModelProvider 标识 AI 提供商，取值见 Provider* 常量（zhipu/siliconflow/gateway/fallback）
 const (
 	ProviderZhipu       ModelProvider = "zhipu"       // 智谱GLM
+	ProviderDeepSeek    ModelProvider = "deepseek"    // DeepSeek 官网直连（P1-5→批三：第三独立供应商）
 	ProviderSiliconFlow ModelProvider = "siliconflow" // 硅基流动
 	ProviderGateway     ModelProvider = "gateway"     // AI 网关（云端枢纽转发）
 	ProviderFallback    ModelProvider = "fallback"    // 模板兜底
@@ -63,8 +64,9 @@ type AIRouter struct {
 var Router *AIRouter
 
 // InitRouter 初始化AI路由器
-// 模型优先级：硅基流动GLM-4-9B(免费) → 硅基流动DeepSeek → 模板兜底
-// 智谱已移除（频繁触发429限流，无法正常使用）
+// 模型优先级：网关(若配) → 硅基流动GLM-4-9B(免费) → 硅基流动DeepSeek备源 → DeepSeek官网直连 → 模板兜底
+// P1-5→批三(2026-09-20)：旧链前两环同挂硅基流动平台（仅跨模型不跨供应商），平台整体故障=全链同灭；
+// 补 DEEPSEEK_API_KEY 装配第三家独立供应商。智谱已移除（频繁429，callProvider 仍留兼容分支）
 func InitRouter() {
 	models := make([]*ModelState, 0)
 
@@ -93,7 +95,7 @@ func InitRouter() {
 			ConsecutiveFails: 0,
 		})
 
-		// 2. 硅基流动 DeepSeek V4 Flash（备用）
+		// 2. 硅基流动 DeepSeek V4 Flash（备源，仍属硅基流动平台）
 		if cfg.SiliconFlow.ModelBackup != "" && cfg.SiliconFlow.ModelBackup != cfg.SiliconFlow.Model {
 			models = append(models, &ModelState{
 				Provider:         ProviderSiliconFlow,
@@ -102,6 +104,17 @@ func InitRouter() {
 				ConsecutiveFails: 0,
 			})
 		}
+	}
+
+	// 3. DeepSeek 官网直连（P1-5→批三）：跨供应商第三路，仅当配置 DEEPSEEK_API_KEY 时装配；
+	//    即使硅基流动未配 Key 也可独立成路（Enabled=false 的客户端会被链路直接跳过报错，无副作用）
+	if cfg.DeepSeek.APIKey != "" && DeepSeekDefaultClient != nil && DeepSeekDefaultClient.Enabled {
+		models = append(models, &ModelState{
+			Provider:         ProviderDeepSeek,
+			ModelName:        cfg.DeepSeek.Model,
+			Available:        true,
+			ConsecutiveFails: 0,
+		})
 	}
 
 	// 智谱已移除（频繁429限流，重试8-16秒也大概率继续429）
@@ -171,6 +184,11 @@ func (r *AIRouter) callProvider(ctx context.Context, provider ModelProvider, mod
 		return DefaultClient.GenerateTextWithModelOverride(ctx, messages, temperature, modelName)
 	case ProviderSiliconFlow:
 		return SiliconFlowDefaultClient.GenerateTextWithModelOverride(ctx, messages, temperature, modelName)
+	case ProviderDeepSeek:
+		if DeepSeekDefaultClient == nil {
+			return "", Usage{}, fmt.Errorf("DeepSeek 第三路未初始化")
+		}
+		return DeepSeekDefaultClient.GenerateTextWithModelOverride(ctx, messages, temperature, modelName)
 	case ProviderGateway:
 		if DefaultGatewayClient == nil {
 			return "", Usage{}, fmt.Errorf("网关未初始化")

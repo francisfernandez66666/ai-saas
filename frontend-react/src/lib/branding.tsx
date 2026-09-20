@@ -6,6 +6,10 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 
 // BrandingResp /api/v1/public/branding 的 data 契约（白标配置字段，均可选）
+// PLATFORM_DEFAULT_BRAND 平台出厂品牌名（P2-14 收口：原散点硬编码 4+1 处，哨兵比对一改即漂移）。
+// 后端 seed 出厂 brand_name 与前端默认标题同源值；BrandingTab 亦 import 本常量做"未定制"判定。
+export const PLATFORM_DEFAULT_BRAND = '跨山 LexCross'
+
 interface BrandingResp {
   brand_name?: string
   brand_link?: string
@@ -34,7 +38,7 @@ export type Brand = {
 
 // 平台级默认品牌（未配置白标时回退到此），避免标题/favicon 出现空白
 const DEFAULT: Brand = {
-  brandName: '跨山 LexCross',
+  brandName: PLATFORM_DEFAULT_BRAND,
   brandLink: '',
   logoUrl: '',
   faviconUrl: '',
@@ -79,7 +83,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         // favicon/主题色/自定义 CSS 永不注入——白标链路整体静默失效。统一解包 data。
         const d: BrandingResp = res.data || {}
         const brandName =
-          d.brand_name && d.brand_name !== '跨山 LexCross' ? String(d.brand_name) : '跨山 LexCross'
+          d.brand_name && d.brand_name !== PLATFORM_DEFAULT_BRAND ? String(d.brand_name) : PLATFORM_DEFAULT_BRAND
         setB({
           brandName,
           brandLink: (d.brand_link as string) || '',
@@ -92,8 +96,8 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
         // 标题：自定义品牌强制替换（P2 全量白标）；平台默认仅替换含默认名部分
         if (!d.platform_default && brandName) {
           document.title = brandName
-        } else if (document.title.indexOf('跨山 LexCross') > -1) {
-          document.title = document.title.replace('跨山 LexCross', brandName)
+        } else if (document.title.indexOf(PLATFORM_DEFAULT_BRAND) > -1) {
+          document.title = document.title.replace(PLATFORM_DEFAULT_BRAND, brandName)
         }
         // 动态更新 favicon
         if (d.favicon_url) {

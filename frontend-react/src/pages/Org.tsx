@@ -18,7 +18,8 @@ type User = { id: number; username: string; real_name?: string; role: string; de
 // 无超时/401 登出/断网兜底，网络异常整页静默失败。统一改走 lib/api AUTH：
 // 自动注入鉴权与代管租户头（P2-15/X-Tenant-ID 语义不变），失败经 toastError 轻提示。
 // 角色中文映射
-const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_admin: '租户管理员', dept_admin: '部门管理员', user: '成员', readonly: '只读' }
+// P2-16 修复(2026-09-20 批三)：补 sales/admin 两角色中文名——成员列此前直出英文原值
+const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_admin: '租户管理员', dept_admin: '部门管理员', admin: '管理员', sales: '销售顾问', user: '成员', readonly: '只读' }
 
 /**
  * 组织架构管理页组件

@@ -107,6 +107,8 @@ export default function AppSettings() {
    * 删除知识库条目：调用 /api/v1/admin/kb/my/:id DELETE 接口
    */
   async function delKb(id: number) {
+    // P2-14 修复(2026-09-20 批三)：删除知识切片原一键直删——补二次确认（与注销/PII 删除同口径）
+    if (!(await confirmDialog('删除该知识切片？删除后 AI 问答将不再引用其内容，且不可恢复。', '删除知识切片'))) return
     await AUTH('/api/v1/admin/kb/my/' + id, { method: 'DELETE' })
     loadKb()
   }

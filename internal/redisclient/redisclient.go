@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -319,6 +320,22 @@ func DecrByWithTTL(key string, delta int64, ttl time.Duration) (int64, bool) {
 	return n, true
 }
 
+// SetNXExE 与 SetNXEx 同语义但把 Redis 错误显式带回（acquired, err 互斥：出错判未获取）。
+// P2-4(2026-09-20 批三)：健康告警冷却表用——故障期必须与"键已存在（冷却中）"区分，
+// 前者退回调用方本机内存冷却兜底（宁可多报不漏报），后者才允许静默跳过。
+func SetNXExE(key, value string, ttl time.Duration) (bool, error) {
+	if !IsEnabled() {
+		return false, errors.New("redis disabled")
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	ok, err := rdb.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false, err
+	}
+	return ok, nil
+}
+
 // LPushLeftPush 左侧推入列表（跨实例消息转交）
 func LPush(key, value string) {
 	if !IsEnabled() {
@@ -339,6 +356,21 @@ func RPush(key, value string) {
 	ctx, cancel := ctxDefault()
 	defer cancel()
 	_ = rdb.RPush(ctx, key, value).Err()
+}
+
+// LLen 返回列表当前长度（Redis 未启用或出错一律 0，只读探测语义 fail-open）。
+// P2-1(2026-09-20 批三)：合并队列用它探测跨实例 pending 积压是否有在途批次，探测失败按"无积压"处理不阻断主流程。
+func LLen(key string) int64 {
+	if !IsEnabled() {
+		return 0
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	n, err := rdb.LLen(ctx, key).Result()
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // luaDrainList 原子取出整个列表（LRANGE+DEL 非原子会丢消息，必须 Lua）

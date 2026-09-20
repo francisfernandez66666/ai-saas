@@ -1,6 +1,6 @@
 // 全站根路由组件：声明路由表，区分公开页（登录/注册/协议）与业务页（/admin、/super、/advisor、/client、/billing 等）
 // /app 为嵌套布局路由，其内部子页由 AppLayout 统一做登录态守卫与顶栏
-// D1：业务大页路由级 lazy，首屏只加载当前页；TDesign/React 由 vite manualChunks 稳定拆包
+// D1：业务大页路由级 lazy，首屏只加载当前页；TDesign 由 vite 自动分块拆包（P2-16 纠偏：曾注释称 manualChunks 手工拆包而 vite.config 实无该配置，口径以 vite.config.ts 为准）
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { getToken, verifySession } from './lib/api'

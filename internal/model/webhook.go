@@ -14,7 +14,10 @@ const (
 
 // 投递状态
 const (
-	WebhookDeliveryPending   = "pending"
+	WebhookDeliveryPending = "pending"
+	// WebhookDeliverySending 取单预占态（P2-3，2026-09-20 批三）：worker 同事务 FOR UPDATE SKIP LOCKED
+	// 取到期 pending 即置 sending，消除多实例/崩溃换主窗口的双投；持有者崩溃超 5min 由下轮复活回 pending
+	WebhookDeliverySending   = "sending"
 	WebhookDeliveryDelivered = "delivered"
 	WebhookDeliveryDead      = "dead"
 )

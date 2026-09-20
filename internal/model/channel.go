@@ -47,6 +47,9 @@ func (Channel) TableName() string { return "channels" }
 // 出站消息状态常量（W6）
 const (
 	OutboundPending = "pending" // 待发送
+	// OutboundSending 取单预占态（P2-3，2026-09-20 批三）：FOR UPDATE SKIP LOCKED 取单同事务置
+	// sending，"取到即锁定"消除多实例/崩溃换主窗口的双发；持有者崩溃由 worker 按 updated_at 超 5min 复活回 pending
+	OutboundSending = "sending"
 	OutboundSent    = "sent"    // 已发送
 	OutboundFailed  = "failed"  // 超过最大重试，进死信（/admin 通道页可见，可人工重发）
 )

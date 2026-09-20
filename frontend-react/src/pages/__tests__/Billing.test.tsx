@@ -89,3 +89,54 @@ describe('Billing 续费触达 banner', () => {
     expect(await screen.findByText(/1 笔订单待支付/, undefined, { timeout: 4000 })).toBeTruthy()
   })
 })
+
+// P2-11/P2-12 回归(2026-09-20 批三)：
+// ① 发票弹窗邮箱预填必须来自 /auth/me（旧版读 localStorage['email'] 全仓无写入点，恒空假预填）；
+// ② 已退款终态单不得再出"退款/发票"动作按钮（再点必 409/误申请），paid 正常单动作保留。
+describe('Billing 发票预填与退款终态按钮门（P2-11/P2-12）', () => {
+  const paidOrder = {
+    id: 61, order_no: 'BOP1TEST', amount_cents: 9900, package_name: '商业包', channel: 'mock',
+    status: 'paid', created_at: '2026-09-19T10:00:00Z',
+  }
+  const refundedOrder = {
+    id: 62, order_no: 'BOR1TEST', amount_cents: 9900, package_name: '商业包', channel: 'mock',
+    status: 'refunded', refund_amount_cents: 9900, created_at: '2026-09-19T11:00:00Z',
+  }
+  function routeFetch2(orders: unknown[]) {
+    return vi.fn(async (url: string) => {
+      const body = url.includes('/billing/my-package')
+        ? { code: 0, data: { tenant_name: 'ACME', status: 'paid', used_ai_calls: 1, max_ai_calls: 100, ai_call_balance: 99, pay_mode: 'mock' } }
+        : url.includes('/api/v1/packages')
+          ? { code: 0, data: [] }
+          : url.includes('/billing/orders')
+            ? { code: 0, data: orders }
+            : url.includes('/auth/me')
+              ? { code: 0, data: { username: 'admin', role: 'admin', email: 'finance@acme.test' } }
+              : { code: 0, data: {} }
+      return { json: async () => body, ok: true } as Response
+    })
+  }
+
+  it('发票弹窗接收邮箱预填 /auth/me 绑定邮箱', async () => {
+    localStorage.clear(); localStorage.setItem('role', 'admin')
+    vi.stubGlobal('fetch', routeFetch2([paidOrder]))
+    render(<Billing />)
+    const btn = await screen.findByLabelText('申请发票订单BOP1TEST', undefined, { timeout: 4000 })
+    fireEvent.click(btn)
+    const emailInp = (await screen.findByPlaceholderText('接收邮箱', undefined, { timeout: 4000 })) as HTMLInputElement
+    await waitFor(() => expect(emailInp.value).toBe('finance@acme.test'))
+  })
+
+  it('已退款单无退款/发票按钮，paid 单动作保留', async () => {
+    localStorage.clear(); localStorage.setItem('role', 'admin')
+    vi.stubGlobal('fetch', routeFetch2([paidOrder, refundedOrder]))
+    render(<Billing />)
+    // 终态行渲染可见（状态列"已退款"）
+    await screen.findByText(/已退款/, undefined, { timeout: 4000 })
+    expect(screen.queryByLabelText('申请退款订单BOR1TEST')).toBeNull()
+    expect(screen.queryByLabelText('申请发票订单BOR1TEST')).toBeNull()
+    // 对照：paid 行两键仍在（门不能一刀切）
+    expect(screen.queryByLabelText('申请退款订单BOP1TEST')).toBeTruthy()
+    expect(screen.queryByLabelText('申请发票订单BOP1TEST')).toBeTruthy()
+  })
+})

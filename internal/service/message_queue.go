@@ -58,10 +58,10 @@ type CustomerQueue struct {
 	// P1-4 配套(2026-09-20 审计批)：simple 锁的持有时点与代次令牌。
 	// simpleSince 供看门狗判定持锁时长；simpleToken 每次接管递增，看门狗只复位
 	// "自己那次接管"（防误伤后续正常持有者），SimpleMessageDone 语义不变。
-	simpleSince time.Time
-	simpleToken uint64
-	deadlineExpired  bool             // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
-	currentBatch     uint64           // 当前批次ID，每次新批次递增，防止跨批次消息混合
+	simpleSince     time.Time
+	simpleToken     uint64
+	deadlineExpired bool   // 合并窗口到期标记（由AfterFunc定时器设置，waitForMerge检查后清除）
+	currentBatch    uint64 // 当前批次ID，每次新批次递增，防止跨批次消息混合
 	// batchClosed P0-7 修复(2026-09-15)：批次"关账"标志。waitForMerge 收集完本批消息后
 	// 置 true——此后 AI 生成+延迟期间（10-135s，正是客户等回复补发消息的高发窗口）到达的
 	// 消息不再标进已封账批次（旧行为：等待者拿到不含自己内容的旧回复，消息以旧 BatchID
@@ -142,6 +142,84 @@ func (s *MessageQueueService) ActiveQueueCount() int {
 		q.mu.Unlock()
 	}
 	return n
+}
+
+// HasInflightBatch 探测该客户当前是否"会有人回复"：本实例队列 processing/简单锁持有/待合并积压，
+// 或（Redis 启用时）跨实例处理锁 mq:lock:* 存在、他实例 mq:pending:* 有积压。
+// P2-1 修复(2026-09-20 批三)：web 端相似消息抑制只在确实存在在途批次时才走 merged 分支——
+// 此前抑制仅看历史消息重叠度，主批次早已回完时相似句被标 merged_suppressed 却无人再答，
+// 客户连发相似句只收到第一条回复（静默丢答）。探测不建队列对象、不改任何状态，Redis 错误按"无在途"fail-open。
+func (s *MessageQueueService) HasInflightBatch(tenantID, customerID uint) bool {
+	k := queueKey(tenantID, customerID)
+	s.mu.Lock()
+	q := s.queues[k]
+	s.mu.Unlock()
+	if q != nil {
+		q.mu.Lock()
+		inflight := q.processing || q.simpleProcessing || len(q.pending) > 0
+		q.mu.Unlock()
+		if inflight {
+			return true
+		}
+	}
+	if redisclient.IsEnabled() {
+		if redisclient.LockExists("mq:lock:" + k) {
+			return true
+		}
+		if redisclient.LLen("mq:pending:"+k) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// ShutdownDrain P2-8 修复(2026-09-20 批三)：优雅停机排空合并队列——
+// ①宽限期（grace，默认调用方给 5s）内轮询等在途批次自然收尾（处理者会自行 SetReply+放锁）；
+// ②到期仍有在途的，强制释放：本地 processing/simple 复位、Redis 处理锁句柄主动 Unlock、
+//
+//	epoch 递增（fencing：濒死旧批次的迟到 SetReply 因代际不符被拒，不污染重启后新批次）。
+//
+// 背景：旧停机序列只有 HTTP Shutdown+usage flush，processing 锁残留要等 600s TTL 自愈——
+// 重启窗口内该客户新消息无人接管（waitRemotely 见锁在就一直干等），部署后客户静默黑屏。
+// 客户消息本身在入队前已落库（P2-8 的"消息不丢"底线由落库先行保证），本函数救的是"后续可被回答"。
+func (s *MessageQueueService) ShutdownDrain(grace time.Duration) {
+	deadline := time.Now().Add(grace)
+	for {
+		s.mu.Lock()
+		var inflight []*CustomerQueue
+		for _, q := range s.queues {
+			q.mu.Lock()
+			if q.processing || q.simpleProcessing {
+				inflight = append(inflight, q)
+			}
+			q.mu.Unlock()
+		}
+		s.mu.Unlock()
+		// HTTP 已先行 Shutdown：不会再有新的入队者，队列清空即排空达成，可立即返回
+		if len(inflight) == 0 {
+			return
+		}
+		if !time.Now().After(deadline) {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		// 宽限到期：强制释放残留锁
+		for _, q := range inflight {
+			q.mu.Lock()
+			if q.redisLock != nil {
+				q.redisLock.Unlock()
+				q.redisLock = nil
+			}
+			q.processing = false
+			q.simpleProcessing = false
+			q.epoch++
+			q.batchClosed = true
+			q.cond.Broadcast()
+			q.mu.Unlock()
+		}
+		log.Printf("[合并队列] 停机宽限 %s 到期，强制释放 %d 个在途批次锁并递增代际（P2-8）", grace, len(inflight))
+		return
+	}
 }
 
 // SimpleMessageDone 简单消息处理完毕，释放同客户串行锁（H7）

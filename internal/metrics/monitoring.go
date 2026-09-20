@@ -14,6 +14,7 @@ import "ai-scrm/internal/notify"
 
 import (
 	"ai-scrm/internal/runtimecfg"
+	"context"
 	"runtime"
 	"strconv"
 	"sync"
@@ -216,13 +217,33 @@ func MaybeAlert(snap HealthSnapshot) {
 		if c.Status != StatusCrit {
 			continue
 		}
-		// 冷却：同一指标 10 分钟内只通知一次
-		if t, ok := alertCooldown.Load(c.Name); ok {
-			if last, ok2 := t.(time.Time); ok2 && time.Since(last) < alertCooldownSec*time.Second {
-				continue
+		// 冷却：同一指标 10 分钟内只通知一次，避免刷屏。
+		// P2-4(2026-09-20 批三)：冷却表双轨——Redis 可用走 alert:cd:<name>（SETNX+TTL，跨实例共享，
+		// 多实例不再各刷一次群）；键已存在=冷却中跳过，Redis 出错退回本机内存冷却兜底（宁可多报不漏报，
+		// 与 ClaimReplyDelivery 的"故障≠他人已认领"同口径）。旧内存 sync.Map 保留为降级路径。
+		coolKey := "alert:cd:" + c.Name
+		coolMem := func() bool {
+			if t, ok := alertCooldown.Load(c.Name); ok {
+				if last, ok2 := t.(time.Time); ok2 && time.Since(last) < alertCooldownSec*time.Second {
+					return false
+				}
 			}
+			alertCooldown.Store(c.Name, time.Now())
+			return true
 		}
-		alertCooldown.Store(c.Name, time.Now())
+		if redisclient.IsEnabled() {
+			acquired, err := redisclient.SetNXExE(coolKey, "1", alertCooldownSec*time.Second)
+			if err == nil && !acquired {
+				continue // Redis 冷却生效（本窗口已有人发过）
+			}
+			if err != nil {
+				if !coolMem() {
+					continue // Redis 故障降级：本机冷却中
+				}
+			}
+		} else if !coolMem() {
+			continue // 单实例内存冷却中（原语义）
+		}
 		lines += "> - **" + c.Name + "** 触发严重阈值：当前 " + c.Value + "（crit≥" + c.CritAt + "）\n"
 	}
 	if lines == "" {
@@ -232,4 +253,33 @@ func MaybeAlert(snap HealthSnapshot) {
 	// 双通道：企微优先，钉钉兜底（notifier 内部未配置静默跳过）
 	notify.NotifyWecom(msg)
 	notify.NotifyDingtalk(msg)
+}
+
+// StartAlertSelfCheck P2-4 修复(2026-09-20 批三)：告警从"纯拉驱动"补上后台自检 push——
+// 旧 MaybeAlert 唯一触发点是 /status handler，没有探活流量（部署在内网/监控未接）就永不通知。
+// 现每 interval 自检一次 ComputeHealth+MaybeAlert；Redis 可用时先抢 metrics:alert:tick 短锁选主，
+// 多实例只有一台执行（冷却键 alert:cd:* 虽已跨实例共享，选主仍省掉 N 份探针开销与通知竞争）。
+// ctx 取消即停，随停机信号收尾；本函数不阻塞调用方。
+func StartAlertSelfCheck(ctx context.Context, interval time.Duration) {
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if redisclient.IsEnabled() {
+					h := redisclient.TryLock("metrics:alert:tick", interval-time.Second)
+					if h == nil {
+						continue // 本窗口他实例已自检
+					}
+					MaybeAlert(ComputeHealth())
+					h.Unlock()
+					continue
+				}
+				MaybeAlert(ComputeHealth())
+			}
+		}
+	}()
 }

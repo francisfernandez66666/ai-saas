@@ -5,6 +5,7 @@
 package ai
 
 import (
+	"ai-scrm/config"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -286,5 +287,84 @@ func TestSFContextCancelsHangingHTTPRequest(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("应在 ctx 预算内中断（证明 ctx 生效），实际耗时 %v", elapsed)
+	}
+}
+
+// TestRouterDeepSeekThirdProviderTakeover P1-5→批三(2026-09-20)验收：
+// 硅基流动主+备源同平台全故障（500/429）时，DeepSeek 官网直连第三路必须接管——
+// 旧降级链两环同挂单一平台，平台整体故障=全链同灭只剩模板兜底。
+func TestRouterDeepSeekThirdProviderTakeover(t *testing.T) {
+	r := &AIRouter{coolDownSec: 300}
+	r.models = []*ModelState{
+		{Provider: ProviderSiliconFlow, ModelName: "sf_main", Available: true},
+		{Provider: ProviderSiliconFlow, ModelName: "sf_backup", Available: true},
+		{Provider: ProviderDeepSeek, ModelName: "deepseek-chat", Available: true},
+	}
+	var calls []string
+	r.callOverride = func(_ context.Context, p ModelProvider, model string, _ []ChatMessage, _ float64, _ uint, _ string) (string, Usage, error) {
+		calls = append(calls, string(p)+":"+model)
+		if p == ProviderDeepSeek {
+			return "第三路顶上", Usage{TotalTokens: 9}, nil
+		}
+		return "", Usage{}, fmt.Errorf("API返回错误: status=500")
+	}
+	reply, prov, model, usage, err := r.GenerateTextForStage(context.Background(), "reply", 1, routerMessages(), 0.5)
+	if err != nil || reply != "第三路顶上" || model != "deepseek-chat" {
+		t.Fatalf("双硅基挂后第三路应接管成功，reply=%q model=%q err=%v", reply, model, err)
+	}
+	if prov != string(ProviderDeepSeek) {
+		t.Fatalf("返回 provider 应为 deepseek，实际 %q", prov)
+	}
+	if len(calls) != 3 || usage.TotalTokens != 9 {
+		t.Fatalf("应依次试遍 sf主/sf备/deepseek 且透传用量，calls=%v usage=%+v", calls, usage)
+	}
+}
+
+// TestInitRouterAssemblesDeepSeek InitRouter 装配门：配 DEEPSEEK_API_KEY 才挂第三路，
+// 未配置维持原两环链（零行为变更）。
+func TestInitRouterAssemblesDeepSeek(t *testing.T) {
+	origCfg := config.GlobalConfig
+	origSF, origDS, origRouter := SiliconFlowDefaultClient, DeepSeekDefaultClient, Router
+	// GlobalConfig 是指针：测试期整只换新实例（浅拷贝原值），结束后还原指针，避免污染其它用例
+	base := config.Config{}
+	if origCfg != nil {
+		base = *origCfg
+	}
+	cfg := base
+	config.GlobalConfig = &cfg
+	defer func() {
+		config.GlobalConfig = origCfg
+		SiliconFlowDefaultClient, DeepSeekDefaultClient, Router = origSF, origDS, origRouter
+	}()
+
+	config.GlobalConfig.AI.SiliconFlow = config.SiliconFlowConfig{APIKey: "sk-sf", BaseURL: "https://sf.test/v1", Model: "glm", ModelBackup: "ds-flash", MaxTokens: 512, Temperature: 0.7}
+	config.GlobalConfig.AI.DeepSeek = config.DeepSeekConfig{APIKey: "sk-ds", BaseURL: "https://ds.test", Model: "deepseek-chat", MaxTokens: 512, Temperature: 0.7}
+	InitSiliconFlowClient()
+	InitDeepSeekClient()
+	InitRouter()
+	var sawDS bool
+	for i, m := range Router.models {
+		if m.Provider == ProviderDeepSeek {
+			sawDS = true
+			if m.ModelName != "deepseek-chat" {
+				t.Fatalf("第三路模型名应为配置值，实际 %q", m.ModelName)
+			}
+			if i != len(Router.models)-1 {
+				t.Fatal("第三路应排在降级链末端（前序供应商优先）")
+			}
+		}
+	}
+	if !sawDS {
+		t.Fatalf("配置 DEEPSEEK_API_KEY 后应装配第三路，实际链：%+v", Router.models)
+	}
+
+	// 无 Key → 不装配（第三路对存量部署零影响）
+	config.GlobalConfig.AI.DeepSeek.APIKey = ""
+	InitDeepSeekClient()
+	InitRouter()
+	for _, m := range Router.models {
+		if m.Provider == ProviderDeepSeek {
+			t.Fatal("未配 DEEPSEEK_API_KEY 不得装配第三路")
+		}
 	}
 }

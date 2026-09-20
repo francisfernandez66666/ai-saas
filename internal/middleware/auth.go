@@ -245,10 +245,29 @@ func AdminRequired() gin.HandlerFunc {
 	}
 }
 
-// CurrentUser 获取当前用户ID
+// CurrentUser 获取当前用户ID/用户名/角色。
+// P2-7 修复(2026-09-20 批三)：旧实现裸断言 `userID.(uint)`——ctx 键缺失或类型不符直接 panic
+// 冒成 500（此前只靠"必挂在 JWTAuth 之后"的隐式顺序约定兜底，OptionalJWTAuth/新挂载点漏一步即炸）。
+// 改 comma-ok 安全取键：缺键/错型一律回零值 (0,"","")——下游 AdminRequired 等角色闸对零值
+// 天然 fail-closed（""不在白名单），比"panic 才有暴露"更稳且更严。
 func CurrentUser(c *gin.Context) (uint, string, string) {
-	userID, _ := c.Get("user_id")
-	username, _ := c.Get("username")
-	role, _ := c.Get("role")
-	return userID.(uint), username.(string), role.(string)
+	var uid uint
+	if v, ok := c.Get("user_id"); ok {
+		if u, ok2 := v.(uint); ok2 {
+			uid = u
+		}
+	}
+	var uname string
+	if v, ok := c.Get("username"); ok {
+		if s, ok2 := v.(string); ok2 {
+			uname = s
+		}
+	}
+	var urole string
+	if v, ok := c.Get("role"); ok {
+		if s, ok2 := v.(string); ok2 {
+			urole = s
+		}
+	}
+	return uid, uname, urole
 }

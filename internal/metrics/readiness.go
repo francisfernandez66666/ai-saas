@@ -10,9 +10,11 @@
 package metrics
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/runtimecfg"
 )
 
@@ -66,6 +68,29 @@ func computeReadinessChecks() []HealthCheck {
 		WarnAt: "-", CritAt: "-",
 		Desc: "Sentry/GlitchTip 错误上报双轨观测位；未配置时 /client-errors 自建通道兜底",
 	})
+
+	// P2-2(2026-09-20 批三)：RLS 真实生效形态显式观测——"RLS_ENABLED=true"≠"DB 级兜底恒成立"：
+	// ①策略在 app.current_tenant 未设置时恒真放行（休眠 opt-in，后台任务依赖，非全时强隔离）；
+	// ②连接角色为 SUPERUSER/BYPASSRLS 时 PG 无条件旁路。默认未启用属设计内（应用层 db.T/PQ 保证）判 OK；
+	// 启用但被旁路判 Warn（给出的第二道闸是虚设）；启用且未旁路判 OK 但 Desc 明示恒真放行语义。
+	rs := db.GetRLSStatus()
+	switch {
+	case !rs.Enabled:
+		checks = append(checks, HealthCheck{
+			Name: "rls_effective", Status: StatusOK, Value: "disabled",
+			WarnAt: "-", CritAt: "-",
+			Desc: "RLS 未启用（默认）：租户隔离仅应用层 db.T/PQ；勿当 DB 级兜底已成立",
+		})
+	case rs.Bypass:
+		checks = append(checks, readinessCheck("rls_effective", false, "enabled_but_bypassed", StatusWarn,
+			"RLS_ENABLED=true 但连接角色为 SUPERUSER/BYPASSRLS → PG 无条件旁路策略，DB 级兜底形同虚设；生产须为应用建 NOSUPERUSER NOBYPASSRLS 角色（见 DEPLOY_CHECKLIST）"))
+	default:
+		checks = append(checks, HealthCheck{
+			Name: "rls_effective", Status: StatusOK, Value: fmt.Sprintf("enabled(%d tables)", rs.Tables),
+			WarnAt: "-", CritAt: "-",
+			Desc: "策略已挂但休眠式：app.current_tenant 未设置的查询恒真放行（后台任务依赖），强隔离走 db.WithTenantRLS 显式 opt-in",
+		})
+	}
 
 	// R1 注册审核开关：出厂 false=注册即送真实 AI 额度（防薅红线），生产必开
 	reviewOn := false

@@ -69,6 +69,9 @@ export default function Billing() {
   const [invOpen, setInvOpen] = useState(false)
   const [invOrder, setInvOrder] = useState<Order | null>(null)
   const [invForm, setInvForm] = useState({ title: '', tax_no: '', email: '' })
+  // P2-11 修复(2026-09-20 批三)：发票邮箱预填原读 localStorage['email']——全仓无任何写入点，恒为空串假预填。
+  // 改从 /auth/me 拉绑定邮箱（后端 auth.go:29 一直下发 email 字段）
+  const [meEmail, setMeEmail] = useState('')
 
   /** 加载当前套餐用量 */
   async function loadQuota() {
@@ -102,6 +105,14 @@ export default function Billing() {
     // 未登录时跳转登录页
     if (!getToken()) { location.href = '/login'; return }
     loadAll()
+    // P2-11(2026-09-20 批三)：拉 /auth/me 绑定邮箱作发票预填（失败静默留空可手填）
+    ;(async () => {
+      try {
+        const r = await apiFetch('/api/v1/auth/me')
+        const j = await r.json().catch(() => null)
+        if (j?.code === 0 && j.data?.email) setMeEmail(String(j.data.email))
+      } catch { /* 断网/未绑定邮箱：保持空串 */ }
+    })()
     setNowMs(Date.now())
     // 每 15s 轮询订单与套餐，自动刷新待支付/已到账状态
     const t = setInterval(() => { loadOrders(); loadQuota(); setNowMs(Date.now()) }, 15000)
@@ -245,8 +256,10 @@ export default function Billing() {
                 <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>
                 {/* G-16：退款按钮——仅已完成订单可操作，弹出 ConfirmDialog 二次确认后调用 refund 接口 */}
                 {/* B7 双轨：mock 即时退；static_qr/sdk 仅受理申请，超管审批后执行 */}
-                {o.refund_requested && <span style={{ ...st, background: '#feebc8', color: '#975a16' }}>退款审批中</span>}
-                {!o.refund_requested && <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                {/* P2-12 修复(2026-09-20 批三)：status=refunded 的行旧版仍渲染退款/发票按钮——
+                    再点必然 409/误申请，资金动作入口对终态单直接隐藏 */}
+                {o.status !== 'refunded' && o.refund_requested && <span style={{ ...st, background: '#feebc8', color: '#975a16' }}>退款审批中</span>}
+                {o.status !== 'refunded' && !o.refund_requested && <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
                   setConfirmTitle('申请退款')
                   setConfirmMsg(payMode === 'mock' ? '确认申请退款？退款将按比例计算并即时到账。' : '确认提交退款申请？平台审核后按比例退款（已消耗部分不可退）。')
                   setConfirmFn(async () => {
@@ -261,8 +274,8 @@ export default function Billing() {
                   ? <span style={{ color: '#276749', fontSize: 12 }}>发票已开具{o.invoice_no ? `（${o.invoice_no}）` : ''}</span>
                   : o.invoice_status === 'requested'
                     ? <span style={{ color: '#975a16', fontSize: 12 }}>发票开具中</span>
-                    : <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
-                      setInvOrder(o); setInvForm({ title: '', tax_no: '', email: localStorage.getItem('email') || '' }); setInvOpen(true)
+                    : o.status !== 'refunded' && <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                      setInvOrder(o); setInvForm({ title: '', tax_no: '', email: meEmail }); setInvOpen(true)
                     }}>发票</button>}
               </span>}</td>
             </tr>

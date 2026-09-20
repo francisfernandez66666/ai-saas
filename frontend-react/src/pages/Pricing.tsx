@@ -24,21 +24,36 @@ export default function Pricing() {
   const [plans, setPlans] = useState<Plan[]>([])
   // AI 商业包列表（来自 /api/v1/plans 的 packages 字段）
   const [pkgs, setPkgs] = useState<Pkg[]>([])
+  // P2-14 修复(2026-09-20 批三)：旧版 .catch(()=>{}) 吞错——断网时页面只剩"暂无"也分不清
+  // 是没套餐还是挂了。加失败态+重试入口（公开页免登录，保持裸 fetch 白名单不动）。
+  const [loadErr, setLoadErr] = useState(false)
+  const [reloadTick, setReloadTick] = useState(0)
 
   useEffect(() => {
     // 加载套餐与商业包数据（P2-90：data 统一信封 {plans, packages}）
+    let dead = false
+    setLoadErr(false)
     fetch('/api/v1/plans').then((r) => r.json()).then((j) => {
+      if (dead) return
       const d = j.data || {}
       setPlans(Array.isArray(d) ? d : d.plans || [])
       setPkgs(d.packages || [])
-    }).catch(() => {})
-  }, [])
+    }).catch(() => { if (!dead) setLoadErr(true) })
+    return () => { dead = true }
+  }, [reloadTick])
 
   return (
     <div className="px-4 py-8 lg:px-5" style={{ fontFamily: '-apple-system, PingFang SC, sans-serif', background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
       {/* 租户套餐区域 */}
       <h1 className="text-xl sm:text-2xl" style={{ textAlign: 'center', marginBottom: 8 }}>选择适合您的套餐</h1>
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 36 }}>全部套餐支持免费试用 · 随时升降级</p>
+      {/* P2-14：套餐接口失败空态（区分"网络挂了"与"真没套餐"），带一键重试 */}
+      {loadErr && (
+        <div style={{ textAlign: 'center', margin: '0 auto 24px', maxWidth: 520, background: '#fffbeb', border: '1px solid #fbbf24', borderRadius: 10, padding: '14px 18px', color: '#92400e', fontSize: 14 }}>
+          套餐列表加载失败（网络异常），请稍后重试。
+          <button onClick={() => setReloadTick((v) => v + 1)} style={{ marginLeft: 10, background: 'var(--pri)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 12px', cursor: 'pointer', fontSize: 13 }}>重试</button>
+        </div>
+      )}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
         {plans.map((p, i) => {
           // 套餐亮点为 JSON 字符串，解析失败时降级为空数组

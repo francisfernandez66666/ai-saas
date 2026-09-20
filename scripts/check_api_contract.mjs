@@ -114,6 +114,20 @@ for (const file of walk('frontend-react/src')) {
 }
 
 let fail = 0
+
+// P2-18(2026-09-20 审计批三)：EntityCrud 的启停端点为运行时拼接（`${base}/${row.id}/enable|disable`），
+// PATH_RE 只认完整字面量导致 KnowledgeTab/TagSystemTab 全家桶在反向清单里恒为"FE 无引用"孤儿。
+// 现按 `base="…"` 字面量逐条登记 POST {base}/:id/{enable,disable} 到已引用集合——
+// 登记后反向若仍剩该族孤儿即真无对应后端路由/确无消费者，孤儿语义不再被拼接盲区稀释。
+for (const file of walk('frontend-react/src')) {
+  const text = readFileSync(file, 'utf8')
+  for (const m of text.matchAll(/\bbase=["'`](\/api[^"'`\s]+)["'`]/g)) {
+    const b = m[1].replace(/\/+$/, '')
+    referenced.add(`POST ${b}/:id/enable`)
+    referenced.add(`POST ${b}/:id/disable`)
+  }
+}
+
 if (orphans.size) {
   for (const o of [...orphans].sort()) console.log('  ORPHAN ' + o)
   fail = 1

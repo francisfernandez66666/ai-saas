@@ -12,6 +12,8 @@ import (
 	"math"
 	"time"
 
+	"gorm.io/gorm"
+
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
@@ -51,17 +53,51 @@ func nextBackoff(retries int) time.Duration {
 	return d
 }
 
+// staleSendingTTL sending 预占行的复活阈值：持有者（发送协程/整进程）崩溃后，
+// 超此时长仍未回写终态的 sending 行按"未发送"回炉 pending（updated_at 取单事务已刷新）。
+const staleSendingTTL = 5 * time.Minute
+
+// claimDueOutbound P2-3 修复(2026-09-20 批三)：出站取单从"裸 SELECT 直查直发"改为行级 claim——
+// 同事务内 ①复活超时 sending（崩溃窗口回炉）②SELECT ... FOR UPDATE SKIP LOCKED 取到期 pending
+// ③立即置 sending。此前多实例虽有选主 Redis 锁，但锁 3s 粒度换主/进程崩溃而结果未回写的窗口里，
+// 同一行可被两个实例都查到并双发（微信侧真实重复消息）；预占态使"取到即锁定"，并发取单天然互斥。
+func claimDueOutbound(now time.Time) []model.ChannelOutbound {
+	var claimed []model.ChannelOutbound
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.ChannelOutbound{}).
+			Where("status = ? AND updated_at < ?", model.OutboundSending, now.Add(-staleSendingTTL)).
+			Updates(map[string]interface{}{"status": model.OutboundPending, "next_retry_at": now}).Error; err != nil {
+			return err
+		}
+		if err := tx.Raw(`SELECT * FROM channel_outbound
+			WHERE status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)
+			ORDER BY id ASC LIMIT 50 FOR UPDATE SKIP LOCKED`,
+			model.OutboundPending, now).Scan(&claimed).Error; err != nil {
+			return err
+		}
+		if len(claimed) == 0 {
+			return nil
+		}
+		ids := make([]uint, 0, len(claimed))
+		for i := range claimed {
+			ids = append(ids, claimed[i].ID)
+		}
+		return tx.Model(&model.ChannelOutbound{}).Where("id IN ?", ids).
+			Update("status", model.OutboundSending).Error
+	})
+	if err != nil {
+		// 取单失败按"本轮空转"处理（3s 后下轮重扫），不误报死信
+		log.Printf("[出站队列] claim 失败（本轮跳过）: %v", err)
+		return nil
+	}
+	return claimed
+}
+
 // ProcessDueOutbound 取到期的 pending 批次并发送；返回本轮成功数、失败(仍重试)数、死信数。
-// 由 main.go 后台 ticker（channel:outbound，3s）调用；多实例经 Redis 锁选主（此处仅本地循环，锁在调用侧）。
+// 由 main.go 后台 ticker（channel:outbound，3s）调用；多实例经 Redis 锁选主 + P2-3 行级 claim 双保险。
 func ProcessDueOutbound(ctx context.Context) (sent, retried, dead int) {
 	now := time.Now()
-	var due []model.ChannelOutbound
-	// 单次上限 50，避免长事务；status=pending 且到 next_retry_at
-	if err := db.DB.Where("status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)", model.OutboundPending, now).
-		Order("id ASC").Limit(50).Find(&due).Error; err != nil {
-		log.Printf("[出站队列] 取到期项失败: %v", err)
-		return
-	}
+	due := claimDueOutbound(now)
 	for i := range due {
 		ob := &due[i]
 		res := sendOne(ctx, ob)
@@ -75,7 +111,7 @@ func ProcessDueOutbound(ctx context.Context) (sent, retried, dead int) {
 			metrics.IncChannelDeadLetter("fatal") // F6：死信速率指标
 			dead++
 		default:
-			// 可重试：退避递增，超限转死信
+			// 可重试：退避递增，超限转死信；P2-3：行现处 sending，回炉必须显式写回 pending
 			ob.Retries++
 			if ob.Retries > maxRetries {
 				db.DB.Model(ob).Updates(map[string]interface{}{"status": model.OutboundFailed, "error": truncateErr(res.Err)})
@@ -84,7 +120,7 @@ func ProcessDueOutbound(ctx context.Context) (sent, retried, dead int) {
 				dead++
 			} else {
 				nt := time.Now().Add(nextBackoff(ob.Retries))
-				db.DB.Model(ob).Updates(map[string]interface{}{"retries": ob.Retries, "next_retry_at": nt, "error": truncateErr(res.Err)})
+				db.DB.Model(ob).Updates(map[string]interface{}{"status": model.OutboundPending, "retries": ob.Retries, "next_retry_at": nt, "error": truncateErr(res.Err)})
 				retried++
 			}
 		}

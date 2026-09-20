@@ -173,6 +173,7 @@ func main() {
 	// 7. 初始化AI客户端
 	ai.InitClient()
 	ai.InitSiliconFlowClient()
+	ai.InitDeepSeekClient() // P1-5→批三：第三独立供应商（未配 Key 空转）
 	ai.InitRouter()
 	service.InitEmbeddingClient() // P0-4 向量检索：未配置 EMBEDDING_* 自动回退关键词
 
@@ -718,6 +719,12 @@ func main() {
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[优雅停机] HTTP 关闭异常: %v", err)
 		}
+		// P2-8(2026-09-20 批三)：HTTP 停后先排空合并队列——在途批次 5s 宽限自然收尾，
+		// 残留 processing/simple 锁强制释放+代际递增（否则锁随进程死残留至 600s TTL，
+		// 重启后该客户新消息干等锁过期，部署窗口=客户静默黑屏）。
+		if service.DefaultMessageQueueService != nil {
+			service.DefaultMessageQueueService.ShutdownDrain(5 * time.Second)
+		}
 		log.Println("[优雅停机] 执行计量最终 flush...")
 		billing.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账
 		log.Println("[优雅停机] 关闭 MQ 消费者...")
@@ -728,6 +735,11 @@ func main() {
 		}
 		log.Println("[优雅停机] 完成")
 	}()
+
+	// P2-4(2026-09-20 批三)：健康告警自检 push——旧 MaybeAlert 纯拉驱动（仅 /status handler 触发），
+	// 无探活流量即永不通知。60s 周期 ComputeHealth+MaybeAlert；Redis 启用时锁选主防多实例刷群；
+	// ctx 随停机信号收尾（metrics.StartAlertSelfCheck 内部 select ctx.Done）。
+	metrics.StartAlertSelfCheck(ctx, 60*time.Second)
 
 	err = srv.ListenAndServe()
 	if err != nil && err != http.ErrServerClosed {

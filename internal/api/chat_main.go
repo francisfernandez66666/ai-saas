@@ -239,6 +239,11 @@ func Chat(c *gin.Context) {
 		mergeSuppressWindow = 10 * time.Minute
 	}
 	var recentCustomerMsgs []model.Message
+	// P2-1 修复(2026-09-20 批三)：相似抑制仅在"确有在途批次会回答"时才允许 merged——
+	// 旧实现只看历史重叠度，主批次早已回完时相似句被标 merged_suppressed 却无人再答，
+	// 客户连发相似句只收到第 1 条回复（静默丢答）。无在途批次则照常入队生成新回复。
+	inflightBatch := service.DefaultMessageQueueService != nil &&
+		service.DefaultMessageQueueService.HasInflightBatch(tenantID, customer.ID)
 	if err := db.RQ(c).Where("customer_id = ? AND sender_type = ? AND created_at > ?",
 		customer.ID, "customer", time.Now().Add(-mergeSuppressWindow)).
 		Order("id DESC").Limit(2).Find(&recentCustomerMsgs).Error; err == nil {
@@ -261,6 +266,12 @@ func Chat(c *gin.Context) {
 				}
 				overlapRate := float64(overlapCount) / float64(len(currentKeywords))
 				if overlapRate > 0.5 {
+					if !inflightBatch {
+						// P2-1 护栏：无在途批次=没人会再答这条，抑制即丢答——放弃抑制走正常入队
+						log.Printf("[相似消息合并] 客户%d 重叠度%.0f%%但无在途批次，不抑制、正常入队（P2-1）",
+							customer.ID, overlapRate*100)
+						break
+					}
 					log.Printf("[相似消息合并] 客户%d 当前:%q 与历史:%q 重叠度%.0f%%, 合并为一次回答",
 						customer.ID, logx.Safe(req.Content, 40), logx.Safe(pastMsg.Content, 40), overlapRate*100)
 

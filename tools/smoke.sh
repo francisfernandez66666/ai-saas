@@ -13,6 +13,8 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / E3 全链路 trace_id：响应头回显+入口/队列日志同 trace 贯穿 3 断言（二十三，2026-09-19 增强批）
 #       / E9 KB 检索重排：kb_rerank 键播种+开关往返+客户端未配置 fail-open 5 断言（二十四，2026-09-19 增强二批）
 #       / E10 租户 OpenAPI 文档站：spec 端点可用+结构完整+内部面零泄露+缓存头 5 断言（二十五，2026-09-19 增强二批）
+#       / 2026-09-20 审计批：公开面 IP/Key 限流 429+换Key不误伤 3 断言（二十六）
+#       / 2026-09-20 审计批三 P2-1：相似消息「仅在途批次」抑制护栏 2 断言（二十七）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -599,6 +601,28 @@ check "collector 连打305次超限(429)" 429 "$COLL_LAST"
 # collector 限流按 Key 维度：换 Key 不受上一个桶影响（回落放行至鉴权层 401）
 COLL_B=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key_other" -d '[]')
 check "collector 换Key不误伤(401未授权而非429)" 401 "$COLL_B"
+
+echo "---- 二十七、2026-09-20 审计批三 P2-1：相似消息「仅在途批次」抑制护栏 ----"
+# 修复前：与历史消息关键词重叠>50%（窗口≥2min）即走 merged 分支——主批次早已回复完毕时，
+# 第二句相同内容被标 merged_suppressed 且无人再答（静默丢答）。现在抑制前必须探测
+# HasInflightBatch（本地 processing/简单锁/pending 积压，或 Redis 处理锁与待合并列表）。
+# 有在途批次时的 merged 路径行为不变，由 TestHasInflightBatch 与 chat_main.go 分支注释钉住。
+P21CID=$(curl -s -X POST "$B/api/v1/customers" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"name":"P21护栏客","remark":"smoke p2-1"}' | jsonget "['data']['id']")
+P21MSG='你好，请问现在买车有什么优惠活动吗'
+# 第一条同步等回复完毕（同时建立"历史相似句"基线）；返回即代表在途批次已释放
+curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"customer_id\":$P21CID,\"content\":\"$P21MSG\"}" >/dev/null
+# 第二条相同内容：此刻无在途批次——旧逻辑必 merged:true（丢答），P2-1 后必须正常入队回答
+P21B=$(curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d "{\"customer_id\":$P21CID,\"content\":\"$P21MSG\"}")
+check "相同内容第二连发不被merged抑制(P2-1)" False "$(echo "$P21B" | jsonget "['data']['merged']")"
+P21MID=$(echo "$P21B" | jsonget "['data']['customer_msg_id']")
+[ "${P21MID:-0}" -gt 0 ] 2>/dev/null && check "第二连发仍正常落库可查(customer_msg_id>0)" y y || check "第二连发仍正常落库可查(customer_msg_id>0)" y n
+# P2-2（同段捎带）：readiness 显式 rls_effective 观测位——纠偏"RLS_ENABLED=true=DB 兜底成立"误读
+HT27=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+curl -s -H "X-Health-Token: $HT27" "$B/status/detail" 2>/dev/null | grep -q "rls_effective" \
+  && check "readiness 含 rls_effective 观测位(P2-2)" y y || check "readiness 含 rls_effective 观测位(P2-2)" y n
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

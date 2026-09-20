@@ -2,8 +2,10 @@
 package privacy
 
 import (
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
@@ -32,6 +34,9 @@ func seedCustomerWithChat(t *testing.T, tid uint) (uint, []uint) {
 		ids = append(ids, msgs[i].ID)
 	}
 	db.DB.Create(&model.CdpProfile{TenantID: tid, CustomerID: cu.ID, CdpId: "cdp_" + time.Now().Format("150405.000"), ProfileName: "张三", ProfileData: `{"phone":"13800001111"}`})
+	// P2-5(2026-09-20 批三)：一并种 OneID 身份锚点与通道身份，断匿名化覆盖到位
+	db.DB.Create(&model.CustomerIdentity{TenantID: tid, CustomerID: cu.ID, IdentityType: "phone", IdentityValue: "13800001111"})
+	db.DB.Create(&model.ChannelIdentity{TenantID: tid, ChannelID: 999, CustomerID: cu.ID, ExternalID: "wm_EXT_abc"})
 	return cu.ID, ids
 }
 
@@ -111,6 +116,56 @@ func TestDeletionEnqueueIdempotentAndAnonymize(t *testing.T) {
 	db.DB.First(&req, row.ID)
 	if req.Status != model.DeletionStatusAnonymized || req.ProcessedAt == nil {
 		t.Fatalf("执行后状态应 anonymized 且 processed_at 非空，实际 %s", req.Status)
+	}
+
+	// 5) P2-5：OneID 身份锚点与通道身份同样断链（行保留、值 anon:<id>），二次执行无变化
+	var idents []model.CustomerIdentity
+	db.DB.Where("tenant_id = ? AND customer_id = ?", tid, custID).Find(&idents)
+	if len(idents) != 1 || idents[0].IdentityValue == "13800001111" || !strings.HasPrefix(idents[0].IdentityValue, anonPrefix) {
+		t.Fatalf("customer_identities 身份值应匿名化保留行，实际 %+v", idents)
+	}
+	var chIDs []model.ChannelIdentity
+	db.DB.Where("tenant_id = ? AND customer_id = ?", tid, custID).Find(&chIDs)
+	if len(chIDs) != 1 || chIDs[0].ExternalID == "wm_EXT_abc" || !strings.HasPrefix(chIDs[0].ExternalID, anonPrefix) {
+		t.Fatalf("channel_identities external_id 应匿名化，实际 %+v", chIDs)
+	}
+	if err := ExecuteDeletion(row.ID); err != nil {
+		t.Fatalf("二次执行（含身份表路径）应幂等无错: %v", err)
+	}
+	db.DB.Where("tenant_id = ? AND customer_id = ?", tid, custID).Find(&idents)
+	if len(idents) != 1 {
+		t.Fatalf("二次执行不得增删身份行，实际 %d", len(idents))
+	}
+}
+
+// TestAnonHashTenantSalt P2-5：租户级盐 HMAC——同文本跨租户哈希互异（防平台侧横向关联），
+// 同租户内确定性可重放（同一行二次处理前缀判定已在别处测），且不再等于无盐 sha256（防枚举反推口径升级）。
+func TestAnonHashTenantSalt(t *testing.T) {
+	content := "我手机13800001111"
+	h1 := anonHash(1, content)
+	h2 := anonHash(2, content)
+	if !strings.HasPrefix(h1, anonPrefix) || !strings.HasPrefix(h2, anonPrefix) {
+		t.Fatalf("匿名值必须带 anon: 前缀，实际 %q / %q", h1, h2)
+	}
+	if h1 == h2 {
+		t.Fatal("同文本跨租户哈希相同→可横向关联，租户盐未生效")
+	}
+	if anonHash(1, content) != h1 {
+		t.Fatal("同租户同文本应确定性输出（幂等依赖）")
+	}
+}
+
+// TestTruncateRuneSafe P2-5：旧实现按字节切会把中文拦腰截成非法 UTF-8。
+func TestTruncateRuneSafe(t *testing.T) {
+	got := truncate("你好世界abc", 3)
+	if got != "你好世" {
+		t.Fatalf("应按码点截 3 字符，实际 %q", got)
+	}
+	if !utf8.ValidString(truncate("错误：连接被重置 reset", 7)) {
+		t.Fatal("截断结果必须是合法 UTF-8")
+	}
+	if truncate("短", 10) != "短" {
+		t.Fatal("不足长度应原样返回")
 	}
 }
 

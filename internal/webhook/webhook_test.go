@@ -181,3 +181,72 @@ func TestMaxAttemptsGoesDead(t *testing.T) {
 		t.Fatalf("状态应为 dead，实际 %s", d.Status)
 	}
 }
+
+// TestClaimDueDeliveriesP23 P2-3(2026-09-20 批三)行级 claim 单测：
+// ①取单即置 sending——同轮二次 claim 不得再拿到同一行（双投封堵）；
+// ②超 staleSendingTTL 的 sending 行（持有者崩溃模拟）必须被复活并可再次领取；
+// ③退避回炉路径状态回到 pending（否则预占态泄漏，消息永远卡在 sending）。
+func TestClaimDueDeliveriesP23(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	wid := newSub(t, tid, "http://127.0.0.1:1/never", "s", model.WebhookEventHumanAssigned)
+	Emit(tid, model.WebhookEventHumanAssigned, map[string]interface{}{"p23": 1})
+
+	// ① 两轮 claim：第一轮全部预占为 sending，第二轮必须空
+	first := claimDueDeliveries(time.Now())
+	if len(first) == 0 {
+		t.Fatal("首轮 claim 应取到到期投递")
+	}
+	for _, d := range first {
+		if d.WebhookID != wid {
+			t.Fatalf("取到非本测试投递 id=%d", d.ID)
+		}
+	}
+	// Emit 可能带出其它测试租户遗留行？SetupTestDB 事务回滚模型按表清理——只断言本订阅行被锁
+	var st string
+	db.DB.Model(&model.WebhookDelivery{}).Where("webhook_id = ? ", wid).Select("status").Scan(&st)
+	if st != model.WebhookDeliverySending {
+		t.Fatalf("取单后本订阅投递应处 sending 预占，实际 %s", st)
+	}
+	second := claimDueDeliveries(time.Now())
+	for _, d := range second {
+		if d.WebhookID == wid {
+			t.Fatal("同轮二次 claim 不得重复取到已预占行（双投）")
+		}
+	}
+
+	// ③（先做，复活依赖回炉语义独立）退避回炉：模拟发送失败路径写回 pending
+	db.DB.Model(&model.WebhookDelivery{}).Where("webhook_id = ?", wid).
+		Update("status", model.WebhookDeliveryPending)
+	again := claimDueDeliveries(time.Now())
+	found := false
+	for _, d := range again {
+		if d.WebhookID == wid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("pending 回炉后应可再次领取")
+	}
+
+	// ② 崩溃复活：把 sending 行的 updated_at 拨到 staleSendingTTL 之前，claim 应复活并重取
+	db.DB.Model(&model.WebhookDelivery{}).Where("webhook_id = ?", wid).
+		UpdateColumn("updated_at", time.Now().Add(-staleSendingTTL-time.Minute))
+	revived := claimDueDeliveries(time.Now())
+	found = false
+	for _, d := range revived {
+		if d.WebhookID == wid {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("超时 sending 行必须被复活领取（崩溃窗口自愈）")
+	}
+	var cnt int64
+	db.DB.Model(&model.WebhookDelivery{}).Where("webhook_id = ? AND status = ?", wid, model.WebhookDeliveryPending).Count(&cnt)
+	if cnt != 0 {
+		t.Fatalf("复活领取后不应残留 pending，残留 %d", cnt)
+	}
+}

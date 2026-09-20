@@ -82,15 +82,47 @@ func subscribes(csv, event string) bool {
 	return false
 }
 
+// staleSendingTTL sending 预占行复活阈值：持有者崩溃超此时长未回写终态→回炉 pending 重投。
+const staleSendingTTL = 5 * time.Minute
+
+// claimDueDeliveries P2-3 修复(2026-09-20 批三)：与出站队列同型——裸 SELECT 直查直发在
+// 多实例/换主/崩溃窗口会双投（下游收到重复事件）。改同事务：复活超时 sending →
+// FOR UPDATE SKIP LOCKED 取到期 pending → 置 sending 预占。
+func claimDueDeliveries(now time.Time) []model.WebhookDelivery {
+	var claimed []model.WebhookDelivery
+	err := db.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Model(&model.WebhookDelivery{}).
+			Where("status = ? AND updated_at < ?", model.WebhookDeliverySending, now.Add(-staleSendingTTL)).
+			Updates(map[string]interface{}{"status": model.WebhookDeliveryPending, "next_retry_at": now}).Error; err != nil {
+			return err
+		}
+		if err := tx.Raw(`SELECT * FROM webhook_deliveries
+			WHERE status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)
+			ORDER BY id ASC LIMIT 50 FOR UPDATE SKIP LOCKED`,
+			model.WebhookDeliveryPending, now).Scan(&claimed).Error; err != nil {
+			return err
+		}
+		if len(claimed) == 0 {
+			return nil
+		}
+		ids := make([]uint, 0, len(claimed))
+		for i := range claimed {
+			ids = append(ids, claimed[i].ID)
+		}
+		return tx.Model(&model.WebhookDelivery{}).Where("id IN ?", ids).
+			Update("status", model.WebhookDeliverySending).Error
+	})
+	if err != nil {
+		log.Printf("[webhook] claim 失败（本轮跳过）: %v", err)
+		return nil
+	}
+	return claimed
+}
+
 // ProcessDue worker：取到期的 pending 投递并发送，退避重试/死信/熔断。返回 (delivered, retried, dead)。
 func ProcessDue() (delivered, retried, dead int) {
 	now := time.Now()
-	var due []model.WebhookDelivery
-	if err := db.DB.Where("status = ? AND (next_retry_at IS NULL OR next_retry_at <= ?)",
-		model.WebhookDeliveryPending, now).Order("id ASC").Limit(50).Find(&due).Error; err != nil {
-		log.Printf("[webhook] 取到期投递失败: %v", err)
-		return
-	}
+	due := claimDueDeliveries(now)
 	for i := range due {
 		d := &due[i]
 		var wh model.TenantWebhook
@@ -122,8 +154,9 @@ func ProcessDue() (delivered, retried, dead int) {
 			dead++
 		} else {
 			nt := now.Add(nextBackoff(d.Attempts))
+			// P2-3：行取单时已置 sending，退避回炉必须显式写回 pending
 			db.DB.Model(d).Updates(map[string]interface{}{
-				"attempts": d.Attempts, "next_retry_at": nt, "last_error": truncate(msg, 280),
+				"status": model.WebhookDeliveryPending, "attempts": d.Attempts, "next_retry_at": nt, "last_error": truncate(msg, 280),
 			})
 			retried++
 		}

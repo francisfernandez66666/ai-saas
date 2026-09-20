@@ -1,5 +1,5 @@
 // 平台超管后台页（SuperAdmin）：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Table, Tag, Button, Input, Select, MessagePlugin, Dialog } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
@@ -89,6 +89,9 @@ export default function SuperAdmin() {
   const [pendings, setPendings] = useState<Pending[]>([])
   // 审计日志列表
   const [audits, setAudits] = useState<Audit[]>([])
+  // P2-13(2026-09-20 批三)：超管审计同租户 AuditTab——后端默认 20 条封顶，接 page/page_size 并给翻页条
+  const [auditPage, setAuditPage] = useState(1)
+  const [auditTotal, setAuditTotal] = useState(0)
   // 协议签署记录列表
   const [ags, setAgs] = useState<Ag[]>([])
   // 协议类型筛选（user/privacy/''）
@@ -133,15 +136,16 @@ export default function SuperAdmin() {
   async function loadPending() {
     const j = await AUTH('/api/v1/super/orders/pending'); setPendings(j.data || [])
   }
-  // 按筛选条件（动作/租户/时间区间）拉取审计日志
-  async function loadAudit() {
-    const q = new URLSearchParams()
+  // 按筛选条件（动作/租户/时间区间）拉取审计日志（P2-13：带分页参数，50/页）
+  async function loadAudit(p = auditPage) {
+    const q = new URLSearchParams({ page: String(p), page_size: '50' })
     const a = (document.getElementById('aAction') as HTMLSelectElement)?.value
     const ti = (document.getElementById('aTenant') as HTMLInputElement)?.value
     const f = (document.getElementById('aFrom') as HTMLInputElement)?.value
     const t = (document.getElementById('aTo') as HTMLInputElement)?.value
     if (a) q.set('action', a); if (ti) q.set('tenant_id', ti); if (f) q.set('from', f); if (t) q.set('to', t)
-    const j = await AUTH('/api/v1/super/audit-logs?' + q); setAudits((j.data && j.data.list) || [])
+    const j = await AUTH('/api/v1/super/audit-logs?' + q)
+    if (j?.code === 0) { setAudits(j.data.list || []); setAuditTotal(Number(j.data.total) || 0) }
   }
   // 按类型拉取协议签署记录
   async function loadAgreements() {
@@ -168,6 +172,12 @@ export default function SuperAdmin() {
     return () => clearInterval(t)
   }, [])
   useEffect(() => { loadFeedbacks() }, [fbStatus, fbTarget])
+  // P2-13：审计翻页重拉（首挂载由总装载 effect 负责，此处跳过一次防双请）
+  const auditFirstRun = useRef(true)
+  useEffect(() => {
+    if (auditFirstRun.current) { auditFirstRun.current = false; return }
+    void loadAudit(auditPage)
+  }, [auditPage])
   useEffect(() => { loadAgreements() }, [agType])
   useEffect(() => { loadPackQuality() }, [packQualityDays])
 
@@ -433,12 +443,18 @@ export default function SuperAdmin() {
             {view === 'audit' && (
               <Section title="审计日志">
                 <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap', alignItems: 'center' }}>
-                  <select id="aAction" defaultValue="" style={sel}><option value="">全部动作</option><option value="order_manual_confirm_critical">我已付费(critical)</option><option value="order_paid_confirm">订单确认发放</option><option value="order_paid_mock">模拟支付</option><option value="super_admin_access">超管访问</option><option value="super_tenant_status">租户封禁/恢复</option><option value="tenant_signup">租户注册</option><option value="apikey_create">API Key签发</option></select>
-                  <input id="aTenant" type="number" placeholder="按租户ID过滤" style={{ ...sel, width: 130 }} />
-                  <input id="aFrom" type="date" style={sel} /> <span style={{ color: '#718096' }}>至</span> <input id="aTo" type="date" style={sel} />
-                  <Button theme="primary" onClick={loadAudit}>查询</Button>
+                  <select id="aAction" aria-label="审计动作筛选" defaultValue="" style={sel}><option value="">全部动作</option><option value="order_manual_confirm_critical">我已付费(critical)</option><option value="order_paid_confirm">订单确认发放</option><option value="order_paid_mock">模拟支付</option><option value="super_admin_access">超管访问</option><option value="super_tenant_status">租户封禁/恢复</option><option value="tenant_signup">租户注册</option><option value="apikey_create">API Key签发</option></select>
+                  <input id="aTenant" aria-label="按租户ID过滤" type="number" placeholder="按租户ID过滤" style={{ ...sel, width: 130 }} />
+                  <input id="aFrom" aria-label="审计时间起" type="date" style={sel} /> <span style={{ color: '#718096' }}>至</span> <input id="aTo" aria-label="审计时间止" type="date" style={sel} />
+                  <Button theme="primary" onClick={() => { if (auditPage === 1) void loadAudit(1); else setAuditPage(1) }}>查询</Button>
                 </div>
                 <Table rowKey="id" data={audits} columns={auditCols} size="small" empty="暂无记录" />
+                {/* P2-13 翻页条（auditPage 变化经 effect 重拉） */}
+                <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 10, padding: '8px 4px 0', fontSize: 13, color: '#718096' }}>
+                  <span>共 {auditTotal} 条 · 第 {auditPage} 页</span>
+                  <Button size="small" variant="outline" disabled={auditPage <= 1} onClick={() => setAuditPage((v) => Math.max(1, v - 1))}>上一页</Button>
+                  <Button size="small" variant="outline" disabled={auditPage * 50 >= auditTotal} onClick={() => setAuditPage((v) => v + 1)}>下一页</Button>
+                </div>
               </Section>
             )}
             {view === 'agreements' && (

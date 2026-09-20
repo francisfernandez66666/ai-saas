@@ -375,3 +375,109 @@ func TestP07BatchClosedNoOrphans(t *testing.T) {
 	}
 	svc.SetReply(tid, cid, b.epoch, "对第二条的回复") // 交还 B 批，状态归零
 }
+
+// TestHasInflightBatch P2-1 护栏(2026-09-20 批三)：相似消息抑制的前置探测——
+// 只有存在在途批次（processing / simple 锁 / pending 积压）才允许 merged 抑制，
+// 否则客户相似连发会被静默丢答。Redis 未启用（测试环境）时只看本实例视图。
+func TestHasInflightBatch(t *testing.T) {
+	svc := NewMessageQueueService()
+	tid, cid := uint(7), uint(901)
+	if svc.HasInflightBatch(tid, cid) {
+		t.Fatal("无队列对象时应判无在途批次")
+	}
+	// getQueue 会建对象但各态全 false——仍判无在途
+	q := svc.getQueue(queueKey(tid, cid))
+	if svc.HasInflightBatch(tid, cid) {
+		t.Fatal("空队列（未开账）应判无在途批次")
+	}
+	q.mu.Lock()
+	q.processing = true
+	q.mu.Unlock()
+	if !svc.HasInflightBatch(tid, cid) {
+		t.Fatal("processing=true 必须判有在途")
+	}
+	q.mu.Lock()
+	q.processing = false
+	q.simpleProcessing = true
+	q.mu.Unlock()
+	if !svc.HasInflightBatch(tid, cid) {
+		t.Fatal("simpleProcessing（简单消息锁）必须判有在途")
+	}
+	q.mu.Lock()
+	q.simpleProcessing = false
+	q.pending = append(q.pending, PendingMessage{Content: "积压一条"})
+	q.mu.Unlock()
+	if !svc.HasInflightBatch(tid, cid) {
+		t.Fatal("pending 有积压必须判有在途")
+	}
+	q.mu.Lock()
+	q.pending = nil
+	q.mu.Unlock()
+	if svc.HasInflightBatch(tid, cid) {
+		t.Fatal("全部状态清零后必须回到无在途")
+	}
+	// 探测不得新建队列对象（P0 观测/探针语义：只读）
+	svc2 := NewMessageQueueService()
+	_ = svc2.HasInflightBatch(1, 2)
+	if _, exists := svc2.queues[queueKey(1, 2)]; exists {
+		t.Fatal("HasInflightBatch 不应创建队列对象")
+	}
+}
+
+// TestShutdownDrain P2-8 护栏(2026-09-20 批三)：停机排空两分支——
+// ①宽限内处理者自行收尾：ShutdownDrain 返回且不动 epoch（无强制痕迹）；
+// ②宽限到期仍在途：强制释放锁（processing/simple 复位、batchClosed）且 epoch+1（fencing 迟到回复）。
+func TestShutdownDrain(t *testing.T) {
+	svc := NewMessageQueueService()
+	tid, cid := uint(8), uint(902)
+
+	// ① 无在途：立即返回（HTTP 已停，无新入队者）
+	svc.ShutdownDrain(200 * time.Millisecond)
+
+	// 开一个"在途"批次
+	q := svc.getQueue(queueKey(tid, cid))
+	q.mu.Lock()
+	q.processing = true
+	epochBefore := q.epoch
+	q.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		// 模拟处理者在宽限内正常收尾
+		time.Sleep(100 * time.Millisecond)
+		q.mu.Lock()
+		q.processing = false
+		q.mu.Unlock()
+		close(done)
+	}()
+	svc.ShutdownDrain(2 * time.Second)
+	<-done
+	q.mu.Lock()
+	if q.epoch != epochBefore {
+		q.mu.Unlock()
+		t.Fatalf("宽限内自然收尾不得 bump 代际，%d -> %d", epochBefore, q.epoch)
+	}
+	q.mu.Unlock()
+
+	// ② 挂死不放：宽限到期必须强制释放
+	q.mu.Lock()
+	q.processing = true
+	epochBefore = q.epoch
+	q.mu.Unlock()
+	start := time.Now()
+	svc.ShutdownDrain(300 * time.Millisecond)
+	if time.Since(start) < 300*time.Millisecond {
+		t.Fatal("强制释放必须等满宽限期")
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.processing || q.simpleProcessing {
+		t.Fatal("宽限到期后 processing/simple 必须被强制复位")
+	}
+	if q.epoch != epochBefore+1 {
+		t.Fatalf("强制释放必须递增代际 fencing 迟到回复，%d -> %d", epochBefore, q.epoch)
+	}
+	if !q.batchClosed {
+		t.Fatal("强制释放后批次须关账，防新消息并入濒死批")
+	}
+}

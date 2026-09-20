@@ -105,6 +105,22 @@ var rlsTenantTables = []string{
 	"pack_stats",           // D9 包效果统计表
 }
 
+// RLSStatusInfo RLS 实际生效形态（P2-2 批三 2026-09-20：readiness 观测位数据源）。
+// 背景：策略在 app.current_tenant 未设置时恒真放行（休眠式设计，后台任务依赖），且 PG 对
+// SUPERUSER/BYPASSRLS 无条件旁路——"RLS_ENABLED=true"≠"DB 级隔离恒成立"，此前极易误当兜底。
+// 该结构把真实形态显式暴露给 /status，纠偏口径见 metrics.ComputeReadiness。
+type RLSStatusInfo struct {
+	Enabled bool // 是否已随 RLS_ENABLED 建策略（EnableRLS 走完创建流程）
+	Bypass  bool // 连接角色为 SUPERUSER/BYPASSRLS：PG 无条件旁路，启用也形同虚设
+	Tables  int  // 已挂策略的租户表数
+}
+
+// rlsStatus 进程内状态快照（EnableRLS 只在启动跑一次，读写无并发窗口）
+var rlsStatus = RLSStatusInfo{}
+
+// GetRLSStatus 返回 RLS 生效形态快照（未调 EnableRLS / 未启用时为零值 Enabled=false）
+func GetRLSStatus() RLSStatusInfo { return rlsStatus }
+
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
 // 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
 // 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
@@ -144,6 +160,7 @@ func EnableRLS() {
 	if err := DB.Raw("SELECT COALESCE(rolsuper,false) FROM pg_roles WHERE rolname = current_user").Scan(&isSuper).Error; err == nil {
 		DB.Raw("SELECT COALESCE(rolbypassrls,false) FROM pg_roles WHERE rolname = current_user").Scan(&bypass)
 	}
+	rlsStatus.Bypass = isSuper || bypass // P2-2 批三：观测位数据源（/status rls_effective）
 	if isSuper || bypass {
 		log.Printf("[RLS][WARN] 当前连接角色是 SUPERUSER/BYPASSRLS——PostgreSQL 无条件旁路行级安全，FORCE ROW LEVEL SECURITY 不生效！")
 		log.Printf("[RLS][WARN] RLS_ENABLED=true 的\"DB 级兜底\"在本部署形态下形同虚设。生产须为应用建 NOSUPERUSER NOBYPASSRLS 角色（见 DEPLOY_CHECKLIST）")
@@ -194,7 +211,9 @@ func EnableRLS() {
 	if failed > 0 {
 		log.Printf("[RLS] 警告：%d 张表策略创建失败，租户隔离保护不完整，请检查上述日志", failed)
 	}
-	log.Printf("[RLS] 已对 %d 张租户表启用休眠式行级隔离（SET app.current_tenant 激活）", len(rlsTenantTables))
+	rlsStatus.Enabled = true
+	rlsStatus.Tables = len(rlsTenantTables)
+	log.Printf("[RLS] 已对 %d 张租户表启用休眠式行级隔离（SET app.current_tenant 激活；未设置 GUC 恒真放行属设计内，非全时强隔离）", len(rlsTenantTables))
 }
 
 // SetTenantRLS 在事务内激活租户隔离
