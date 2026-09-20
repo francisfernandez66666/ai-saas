@@ -100,7 +100,7 @@ func TestGetOffTopicReplyForTenant(t *testing.T) {
 }
 
 // TestNeutralFallbackForUnboundTenant F2(2026-09-15)：无行业包绑定租户走行业中立口径
-// 单测环境 db.DB 为 nil → TenantHasIndustryPack 恒 false → 询价/无关话题兜底必须不含汽车专属词。
+// 单测环境 db.DB 为 nil → TenantUsesAutoTalk 恒 false → 询价/无关话题兜底必须不含汽车专属词。
 // 修复前：general 租户询价硬拦截返回"约试驾"、无关话题兜底自称"卖车的"（UAT 实测复现）。
 func TestNeutralFallbackForUnboundTenant(t *testing.T) {
 	old := runtimecfg.DefaultSystemConfigService

@@ -10,10 +10,13 @@ package service
 
 import (
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/model"
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/strategytypes"
 	"encoding/json"
 	"strings"
+	"sync"
+	"time"
 )
 
 // 行业语义配置键（industry.*，system_configs 内 category="industry"）
@@ -100,6 +103,8 @@ func IndustryVisitKeywordsForTenant(tenantID uint) []string {
 // 无绑定（general/新行业未上架包）→ 行业中立口径，不再让通用行业租户
 // 收到"约试驾/车价"等汽车销售话术（UAT 字节级实测复现：general 租户询价
 // 硬拦截返回试驾话术）。行业键已配置时两口径均被覆盖，优先级不变。
+// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：分流谓词收紧为「汽车族绑定」（TenantUsesAutoTalk），
+// 非 auto 包（edu/wedding/realty/…）绑定租户同走中立口径。
 func IndustryPriceRepliesForTenant(tenantID uint, lead bool) []string {
 	key := IndustryPriceReplyNoLead
 	if lead {
@@ -112,9 +117,9 @@ func IndustryPriceRepliesForTenant(tenantID uint, lead bool) []string {
 }
 
 // priceReplyFallback 询价回复兜底口径分流（F2）：
-// 有行业包绑定 → 汽车版（兼容既有车企租户）；无绑定 → 行业中立版。
+// 绑定汽车族包 → 汽车版（兼容既有车企租户）；无绑定/非 auto 包 → 行业中立版（批四 P2）。
 func priceReplyFallback(tenantID uint, lead bool) []string {
-	if TenantHasIndustryPack(tenantID) {
+	if TenantUsesAutoTalk(tenantID) {
 		if lead {
 			return defaultPriceRepliesLead
 		}
@@ -190,9 +195,11 @@ func IsOffTopicForTenant(tenantID uint, content string) bool {
 // GetOffTopicReplyForTenant 租户级无关话题兜底话术（按长度散列保证确定性）
 // F2 修复(2026-09-15)：无行业包绑定的租户回退中立口径（不再说"我是卖车的"），
 // 有绑定租户保持汽车版不变；租户/系统层 industry.offtopic_replies 配置优先级最高。
+// 批四 P2 修正：分流谓词由「有任意绑定」收紧为「绑定汽车族」——edu/wedding 等非 auto
+// 包租户不再收到"聊车吧"汽车文案。
 func GetOffTopicReplyForTenant(tenantID uint, content string) string {
 	fallback := defaultOffTopicReplies
-	if !TenantHasIndustryPack(tenantID) {
+	if !TenantUsesAutoTalk(tenantID) {
 		fallback = neutralOffTopicReplies
 	}
 	replies := industryKeywordList(tenantID, IndustryOffTopicReplies, fallback)
@@ -208,14 +215,42 @@ var neutralOffTopicReplies = []string{
 	"这块帮不上你，咱们还是说你关心的事吧，想了解啥？",
 }
 
-// TenantHasIndustryPack 租户是否绑定了任意行业/企业包（F2 话术口径分流依据）。
-// db 未初始化（单测环境）按无绑定处理（走中立口径）；绑定结果走 boundPackCodes 的 30s 进程缓存。
-func TenantHasIndustryPack(tenantID uint) bool {
+// TenantUsesAutoTalk 租户兜底话术是否走汽车领域口径（批四 P2，DEFECT_VERIFY_2026-09-20）。
+// 旧口径「绑定任意行业包即汽车话术」对非 auto 包错位：包加载器（pack_kb.go）只写
+// pack_prompts/params/mindset 键、从不写 industry.*，于是绑了 edu/wedding/realty 包的租户
+// 人设是"越野SUV销售"、跑题回"聊车吧"、询价回"约试驾"。
+// 新口径按绑定包在 industry_packs.industry 字段的族别分流：仅汽车族（auto/auto_rox/
+// auto_rox_sales 等 industry=auto 的行业包及其企业/部门子包）保留汽车兜底；
+// 非 auto 包与无绑定同走行业中立口径。db 未初始化（单测环境）按中立兜底；结果 30s 进程缓存。
+func TenantUsesAutoTalk(tenantID uint) bool {
 	if tenantID == 0 || db.DB == nil {
 		return false
 	}
-	return len(boundPackCodes(tenantID)) > 0
+	if v, ok := autoTalkCache.Load(tenantID); ok {
+		if e, good := v.(autoTalkCacheEntry); good && time.Now().Before(e.expireAt) {
+			return e.auto
+		}
+	}
+	auto := false
+	if codes := boundPackCodes(tenantID); len(codes) > 0 {
+		var n int64
+		// 任一绑定包（行业或企业码）属汽车族即算汽车租户；查询失败按中立（保守向，宁中性不错位）
+		if err := db.DB.Model(&model.IndustryPack{}).
+			Where("code IN ? AND industry = ?", codes, "auto").Count(&n).Error; err == nil {
+			auto = n > 0
+		}
+	}
+	autoTalkCache.Store(tenantID, autoTalkCacheEntry{auto: auto, expireAt: time.Now().Add(30 * time.Second)})
+	return auto
 }
+
+// autoTalkCache 汽车族判定短TTL进程缓存（与 boundPackCodes 同 30s 口径，检索/建 prompt 高频调用）
+type autoTalkCacheEntry struct {
+	auto     bool
+	expireAt time.Time
+}
+
+var autoTalkCache sync.Map // tenantID(uint) → autoTalkCacheEntry
 
 // GetHumanTakeoverReplyForTenant 人工接管/待接管话术（P2-21）
 // 行业键 industry.human_reply 可配置；缺省回退内置文案（与站内 chat_main 硬编码语义一致）。

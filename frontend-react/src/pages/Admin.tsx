@@ -182,12 +182,15 @@ export default function Admin() {
           <h1 style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>管理中心</h1>
           <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{role === 'super_admin' ? '平台超管' : '租户后台'}</span>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+        {/* P1-10 补修(2026-09-21 终局回归实证)：390px 下右侧整块不换行+原生 select 固有宽度
+            按最长 option 撑开（租户名一多顶栏 scrollWidth 冲到 790）——右侧允许换行、
+            select 封顶 150px 省略号截断，选项点开仍看全称 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', minWidth: 0 }}>
           {/* E4：超管代管租户选择器——选定后所有租户作用域接口自动带 X-Tenant-ID */}
           {isSuper && (
-            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13 }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, minWidth: 0 }}>
               代管租户：
-              <select value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13 }}>
+              <select value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
                 <option value="">（未选择·仅平台级）</option>
                 {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
               </select>

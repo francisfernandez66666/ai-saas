@@ -658,16 +658,13 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 		RespErr(c, http.StatusNotFound, 404, "客户不存在")
 		return
 	}
-	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）
+	// 四级数据范围门禁：范围外客户视为不存在（不泄露存在性）。
+	// 批四 P3（DEFECT_VERIFY_2026-09-20）：此处原有第二个 customerInDataScope+403 块为
+	// 双重门禁死分支——两次调用入参完全相同，第一关 404 未拦下则第二关必通过，403 恒不可达。
+	// 越权语义（非admin须为指派顾问/上级，防传别人 id 看完整详情+聊天记录）已由本门禁完整承载，
+	// 且"范围外=不存在"不泄露存在性，严于原 403，故删除冗余块、行为零变化。
 	if !customerInDataScope(c, customer.AssignedUserID) {
 		RespErr(c, http.StatusNotFound, 404, "客户不存在")
-		return
-	}
-
-	// 修复（越权）：之前任何顾问传别人的customer id都能看到完整详情+聊天记录。
-	// 现在非admin角色必须是这个客户的指派顾问才能看，否则403。
-	if !customerInDataScope(c, customer.AssignedUserID) {
-		RespErr(c, http.StatusForbidden, 403, "无权查看该客户")
 		return
 	}
 
@@ -745,8 +742,9 @@ func EditCustomerTags(c *gin.Context) {
 		return
 	}
 
-	// 使用打标服务更新标签
-	if err := service.DefaultTagService.ApplyTagsToCustomer(customer.TenantID, customer.ID, req.Tags, "manual"); err != nil {
+	// 覆盖语义更新（批四 P1）：提交列表=最终态——列表外旧标同步清除。
+	// 旧实现增量 upsert 不删除，弹窗取消勾选后旧标滞留库内（uat_advisor 字节级实证）。
+	if err := service.DefaultTagService.ReplaceTagsForCustomer(customer.TenantID, customer.ID, req.Tags, "manual"); err != nil {
 		RespErr(c, http.StatusInternalServerError, 500, "更新标签失败")
 		return
 	}

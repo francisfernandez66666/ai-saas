@@ -43,9 +43,11 @@ func BuildSystemPrompt(tenantID uint, features []model.Feature, modelID uint, ha
 	// 泛行业化（P2）：industry.salesperson 由行业包注入
 	// UATFOLLOWUP F3 修复(2026-09-15)：无行业包绑定的租户（general/新行业）回退**行业中立**人设，
 	// 不再硬编码"越野SUV品牌的销售顾问"——绑定车企包的租户行为不变。
+	// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：分流谓词收紧为「汽车族绑定」——绑 edu/wedding 等
+	// 非 auto 包且未配 industry.salesperson 的租户同样回中立人设（旧口径误给汽车销售人设）。
 	if persona := service.IndustrySalespersonForTenant(tenantID); persona != "" {
 		sb.WriteString(persona)
-	} else if !service.TenantHasIndustryPack(tenantID) {
+	} else if !service.TenantUsesAutoTalk(tenantID) {
 		sb.WriteString(neutralPersona)
 	} else {
 		sb.WriteString(getTonePersona(toneStyle))
@@ -579,11 +581,12 @@ func priceReplyRef(tenantID uint, lead bool) string {
 // 行业包可通过 industry.domain_constraint 配置「只聊什么」；
 // UATFOLLOWUP F3 修复(2026-09-15)：无行业包绑定的租户回退行业中立文案（旧回退写死"只聊车"），
 // 绑定车企包的租户保持汽车文案不变。
+// 批四 P2 修正：汽车文案兜底仅限汽车族绑定，非 auto 包租户回中立（同谓词收口）。
 func domainConstraintText(tenantID uint) string {
 	if s := service.IndustryDomainConstraintForTenant(tenantID); s != "" {
 		return s
 	}
-	if !service.TenantHasIndustryPack(tenantID) {
+	if !service.TenantUsesAutoTalk(tenantID) {
 		return "只聊咱们家的产品、服务和使用场景相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回来：「这个我还真不太懂，不过你说的这个让我想到，你是不是对这方面有需求？咱可以细聊」或「哈哈这块我不太行，咱们还是说你关心的事吧」。绝不装全能、绝不硬答无关领域"
 	}
 	return "你只聊车、品牌、用车生活相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回车：「这个我还真不太懂，不过你说的这个让我想到，你是不是对智能化挺感兴趣的？咱车的智能座舱你可能会有兴趣」或「哈哈这块我不太行，咱们还是聊聊你用车的事吧」。绝不装全能、绝不硬答无关领域"

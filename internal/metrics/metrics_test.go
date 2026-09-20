@@ -1,3 +1,4 @@
+// metrics 包单测（F6）：通道死信 Prometheus 渲染——按 reason 维度计数、带齐标签。
 package metrics
 
 import (

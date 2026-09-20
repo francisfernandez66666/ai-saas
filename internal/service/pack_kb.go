@@ -29,7 +29,7 @@ func boundPackCodes(tenantID uint) []string {
 		return nil
 	}
 	// F3 修复(2026-09-15)：db 未初始化（纯逻辑单测环境）直接返回无绑定，
-	// 防止 nil 指针 panic——与 TenantHasIndustryPack 的 nil 防护口径一致
+	// 防止 nil 指针 panic——与 TenantUsesAutoTalk 的 nil 防护口径一致
 	if db.DB == nil {
 		return nil
 	}

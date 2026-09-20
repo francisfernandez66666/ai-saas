@@ -607,18 +607,23 @@ echo "---- 二十七、2026-09-20 审计批三 P2-1：相似消息「仅在途�
 # 第二句相同内容被标 merged_suppressed 且无人再答（静默丢答）。现在抑制前必须探测
 # HasInflightBatch（本地 processing/简单锁/pending 积压，或 Redis 处理锁与待合并列表）。
 # 有在途批次时的 merged 路径行为不变，由 TestHasInflightBatch 与 chat_main.go 分支注释钉住。
-P21CID=$(curl -s -X POST "$B/api/v1/customers" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+# 注：主 TOKEN 为 super_admin 会话——批三 P2-15 收紧后租户作用域路径（/customers、/chat）
+# 必须带 X-Tenant-ID，否则 400 空 CID 把两条护栏断言打成假失败（终局回归首跑实证）。
+P21CID=$(curl -s -X POST "$B/api/v1/customers" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H 'Content-Type: application/json' \
   -d '{"name":"P21护栏客","remark":"smoke p2-1"}' | jsonget "['data']['id']")
 P21MSG='你好，请问现在买车有什么优惠活动吗'
 # 第一条同步等回复完毕（同时建立"历史相似句"基线）；返回即代表在途批次已释放
-curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H 'Content-Type: application/json' \
   -d "{\"customer_id\":$P21CID,\"content\":\"$P21MSG\"}" >/dev/null
 # 第二条相同内容：此刻无在途批次——旧逻辑必 merged:true（丢答），P2-1 后必须正常入队回答
-P21B=$(curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+P21B=$(curl -s --max-time 60 -X POST "$B/api/v1/chat" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H 'Content-Type: application/json' \
   -d "{\"customer_id\":$P21CID,\"content\":\"$P21MSG\"}")
 check "相同内容第二连发不被merged抑制(P2-1)" False "$(echo "$P21B" | jsonget "['data']['merged']")"
-P21MID=$(echo "$P21B" | jsonget "['data']['customer_msg_id']")
-[ "${P21MID:-0}" -gt 0 ] 2>/dev/null && check "第二连发仍正常落库可查(customer_msg_id>0)" y y || check "第二连发仍正常落库可查(customer_msg_id>0)" y n
+# 落库断言走 DB 字节级：/api/v1/chat 正常路径响应本就不回 customer_msg_id（该字段仅
+# merged/相似抑制分支设置，见 chat_main.go:294-298），旧断言拿它查落库是测试侧口径错。
+P21CNT=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
+  "SELECT count(*) FROM messages WHERE customer_id=$P21CID AND sender_type='customer' AND content='$P21MSG'" | tr -d '[:space:]')
+[ "${P21CNT:-0}" -ge 2 ] 2>/dev/null && check "第二连发正常落库可查(客户消息2条,无丢答)" y y || check "第二连发正常落库可查(客户消息2条,无丢答)" y "n($P21CNT)"
 # P2-2（同段捎带）：readiness 显式 rls_effective 观测位——纠偏"RLS_ENABLED=true=DB 兜底成立"误读
 HT27=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
 curl -s -H "X-Health-Token: $HT27" "$B/status/detail" 2>/dev/null | grep -q "rls_effective" \

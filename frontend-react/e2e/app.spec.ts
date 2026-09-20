@@ -1,3 +1,5 @@
+// Playwright 真浏览器 E2E（14 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
+// 外加 390px 窄屏三台（Admin/Super 折叠下拉、Org 单栏不炸版，P1-10 批二）。需 9090 服务在跑。
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
 
@@ -154,8 +156,10 @@ test.describe('P1-10 390px 桌面三台可达', () => {
     await expect(menu).toBeVisible({ timeout: 10000 });
     await expect(page.locator('.t-layout__aside')).toHaveCount(0);
     await menu.selectOption('reply_speed');
-    // 配置类 Tab 无租户作用域限制，选中后渲染底部动作条
-    await expect(page.getByText('延迟归零')).toBeVisible({ timeout: 10000 });
+    // 配置类 Tab 无租户作用域限制，选中后渲染底部动作条。
+    // 用 button 角色精确定位：页内另有 ConfigPanel 提示文案「使用顶部"⚡ 延迟归零"按钮切换」，
+    // getByText 会 strict-mode 命中 2 元素假失败（2026-09-21 终局回归实证）
+    await expect(page.getByRole('button', { name: /延迟归零/ })).toBeVisible({ timeout: 10000 });
     const sw = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(sw).toBeLessThanOrEqual(392);
   });

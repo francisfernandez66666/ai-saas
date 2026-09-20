@@ -52,6 +52,9 @@ func (s *TagService) ApplyTagsToCustomer(tenantID uint, customerID uint, tagName
 
 	now := time.Now()
 	newTags := 0
+	// P0 修复（DEFECT_VERIFY_2026-09-20）：写失败不再恒返回 nil——汇总首个错误上抛，
+	// 调用方（advisor/tag API）据此报错，前端不再"假成功"。
+	var firstErr error
 
 	// 逐个处理标签
 	for _, name := range tagNames {
@@ -72,9 +75,15 @@ func (s *TagService) ApplyTagsToCustomer(tenantID uint, customerID uint, tagName
 		result := db.DB.Scopes(db.TenantFilter(tenantID)).
 			Where("customer_id = ? AND tag_id = ?", customerID, targetTag.ID).First(&existing)
 		if result.Error == nil {
-			// 已存在，更新来源
+			// 已存在，更新来源（P0 批四：Save 失败同样记错上抛，不再静默）
 			existing.Source = source
-			db.DB.Save(&existing)
+			if err := db.DB.Save(&existing).Error; err != nil {
+				log.Printf("[打标服务] 更新标签来源失败: %v", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+				continue
+			}
 			continue
 		}
 
@@ -92,6 +101,11 @@ func (s *TagService) ApplyTagsToCustomer(tenantID uint, customerID uint, tagName
 			CreatedAt:  now,
 		}
 		// tenant_id、created_at 不在唯一键内，冲突更新仅覆盖 source/weight
+		// P0 修复（DEFECT_VERIFY_2026-09-20）：原 `MAX(weight, 1.0)` 在 PostgreSQL 必炸——
+		// MAX 是单参聚合函数，两参取大是标量函数 GREATEST（实测报 42883 function does not exist）。
+		// 手工标签几乎总命中 (customer_id,tag_id) 唯一键（客户已有 auto 标签）→ 走 DO UPDATE
+		// → 坏 SQL → 错误又被 continue 吞掉 → 前端显示成功但库里 source 恒为 auto、manual 0 行。
+		// 改 GREATEST 取两边较大（保留 P2-43 并发回退防护语义），且失败不再静默：记入首个错误返回调用方。
 		if err := db.DB.Clauses(clause.OnConflict{
 			Columns: []clause.Column{
 				{Name: "customer_id"},
@@ -99,21 +113,59 @@ func (s *TagService) ApplyTagsToCustomer(tenantID uint, customerID uint, tagName
 			},
 			DoUpdates: clause.Assignments(map[string]interface{}{
 				"source": source,
-				"weight": gorm.Expr("MAX(weight, 1.0)"),
+				"weight": gorm.Expr("GREATEST(customer_tags.weight, EXCLUDED.weight)"),
 			}),
 		}).Create(customerTag).Error; err != nil {
 			log.Printf("[打标服务] 创建客户标签失败: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		newTags++
 	}
 
-	log.Printf("[打标服务] 客户%d打标完成: 尝试%d个, 新增%d个",
-		customerID, len(tagNames), newTags)
+	log.Printf("[打标服务] 客户%d打标完成: 尝试%d个, 新增%d个, 失败%v",
+		customerID, len(tagNames), newTags, firstErr != nil)
 
 	// 同步更新客户表的Tags字段（冗余存储，方便查询）
 	s.syncCustomerTagsField(tenantID, customerID)
 
+	return firstErr
+}
+
+// ReplaceTagsForCustomer 全量覆盖客户标签（PUT 语义：提交列表=最终态）。
+// 批四 P1（uat_advisor 首跑实证）：EditCustomerTags 旧实现只走增量 ApplyTagsToCustomer，
+// 从不删除——顾问端标签弹窗取消勾选后旧标永久滞留库内，与路由注释"覆盖更新"和前端
+// checkedTags 全量提交的契约双双背离。本方法=先 upsert 提交项、再清除列表外的行，
+// 最后同步 customers.tags 冗余字段。未匹配到标签库的名字按 ApplyTagsToCustomer 口径跳过。
+func (s *TagService) ReplaceTagsForCustomer(tenantID uint, customerID uint, tagNames []string, source string) error {
+	if err := s.ApplyTagsToCustomer(tenantID, customerID, tagNames, source); err != nil {
+		return err
+	}
+	// 提交名/编码 → 保留的标签 ID 集合（匹配口径与 Apply 一致：先名称后编码）
+	keep := make(map[uint]bool)
+	for _, t := range cache.DefaultTagCache.GetAllTags(tenantID) {
+		for _, n := range tagNames {
+			if t.Name == n || t.Code == n {
+				keep[t.ID] = true
+				break
+			}
+		}
+	}
+	q := db.DB.Scopes(db.TenantFilter(tenantID)).Where("customer_id = ?", customerID)
+	if len(keep) > 0 {
+		ids := make([]uint, 0, len(keep))
+		for id := range keep {
+			ids = append(ids, id)
+		}
+		q = q.Where("tag_id NOT IN ?", ids)
+	}
+	if err := q.Delete(&model.CustomerTag{}).Error; err != nil {
+		log.Printf("[打标服务] 覆盖清除旧标签失败: %v", err)
+		return err
+	}
+	s.syncCustomerTagsField(tenantID, customerID)
 	return nil
 }
 

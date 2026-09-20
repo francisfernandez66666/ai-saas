@@ -306,8 +306,11 @@ func generateAIReplyInner(ctx context.Context, customer *model.Customer, convers
 
 	// 7c. 硬拦截：胡搅蛮缠分支
 	// 3轮非车话题后关闭引导+固定回复
+	// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：固定文案曾硬编码"只能回答你车和品牌"，
+	// 任何行业租户都返回汽车版且绕开行业分流——改走 GetOffTopicReplyForTenant，
+	// 汽车族仍是行业口径兜底、非 auto 包/无绑定回中立句；租户配置 industry.offtopic_replies 优先级最高。
 	if offtopicRepeatCount >= offtopicRepeatMaxTimes {
-		reply = "我这边只能回答你车和品牌相关的问题哈。咱们要不还是回到车和品牌上来？车相关的咱们还是专业对口的哈，你放心"
+		reply = service.GetOffTopicReplyForTenant(customer.TenantID, userInput)
 		log.Printf("[胡搅蛮缠-硬拦截] 客户%d 非车话题%d次 >= 阈值%d，已替换回复",
 			customer.ID, offtopicRepeatCount, offtopicRepeatMaxTimes)
 	}
