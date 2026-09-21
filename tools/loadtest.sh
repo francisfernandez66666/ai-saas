@@ -195,7 +195,7 @@ if [ "$LOAD_TEST_AI" = "true" ]; then
     printf '{"customer_id":%s,"content":"你好，你们有什么车型可以推荐？"}' "$CID" > "$TMP/chat.json"
     if run_ab_clean "$TMP/chat.ab" "/chat/test 同步链路(含合并/AI/延迟)" "$TMP/table.md" 3 \
       -n "$CHAT_N" -c "$CHAT_C" -H "X-Tenant-ID: 1" -T application/json -p "$TMP/chat.json" \
-      "$BASE/api/v1/chat/test?visitor_key=$VK"; then
+      "$BASE/api/v1/chat/unauthorized?visitor_key=$VK"; then
       CHAT_NOTE="运行参数：n=${CHAT_N} c=${CHAT_C}；该场景受合并窗口、模型降级链和模拟延迟影响，小样本仅用于趋势观测。"
     else
       CHAT_NOTE="运行参数：n=${CHAT_N} c=${CHAT_C}；多次重试后仍有非 2xx，结果保留原始 ab 输出。"

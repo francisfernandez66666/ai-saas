@@ -46,7 +46,13 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 // 这些都必须注册在 v1.Use(JWTAuth...) 之前（匿名/服务端回调不带 JWT）。
 func registerChatPublic(v1 *gin.RouterGroup) {
 	// AI对话测试（免登录）：Turnstile 防薅 + IP 限流（每条真调 AI+扣额度+写多表，是匿名刷量最大入口）
-	v1.POST("/chat/test", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_test", 20, time.Minute), ChatTest)
+	// C1(PLAN_FIX_2026-09-21)：原名 /chat/test 易被误读为"测试桩"，实为**未授权未留资访客的
+	// 正式聊天入口**（Client.tsx 在用，能力完整：会话竞态/四层分流/延迟清零/留资/OneID 合并）。
+	// 改名 /chat/unauthorized 让语义自解释（免登录 + visitor_key 自证 + Turnstile + IP 限流）。
+	v1.POST("/chat/unauthorized", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_unauthorized", 20, time.Minute), ChatUnauthorized)
+	// 兼容别名（deprecated）：旧客户端/外部集成仍在打 /chat/test，保留一版并在日志留痕，
+	// 与限流桶分开计数避免互相挤占；下个版本移除。
+	v1.POST("/chat/test", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_test", 20, time.Minute), ChatUnauthorized)
 	// 访客注册（免登录，每次打开 client 页面创建新访客）
 	v1.POST("/chat/guest", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_guest", 10, time.Minute), CreateGuest)
 	// PIPL 删除权受理（C2，免登录 C 端 + OptionalJWTAuth 让登录态可撤回账号）：visitor_key 自证或登录放行

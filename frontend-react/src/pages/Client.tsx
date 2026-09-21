@@ -169,7 +169,7 @@ export default function Client() {
       // visitor_key 走 query（CheckVisitorKey 仅读 query），与 history/welcome 一致
       // C3：改走统一请求层；但 AI 生成链路耗时可远超默认 30s（smoke 侧 --max-time 60），
       // 故对本条显式 timeoutMs:0 禁用超时，避免"收口即截断"的功能回归。
-      const r = await apiFetch(`${API}/chat/test?visitor_key=${encodeURIComponent(vk)}`, { method: 'POST', headers: tsHeaders(), timeoutMs: 0, body: JSON.stringify({ customer_id: custId.current, content }) })
+      const r = await apiFetch(`${API}/chat/unauthorized?visitor_key=${encodeURIComponent(vk)}`, { method: 'POST', headers: tsHeaders(), timeoutMs: 0, body: JSON.stringify({ customer_id: custId.current, content }) })
       const j = await r.json()
       if (j.code === 0 && j.data) {
         if (j.data.conversation_id) { setConvId(j.data.conversation_id); convIdRef.current = j.data.conversation_id }

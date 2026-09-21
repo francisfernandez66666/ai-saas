@@ -274,7 +274,7 @@ echo "---- 十、G-19 投诉事件集成 ----"
 # 投诉关键词识别：发送含投诉意图的消息，验证 complaint 计数器不为负
 COMP_BEFORE=$(echo "$METRICS" | grep "ai_scrm_complaint_total" | awk '{print $2}')
 # 触发一次投诉检测（通过 feedback 接口或 AI 对话）
-curl -s -X POST "$B/api/v1/chat/test" \
+curl -s -X POST "$B/api/v1/chat/unauthorized" \
   -H "Content-Type: application/json" \
   -d '{"content":"我要投诉你们的服务态度太差了"}' >/dev/null 2>&1
 METRICS2=$(curl -s "$B/metrics" 2>/dev/null)
@@ -325,7 +325,7 @@ if [ -f "$LOGFILE" ]; then
   PCID=$(echo "$PVK" | jsonget "['data']['customer_id']")
   PKEY=$(echo "$PVK" | jsonget "['data']['visitor_key']")
   MARK=$(wc -c < "$LOGFILE" 2>/dev/null | tr -d '[:space:]')
-  curl -s -o /dev/null --max-time 40 -X POST "$B/api/v1/chat/test?visitor_key=$PKEY" -H "X-Tenant-ID: 1" \
+  curl -s -o /dev/null --max-time 40 -X POST "$B/api/v1/chat/unauthorized?visitor_key=$PKEY" -H "X-Tenant-ID: 1" \
     -H "Content-Type: application/json" \
     -d "{\"customer_id\":${PCID:-1},\"content\":\"我电话13911112222，方便给我回个报价吗谢谢\"}"
   sleep 3
@@ -539,7 +539,7 @@ if [ -f "$LOGFILE" ]; then
   E3CID=$(echo "$E3G" | jsonget "['data']['customer_id']")
   E3KEY=$(echo "$E3G" | jsonget "['data']['visitor_key']")
   E3MARK=$(wc -c < "$LOGFILE" | tr -d '[:space:]')
-  E3HDR=$(curl -s -o /dev/null -D - --max-time 25 -X POST "$B/api/v1/chat/test?visitor_key=$E3KEY" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  E3HDR=$(curl -s -o /dev/null -D - --max-time 25 -X POST "$B/api/v1/chat/unauthorized?visitor_key=$E3KEY" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
     -H "X-Trace-ID: $E3TID" -d "{\"customer_id\":${E3CID:-1},\"content\":\"在吗\"}")
   echo "$E3HDR" | grep -qi "^x-trace-id: $E3TID" && check "X-Trace-ID客户端值响应头回显" y y || check "X-Trace-ID客户端值响应头回显" y n
   sleep 1

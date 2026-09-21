@@ -1841,7 +1841,7 @@
       "method": "POST",
       "path": "/api/v1/chat/test",
       "group": "chat",
-      "handler": "ChatTest",
+      "handler": "ChatUnauthorized",
       "auth": [
         "optional_jwt",
         "ip_limit"
@@ -1863,6 +1863,16 @@
       "handler": "TransferToHuman",
       "auth": [
         "jwt"
+      ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/chat/unauthorized",
+      "group": "chat",
+      "handler": "ChatUnauthorized",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
       ]
     },
     {

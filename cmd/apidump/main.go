@@ -234,7 +234,7 @@ func authOf(path string) []string {
 		add("ip_limit")
 	case path == "/api/v1/collector":
 		add("collector_key")
-	case path == "/api/v1/chat/test", path == "/api/v1/chat/guest", path == "/api/v1/chat/welcome", path == "/api/v1/chat/history", path == "/api/v1/chat/clear-delay":
+	case path == "/api/v1/chat/unauthorized", path == "/api/v1/chat/test", path == "/api/v1/chat/guest", path == "/api/v1/chat/welcome", path == "/api/v1/chat/history", path == "/api/v1/chat/clear-delay":
 		add("optional_jwt")
 		add("ip_limit")
 	case strings.HasPrefix(path, "/api/v1/channel/callback/"):

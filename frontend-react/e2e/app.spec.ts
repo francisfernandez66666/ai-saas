@@ -101,13 +101,22 @@ test('health check endpoint returns OK', async ({ request }) => {
 });
 
 // 9. Chat test endpoint responds (may require visitor session)
-test('chat test endpoint responds', async ({ request }) => {
-  const r = await request.post(`${BASE}/api/v1/chat/test`, {
+// C1(PLAN_FIX_2026-09-21)：主路由由 /chat/test 改名 /chat/unauthorized（语义自解释：
+// 未授权/未留资访客的聊天入口，不是测试桩）；旧路径作为 deprecated 兼容别名保留一版。
+test('chat unauthorized endpoint responds', async ({ request }) => {
+  const r = await request.post(`${BASE}/api/v1/chat/unauthorized`, {
     data: { content: '你好' },
   });
   // Endpoint may return 403 (visitor auth required) or 200；
-  // 429 也属正常响应：test_all 顺序跑八套 E2E 时同源 ::1 的 chat_test IP 桶可能已满，
+  // 429 也属正常响应：test_all 顺序跑八套 E2E 时同源 IP 桶可能已满，
   // 限流生效本身即证明端点在位（单跑复现 403，整跑偶发 429，见 2026-09-18 实测批）。
+  expect([200, 403, 429]).toContain(r.status());
+});
+
+test('chat test 旧别名仍在位(deprecated 兼容)', async ({ request }) => {
+  const r = await request.post(`${BASE}/api/v1/chat/test`, {
+    data: { content: '你好' },
+  });
   expect([200, 403, 429]).toContain(r.status());
 });
 

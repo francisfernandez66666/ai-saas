@@ -50,7 +50,7 @@ import (
 // 导致同一客户出现多个活跃会话。用客户级互斥锁确保：
 //  1. 同一客户同一时刻只有一个请求执行"查找或创建会话"
 //  2. 先查已有活跃会话，有则复用；没有才创建新会话+冷启动秒回
-//  3. Chat() 和 ChatTest() 统一使用此机制，行为一致
+//  3. Chat() 和 ChatUnauthorized() 统一使用此机制，行为一致
 //
 // ============================================================
 
@@ -81,7 +81,7 @@ import (
 // 9. 返回结果
 
 // Chat POST /api/v1/chat 正式对话入口（JWT链；硬边界→快速通道→简单消息→合并队列四层分流）
-func ChatTest(c *gin.Context) {
+func ChatUnauthorized(c *gin.Context) {
 	extendWriteDeadlineForAI(c) // D4：同步处理者分支最坏 25+15+110s，延长本连接写截止（write_deadline.go）
 	// 修复：记录请求开始时间，用于总延迟2分钟硬顶兜底
 	// 总回复时长 = 合并等待 + AI调用 + 模拟延迟，不得超过2分钟
@@ -260,7 +260,7 @@ func ChatTest(c *gin.Context) {
 			}
 			leadUpdates["journey_stage"] = model.JourneyLeadCaptured
 			leadUpdates["assignment_reason"] = "lead_captured"
-			// 修复问题2：ChatTest到店倾向已留资分支也用轮询选顾问
+			// 修复问题2：ChatUnauthorized到店倾向已留资分支也用轮询选顾问
 			if customer.AssignedUserID == 0 {
 				var salesUsers []model.User
 				// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同主路径）
@@ -307,7 +307,7 @@ func ChatTest(c *gin.Context) {
 			}
 			log.Printf("[到店倾向-已留资线索-测试接口] 客户%d 留资成功: phone=%s, stage=lead_captured, assigned=%d",
 				customer.ID, pii.MaskPhone(phoneMatchTest), customer.AssignedUserID)
-			// P3：到店分支留资事件上行（ChatTest 路径）
+			// P3：到店分支留资事件上行（ChatUnauthorized 路径）
 			if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, tenantID,
 				fmt.Sprintf("c:%d", customer.ID), "lead_captured",
 				mq.UserEvent{EventType: "behavior", EventName: "lead_captured", AnchorType: "phone",
@@ -459,7 +459,7 @@ func ChatTest(c *gin.Context) {
 skipStoreVisitFastTest:
 
 	// ---- 修复问题4：先存客户消息到DB，再EnqueueAndWait ----
-	// 根因：ChatTest在EnqueueAndWait之后才存客户消息，客户F5刷新时DB里没有这条消息所以丢失
+	// 根因：ChatUnauthorized在EnqueueAndWait之后才存客户消息，客户F5刷新时DB里没有这条消息所以丢失
 	// 修复：跟Chat接口第263行逻辑一致，先存DB再入队列；合并后如果内容变了再更新DB
 	testCustomerMsg := model.Message{
 		ConversationID: 0, // 暂填0，后面拿到conversation后更新
@@ -650,19 +650,19 @@ skipStoreVisitFastTest:
 					"mode":                "ai",
 					"pending_handoff":     false,
 				})
-				log.Printf("[ChatTest] 会话%d 顾问超时%d秒未回复，自动重开AI回复", conversation.ID, aiTimeout)
+				log.Printf("[ChatUnauthorized] 会话%d 顾问超时%d秒未回复，自动重开AI回复", conversation.ID, aiTimeout)
 				// 继续走正常流程（不return）
 			} else {
-				log.Printf("[ChatTest] 客户%d 会话%d 人工接管且AI回复已关闭(IsAiReplyEnabled=false)，跳过AI",
+				log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管且AI回复已关闭(IsAiReplyEnabled=false)，跳过AI",
 					customer.ID, conversation.ID)
 				// 客户消息中包含手机号 → 在此处提前调用留资检测，确保基于手机号的分配顾问逻辑不被绕过
 				if customer.JourneyStage != model.JourneyLeadCaptured && customer.JourneyStage != model.JourneyArrived &&
 					customer.JourneyStage != model.JourneyOrdered && customer.JourneyStage != model.JourneyDelivered {
 					leadResult := chatflow.DetectLeadCapture(req.Content, &customer)
 					if leadResult != 0 {
-						log.Printf("[ChatTest-留资检测-human_locked] 客户 %d 已留资+分配顾问", customer.ID)
+						log.Printf("[ChatUnauthorized-留资检测-human_locked] 客户 %d 已留资+分配顾问", customer.ID)
 						if leadResult > 0 {
-							log.Printf("[ChatTest-留资检测-OneID] 前端需切换customer_id → %d", leadResult)
+							log.Printf("[ChatUnauthorized-留资检测-OneID] 前端需切换customer_id → %d", leadResult)
 						}
 					}
 				}
@@ -703,7 +703,7 @@ skipStoreVisitFastTest:
 		if conversation.IsAiReplyEnabled && aiAutoReply && conversation.LastHumanReplyAt != nil {
 			sinceLastReply := time.Since(*conversation.LastHumanReplyAt)
 			if sinceLastReply < aiTimeoutDur {
-				log.Printf("[ChatTest] 客户%d 会话%d 人工接管，顾问%ds内已回复，跳过AI（客户消息已入库顾问秒看）",
+				log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，顾问%ds内已回复，跳过AI（客户消息已入库顾问秒看）",
 					customer.ID, conversation.ID, int(sinceLastReply.Seconds()))
 				now := time.Now()
 				conversation.LastMessageAt = &now
@@ -736,7 +736,7 @@ skipStoreVisitFastTest:
 			}
 		}
 		// 顾问未回复或超时，AI自动回复
-		log.Printf("[ChatTest] 客户%d 会话%d 人工接管，AI自动回复(配置=%v timeout=%ds)",
+		log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，AI自动回复(配置=%v timeout=%ds)",
 			customer.ID, conversation.ID, aiAutoReply, aiTimeout)
 	}
 
@@ -791,7 +791,7 @@ skipStoreVisitFastTest:
 
 	// ---- 7.5 内容安全闸门（G8 修复，2026-09-14）----
 	// 免登录测试通道此前缺失此闸：正式对话(chat_main.go)过滤敏感词/违规内容后转人工，
-	// 但 ChatTest 直通落库+推送，同一模型输出在测试口可绕过安全闸直达用户与飞轮样本。
+	// 但 ChatUnauthorized 直通落库+推送，同一模型输出在测试口可绕过安全闸直达用户与飞轮样本。
 	// 与主链路复用同一 ContentsafetyGate，行为完全对齐（MASK改写/BLOCK退场转人工/shadow只计数）。
 	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
 		switch action {
@@ -837,7 +837,7 @@ skipStoreVisitFastTest:
 	// 模拟真人回复延迟：打字(40字/分钟) + 线下偏移
 	// 到店倾向客户：去掉线下偏移，顾问必须快速响应
 	isStoreVisit := service.IsStoreVisitIntentForTenant(tenantID, mergedContent) && !chatflow.IsLeadCaptured(&customer) // 到店意图且未留资才去除线下偏移
-	log.Printf("[ChatTest] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, pii.MaskPhoneInText(mergedContent))
+	log.Printf("[ChatUnauthorized] 客户%d 到店倾向检测: %v, 合并内容: %q", customer.ID, isStoreVisit, pii.MaskPhoneInText(mergedContent))
 	humanlikeDelay := service.CalcHumanlikeDelay(tenantID, aiReply, mergeWaitDuration, mergeCount, isStoreVisit)
 
 	// 胡搅蛮缠：总非车话题>10且最近未恢复→回复速度降到3分钟一次
@@ -859,7 +859,7 @@ skipStoreVisitFastTest:
 	elapsed := time.Since(requestStart)
 	remainingBudget := maxTotalDelay - elapsed
 	if humanlikeDelay > remainingBudget {
-		log.Printf("[ChatTest] 客户%d 总延迟硬顶触发: 已用%.1fs + 模拟延迟%.1fs > 2分钟, 截断到%.1fs",
+		log.Printf("[ChatUnauthorized] 客户%d 总延迟硬顶触发: 已用%.1fs + 模拟延迟%.1fs > 2分钟, 截断到%.1fs",
 			customer.ID, elapsed.Seconds(), humanlikeDelay.Seconds(), remainingBudget.Seconds())
 		humanlikeDelay = remainingBudget
 	}
@@ -867,16 +867,16 @@ skipStoreVisitFastTest:
 		humanlikeDelay = 0
 	}
 
-	log.Printf("[ChatTest] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
+	log.Printf("[ChatUnauthorized] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
 	// 修复问题2：instant模式跳过CancellableSleep，秒回无延迟
 	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
 	if replyDelayMode == "instant" {
-		log.Printf("[ChatTest] 客户%d instant模式，跳过延迟直接回复", customer.ID)
+		log.Printf("[ChatUnauthorized] 客户%d instant模式，跳过延迟直接回复", customer.ID)
 	} else {
 		// 修复问题3：用可取消延迟替代time.Sleep，支持"立即回复"按钮
 		chatflow.CancellableSleep(customer.ID, humanlikeDelay)
 	}
-	log.Printf("[ChatTest] 客户%d 延迟结束，返回回复", customer.ID)
+	log.Printf("[ChatUnauthorized] 客户%d 延迟结束，返回回复", customer.ID)
 
 	// 回复写入队列缓存，唤醒所有等待的请求（携带本请求持有的处理代际，旧处理者复活不践踏）
 	service.DefaultMessageQueueService.SetReply(tenantID, customer.ID, processEpoch, aiReply)

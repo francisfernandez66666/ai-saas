@@ -197,6 +197,7 @@ export interface ApiRoutes {
   "POST /api/v1/chat/test": unknown
   "POST /api/v1/chat/transfer/ai": unknown
   "POST /api/v1/chat/transfer/human": unknown
+  "POST /api/v1/chat/unauthorized": unknown
   "POST /api/v1/chat/welcome": unknown
   "POST /api/v1/client-errors": unknown
   "POST /api/v1/collector": unknown
