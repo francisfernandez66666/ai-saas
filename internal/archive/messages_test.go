@@ -11,6 +11,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestRunMessagesArchiveScoped 验证历史消息归档按租户数据范围裁剪：超期消息被归档，未超期消息保留。
 func TestRunMessagesArchiveScoped(t *testing.T) {
 	testutil.SetupTestDB(t)
 	runtimecfg.InitSystemConfigService()
@@ -53,6 +54,7 @@ func TestRunMessagesArchiveScoped(t *testing.T) {
 	}
 }
 
+// TestRunMessagesOnceDefaultOff 验证 message_archive_days 未配置（默认 0）时归档任务空转返回 0，不扫表。
 func TestRunMessagesOnceDefaultOff(t *testing.T) {
 	testutil.SetupTestDB(t)
 	runtimecfg.InitSystemConfigService()

@@ -4,6 +4,7 @@ import { Tag } from 'tdesign-react'
 import { Cust } from '../../types'
 import { H, HI, STAGE_COLORS, STAGE_LABELS, TABS, fmtShort, type Stat } from './shared'
 
+// HomeView 顾问工作台首页：展示统计概览与客户列表，支持按状态筛选。
 export default function HomeView({ stats, list, status, onStatus, onOpen }: {
   stats: Stat[]
   list: Cust[]

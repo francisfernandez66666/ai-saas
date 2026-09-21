@@ -4,6 +4,7 @@
 import type { RefObject } from 'react'
 import type { Msg } from '../../types'
 
+// ChatCard 顾问工作台「会话」卡片：渲染消息流并提供 AI 开关、接管、转回 AI 等操作。
 export default function ChatCard({ msgs, chatRef, convId, convMode, aiOn, onClearDelay, onTakeover, onTransferBackAI, onToggleAI }: {
   msgs: Msg[]
   chatRef: RefObject<HTMLDivElement>

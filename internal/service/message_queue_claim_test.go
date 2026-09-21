@@ -10,6 +10,7 @@ import (
 	"ai-scrm/internal/redisclient"
 )
 
+// TestClaimReplyDeliveryExactlyOnce 断言同一 epoch 的回复只允许被认领投递一次（幂等去重）。
 func TestClaimReplyDeliveryExactlyOnce(t *testing.T) {
 	svc := NewMessageQueueService()
 	tid, cid, chID := uint(11), uint(9511), uint(77)

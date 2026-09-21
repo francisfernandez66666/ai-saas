@@ -275,6 +275,7 @@ const FRAGMENT_ALL_FIELDS: FieldSpec[] = [
   { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
 ]
 
+// KnowledgeTab 后台「知识库」管理页：按分片/文档分组检索与维护知识资产。
 export default function KnowledgeTab() {
   const [tab, setTab] = useState('fragments')
   const [brandOptions, setBrandOptions] = useState<Option[]>([])

@@ -519,6 +519,7 @@ export interface ReferralRecord {
 // 包质量 / 通道接入（T7 codegen 锚点类型）
 // ============================================================
 
+// PackStatRow 行业包统计行：按租户维度的包使用与效果指标。
 export interface PackStatRow {
   tenant_id?: number
   pack_code: string

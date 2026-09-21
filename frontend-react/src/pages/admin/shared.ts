@@ -1,5 +1,6 @@
 // Admin 后台共享类型与菜单常量（F1：从巨型 Admin.tsx 拆出，避免页面级重复定义）
 
+// Cfg 后台配置项的通用键值形状（配置键、值及展示元信息）。
 export type Cfg = {
   key: string
   category: string

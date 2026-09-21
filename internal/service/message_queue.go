@@ -667,6 +667,7 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 var tryDeliveryClaim = redisclient.TryLockE   // 测试接缝：单测注入故障/持锁三态
 var claimRedisEnabled = redisclient.IsEnabled // 测试接缝：单测模拟 Redis 开/关两态
 
+// ClaimReplyDelivery 以「会话:epoch:渠道」为维度认领发送权，保证同一条 AI 回复在一个合并批次内只投递一次；epoch=0（未启用纪元防栅）直接放行。
 func (s *MessageQueueService) ClaimReplyDelivery(tenantID, customerID uint, epoch uint64, channelID uint) bool {
 	if epoch == 0 {
 		return true

@@ -4,6 +4,7 @@ import { Button, Table } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { Section, esc, type Pending } from './shared'
 
+// PendingTab 平台后台「待确认收款」页：列出待确认订单并支持确认到账发放。
 export default function PendingTab({ pendings, onConfirm }: { pendings: Pending[]; onConfirm: (id: number) => void }) {
   // 待确认收款订单列定义（含确认到账发放按钮）
   const pendingCols = [

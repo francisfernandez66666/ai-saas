@@ -41,6 +41,7 @@ func TestPriceKeywordsTenantIDZero(t *testing.T) {
 	}
 }
 
+// TestPriceKeywordsByIndustryFamily 验证价格关键词按行业族（汽车/教育等）返回对应词表，未知行业退化到默认族。
 func TestPriceKeywordsByIndustryFamily(t *testing.T) {
 	testutil.SetupTestDB(t)
 	if db.DB == nil {

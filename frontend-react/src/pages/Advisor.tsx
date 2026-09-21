@@ -21,6 +21,7 @@ import { EditDialog, FeedbackDialog, FollowupDialog, StageDialog, TagDialog, Tes
 
 // 客户详情（资料+标签+会话）由 ../types 的 Detail 承载，统一领域口径
 
+// Advisor 销售顾问工作台入口：承载首页、客户详情、会话、跟进等视图的路由容器。
 export default function Advisor() {
   const brand = useBrand()
   const [view, setView] = useState('home')

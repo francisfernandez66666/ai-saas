@@ -7,6 +7,7 @@ import (
 	"testing"
 )
 
+// TestConversationMutexSharded 验证会话锁分片：同客户恒取同一把锁（互斥语义不变），跨客户按取模落段。
 func TestConversationMutexSharded(t *testing.T) {
 	// 同客户恒得同一把锁（互斥语义不变）
 	a := GetConversationMutex(1001)

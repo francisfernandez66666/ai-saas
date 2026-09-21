@@ -4,6 +4,7 @@ package api
 
 import "testing"
 
+// TestValidatePasswordStrengthRuneCount 锁定口令强度按 rune 而非字节计长（防中文 3 字符 9 字节被旧字节口径误判达标）。
 func TestValidatePasswordStrengthRuneCount(t *testing.T) {
 	cases := []struct {
 		name string

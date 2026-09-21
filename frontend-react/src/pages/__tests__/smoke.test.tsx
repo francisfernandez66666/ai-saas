@@ -69,7 +69,9 @@ let fetchLog: string[] = []
 
 // 关键列断言用的固定样本（形态对齐后端真实信封：/super/tenants 分页、/org 树、/advisor/customers 分页）
 export const SMOKE_TENANT_NAME = '极石汽车体验店'
+// SMOKE_DEPT_NAME 渲染冒烟用例中用于断言的部门名。
 export const SMOKE_DEPT_NAME = '销售一部'
+// SMOKE_CUSTOMER_NAME 渲染冒烟用例中用于断言的客户名。
 export const SMOKE_CUSTOMER_NAME = '王小明'
 
 function installFetch(role = 'tenant_admin') {

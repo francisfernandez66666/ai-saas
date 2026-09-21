@@ -4,6 +4,7 @@ import { Table } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { Section, type Cost } from './shared'
 
+// CostTab 平台后台「成本」页：展示 AI 调用等成本口径统计。
 export default function CostTab({ cost }: { cost: Cost | null }) {
   return (
     <Section title={<>模型成本核算 <span style={{ fontSize: 13, color: '#718096' }}>{cost ? `近${cost.days}天 · 共${cost.total_calls}次 / ${cost.total_tokens} tokens / ¥${cost.total_cost_yuan}` : ''}</span></>}>

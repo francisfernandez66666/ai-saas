@@ -40,6 +40,7 @@ func TestReadinessDebugDowngraded(t *testing.T) {
 	}
 }
 
+// TestReadinessReleaseLevels 覆盖 release 级就绪评估：registration_review=false 记 crit，contentsafety shadow 与 pay_mode=mock 记 warn。
 func TestReadinessReleaseLevels(t *testing.T) {
 	SetDeploymentContext(1, true)
 	defer SetDeploymentContext(1, false)

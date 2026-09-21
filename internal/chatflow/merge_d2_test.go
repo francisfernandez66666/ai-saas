@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestMergeCustomerByPhoneTxAndCollapseActives 覆盖按手机号合并客户的事务语义：幸存客户保留、重复活跃会话收敛为一条。
 func TestMergeCustomerByPhoneTxAndCollapseActives(t *testing.T) {
 	testutil.SetupTestDB(t)
 	if db.DB == nil {
@@ -166,6 +167,7 @@ func TestMergeCustomerByPhoneTxAndCollapseActives(t *testing.T) {
 	}
 }
 
+// TestCheckHumanTimeoutPersists 验证人工接管超时后状态回落的持久化结果（读热配置，测试注入静态服务）。
 func TestCheckHumanTimeoutPersists(t *testing.T) {
 	testutil.SetupTestDB(t)
 	if db.DB == nil {

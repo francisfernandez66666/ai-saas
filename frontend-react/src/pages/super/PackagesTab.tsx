@@ -4,6 +4,7 @@ import { Button, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { Section, TYPE_NAMES, type Pkg } from './shared'
 
+// PackagesTab 平台后台「套餐管理」页：套餐列表、上下架与新建入口。
 export default function PackagesTab({ pkgs, onToggle, onCreate }: {
   pkgs: Pkg[]
   onToggle: (id: number, enabled: boolean) => void

@@ -6,6 +6,7 @@ import { TOKEN_KEY } from './api';
 
 /** Sentry 懒加载桥：DSN 未设直接短路，SDK chunk 不进首屏、加载/初始化失败静默吞掉 */
 let sentryPromise: Promise<unknown> | null = null
+// sentryBridge 惰性初始化 Sentry：未配置 VITE_SENTRY_DSN 时返回 null（不加载 SDK），已配置则动态 import 并复用同一 Promise。
 export function sentryBridge(): Promise<unknown> | null {
   const dsn = (import.meta.env.VITE_SENTRY_DSN as string | undefined) || ''
   if (!dsn) return null

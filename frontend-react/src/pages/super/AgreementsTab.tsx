@@ -4,6 +4,7 @@ import { Select, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { AG_TYPES, Section, esc, type Ag } from './shared'
 
+// AgreementsTab 平台后台「协议管理」页：按协议类型切换并维护协议内容。
 export default function AgreementsTab({ ags, type, onType }: {
   ags: Ag[]
   type: string

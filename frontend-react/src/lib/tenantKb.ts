@@ -1,6 +1,7 @@
 // F3 租户资料上传解析层：把 JSON/Markdown/TXT 文件转换成 /admin/kb/upload 可消费的片段。
 // 仅处理纯文本形态，不触发网络请求，便于组件测试与错误定位。
 
+// KBUpsertPayload 租户知识库条目新增/更新的请求体形状（标题、正文、可选分类）。
 export type KBUpsertPayload = { title: string; content: string; category?: string }
 
 const DEFAULT_CATEGORY = '企业知识'

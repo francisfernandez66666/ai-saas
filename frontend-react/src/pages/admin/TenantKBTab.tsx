@@ -22,6 +22,7 @@ function vectorTag(row: TableRowData) {
   return <Tag theme={ready ? 'success' : 'warning'}>{ready ? '已向量化' : '待向量化'}</Tag>
 }
 
+// TenantKBTab 后台「我的知识库」页：以通用 CRUD 组件维护本租户私有知识条目。
 export default function TenantKBTab({ configs = [] }: { configs?: Cfg[] }) {
   const crud = useCrud('/api/v1/admin/kb/my', { pageSize: 20 })
   const fileRef = useRef<HTMLInputElement>(null)

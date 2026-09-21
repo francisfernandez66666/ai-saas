@@ -1,0 +1,3 @@
+# 导出面缺文档注释数量的棘轮基线（只降不升）；由 tools/check_doc_comments.py --update-baseline 生成
+go=0
+fe=0

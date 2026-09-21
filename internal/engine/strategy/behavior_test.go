@@ -13,6 +13,7 @@ import (
 
 // ---- G-8-1: StageAnchorCeiling 阶段锁 ----
 
+// TestStageAnchorCeilingLockBehavior 锁定阶段锚点上限：上限随阶段单调抬升，选中锚点超限时降级并返回 downgraded=true。
 func TestStageAnchorCeilingLockBehavior(t *testing.T) {
 	// AnchorAggressiveness: [0,1,2,3,4,5,6]
 	// StageAnchorCeiling:   [1,2,3,4,6,6]
@@ -48,6 +49,7 @@ func TestStageAnchorCeilingLockBehavior(t *testing.T) {
 
 // ---- G-8-2: softmax 锚点选择 ----
 
+// TestSoftmaxAnchorSelectionBehavior 覆盖 Step2 softmax 选锚：高分锚点被选中并返回归一化置信度。
 func TestSoftmaxAnchorSelectionBehavior(t *testing.T) {
 	// 需要初始化 config.GlobalConfig 和 DefaultSystemConfigService
 	if config.GlobalConfig == nil {
@@ -83,6 +85,7 @@ func TestSoftmaxAnchorEqualScoresBehavior(t *testing.T) {
 
 // ---- G-8-3: 锚点攻击性值 ----
 
+// TestAnchorAggressivenessValuesBehavior 断言 AnchorAggressiveness 全表取值落在 [0,10] 合法区间。
 func TestAnchorAggressivenessValuesBehavior(t *testing.T) {
 	for i, agg := range AnchorAggressiveness {
 		if agg < 0 || agg > 10 {
@@ -103,6 +106,7 @@ func TestStageAnchorCeilingConsistencyBehavior(t *testing.T) {
 
 // ---- G-8-4: 询价意图检测（行为测试，区别于 strategy_test.go 的单元测试） ----
 
+// TestIsPriceInquiryBehavior 覆盖价格问询识别（多少钱/价格/优惠/落地价等表述）。
 func TestIsPriceInquiryBehavior(t *testing.T) {
 	cases := []struct {
 		text string
@@ -125,6 +129,7 @@ func TestIsPriceInquiryBehavior(t *testing.T) {
 
 // ---- G-8-5: 接钩检测 ----
 
+// TestCheckHookedBehavior 覆盖客户「已接钩/已应答」判定：≥3 个 rune 的确认性短答算接钩，意图句不算。
 func TestCheckHookedBehavior(t *testing.T) {
 	cases := []struct {
 		text string
@@ -148,6 +153,7 @@ func TestCheckHookedBehavior(t *testing.T) {
 
 // ---- G-8-6: 情绪检测 ----
 
+// TestDetectEmotionBehavior 覆盖情绪识别：正面与负面表述分别归类为 positive/negative。
 func TestDetectEmotionBehavior(t *testing.T) {
 	cases := []struct {
 		text   string
@@ -166,6 +172,7 @@ func TestDetectEmotionBehavior(t *testing.T) {
 
 // ---- G-8-7: 问候检测 ----
 
+// TestIsGreetingBehavior 覆盖寒暄识别（你好/嗨/在吗等），购车意图句不得误判为寒暄。
 func TestIsGreetingBehavior(t *testing.T) {
 	cases := []struct {
 		text string
@@ -187,6 +194,7 @@ func TestIsGreetingBehavior(t *testing.T) {
 
 // ---- G-8-8: SoftDowngrade 软降级 ----
 
+// TestSoftDowngradeBehavior 覆盖软降级：高攻击性叠加低接钩率时降级，高接钩率时不降级。
 func TestSoftDowngradeBehavior(t *testing.T) {
 	// 高攻击性 + 低接钩率 → 应降级
 	state := model.SessionState{HookRate: 0.1}

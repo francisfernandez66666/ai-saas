@@ -4,6 +4,7 @@ import { Button, Select, Table, Tag } from 'tdesign-react'
 import type { CellProps, TableRowData } from '../../types'
 import { Section, type PackQualityRow } from './shared'
 
+// PackQualityTab 平台后台「包质量」页：按天数窗口刷新行业包质量指标。
 export default function PackQualityTab({ rows, days, onDays, onRefresh }: {
   rows: PackQualityRow[]
   days: string

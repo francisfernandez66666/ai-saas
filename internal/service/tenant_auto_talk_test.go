@@ -51,6 +51,7 @@ func bindTestPack(t *testing.T, codeName, packCode, industry string, enterprise 
 	return tid
 }
 
+// TestTenantUsesAutoTalk 验证租户级「自动接待」开关按租户独立读取（未开启不得误开）。
 func TestTenantUsesAutoTalk(t *testing.T) {
 	testutil.SetupTestDB(t)
 	if db.DB == nil {

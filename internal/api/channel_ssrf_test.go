@@ -5,6 +5,7 @@ package api
 
 import "testing"
 
+// TestValidateChannelMockBaseURL 锁定渠道 mock_base_url 的 SSRF 校验边界：debug 放行（含非法/空配置），release 拦截环回与内网地址。
 func TestValidateChannelMockBaseURL(t *testing.T) {
 	// debug：空配置/无键/非法 JSON/空值均不得拦截（保持既有联调路径零扰动）
 	t.Setenv("GIN_MODE", "debug")

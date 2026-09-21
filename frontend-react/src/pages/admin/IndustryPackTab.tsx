@@ -110,6 +110,7 @@ function compareVersion(a: string, b: string): number {
   return String(a || '').localeCompare(String(b || ''))
 }
 
+// IndustryPackTab 后台「行业包」管理页：行业包列表、内容项维护与上下架。
 export default function IndustryPackTab() {
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)

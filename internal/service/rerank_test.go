@@ -24,6 +24,7 @@ type fakeRerankClient struct {
 	calls   int
 }
 
+// Rerank 是测试用假重排客户端的实现：记录调用次数并返回固定顺序结果，用于验证重排调用路径。
 func (f *fakeRerankClient) Rerank(query string, docs []string) ([]RerankItem, error) {
 	f.calls++
 	f.gotQ = query

@@ -2,6 +2,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分），FU 条目组件一并收在此文件（仅本视图使用）
 import { H, fmtShort, type Followup } from './shared'
 
+// FollowupView 顾问工作台「跟进记录」视图：列出跟进项并支持打开明细。
 export default function FollowupView({ followups, onOpen }: { followups: Followup[]; onOpen: (id: number) => void }) {
   return (
     <div style={{ padding: 12 }}>

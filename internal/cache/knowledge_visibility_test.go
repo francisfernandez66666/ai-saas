@@ -34,6 +34,7 @@ func newVisibleFixture() *KnowledgeCacheManager {
 	}
 }
 
+// TestGetVisibleBrands 验证品牌可见性：公开面仅返回系统预置 public 与本租户 public，他租户与 private 一律剔除。
 func TestGetVisibleBrands(t *testing.T) {
 	m := newVisibleFixture()
 	got := m.GetVisibleBrands(7)
@@ -48,6 +49,7 @@ func TestGetVisibleBrands(t *testing.T) {
 	}
 }
 
+// TestGetVisibleModels 验证车型可见性（全量与按品牌两个入口）：本租户 private 与他租户车型不得出现在公开面。
 func TestGetVisibleModels(t *testing.T) {
 	m := newVisibleFixture()
 	// 全量：预置 + 本租户 public
@@ -73,6 +75,7 @@ func TestGetVisibleModels(t *testing.T) {
 	}
 }
 
+// TestGetVisibleCompares 验证竞品对比可见性：按车型取公开对比时，private 与他租户行必须被过滤。
 func TestGetVisibleCompares(t *testing.T) {
 	m := newVisibleFixture()
 	got := m.GetVisibleComparesByModelID(7, 12)

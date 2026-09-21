@@ -33,6 +33,7 @@ const ZERO_DELAY_KEYS = [
   'merge_window_seconds', 'simple_msg_delay', 'store_visit_first_delay', 'store_visit_second_delay',
 ]
 
+// Admin 租户管理端页面入口：按 Tab 组织知识库、行业包、CDP、租户等后台功能。
 export default function Admin() {
   const brand = useBrand()
   const [tab, setTab] = useState('dashboard')

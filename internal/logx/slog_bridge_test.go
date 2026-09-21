@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestSlogBridgeLevels 验证 slog 桥接把 std log 文本（INFO/WARN）解析为对应级别的结构化日志。
 func TestSlogBridgeLevels(t *testing.T) {
 	var buf bytes.Buffer
 	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
@@ -46,6 +47,7 @@ func TestSlogBridgeLevels(t *testing.T) {
 	}
 }
 
+// TestInitStructuredLoggingSetsFlags 验证桥接后 std log 仅保留 Lshortfile（时间戳统一由 slog 提供，避免重复）。
 func TestInitStructuredLoggingSetsFlags(t *testing.T) {
 	out := log.Writer()
 	flags := log.Flags()

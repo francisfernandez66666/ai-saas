@@ -2,6 +2,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）
 import { URGENCY_LABELS, type Recommend } from './shared'
 
+// RecommendCard 顾问工作台「AI 推荐」卡片：展示推荐内容并支持一键回填输入框。
 export default function RecommendCard({ rec, onFill }: { rec: Recommend | null; onFill: (s: string) => void }) {
   if (!rec || (rec.recommends || []).length === 0) return null
   return (

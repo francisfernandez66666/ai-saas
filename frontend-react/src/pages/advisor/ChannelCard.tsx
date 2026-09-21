@@ -2,6 +2,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）。§八-6 D 块：JS-SDK 装配结果以一行小字呈现，失败不阻断功能
 import { STAGE_LABELS, splitTags, type ChannelContext } from './shared'
 
+// ChannelCard 顾问工作台「渠道接入」卡片：展示渠道上下文与 JS-SDK 就绪状态。
 export default function ChannelCard({ chanCtx, chanKey, jsSdkOk, customerId }: {
   chanCtx: ChannelContext | null
   chanKey: { corpid: string; external_userid: string } | null

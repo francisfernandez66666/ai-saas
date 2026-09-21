@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestExpireCheckLapseAndRemind 覆盖套餐到期检查：过期租户置为失效并发出提醒，SMTP 未配置时静默降级不报错。
 func TestExpireCheckLapseAndRemind(t *testing.T) {
 	testutil.SetupTestDB(t)
 	tid := testutil.CreateTenant(t)

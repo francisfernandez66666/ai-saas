@@ -7,24 +7,34 @@
 
 // 主色（与 index.css :root --pri 对齐，TDesign 品牌色）
 export const PRI = '#4f46e5'
+// PRI_LIGHT 主色浅底（选中/悬停背景）。
 export const PRI_LIGHT = '#eef2ff'
+// PRI_LIGHT_HOVER 主色浅底的悬停态。
 export const PRI_LIGHT_HOVER = '#e0e7ff'
 
 // 语义色（仅表达状态含义）
 export const SUCCESS = '#16a34a'
+// WARNING 警告色（待处理、临界提示）。
 export const WARNING = '#d97706'
+// DANGER 危险色（错误、失败、删除）。
 export const DANGER = '#dc2626'
 
 // 中性灰阶（背景/边框/文字）
 export const BG = '#f5f7fa'
+// CARD 卡片背景色。
 export const CARD = '#ffffff'
+// BORDER 边框与分隔线颜色。
 export const BORDER = '#e5e7eb'
+// TEXT 主文本颜色。
 export const TEXT = '#1f2937'
+// TEXT_SUB 次级文本颜色。
 export const TEXT_SUB = '#6b7280'
+// TEXT_MUTED 弱化文本颜色（占位、禁用）。
 export const TEXT_MUTED = '#9ca3af'
 
 // 圆角 / 阴影
 export const RADIUS = 12
+// SHADOW 卡片投影（低强度双层阴影）。
 export const SHADOW = '0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1)'
 
 /**

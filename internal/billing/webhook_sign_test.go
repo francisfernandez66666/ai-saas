@@ -16,6 +16,7 @@ func signV2(key, base string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+// TestVerifyGatewaySignV2AmountSegment 验证支付网关 V2 五段签名（含金额段）校验：金额一致方通过，篡改金额必须拒绝。
 func TestVerifyGatewaySignV2AmountSegment(t *testing.T) {
 	key := "test-gw-key"
 	orderNo, status, ts, nonce := "ORD1", "TRADE_SUCCESS", "1700000000", "n-1"

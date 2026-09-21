@@ -3,6 +3,7 @@
 import { Button, Select } from 'tdesign-react'
 import { Field, Section, type BdForm, type Tenant } from './shared'
 
+// BrandingTab 平台后台「品牌设置」页：按租户加载与保存品牌、落地页配置。
 export default function BrandingTab({ tenants, tenant, onTenant, bd, onBd, msg, onLoad, onSave }: {
   tenants: Tenant[]
   tenant: number | ''

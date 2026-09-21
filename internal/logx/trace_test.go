@@ -10,6 +10,7 @@ import (
 	"testing"
 )
 
+// TestContextTraceRoundTrip 覆盖 trace id 在 ctx 中的存取：无 trace、nil ctx 安全返回空串，空串不写入，非空可回读。
 func TestContextTraceRoundTrip(t *testing.T) {
 	if got := TraceFrom(context.Background()); got != "" {
 		t.Fatalf("无 trace ctx 应返回空串，得到 %q", got)
@@ -31,6 +32,7 @@ func TestContextTraceRoundTrip(t *testing.T) {
 	}
 }
 
+// TestWithTraceEmitsField 验证 WithTrace 派生的 logger 会把 trace_id 作为字段写入每条 JSON 日志。
 func TestWithTraceEmitsField(t *testing.T) {
 	var buf bytes.Buffer
 	old := slog.Default()
@@ -53,6 +55,7 @@ func TestWithTraceEmitsField(t *testing.T) {
 	}
 }
 
+// TestNewTraceID 断言 NewTraceID 产出 16 位十六进制且近似唯一（两次调用不相同）。
 func TestNewTraceID(t *testing.T) {
 	a, b := NewTraceID(), NewTraceID()
 	if len(a) != 16 || a == b {

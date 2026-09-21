@@ -127,6 +127,7 @@ func TestThreeBucketFreeExpiredFallsToMonthly(t *testing.T) {
 
 // ---- G-7-2: 三桶并发扣减原子性（纯逻辑，无 DB） ----
 
+// TestThreeBucketConcurrentDeduction 用 100 个 goroutine 并发扣减，验证三桶扣减的原子性与总数精确（不超扣、不丢扣）。
 func TestThreeBucketConcurrentDeduction(t *testing.T) {
 	// 100 个 goroutine 并发扣 1 token，free=50, monthly=100, balance=1000
 	// 总扣 100 token，余额应精确
@@ -226,6 +227,7 @@ func TestEpochFencingIncrement(t *testing.T) {
 
 // ---- G-7-4: processLocally 并发合并模拟 ----
 
+// TestProcessLocallyConcurrentMerge 模拟 processLocally 合并窗口：首个请求成为 processor，窗口内后续请求被合并而非并发触发。
 func TestProcessLocallyConcurrentMerge(t *testing.T) {
 	// 模拟 processLocally 的核心逻辑：第一个请求成为 processor，
 	// 后续请求在 merge window 内追加

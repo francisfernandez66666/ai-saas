@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/testutil"
 )
 
+// TestProcessInboundSimpleAsyncDelivery 验证渠道入站简单消息的异步投递链路（worker 消费后回复正确落地）。
 func TestProcessInboundSimpleAsyncDelivery(t *testing.T) {
 	testutil.SetupTestDB(t)
 	if db.DB == nil {

@@ -3,6 +3,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）
 import { Button, Textarea } from 'tdesign-react'
 
+// RatingCard 顾问工作台「服务评分」卡片：采集评分与评语并提交。
 export default function RatingCard({ rate, onRate, onSubmit }: {
   rate: { score: number; comment: string }
   onRate: (r: { score: number; comment: string }) => void

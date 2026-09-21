@@ -4,6 +4,7 @@ import { Button, Dialog, Input, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { type PlanOpt, type Tenant } from './shared'
 
+// TenantsTab 平台后台「租户管理」页：租户列表、关键词检索、授权/状态/套餐调整。
 export default function TenantsTab({ tenants, kw, onKw, onGrant, onSetStatus, onOpenPlan,
   planDlg, planOpts, onClosePlan, onConfirmPlan }: {
   tenants: Tenant[]

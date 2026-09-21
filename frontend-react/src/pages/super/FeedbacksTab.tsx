@@ -4,6 +4,7 @@ import { Button, Select, Table } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { FB_TYPES, Section, esc, type Fb } from './shared'
 
+// FeedbacksTab 平台后台「反馈处理」页：按状态与对象筛选并处理用户反馈。
 export default function FeedbacksTab({ fbs, status, onStatus, target, onTarget, onResolve }: {
   fbs: Fb[]
   status: string

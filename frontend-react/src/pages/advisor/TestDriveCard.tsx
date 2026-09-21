@@ -2,6 +2,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）；表单填充逻辑留在父组件，本卡只发意图
 import { TD_STATUS_LABELS, fmtShort, type TestDrive } from './shared'
 
+// TestDriveCard 顾问工作台「试驾」卡片：试驾列表与新建/编辑/状态流转入口。
 export default function TestDriveCard({ testDrives, onNew, onEdit, onSetStatus }: {
   testDrives: TestDrive[]
   onNew: () => void

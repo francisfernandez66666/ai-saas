@@ -5,6 +5,7 @@ import { Button, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { SELECT_STYLE as sel, Section, type Audit } from './shared'
 
+// AuditLogsTab 平台后台「审计日志」页：分页查询平台侧操作审计记录。
 export default function AuditLogsTab({ audits, page, total, onPage, onQuery }: {
   audits: Audit[]
   page: number

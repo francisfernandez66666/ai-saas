@@ -7,6 +7,7 @@ import type { Msg } from '../../types'
 // CONV_STATUS_LABELS 会话状态码 → 中文（未知码原样呈现）
 const CONV_STATUS_LABELS: Record<string, string> = { active: '进行中', closed: '已结束' }
 
+// HistoryTimeline 顾问工作台「历史会话时间线」：按会话展开/收起消息记录。
 export default function HistoryTimeline({ conversations, tlConv, tlMsgs, onToggle }: {
   conversations: ConvBrief[]
   tlConv: number | null

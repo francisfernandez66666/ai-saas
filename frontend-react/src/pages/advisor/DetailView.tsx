@@ -11,6 +11,7 @@ import ChatCard from './ChatCard'
 import HistoryTimeline from './HistoryTimeline'
 import RatingCard from './RatingCard'
 
+// DetailView 顾问工作台「客户详情」视图：聚合画像、标签、跟进、试驾与推荐入口。
 export default function DetailView({ detail, chanCtx, chanKey, jsSdkOk, onBack, onEdit, onEditTags,
   onNewFollowup, onStage, onNewTestDrive, rec, onFillInput,
   testDrives, onEditTestDrive, onSetTDStatus,

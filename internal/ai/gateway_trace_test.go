@@ -14,6 +14,7 @@ import (
 	"ai-scrm/internal/logx"
 )
 
+// TestTraceparentFor 校验 traceparentFor 产出的 W3C Trace Context 头格式（version-traceid-spanid-flags），并断言 trace id 由入参稳定派生。
 func TestTraceparentFor(t *testing.T) {
 	re := regexp.MustCompile(`^00-([0-9a-f]{32})-([0-9a-f]{16})-01$`)
 	h := traceparentFor("a1b2c3d4e5f60718")
@@ -40,6 +41,7 @@ func TestTraceparentFor(t *testing.T) {
 	}
 }
 
+// TestGatewayClientTraceHeaders 验证网关请求会携带 traceparent 头，保证 AI 调用链可跨进程串联。
 func TestGatewayClientTraceHeaders(t *testing.T) {
 	var got http.Header
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

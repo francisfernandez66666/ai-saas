@@ -3,6 +3,7 @@
 import { Button } from 'tdesign-react'
 import type { Quota } from './shared'
 
+// MeView 顾问工作台「我的」视图：展示配额用量并提供反馈入口。
 export default function MeView({ quota, onFeedback }: { quota: Quota | null; onFeedback: () => void }) {
   return (
     <div style={{ padding: 16 }}>

@@ -22,6 +22,7 @@ const CATEGORY_LABEL: Record<string, string> = {
   env: '环境',
 }
 
+// CdpTab 后台「CDP 客户数据」配置页：维护标签/画像等客户数据定义。
 export default function CdpTab() {
   const [defs, setDefs] = useState<CrudRow[]>([])
   const [customers, setCustomers] = useState<CrudRow[]>([])

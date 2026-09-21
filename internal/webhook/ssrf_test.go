@@ -5,6 +5,7 @@ package webhook
 
 import "testing"
 
+// TestValidateCallbackURLDebugAllowsLoopback 验证 debug 环境放行环回地址回调，保持本地联调路径零扰动。
 func TestValidateCallbackURLDebugAllowsLoopback(t *testing.T) {
 	t.Setenv("GIN_MODE", "debug")
 	for _, u := range []string{
@@ -17,6 +18,7 @@ func TestValidateCallbackURLDebugAllowsLoopback(t *testing.T) {
 	}
 }
 
+// TestValidateCallbackURLReleaseBlocksInternal 验证 release 环境拦截内网/环回/云元数据地址回调，防 SSRF。
 func TestValidateCallbackURLReleaseBlocksInternal(t *testing.T) {
 	t.Setenv("GIN_MODE", "release")
 	blocked := []string{
