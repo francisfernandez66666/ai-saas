@@ -1,35 +1,26 @@
 // 顾问工作台页（移动风格）：首页客户列表/跟进提醒/我的套餐，客户详情含聊天、试驾、标签、AI 接管开关
-// 顶部文件级说明；子组件 FU（跟进条目）、EditForm（资料编辑表单）见下方
-// 依赖 /api/v1/advisor/*、/api/v1/chat/history、/api/v1/feedback、/api/v1/billing/my-package、/api/v1/admin/tags
+// C2 拆分(2026-09-21)：原单文件 51,979 字节（统计+列表+详情+6 弹窗全在一个组件），
+// 现按「视图 / 详情卡片 / 弹窗」拆到 ./advisor/* 子组件，本文件只保留**状态与行为编排**（数据加载与写操作），
+// 渲染全部下沉，行为与交互逐字保持不变。
+// 依赖 /api/v1/advisor/*、/api/v1/chat/history、/api/v1/feedback、/api/v1/billing/my-package、/api/v1/advisor/tags
 import { useState, useEffect, useRef } from 'react'
-import { Button, Dialog, Input, Textarea, Tag, MessagePlugin } from 'tdesign-react'
+import { MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { AUTH, getToken, logoutAndRedirect } from '../lib/api'
 import { useAdvisorWS } from '../lib/realtime'
 import { collectFreshMessages } from '../lib/chat'
 // §八-6 D 块：企微侧边栏 JS-SDK 按需装配（失败只告警，不阻断渲染）
 import { setupWecomJsSdk } from '../lib/wecomJsSdk'
-import { Msg, Cust, Detail } from '../types'
+import { Cust, Detail, Msg } from '../types'
+import { API, NAV_TABS, type ChannelContext, type Followup, type Quota, type Recommend, type Stat, type TestDrive } from './advisor/shared'
+import HomeView from './advisor/HomeView'
+import FollowupView from './advisor/FollowupView'
+import MeView from './advisor/MeView'
+import DetailView from './advisor/DetailView'
+import { EditDialog, FeedbackDialog, FollowupDialog, StageDialog, TagDialog, TestDriveDialog, type FuForm, type StageForm, type TdForm } from './advisor/dialogs'
 
-// 顾问工作台接口前缀
-const API = '/api/v1/advisor'
-// STAGE_LABELS 客户旅程阶段码 → 中文名（列表/详情展示用）
-const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
-// STAGE_COLORS 阶段码 → Tailwind 徽标样式（状态标签配色）
-const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
-// TABS 客户列表顶部筛选页签（值 + 中文文案）
-const TABS = [{ k: 'all', t: '全部' }, { k: 'pending', t: '待跟进' }, { k: 'following', t: '跟进中' }, { k: 'arrived', t: '已到店' }, { k: 'test_drive', t: '已试驾' }]
-// H 客户姓名的展示处理：匿名访客统一显示为"客户"（避免泄露原始标识）
-const H = (n?: string) => (!n || n.startsWith('访客_')) ? '客户' : n
-// HI 客户头像占位字符：访客取"客"，普通客户取姓名首字符
-const HI = (n?: string) => (!n || n.startsWith('访客_')) ? '客' : (n?.[0] || '?')
+// 客户详情（资料+标签+会话）由 ../types 的 Detail 承载，统一领域口径
 
-// 首页统计卡片的数据结构（数值 + 文案 + 颜色）
-type Stat = { value: number; label: string; color: string }
-// Cust / Detail / Msg 已从 ../types 导入（见上方 import），统一领域口径
-
-// 顾问端（移动风格）：首页客户列表/跟进提醒/我的套餐，客户详情含聊天、试驾、标签、AI 接管开关
-// 依赖 /api/v1/advisor/*、/api/v1/chat/history、/api/v1/feedback、/api/v1/billing/my-package
 export default function Advisor() {
   const brand = useBrand()
   const [view, setView] = useState('home')
@@ -44,9 +35,9 @@ export default function Advisor() {
   // §八-6 C 块：当前会话模式（ai/human）——驱动「转回 AI」按钮可见性；
   // 进详情随会话同步，接管/转回操作后就地翻转（避免整页重拉）
   const [convMode, setConvMode] = useState('')
-  const [testDrives, setTestDrives] = useState<any[]>([])
-  const [followups, setFollowups] = useState<any[]>([])
-  const [quota, setQuota] = useState<any>(null)
+  const [testDrives, setTestDrives] = useState<TestDrive[]>([])
+  const [followups, setFollowups] = useState<Followup[]>([])
+  const [quota, setQuota] = useState<Quota | null>(null)
   const [input, setInput] = useState('')
   const [editOpen, setEditOpen] = useState(false)
   const [tagOpen, setTagOpen] = useState(false)
@@ -56,15 +47,15 @@ export default function Advisor() {
   const [fbText, setFbText] = useState('')
   // E2 修复(2026-09-14)：后端就绪但工作台零入口的 5 个能力补齐——
   // 策略推荐卡片 / 新建跟进 / 阶段调整 / 建·改试驾 / 接管对话
-  const [rec, setRec] = useState<{ intent_score?: number; urgency_level?: string; recommends?: { anchor_name?: string; template_name?: string; prompt_template?: string }[] } | null>(null)
+  const [rec, setRec] = useState<Recommend | null>(null)
   const [fuOpen, setFuOpen] = useState(false)
-  const [fuForm, setFuForm] = useState<{ method: string; content: string; next_follow_at: string }>({ method: 'phone', content: '', next_follow_at: '' })
+  const [fuForm, setFuForm] = useState<FuForm>({ method: 'phone', content: '', next_follow_at: '' })
   const [stageOpen, setStageOpen] = useState(false)
-  const [stageForm, setStageForm] = useState<{ journey_stage: string; journey_sub_stage: string }>({ journey_stage: '', journey_sub_stage: '' })
+  const [stageForm, setStageForm] = useState<StageForm>({ journey_stage: '', journey_sub_stage: '' })
   const [tdOpen, setTdOpen] = useState(false)
-  const [tdEdit, setTdEdit] = useState<any>(null) // 非空=编辑已有单（PUT），空=新建（POST）
-  const [tdForm, setTdForm] = useState<Record<string, string>>({ scheduled_at: '', model_name: '', contact_name: '', contact_phone: '', location: '', note: '', status: 'pending' })
-  const [chanCtx, setChanCtx] = useState<any>(null)
+  const [tdEdit, setTdEdit] = useState<TestDrive | null>(null) // 非空=编辑已有单（PUT），空=新建（POST）
+  const [tdForm, setTdForm] = useState<TdForm>({ scheduled_at: '', model_name: '', contact_name: '', contact_phone: '', location: '', note: '', status: 'pending' })
+  const [chanCtx, setChanCtx] = useState<ChannelContext | null>(null)
   const [chanKey, setChanKey] = useState<{ corpid: string; external_userid: string } | null>(null)
   // P1-9 零UI补齐(2026-09-20)：跨会话历史时间线——GET /conversations/:id/messages 此前前端零消费者，
   // 详情底部聊天记录只看当前会话，历史会话内容无处可查。点行展开该会话全量消息（≤200 条，后端 ASC）
@@ -224,6 +215,23 @@ export default function Advisor() {
     if (j.code === 0) { MessagePlugin.success('阶段已更新'); setStageOpen(false); openDetail(detailId) }
     else MessagePlugin.error(j?.message || '更新失败')
   }
+  // E2：打开新建试驾单弹窗（用当前客户资料预填车型/联系人/电话）
+  const newTestDriveForm = (): TdForm => ({
+    scheduled_at: '', model_name: detail?.customer?.interest_model || '',
+    contact_name: detail?.customer?.name || '', contact_phone: detail?.customer?.phone || '',
+    location: '', note: '', status: 'pending',
+  })
+  function openNewTestDrive() { setTdEdit(null); setTdForm(newTestDriveForm()); setTdOpen(true) }
+  // E2：打开编辑试驾单弹窗（datetime-local 只认本地时间前 16 位，截掉时区尾）
+  function openEditTestDrive(td: TestDrive) {
+    setTdEdit(td)
+    setTdForm({
+      scheduled_at: td.scheduled_at ? td.scheduled_at.slice(0, 16) : '',
+      model_name: td.model_name || '', contact_name: td.contact_name || '', contact_phone: td.contact_phone || '',
+      location: td.location || '', note: td.note || '', status: td.status || 'pending',
+    })
+    setTdOpen(true)
+  }
   // E2：创建/更新试驾单（tdEdit 非空走 PUT，附状态变更）
   async function saveTestDrive() {
     if (!detailId) return
@@ -238,7 +246,7 @@ export default function Advisor() {
     else MessagePlugin.error(j?.message || '保存失败')
   }
   // E2：快捷改试驾单状态（已完成/已取消）
-  async function setTDStatus(td: { id: number }, status: string) {
+  async function setTDStatus(td: TestDrive, status: string) {
     const j = await AUTH(API + '/test-drive/' + td.id, { method: 'PUT', body: { status } })
     if (j?.code === 0) { MessagePlugin.success('已更新'); loadTestDrives(detailId!) }
     else MessagePlugin.error(j?.message || '更新失败')
@@ -295,7 +303,13 @@ export default function Advisor() {
   })
 
   if (!getToken()) return null
-  const c = detail?.customer
+
+  // 返回列表：清 detailId 与错位保护 ref（不动 view，见 DetailView 的 P0-3 说明）
+  const backToList = () => { detailIdRef.current = null; setDetailId(null) }
+  // 打开标签弹窗：以当前客户已有标签为初始勾选（保存语义=提交列表即最终态）
+  const openTagDialog = () => { setCheckedTags((detail?.tags || []).map((t) => t.tag_name)); setTagOpen(true) }
+  // 打开阶段弹窗：以当前客户阶段预填
+  const openStageDialog = () => { setStageForm({ journey_stage: detail?.customer?.journey_stage || '', journey_sub_stage: detail?.customer?.journey_sub_stage || '' }); setStageOpen(true) }
 
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f5f7fa', color: '#2d3748' }}>
@@ -305,279 +319,49 @@ export default function Advisor() {
         <button onClick={logoutAndRedirect} aria-label="退出登录" style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>退出</button>
       </header>
 
-      {view === 'home' && (
-        <div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8, padding: 12 }}>
-            {stats.map((s, i) => <div key={i} style={{ background: '#fff', borderRadius: 8, border: '1px solid #f0f0f0', padding: 10, textAlign: 'center' }}><p style={{ fontSize: 20, fontWeight: 700 }}>{s.value}</p><p style={{ fontSize: 11, color: '#718096', marginTop: 2 }}>{s.label}</p></div>)}
-          </div>
-          <div style={{ display: 'flex', gap: 6, padding: '0 12px 10px', overflowX: 'auto' }}>
-            {TABS.map((t) => <button key={t.k} onClick={() => setStatus(t.k)} style={{ whiteSpace: 'nowrap', padding: '5px 12px', borderRadius: 16, fontSize: 13, border: 'none', background: status === t.k ? 'var(--pri)' : '#fff', color: status === t.k ? '#fff' : '#718096' }}>{t.t}</button>)}
-          </div>
-          <div style={{ background: '#fff' }}>
-            {list.length === 0 && <div style={{ textAlign: 'center', color: '#a0aec0', padding: 40, fontSize: 13 }}>暂无客户</div>}
-            {list.map((l) => (
-              <div key={l.id} onClick={() => openDetail(l.id)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '12px 16px', cursor: 'pointer', borderBottom: '1px solid #f0f0f0' }}>
-                <div style={{ width: 40, height: 40, background: '#f0f0f0', borderRadius: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: '#718096', fontWeight: 600 }}>{HI(l.name)}</div>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                    <span style={{ fontSize: 14, fontWeight: 500 }}>{H(l.name)}</span>
-                    <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: (STAGE_COLORS[l.journey_stage || ''] || 'bg-gray-100') + ' ' + (STAGE_COLORS[l.journey_stage || ''] ? '' : 'text-gray-500') }}>{STAGE_LABELS[l.journey_stage || ''] || l.journey_stage || '-'}</span>
-                    {l.conv_mode === 'human' && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#dbeafe', color: '#1d4ed8' }}>人工</span>}
-                    {/* §八-6 C 块：待接管徽标——列表接口当前未下发该列，仅在数据真带 pending_handoff=true 时渲染（勿造字段） */}
-                    {l.pending_handoff === true && <Tag size="small" theme="warning">待接管</Tag>}
-                  </div>
-                  <p style={{ fontSize: 12, color: '#a0aec0', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{l.last_message || '暂无消息'}</p>
-                </div>
-                <span style={{ fontSize: 11, color: '#cbd5e0' }}>{l.updated_at ? new Date(l.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {view === 'followup' && (
-        <div style={{ padding: 12 }}>
-          <h3 style={{ fontSize: 14, margin: '8px 0' }}>今日待跟进</h3>
-          {followups.filter((f) => f.next_follow_at && new Date(f.next_follow_at) >= new Date()).map((f) => <FU key={'t' + f.customer_id} f={f} onClick={() => openDetail(f.customer_id)} />)}
-          <h3 style={{ fontSize: 14, margin: '16px 0 8px' }}>逾期跟进</h3>
-          {followups.filter((f) => f.next_follow_at && new Date(f.next_follow_at) < new Date()).map((f) => <FU key={'o' + f.customer_id} f={f} onClick={() => openDetail(f.customer_id)} />)}
-          {followups.length === 0 && <p style={{ color: '#a0aec0', fontSize: 13 }}>暂无跟进提醒</p>}
-        </div>
-      )}
-
-      {view === 'me' && (
-        <div style={{ padding: 16 }}>
-          {quota && <div style={{ background: '#fff', borderRadius: 12, padding: 16, marginBottom: 16, display: 'flex', gap: 20 }}>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.used_ai_calls}/{quota.max_ai_calls || '∞'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>本月AI调用</span></div>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.ai_call_balance}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>增量余额</span></div>
-            <div style={{ textAlign: 'center' }}><b style={{ fontSize: 18, color: 'var(--pri)' }}>{quota.expired_at ? new Date(quota.expired_at).toLocaleDateString() : '-'}</b><span style={{ fontSize: 11, color: '#718096', display: 'block' }}>到期日</span></div>
-          </div>}
-          <Button theme="primary" block onClick={() => setFbOpen(true)}>提交产品反馈</Button>
-        </div>
-      )}
+      {view === 'home' && <HomeView stats={stats} list={list} status={status} onStatus={setStatus} onOpen={openDetail} />}
+      {view === 'followup' && <FollowupView followups={followups} onOpen={openDetail} />}
+      {view === 'me' && <MeView quota={quota} onFeedback={() => setFbOpen(true)} />}
 
       {/* 客户详情 */}
       {/* P0-3 修复(2026-09-20)：原 `view === 'home'` 闸导致从「我的/统计」等 Tab 点开
           客户时 detailId 已设但详情不渲染（点了没反应）。详情本身是 fixed 全屏覆盖层，
           任意 Tab 下都应显示，返回按钮只清 detailId 不动 view */}
       {detailId != null && (
-        <div style={{ position: 'fixed', inset: 0, background: '#f5f7fa', zIndex: 20, maxWidth: 480, margin: '0 auto' }}>
-          <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            {/* G-20：aria-label 标注返回按钮，辅助技术可识别导航操作 */}
-            <button onClick={() => (detailIdRef.current = null, setDetailId(null))} aria-label="返回客户列表" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 16 }}>←</button>
-            <span style={{ fontWeight: 600 }}>{H(c?.name)}</span>
-            {/* G-20：aria-label 标注编辑按钮，辅助技术可识别操作意图 */}
-            <button onClick={() => setEditOpen(true)} aria-label="编辑客户资料" style={{ background: 'none', border: 'none', color: '#fff', fontSize: 13 }}>编辑</button>
-          </header>
-          <div style={{ padding: 12, overflowY: 'auto', height: 'calc(100vh - 110px)' }}>
-            {chanCtx && Number(chanCtx.customer_id) === Number(c?.id) && (
-              <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13, border: '1px solid #eef2ff' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <b>企业微信客户</b>
-                  <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#eef2ff', color: '#4338ca' }}>侧边栏</span>
-                </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: '6px 12px', marginTop: 8 }}>
-                  <div><span style={{ color: '#a0aec0' }}>阶段</span><div>{STAGE_LABELS[chanCtx.journey_stage] || chanCtx.journey_stage || '-'}</div></div>
-                  <div><span style={{ color: '#a0aec0' }}>关注产品</span><div>{chanCtx.interest_model || '-'}</div></div>
-                  <div><span style={{ color: '#a0aec0' }}>企业微信ID</span><div style={{ wordBreak: 'break-all' }}>{chanCtx.external_userid || chanKey?.external_userid || '-'}</div></div>
-                  <div><span style={{ color: '#a0aec0' }}>接待成员</span><div>{chanCtx.staff_id || '-'}</div></div>
-                </div>
-                {/* §八-6 D 块：JS-SDK 装配状态一行小字（null=未装配完成不显示；失败不阻断侧边栏功能） */}
-                {jsSdkOk !== null && (
-                  <div style={{ fontSize: 11, color: '#a0aec0', marginTop: 8 }}>企微上下文：{jsSdkOk ? '已就绪' : '不可用（非企微环境可忽略）'}</div>
-                )}
-                {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).length > 0 && (
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-                    {String(chanCtx.tags || '').split(/[,，]/).map((x: string) => x.trim()).filter(Boolean).map((x: string) => <span key={x} style={{ fontSize: 11, padding: '1px 7px', borderRadius: 10, background: '#f1f5f9', color: '#475569' }}>{x}</span>)}
-                  </div>
-                )}
-              </div>
-            )}
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-              {(detail?.tags || []).map((t, i) => <Tag key={i} theme="primary" variant="light">{t.tag_name}</Tag>)}
-              <Tag theme="default" style={{ cursor: 'pointer' }} onClick={() => { setCheckedTags((detail?.tags || []).map((t) => t.tag_name)); setTagOpen(true) }}>+ 标签</Tag>
-            </div>
-            {/* E2 修复(2026-09-14)：动作条——后端早就绪但旧工作台只有聊天+标签，跟进/阶段/试驾/接管全靠口头或后台 */}
-            <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
-              <Button size="small" variant="outline" onClick={() => setFuOpen(true)}>新建跟进</Button>
-              <Button size="small" variant="outline" onClick={() => { setStageForm({ journey_stage: c?.journey_stage || '', journey_sub_stage: c?.journey_sub_stage || '' }); setStageOpen(true) }}>调整阶段</Button>
-              <Button size="small" variant="outline" onClick={() => { setTdEdit(null); setTdForm({ scheduled_at: '', model_name: c?.interest_model || '', contact_name: c?.name || '', contact_phone: c?.phone || '', location: '', note: '', status: 'pending' }); setTdOpen(true) }}>建试驾单</Button>
-              {c?.journey_stage && <span style={{ alignSelf: 'center', fontSize: 10, padding: '1px 6px', borderRadius: 10, background: '#eef2ff', color: '#4338ca' }}>{STAGE_LABELS[c.journey_stage] || c.journey_stage}</span>}
-            </div>
-            {/* E2：AI 策略推荐卡片（intent/紧迫度 + 推荐话术一键填入输入框） */}
-            {rec && (rec.recommends || []).length > 0 && (
-              <div style={{ background: 'linear-gradient(135deg,#eef2ff,#faf5ff)', border: '1px solid #e0e7ff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                  <b style={{ fontSize: 13 }}>策略推荐</b>
-                  <span style={{ fontSize: 11, color: '#4338ca' }}>意向 {(Number(rec.intent_score) * 100).toFixed(0)}%{rec.urgency_level ? ` · ${rec.urgency_level === 'high' ? '紧迫' : rec.urgency_level === 'medium' ? '中等' : '平稳'}` : ''}</span>
-                </div>
-                {(rec.recommends || []).slice(0, 2).map((r, i) => (
-                  <div key={i} style={{ background: '#fff', borderRadius: 8, padding: '8px 10px', marginTop: 6, display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 11, color: '#7c3aed' }}>{r.anchor_name || '话术'} · {r.template_name}</div>
-                      <div style={{ marginTop: 2, color: '#374151' }}>{(r.prompt_template || '').slice(0, 80)}</div>
-                    </div>
-                    <button aria-label="填入输入框" onClick={() => setInput(r.prompt_template || '')} style={{ flexShrink: 0, background: 'var(--pri)', color: '#fff', border: 'none', borderRadius: 6, padding: '4px 8px', fontSize: 11, cursor: 'pointer' }}>填入</button>
-                  </div>
-                ))}
-              </div>
-            )}
-            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between' }}><span style={{ color: '#a0aec0' }}>手机</span><span>{c?.phone || '-'}{c?.phone && <a href={'tel:' + c.phone} style={{ marginLeft: 8, color: 'var(--pri)' }}>📞</a>}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>兴趣车型</span><span>{c?.interest_model || '-'}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>预算</span><span>{c?.budget > 0 ? c.budget + '万' : '-'}</span></div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>备注</span><span style={{ maxWidth: 200, textAlign: 'right' }}>{c?.remark || '-'}</span></div>
-            </div>
-            {/* E2：试驾单可操作——新建/编辑/完成/取消（旧版只读展示，状态全靠后台改） */}
-            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <b style={{ fontSize: 13 }}>试驾单</b>
-                <button onClick={() => { setTdEdit(null); setTdForm({ scheduled_at: '', model_name: c?.interest_model || '', contact_name: c?.name || '', contact_phone: c?.phone || '', location: '', note: '', status: 'pending' }); setTdOpen(true) }} style={{ background: 'none', border: 'none', color: 'var(--pri)', fontSize: 12, cursor: 'pointer' }}>+ 新建</button>
-              </div>
-              {testDrives.length === 0 && <div style={{ color: '#a0aec0', marginTop: 6, fontSize: 12 }}>暂无试驾单</div>}
-              {testDrives.map((td, i) => <div key={i} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8, alignItems: 'center' }}>
-                <span style={{ flex: 1 }}>{td.model_name || '试驾'} <span style={{ color: '#a0aec0' }}>· {td.status === 'pending' ? '待试驾' : td.status === 'completed' ? '已完成' : '已取消'}</span>{td.scheduled_at ? <span style={{ color: '#a0aec0' }}> · {new Date(td.scheduled_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span> : null}</span>
-                {td.status === 'pending' && <><button onClick={() => setTDStatus(td, 'completed')} style={{ background: 'none', border: '1px solid #c6f6d5', color: '#276749', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>完成</button>
-                  <button onClick={() => setTDStatus(td, 'cancelled')} style={{ background: 'none', border: '1px solid #fed7d7', color: '#9b2c2c', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>取消</button></>}
-                <button onClick={() => { setTdEdit(td); setTdForm({ scheduled_at: td.scheduled_at ? td.scheduled_at.slice(0, 16) : '', model_name: td.model_name || '', contact_name: td.contact_name || '', contact_phone: td.contact_phone || '', location: td.location || '', note: td.note || '', status: td.status || 'pending' }); setTdOpen(true) }} style={{ background: 'none', border: '1px solid #e2e8f0', borderRadius: 4, padding: '1px 6px', fontSize: 11, cursor: 'pointer' }}>编辑</button>
-              </div>)}
-            </div>
-            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-                <b style={{ fontSize: 13 }}>聊天记录</b>
-                <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                  {/* §八-6 C 块：立即回复——解除合并窗口延迟，积压消息马上发出（有会话时常驻的轻量按钮） */}
-                  {convId != null && <button onClick={clearDelay} title="解除等待，让积压消息立即发出" style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568' }}>立即回复</button>}
-                  {/* E2：一键接管对话（AI 暂停），与自动回复开关联动 */}
-                  <button onClick={takeover} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: '#fff', color: 'var(--pri)' }}>接管</button>
-                  {/* §八-6 C 块：转回 AI——仅人工接管态显示，恢复自动回复并刷新聊天 */}
-                  {convMode === 'human' && <button onClick={transferBackAI} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: 'var(--pri)', color: '#fff' }}>转回 AI</button>}
-                  {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
-                  <span onClick={toggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') toggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
-                </div>
-              </div>
-              <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {msgs.map((m, i) => <div key={i} style={{ alignSelf: m.sender_type === 'human' ? 'flex-end' : 'flex-start', background: m.sender_type === 'human' ? 'var(--pri)' : m.sender_type === 'ai' ? '#ecfdf5' : '#f1f5f9', color: m.sender_type === 'human' ? '#fff' : '#1f2937', padding: '8px 12px', borderRadius: 10, maxWidth: '80%', fontSize: 13 }}>{m.content}</div>)}
-              </div>
-            </div>
-            {/* P1-9 零UI补齐(2026-09-20)：跨会话历史时间线——点开某会话拉 /conversations/:id/messages 全量回看 */}
-            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-              <b style={{ fontSize: 13 }}>历史会话</b>
-              {(detail?.conversations || []).length === 0 && <div style={{ color: '#a0aec0', marginTop: 6, fontSize: 12 }}>暂无历史会话</div>}
-              {(detail?.conversations || []).map((cv) => (
-                <div key={cv.id}>
-                  <div onClick={() => toggleTimeline(cv.id)} style={{ marginTop: 6, paddingTop: 6, borderTop: '1px solid #f0f0f0', display: 'flex', gap: 8, alignItems: 'center', cursor: 'pointer' }}>
-                    <span style={{ flex: 1 }}>会话 #{cv.id}
-                      <span style={{ color: '#a0aec0' }}> · {cv.channel || 'web'} · {cv.status === 'active' ? '进行中' : cv.status === 'closed' ? '已结束' : cv.status || '-'}</span>
-                      {cv.last_message_at ? <span style={{ color: '#a0aec0' }}> · {new Date(cv.last_message_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span> : null}
-                    </span>
-                    <span style={{ color: 'var(--pri)', fontSize: 12 }}>{tlConv === cv.id ? '收起' : '展开'}</span>
-                  </div>
-                  {tlConv === cv.id && (
-                    <div style={{ margin: '6px 0 2px', padding: '8px 10px', background: '#f8fafc', borderRadius: 8, maxHeight: 240, overflowY: 'auto' }}>
-                      {tlMsgs.length === 0 && <span style={{ color: '#a0aec0', fontSize: 12 }}>无消息</span>}
-                      {tlMsgs.map((m, i) => (
-                        <div key={i} style={{ fontSize: 12, marginBottom: 4 }}>
-                          <span style={{ color: m.sender_type === 'human' ? '#4338ca' : m.sender_type === 'ai' ? '#047857' : '#64748b' }}>
-                            [{m.sender_type === 'human' ? '顾问' : m.sender_type === 'ai' ? 'AI' : m.sender_type === 'customer' ? '客户' : m.sender_type}]
-                          </span>{' '}{m.content}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            {/* P1-9：客户满意度评分（POST /feedback/rating，登录态记录，后端限 5 次/天/人+客户） */}
-            <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12, fontSize: 13 }}>
-              <b style={{ fontSize: 13 }}>满意度评分</b>
-              <div style={{ display: 'flex', gap: 6, marginTop: 8, alignItems: 'center' }}>
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <button key={n} onClick={() => setRate((r) => ({ ...r, score: n }))} aria-label={n + ' 分'}
-                    style={{ border: 'none', background: 'none', cursor: 'pointer', fontSize: 20, color: n <= rate.score ? '#f59e0b' : '#d1d5db' }}>★</button>
-                ))}
-                <span style={{ color: '#a0aec0', fontSize: 12 }}>{rate.score ? rate.score + ' 分' : '未评分'}</span>
-              </div>
-              <Textarea value={rate.comment} onChange={(v) => setRate((r) => ({ ...r, comment: v }))} placeholder="评语（可选）" autosize={{ minRows: 2 }} style={{ marginTop: 8 }} />
-              <Button size="small" theme="primary" variant="outline" onClick={submitRating} style={{ marginTop: 8 }}>提交评分</Button>
-            </div>
-          </div>
-          <div style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', padding: 10, display: 'flex', gap: 8 }}>
-            {/* G-20：顾问消息输入框 aria-label 供屏幕阅读器识别 */}
-            <Input value={input} onChange={(v) => setInput(v)} placeholder="输入消息…" aria-label="顾问消息输入框" onEnter={send} style={{ flex: 1 }} />
-            {/* G-20：发送按钮 aria-label 标注操作意图 */}
-            <Button theme="primary" onClick={send} aria-label="发送消息">发送</Button>
-          </div>
-        </div>
+        <DetailView
+          detail={detail} chanCtx={chanCtx} chanKey={chanKey} jsSdkOk={jsSdkOk}
+          onBack={backToList} onEdit={() => setEditOpen(true)} onEditTags={openTagDialog}
+          onNewFollowup={() => setFuOpen(true)} onStage={openStageDialog} onNewTestDrive={openNewTestDrive}
+          rec={rec} onFillInput={setInput}
+          testDrives={testDrives} onEditTestDrive={openEditTestDrive} onSetTDStatus={setTDStatus}
+          msgs={msgs} chatRef={chatRef} convId={convId} convMode={convMode} aiOn={aiOn}
+          onClearDelay={clearDelay} onTakeover={takeover} onTransferBackAI={transferBackAI} onToggleAI={toggleAI}
+          tlConv={tlConv} tlMsgs={tlMsgs} onToggleTimeline={toggleTimeline}
+          rate={rate} onRate={setRate} onSubmitRating={submitRating}
+          input={input} onInput={setInput} onSend={send}
+        />
       )}
 
       {/* G-20：底部导航栏 aria-label 标注导航用途，aria-current 标记当前激活页签 */}
       <nav aria-label="顾问工作台导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
-        {[{ k: 'home', t: '首页' }, { k: 'followup', t: '跟进' }, { k: 'me', t: '我的' }].map((t) => <button key={t.k} onClick={() => { setView(t.k); detailIdRef.current = null; setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
+        {NAV_TABS.map((t) => <button key={t.k} onClick={() => { setView(t.k); detailIdRef.current = null; setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
       </nav>
 
-      <Dialog header="编辑客户资料" visible={editOpen} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} confirmBtn="保存">
-        {c && <EditForm id={detailId!} cur={c} />}
-      </Dialog>
-      <Dialog header="编辑标签" visible={tagOpen} onClose={() => setTagOpen(false)} onConfirm={saveTags} confirmBtn="保存">
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-          {allTags.map((t) => <label key={t} style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 4 }}><input type="checkbox" checked={checkedTags.includes(t)} onChange={(e) => { const el = e.target as HTMLInputElement; setCheckedTags(el.checked ? [...checkedTags, t] : checkedTags.filter((x) => x !== t)) }} />{t}</label>)}
-        </div>
-      </Dialog>
-      <Dialog header="产品反馈" visible={fbOpen} onClose={() => setFbOpen(false)} onConfirm={submitFeedback} confirmBtn="提交">
-        <Textarea value={fbText} onChange={(v) => setFbText(v)} placeholder="说说你的建议…" autosize={{ minRows: 3 }} />
-      </Dialog>
-
-      {/* E2：新建跟进弹窗 */}
-      <Dialog header="新建跟进" visible={fuOpen} onClose={() => setFuOpen(false)} onConfirm={saveFollowup} confirmBtn="保存">
-        <div style={{ display: 'grid', gap: 10 }}>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            {[{ k: 'phone', t: '电话' }, { k: 'wechat', t: '微信' }, { k: 'store', t: '到店' }, { k: 'email', t: '邮件' }].map((m) => (
-              <button key={m.k} onClick={() => setFuForm({ ...fuForm, method: m.k })} style={{ padding: '4px 12px', borderRadius: 16, fontSize: 13, border: 'none', background: fuForm.method === m.k ? 'var(--pri)' : '#f1f5f9', color: fuForm.method === m.k ? '#fff' : '#475569', cursor: 'pointer' }}>{m.t}</button>
-            ))}
-          </div>
-          <Textarea value={fuForm.content} onChange={(v) => setFuForm({ ...fuForm, content: v })} placeholder="跟进内容…" autosize={{ minRows: 2 }} />
-          <label style={{ fontSize: 13, color: '#475569' }}>下次跟进时间（可选）<input type="datetime-local" value={fuForm.next_follow_at} onChange={(e) => setFuForm({ ...fuForm, next_follow_at: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }} /></label>
-        </div>
-      </Dialog>
-
-      {/* E2：调整旅程阶段弹窗 */}
-      <Dialog header="调整客户阶段" visible={stageOpen} onClose={() => setStageOpen(false)} onConfirm={saveStage} confirmBtn="保存">
-        <div style={{ display: 'grid', gap: 10 }}>
-          <label style={{ fontSize: 13, color: '#475569' }}>目标阶段
-            <select value={stageForm.journey_stage} onChange={(e) => setStageForm({ ...stageForm, journey_stage: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }}>
-              <option value="">请选择…</option>
-              {Object.entries(STAGE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-            </select>
-          </label>
-          {stageForm.journey_stage === 'arrived' && <label style={{ fontSize: 13, color: '#475569' }}>到店子状态
-            <select value={stageForm.journey_sub_stage} onChange={(e) => setStageForm({ ...stageForm, journey_sub_stage: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }}>
-              <option value="">无</option><option value="test_driven">已试驾</option><option value="quoted">已报价</option>
-            </select>
-          </label>}
-        </div>
-      </Dialog>
-
-      {/* E2：建/改试驾单弹窗 */}
-      <Dialog header={tdEdit ? '编辑试驾单' : '新建试驾单'} visible={tdOpen} onClose={() => setTdOpen(false)} onConfirm={saveTestDrive} confirmBtn="保存">
-        <div style={{ display: 'grid', gap: 10 }}>
-          <label style={{ fontSize: 13, color: '#475569' }}>预约时间 *<input type="datetime-local" value={tdForm.scheduled_at} onChange={(e) => setTdForm({ ...tdForm, scheduled_at: e.target.value })} style={{ display: 'block', marginTop: 4, padding: '6px 10px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 14, width: '100%' }} /></label>
-          <Input value={tdForm.model_name} onChange={(v) => setTdForm({ ...tdForm, model_name: v })} placeholder="试驾车型" />
-          <div style={{ display: 'flex', gap: 8 }}>
-            <Input value={tdForm.contact_name} onChange={(v) => setTdForm({ ...tdForm, contact_name: v })} placeholder="联系人" style={{ flex: 1 }} />
-            <Input value={tdForm.contact_phone} onChange={(v) => setTdForm({ ...tdForm, contact_phone: v })} placeholder="联系电话" style={{ flex: 1 }} />
-          </div>
-          <Input value={tdForm.location} onChange={(v) => setTdForm({ ...tdForm, location: v })} placeholder="试驾地点" />
-          <Textarea value={tdForm.note} onChange={(v) => setTdForm({ ...tdForm, note: v })} placeholder="备注" autosize={{ minRows: 2 }} />
-        </div>
-      </Dialog>
+      <EditDialog visible={editOpen} customer={detail?.customer} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} />
+      <TagDialog visible={tagOpen} allTags={allTags} checkedTags={checkedTags}
+        onToggle={(t, on) => setCheckedTags(on ? [...checkedTags, t] : checkedTags.filter((x) => x !== t))}
+        onClose={() => setTagOpen(false)} onConfirm={saveTags} />
+      <FeedbackDialog visible={fbOpen} value={fbText} onChange={setFbText} onClose={() => setFbOpen(false)} onConfirm={submitFeedback} />
+      <FollowupDialog visible={fuOpen} form={fuForm} onForm={setFuForm} onClose={() => setFuOpen(false)} onConfirm={saveFollowup} />
+      <StageDialog visible={stageOpen} form={stageForm} onForm={setStageForm} onClose={() => setStageOpen(false)} onConfirm={saveStage} />
+      <TestDriveDialog visible={tdOpen} editing={tdEdit} form={tdForm} onForm={setTdForm} onClose={() => setTdOpen(false)} onConfirm={saveTestDrive} />
     </div>
   )
 
   // 保存客户资料编辑：从表单DOM读取姓名/手机/车型/预算/备注后 PUT /customer/:id/info
   async function saveEdit() {
     if (!detailId) return
-    const body: any = {}
+    const body: Record<string, unknown> = {}
     const name = (document.getElementById('eName') as HTMLInputElement)?.value.trim()
     const phone = (document.getElementById('ePhone') as HTMLInputElement)?.value.trim()
     const model = (document.getElementById('eModel') as HTMLInputElement)?.value.trim()
@@ -588,27 +372,4 @@ export default function Advisor() {
     const j = await AUTH(API + '/customer/' + detailId + '/info', { method: 'PUT', body })
     if (j.code === 0) { MessagePlugin.success('保存成功'); setEditOpen(false); openDetail(detailId) } else MessagePlugin.error('保存失败')
   }
-}
-
-// 跟进提醒条目：今日待跟进与逾期跟进列表中的单条展示
-function FU({ f, onClick }: { f: any; onClick: () => void }) {
-  return (<div onClick={onClick} style={{ background: '#fff', borderRadius: 8, border: '1px solid #f0f0f0', padding: 12, marginBottom: 8, display: 'flex', gap: 10, cursor: 'pointer', alignItems: 'center' }}>
-    <div style={{ width: 32, height: 32, background: '#f0f0f0', borderRadius: 16, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11 }}>{H(f.customer_name)[0]}</div>
-    <div style={{ flex: 1, minWidth: 0 }}><p style={{ fontSize: 13, fontWeight: 500 }}>{H(f.customer_name)}</p><p style={{ fontSize: 12, color: '#a0aec0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{f.content || '跟进提醒'}</p></div>
-    <span style={{ fontSize: 11, color: '#cbd5e0' }}>{f.next_follow_at ? new Date(f.next_follow_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</span>
-  </div>)
-}
-
-// 客户资料编辑表单：通过 DOM id 直接读取输入框值（非受控），提交到 /advisor/customer/:id/info
-// 疑点：类型里声明了 id 入参但函数未解构使用，实际靠闭包 detailId 提交
-function EditForm({ cur }: { id: number; cur: any }) {
-  const lab = { display: 'block', fontSize: 13, color: '#475569', margin: '8px 0 4px' }
-  const inp = { width: '100%', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: 8, fontSize: 14 }
-  return (<div style={{ display: 'grid', gap: 0 }}>
-    <label style={lab}>姓名</label><input id="eName" defaultValue={cur.name || ''} style={inp} />
-    <label style={lab}>手机号</label><input id="ePhone" defaultValue={cur.phone || ''} style={inp} />
-    <label style={lab}>兴趣车型</label><input id="eModel" defaultValue={cur.interest_model || ''} style={inp} />
-    <label style={lab}>预算(万)</label><input id="eBudget" type="number" defaultValue={cur.budget || ''} style={inp} />
-    <label style={lab}>备注</label><textarea id="eRemark" defaultValue={cur.remark || ''} style={{ ...inp, minHeight: 60 }} />
-  </div>)
 }
