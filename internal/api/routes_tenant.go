@@ -106,5 +106,8 @@ func registerTenantAuthenticated(v1 *gin.RouterGroup) {
 	stats := v1.Group("/stats")
 	{
 		stats.GET("/overview", GetOverview)
+		// D2(PLAN_FIX_2026-09-21)：AI 贡献度看板——AI 独立接待/留资/到店/成交归因 + 人机切换率。
+		// 权限口径与 /overview 一致（登录态聚合看板，不含客户明细）。
+		stats.GET("/ai-contribution", GetAIContribution)
 	}
 }

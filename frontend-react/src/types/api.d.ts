@@ -95,6 +95,7 @@ export interface ApiRoutes {
   "GET /api/v1/packages": unknown
   "GET /api/v1/plans": unknown
   "GET /api/v1/public/branding": unknown
+  "GET /api/v1/stats/ai-contribution": unknown
   "GET /api/v1/stats/overview": unknown
   "GET /api/v1/strategy/features": unknown
   "GET /api/v1/strategy/stats/anchors": unknown

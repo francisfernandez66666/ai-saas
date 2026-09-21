@@ -332,6 +332,14 @@ if [ -f "$LOGFILE" ]; then
   NEWLOG=$(tail -c +$((MARK + 1)) "$LOGFILE" 2>/dev/null)
   LEAK=$(printf '%s' "$NEWLOG" | grep -cE '(^|[^0-9])1[3-9][0-9]{9}([^0-9]|$)')
   MASKED=$(printf '%s' "$NEWLOG" | grep -c '139\*\*\*\*2222')
+  # ★前提断言（2026-09-21 补）：日志若没有新增字节，下面两条会**一假绿一假红**——
+  # "无明文泄露"平凡通过（空串里当然没有手机号），"出现掩码"却红灯。
+  # 实测踩到：服务未把 stdout 重定向到 ai-scrm.log（如手工 nohup 启动）时，
+  # 该段会给出"脱敏通过"的错误结论。故先钉住"日志确实增长了"这一前提。
+  NOWBYTES=$(wc -c < "$LOGFILE" 2>/dev/null | tr -d '[:space:]')
+  NEWBYTES=$(( ${NOWBYTES:-0} - ${MARK:-0} ))
+  [ "${NEWBYTES:-0}" -gt 0 ] && check "对话后日志确有新增(脱敏断言前提)" y y \
+    || check "对话后日志无新增→脱敏断言不可信(服务未写 ai-scrm.log)" y "n(0字节)"
   [ "${LEAK:-0}" = "0" ] && check "对话后日志无手机号明文(PII脱敏)" y y || check "对话后日志无手机号明文(发现${LEAK}行泄露)" y n
   [ "${MASKED:-0}" -ge 1 ] && check "手机号已脱敏落盘(${MASKED}行掩码形态)" y y || check "手机号应出现掩码形态(脱敏生效证据)" y n
 else
@@ -661,6 +669,79 @@ rows=d.get('data') or []
 print(len([r for r in rows if (r.get('visibility') or 'private') != 'public']))
 " 2>/dev/null)
 [ "${CBAD:-0}" = "0" ] && check "公开面 /knowledge/compares 无 private 条目(B2)" y y || check "公开面 /knowledge/compares 无 private 条目(B2)" y "n($CBAD)"
+
+# ---------- 第二十九节：AI 贡献度看板口径自洽（PLAN_FIX_2026-09-21 D2）----------
+# 立此断言的原因：改造前 /stats/ai-contribution 的会话数按"窗口内新建"(created_at)且带 DataScope，
+# 而消息量按"窗口内产生"(created_at)且不带 DataScope。实测 sales1 看到
+# active_conversations=0 与 ai_messages=261 同屏——两个数字各自都对，口径却不同，
+# 放在一张卡片上就是自相矛盾（销售会读成"AI 这一个月什么都没接待"）。
+# 这里不重复实现细节，而是钉住三条与实现无关的性质：
+#   (1) 同范围内自洽：活跃会话数 ≥ AI 接待数 + 人工接待数
+#   (2) ★缺陷复现：会话数与消息量必须同为 0 或同为正（不允许"0 会话却有消息"）
+#   (3) 与 DB 直算（同一 since 边界、同一 DataScope）相等——防"整体返回 0 也能过 (1)(2)"
+echo "---- 二十九、AI 贡献度口径自洽 ----"
+SC_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d '{"username":"sales1","password":"sales123"}' | jsonget "['data']['token']")
+SC_TID=$($PSQL "SELECT tenant_id FROM tenant_users WHERE username='sales1'" | tr -d '[:space:]')
+SC_UID=$($PSQL "SELECT id FROM tenant_users WHERE username='sales1'" | tr -d '[:space:]')
+SC_JSON=$(curl -s -m 15 "$B/api/v1/stats/ai-contribution?days=30" -H "Authorization: Bearer $SC_TOKEN")
+SC_CODE=$(curl -s -o /dev/null -w "%{http_code}" -m 15 "$B/api/v1/stats/ai-contribution?days=30" -H "Authorization: Bearer $SC_TOKEN")
+check "AI贡献度端点可用" 200 "$SC_CODE"
+
+SC_KEYS=$(echo "$SC_JSON" | python3 -c "
+import sys,json
+try: x=json.load(sys.stdin).get('data') or {}
+except Exception: print('PARSE_FAIL'); raise SystemExit
+need=['period_days','since','until','new_conversations','active_conversations','ai_served_customers',
+      'human_served_customers','ai_serve_share','handoff_rate','ai_leads','assisted_leads','ai_lead_rate',
+      'assisted_lead_rate','ai_arrived','ai_ordered','ai_arrive_rate','ai_order_rate','ai_messages',
+      'human_messages','customer_messages','ai_message_share','pending_handoff_now','notes']
+missing=[k for k in need if k not in x]
+print('OK' if not missing else 'MISSING:'+','.join(missing))
+" 2>/dev/null)
+[ "$SC_KEYS" = "OK" ] && check "AI贡献度契约键齐全(23键)" y y || check "AI贡献度契约键齐全(23键)" y "${SC_KEYS:-PARSE_FAIL}"
+
+# (1) 同范围内自洽
+SC_SELF=$(echo "$SC_JSON" | python3 -c "
+import sys,json
+x=json.load(sys.stdin)['data']
+served=x['ai_served_customers']+x['human_served_customers']
+print('OK' if x['active_conversations']>=served else f'BAD:active={x[\"active_conversations\"]}<served={served}')
+" 2>/dev/null)
+[ "$SC_SELF" = "OK" ] && check "活跃会话数≥AI接待+人工接待(同范围自洽)" y y || check "活跃会话数≥AI接待+人工接待(同范围自洽)" y "${SC_SELF:-PARSE_FAIL}"
+
+# (2) ★缺陷复现断言：不允许出现"0 个活跃会话却有消息"（改造前 sales1 正是 0/261）
+SC_CONSIST=$(echo "$SC_JSON" | python3 -c "
+import sys,json
+x=json.load(sys.stdin)['data']
+convs=x['active_conversations']
+msgs=x['ai_messages']+x['human_messages']+x['customer_messages']
+both_zero=(convs==0 and msgs==0)
+both_pos=(convs>0 and msgs>0)
+print('OK' if (both_zero or both_pos) else f'BAD:convs={convs},msgs={msgs}')
+" 2>/dev/null)
+[ "$SC_CONSIST" = "OK" ] && check "会话数与消息量同零/同正(旧缺陷已封堵)" y y || check "会话数与消息量同零/同正(旧缺陷已封堵)" y "${SC_CONSIST:-PARSE_FAIL}"
+
+# (3) 与 DB 直算对齐：用响应自带的 since 作为边界，消除请求/查询之间的秒级漂移
+SC_SINCE=$(echo "$SC_JSON" | jsonget "['data']['since']")
+SC_DBCONV=$($PSQL "
+WITH scoped AS (SELECT id FROM conversations WHERE tenant_id=${SC_TID} AND assigned_user_id=${SC_UID})
+SELECT COUNT(DISTINCT m.conversation_id) FROM messages m
+ WHERE m.tenant_id=${SC_TID} AND m.created_at >= '${SC_SINCE}'::timestamptz
+   AND m.conversation_id IN (SELECT id FROM scoped)" | tr -d '[:space:]')
+SC_APICONV=$(echo "$SC_JSON" | jsonget "['data']['active_conversations']")
+[ "${SC_DBCONV:-x}" = "${SC_APICONV:-y}" ] && check "活跃会话数与DB直算一致(同since边界)" y y \
+  || check "活跃会话数与DB直算一致(同since边界)" "db=${SC_DBCONV}" "api=${SC_APICONV}"
+
+# (4) 口径说明必须随响应下发且写明数据范围口径（防后人"精简文案"删掉关键限定）
+SC_NOTES=$(echo "$SC_JSON" | python3 -c "
+import sys,json
+try: n=json.load(sys.stdin)['data'].get('notes') or []
+except Exception: print('PARSE_FAIL'); raise SystemExit
+joined='\n'.join(n)
+print('OK' if ('数据范围裁剪' in joined and '同窗同源' in joined) else 'BAD')
+" 2>/dev/null)
+[ "$SC_NOTES" = "OK" ] && check "口径说明下发且含范围/同源限定" y y || check "口径说明下发且含范围/同源限定" y "${SC_NOTES:-PARSE_FAIL}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

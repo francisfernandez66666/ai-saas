@@ -191,3 +191,35 @@ test.describe('P1-10 390px 桌面三台可达', () => {
     expect(sw).toBeLessThanOrEqual(392);
   });
 });
+
+// 16. D2 AI 贡献度看板（真浏览器 + 真实端点）
+// 与单测互补：单测只能证明 mock 数据下的渲染，这里证明"真端点 + 真浏览器 + 超管代管"链路可用。
+// 前置坑（首跑即踩到，记下防复发）：超管未选「代管租户」时，Admin.tsx 会把租户作用域 Tab
+// （dashboard 属于此类）整块替换为"需先选择代管租户"的橙条，DashboardTab 根本不挂载 ——
+// 故必须先在该下拉框里选定租户，否则等多久都等不到卡片（断言会以"标题不存在"失败）。
+// 断言口径：
+//  ① 选定代管租户后卡片标题可见（端点 4xx/500 会让卡片进失败态，此处即红灯）
+//  ② 切"近 7 天"必须发出 days=7 的真实请求（监听网络，防"只改样式不改数据"）
+//  ③ 页面无 NaN/Infinity 文本（0 除 0 未兜底的典型症状，新租户零数据必踩）
+test('D2 admin AI 贡献度卡片渲染且窗口切换发真实请求', async ({ page, request }) => {
+  await seedDesktopLogin(page, request);
+  const hits: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/stats/ai-contribution')) hits.push(r.url());
+  });
+  await page.goto('/admin');
+
+  // 超管必须先选定代管租户，租户作用域 Tab 才会真正挂载
+  const impSel = page.locator('select[aria-label="代管租户"]');
+  await expect(impSel).toBeVisible({ timeout: 10000 });
+  const firstTenant = await impSel.locator('option').nth(1).getAttribute('value');
+  expect(firstTenant).toBeTruthy();
+  await impSel.selectOption(firstTenant!);
+
+  await expect(page.getByRole('heading', { name: 'AI 贡献度' })).toBeVisible({ timeout: 15000 });
+  await expect.poll(() => hits.some((u) => u.includes('days=30')), { timeout: 10000 }).toBeTruthy();
+  await page.getByText('近 7 天').click();
+  await expect.poll(() => hits.some((u) => u.includes('days=7')), { timeout: 10000 }).toBeTruthy();
+  const body = await page.locator('body').innerText();
+  expect(body).not.toMatch(/NaN|Infinity/);
+});

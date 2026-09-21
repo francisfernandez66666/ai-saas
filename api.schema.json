@@ -880,6 +880,15 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/stats/ai-contribution",
+      "group": "stats",
+      "handler": "GetAIContribution",
+      "auth": [
+        "jwt"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/stats/overview",
       "group": "stats",
       "handler": "GetOverview",

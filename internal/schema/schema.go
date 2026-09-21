@@ -285,3 +285,43 @@ type AnchorStats struct {
 	HookRate       float64 `json:"hook_rate"`       // 注释：接钩率
 	ConversionRate float64 `json:"conversion_rate"` // 注释：转化率
 }
+
+// AIContribution AI 贡献度 / 效果度量（D2，PLAN_FIX_2026-09-21）。
+//
+// 商业意义：这是向客户证明「AI 到底带来了多少生意」的核心看板，也是续费谈判的依据。
+// 分子分母口径全部写在 Notes 里随响应下发——指标一旦口径含糊，客户会按对自己有利的方式解读，
+// 反而伤信任，所以宁可把限制说在前面。
+type AIContribution struct {
+	PeriodDays int    `json:"period_days"` // 统计窗口天数
+	Since      string `json:"since"`       // 窗口起点（RFC3339）
+	Until      string `json:"until"`       // 窗口终点（RFC3339）
+
+	// ---- 接待量：AI 独立 vs 人工参与 ----
+	NewConversations     int64   `json:"new_conversations"`      // 窗口内新建会话数（增速观察用）
+	ActiveConversations  int64   `json:"active_conversations"`   // 窗口内有消息往来的会话数（= 接待量与归因的口径边界）
+	AIServedCustomers    int64   `json:"ai_served_customers"`    // AI 独立接待客户数（窗口内会话从无人工回复）
+	HumanServedCustomers int64   `json:"human_served_customers"` // 人工参与接待客户数（窗口内会话出现过人工回复）
+	AIServeShare         float64 `json:"ai_serve_share"`         // AI 独立接待占比 = 前者 / 两者之和
+	HandoffRate          float64 `json:"handoff_rate"`           // 人机切换率 = 后者 / 两者之和
+
+	// ---- 结果归因：留资 / 到店 / 成交 ----
+	AILeads          int64   `json:"ai_leads"`           // AI 独立接待且已留资（含后续阶段）的客户数
+	AssistedLeads    int64   `json:"assisted_leads"`     // 人工参与且已留资（含后续阶段）的客户数
+	AILeadRate       float64 `json:"ai_lead_rate"`       // AI 独立留资转化率 = AILeads / AIServedCustomers
+	AssistedLeadRate float64 `json:"assisted_lead_rate"` // 人工参与留资转化率（对照组）
+	AIArrived        int64   `json:"ai_arrived"`         // AI 独立接待且已到店（含成交/交车）
+	AIOrdered        int64   `json:"ai_ordered"`         // AI 独立接待且已成交（含交车）
+	AIArriveRate     float64 `json:"ai_arrive_rate"`     // AI 独立到店率
+	AIOrderRate      float64 `json:"ai_order_rate"`      // AI 独立成交率
+
+	// ---- 交互结构 ----
+	AIMessages       int64   `json:"ai_messages"`       // 窗口内 AI 发出消息数
+	HumanMessages    int64   `json:"human_messages"`    // 窗口内人工发出消息数
+	CustomerMessages int64   `json:"customer_messages"` // 窗口内客户发出消息数
+	AIMessageShare   float64 `json:"ai_message_share"`  // AI 消息占 AI+人工 消息的比例
+
+	// ---- 运营即时项 ----
+	PendingHandoffNow int64 `json:"pending_handoff_now"` // 当前待接管会话数（瞬时值，不受窗口限制）
+
+	Notes []string `json:"notes"` // 口径说明（随响应下发，避免误读）
+}

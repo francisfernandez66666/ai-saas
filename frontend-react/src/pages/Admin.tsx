@@ -190,7 +190,7 @@ export default function Admin() {
           {isSuper && (
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, minWidth: 0 }}>
               代管租户：
-              <select value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
+              <select aria-label="代管租户" value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
                 <option value="">（未选择·仅平台级）</option>
                 {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
               </select>

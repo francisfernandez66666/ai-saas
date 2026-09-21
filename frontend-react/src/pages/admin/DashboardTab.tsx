@@ -1,9 +1,10 @@
-// 后台工作台（F1/F9）：经营概览、顾问漏斗、模型健康、意向分布、快捷入口、最新线索。
+// 后台工作台（F1/F9）：经营概览、AI 贡献度、顾问漏斗、模型健康、意向分布、快捷入口、最新线索。
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Progress, Table, Tag } from 'tdesign-react'
 import type { CrudRow } from '../../hooks/useCrud'
 import { AUTH } from '../../lib/api'
 import type { CellProps, TableRowData } from '../../types'
+import { AIContributionCard } from './AIContributionCard'
 
 type Overview = {
   total_customers: number
@@ -121,6 +122,8 @@ export function DashboardTab() {
           ))}
         </div>
       </div>
+
+      <AIContributionCard />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-5">
