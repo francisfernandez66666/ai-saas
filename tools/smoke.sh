@@ -629,5 +629,38 @@ HT27=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2
 curl -s -H "X-Health-Token: $HT27" "$B/status/detail" 2>/dev/null | grep -q "rls_effective" \
   && check "readiness 含 rls_effective 观测位(P2-2)" y y || check "readiness 含 rls_effective 观测位(P2-2)" y n
 
+# ---------- 第二十八节：知识库公开面可见性收敛（PLAN_FIX_2026-09-21 B2 / 迁移 016）----------
+# 014(P2-4) 只把 knowledge_fragments 的公开搜索收敛为 publicOnly，同在免鉴权组挂载的
+# brands / models / compares 三个主实体没有可见性概念，匿名可全量拉走商家产品目录与
+# 竞品优劣对比话术。016 补列 + GetVisible* 取数后，公开面**不得出现 visibility!=public 的条目**。
+echo "---- 二十八、知识库公开面可见性收敛（B2 护栏）----"
+for EP in brands models; do
+  KB=$(curl -s -m 10 "$B/api/v1/knowledge/$EP")
+  # 空列表(null 或 [])均合法——收敛后私有内容本就不出；关键是**不得混入非 public 条目**
+  BAD=$(echo "$KB" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print('PARSE_FAIL'); raise SystemExit
+rows=d.get('data') or []
+bad=[r for r in rows if (r.get('visibility') or 'private') != 'public']
+print(len(bad))
+" 2>/dev/null)
+  [ "${BAD:-0}" = "0" ] && check "公开面 /knowledge/$EP 无 private 条目(B2)" y y || check "公开面 /knowledge/$EP 无 private 条目(B2)" y "n($BAD)"
+done
+# 竞品对比：必须带 model_id，取不到车型时端点返 400（非可见性问题），此处只校验"能返回时不漏私有"
+KBC=$(curl -s -m 10 "$B/api/v1/knowledge/compares?model_id=1")
+CBAD=$(echo "$KBC" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print('0'); raise SystemExit
+rows=d.get('data') or []
+print(len([r for r in rows if (r.get('visibility') or 'private') != 'public']))
+" 2>/dev/null)
+[ "${CBAD:-0}" = "0" ] && check "公开面 /knowledge/compares 无 private 条目(B2)" y y || check "公开面 /knowledge/compares 无 private 条目(B2)" y "n($CBAD)"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

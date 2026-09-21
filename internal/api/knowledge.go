@@ -86,6 +86,7 @@ func CreateBrand(c *gin.Context) {
 		FoundedYear int    `json:"founded_year"`
 		Status      int    `json:"status"`
 		Sort        int    `json:"sort"`
+		Visibility  string `json:"visibility"` // public/private（016 公开面可见性，默认 private）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
@@ -101,6 +102,7 @@ func CreateBrand(c *gin.Context) {
 		FoundedYear: req.FoundedYear,
 		Status:      req.Status,
 		Sort:        req.Sort,
+		Visibility:  req.Visibility,
 	}
 	if brand.Status == 0 {
 		brand.Status = 1
@@ -132,6 +134,7 @@ func UpdateBrand(c *gin.Context) {
 		FoundedYear int    `json:"founded_year"`
 		Status      int    `json:"status"`
 		Sort        int    `json:"sort"`
+		Visibility  string `json:"visibility"` // public/private（016 公开面可见性，默认 private）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")
@@ -158,6 +161,9 @@ func UpdateBrand(c *gin.Context) {
 	}
 	if req.Sort != 0 {
 		brand.Sort = req.Sort
+	}
+	if req.Visibility != "" {
+		brand.Visibility = req.Visibility
 	}
 
 	db.RQ(c).Save(&brand)
@@ -287,6 +293,7 @@ func CreateModel(c *gin.Context) {
 		FuelType   string `json:"fuel_type"`
 		Status     int    `json:"status"`
 		Sort       int    `json:"sort"`
+		Visibility string `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
@@ -311,6 +318,7 @@ func CreateModel(c *gin.Context) {
 		FuelType:   req.FuelType,
 		Status:     req.Status,
 		Sort:       req.Sort,
+		Visibility: req.Visibility,
 	}
 	if carModel.Status == 0 {
 		carModel.Status = 1
@@ -342,6 +350,7 @@ func UpdateModel(c *gin.Context) {
 		FuelType   string `json:"fuel_type"`
 		Status     int    `json:"status"`
 		Sort       int    `json:"sort"`
+		Visibility string `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")
@@ -368,6 +377,9 @@ func UpdateModel(c *gin.Context) {
 	}
 	if req.Sort != 0 {
 		carModel.Sort = req.Sort
+	}
+	if req.Visibility != "" {
+		carModel.Visibility = req.Visibility
 	}
 
 	db.RQ(c).Save(&carModel)
@@ -691,6 +703,7 @@ func CreateCompare(c *gin.Context) {
 		ContainsPrice   bool                `json:"contains_price"` // 是否含价格信息
 		Items           []model.CompareItem `json:"items"`
 		Status          int                 `json:"status"`
+		Visibility      string              `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
@@ -704,6 +717,7 @@ func CreateCompare(c *gin.Context) {
 		CompareType:     req.CompareType,
 		ContainsPrice:   req.ContainsPrice,
 		Status:          req.Status,
+		Visibility:      req.Visibility,
 	}
 	if compare.Status == 0 {
 		compare.Status = 1
@@ -735,6 +749,7 @@ func UpdateCompare(c *gin.Context) {
 		ContainsPrice   *bool               `json:"contains_price"` // 指针区分未传和false
 		Items           []model.CompareItem `json:"items"`
 		Status          int                 `json:"status"`
+		Visibility      string              `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespErr(c, http.StatusBadRequest, 400, "参数错误")
@@ -758,6 +773,9 @@ func UpdateCompare(c *gin.Context) {
 	}
 	if req.Status != 0 {
 		compare.Status = req.Status
+	}
+	if req.Visibility != "" {
+		compare.Visibility = req.Visibility
 	}
 
 	db.RQ(c).Save(&compare)
@@ -1068,7 +1086,8 @@ func ReloadKnowledgeCache(c *gin.Context) {
 
 // GetPublicBrands 获取品牌列表（客户端）
 func GetPublicBrands(c *gin.Context) {
-	brands := cache.DefaultKnowledgeCache.GetAllBrands(db.EffectiveTenantIDFromGin(c))
+	// B2(PLAN_FIX_2026-09-21)：公开面只放 visibility=public（与 014/P2-4 的 fragments 同口径）
+	brands := cache.DefaultKnowledgeCache.GetVisibleBrands(db.EffectiveTenantIDFromGin(c))
 	RespOK(c, "success", brands)
 }
 
@@ -1079,12 +1098,12 @@ func GetPublicModels(c *gin.Context) {
 
 	if brandIDStr != "" {
 		brandID, _ := strconv.Atoi(brandIDStr)
-		models := cache.DefaultKnowledgeCache.GetModelsByBrandID(tid, uint(brandID))
+		models := cache.DefaultKnowledgeCache.GetVisibleModelsByBrandID(tid, uint(brandID))
 		RespOK(c, "success", models)
 		return
 	}
 
-	models := cache.DefaultKnowledgeCache.GetAllModels(tid)
+	models := cache.DefaultKnowledgeCache.GetVisibleModels(tid)
 	RespOK(c, "success", models)
 }
 
@@ -1093,7 +1112,7 @@ func GetPublicModelDetail(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
 	tid := db.EffectiveTenantIDFromGin(c)
 
-	carModel := cache.DefaultKnowledgeCache.GetModelByID(tid, uint(id))
+	carModel := cache.DefaultKnowledgeCache.GetVisibleModelByID(tid, uint(id))
 	if carModel == nil {
 		RespErr(c, http.StatusNotFound, 404, "车型不存在")
 		return
@@ -1125,7 +1144,7 @@ func GetPublicCompares(c *gin.Context) {
 
 	modelID, _ := strconv.Atoi(modelIDStr)
 	tid := db.EffectiveTenantIDFromGin(c)
-	compares := cache.DefaultKnowledgeCache.GetComparesByModelID(tid, uint(modelID))
+	compares := cache.DefaultKnowledgeCache.GetVisibleComparesByModelID(tid, uint(modelID))
 
 	RespOK(c, "success", compares)
 }

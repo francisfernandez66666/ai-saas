@@ -29,6 +29,7 @@ type Brand struct {
 	Country     string    `gorm:"size:30" json:"country"`                                                                                  // 品牌所属国家
 	FoundedYear int       `json:"founded_year"`                                                                                            // 创立年份
 	Status      int       `gorm:"default:1;index" json:"status"`                                                                           // 状态: 1启用 0禁用
+	Visibility  string    `gorm:"size:10;default:private" json:"visibility"`                                                               // 可见性: public 公开面可见 / private 仅内部（016 迁移，与 knowledge_fragments 同口径）
 	Sort        int       `gorm:"default:0" json:"sort"`                                                                                   // 排序（数字越小越靠前）
 	CreatedAt   time.Time `json:"created_at"`                                                                                              // 创建时间
 	UpdatedAt   time.Time `json:"updated_at"`                                                                                              // 更新时间
@@ -57,6 +58,7 @@ type CarModel struct {
 	BodyType   string    `gorm:"size:20" json:"body_type"`                                                 // 车身类型: SUV/轿车/皮卡/MPV
 	FuelType   string    `gorm:"size:20" json:"fuel_type"`                                                 // 燃油类型: 燃油/混动/纯电
 	Status     int       `gorm:"default:1;index" json:"status"`                                            // 状态: 1启用 0禁用
+	Visibility string    `gorm:"size:10;default:private" json:"visibility"`                                // 可见性: public/private（016，公开面只放 public）
 	Sort       int       `gorm:"default:0" json:"sort"`                                                    // 排序
 	CreatedAt  time.Time `json:"created_at"`                                                               // 创建时间
 	UpdatedAt  time.Time `json:"updated_at"`                                                               // 更新时间
@@ -118,6 +120,7 @@ type CompetitorCompare struct {
 	Content         string    `gorm:"type:text" json:"content"`                  // 对比内容（JSON数组 CompareItem）
 	ContainsPrice   bool      `gorm:"default:false" json:"contains_price"`       // 是否含价格信息（用于价格管控过滤）
 	Status          int       `gorm:"default:1;index" json:"status"`             // 状态: 1启用 0禁用
+	Visibility      string    `gorm:"size:10;default:private" json:"visibility"` // 可见性: public/private（016，竞品对比内容默认不对外）
 	CreatedAt       time.Time `json:"created_at"`                                // 创建时间
 	UpdatedAt       time.Time `json:"updated_at"`                                // 更新时间
 }

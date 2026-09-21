@@ -203,9 +203,12 @@ TDUS=$($PSQL "SELECT status FROM test_drives WHERE id=$TDID" | tr -d '[:space:]'
 TDUR=$($PSQL "SELECT result FROM test_drives WHERE id=$TDID" | tr -d '[:space:]')
 check "test-drive: 状态更新落库" completed "$TDUS"
 check "test-drive: result 落库字节一致" "已到店完成" "$TDUR"
-# 状态枚举不校验（缺陷探测，非阻断）
+# 状态枚举校验（PLAN_FIX_2026-09-21 B3 已修：非法状态不再落库，此处由缺陷探测 INFO 转真断言）
 TDB=$(curl -s -o /dev/null -m 10 -w "%{http_code}" -X PUT "$B/api/v1/advisor/test-drive/$TDID" -H "$S1H" -H "Content-Type: application/json" -d '{"status":"bogus_state"}')
-echo "  INFO  test-drive: 非法状态写入返回码=$TDB（200 表示缺状态机校验，属缺陷）"
+check "test-drive: 非法状态被拒(400)" 400 "$TDB"
+# 字节级护栏：拒绝后库内状态不得被脏值污染（仍是本轮写入的 completed）
+TDBS=$($PSQL "SELECT status FROM test_drives WHERE id=$TDID" | tr -d '[:space:]')
+check "test-drive: 非法状态零落库" completed "$TDBS"
 $PSQL "UPDATE test_drives SET status='completed' WHERE id=$TDID" >/dev/null 2>&1
 
 # ---------- 会话：接管 / 发送 / AI 开关 ----------

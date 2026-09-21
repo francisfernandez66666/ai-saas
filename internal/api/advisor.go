@@ -355,6 +355,14 @@ func GetTestDrive(c *gin.Context) {
 	RespOK(c, "success", td)
 }
 
+// validTestDriveStatus 试驾单合法状态枚举（PLAN_FIX_2026-09-21 B3）
+// 取值与 model.TestDrive.Status 注释及前端三态展示对齐（待试驾/已完成/已取消）。
+var validTestDriveStatus = map[string]bool{
+	"pending":   true,
+	"completed": true,
+	"cancelled": true,
+}
+
 // updateTestDriveRequest 更新试驾单请求体：全部字段指针化，nil 表示不修改
 type updateTestDriveRequest struct {
 	Status       *string `json:"status"`       // pending/completed/cancelled
@@ -387,7 +395,14 @@ func UpdateTestDrive(c *gin.Context) {
 		return
 	}
 
+	// PLAN_FIX_2026-09-21 B3：补 status 枚举校验——此前 `*req.Status` 直赋，任意字符串
+	// 都能落库（同模块 UpdateCustomerStage 有 validStages 校验并返 400，标准不一致）。
+	// 脏状态会让列表筛选（following/pending/…）与统计口径失配，且无法在写入侧拦截。
 	if req.Status != nil {
+		if !validTestDriveStatus[*req.Status] {
+			RespErr(c, http.StatusBadRequest, 400, "不合法的试驾单状态，仅支持: pending/completed/cancelled")
+			return
+		}
 		td.Status = *req.Status
 	}
 	if req.ScheduledAt != nil {

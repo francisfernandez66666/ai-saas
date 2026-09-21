@@ -426,3 +426,94 @@ func (m *KnowledgeCacheManager) GetFragmentsByCategory(tenantID uint, category s
 	}
 	return result
 }
+
+// ============================================================
+// 公开面可见查询（PLAN_FIX_2026-09-21 B2 / 迁移 016）
+// 背景：014（P2-4）只给 knowledge_fragments 加了 visibility 并把 SearchFragments 收敛为
+// publicOnly；同在 routes_public 免鉴权组的 brands / models / compares 三个主实体没有
+// 可见性概念，匿名仍可全量拉走商家产品目录与竞品优劣对比话术。016 补齐列后，
+// 此处提供"仅 visibility=public"的取数变体供四个公开 handler 使用。
+// 设计取舍：**新增方法而非给既有方法加 publicOnly 参数**——既有 GetAllBrands/GetModelByID
+// 等被 AI 链路（getCustomerModelID）与管理面复用，改签名波及面大且内部本来就该看全量；
+// 公开面是独立 handler，用独立方法零波及。
+// ============================================================
+
+// GetVisibleBrands 公开面品牌（仅 visibility=public，租户隔离同 P0-4）
+func (m *KnowledgeCacheManager) GetVisibleBrands(tenantID uint) []model.Brand {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []model.Brand
+	for _, b := range m.brands {
+		if b.Visibility != "public" {
+			continue
+		}
+		if b.TenantID == 0 || b.TenantID == tenantID {
+			result = append(result, b)
+		}
+	}
+	return result
+}
+
+// GetVisibleModels 公开面车型（仅 visibility=public）
+func (m *KnowledgeCacheManager) GetVisibleModels(tenantID uint) []model.CarModel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []model.CarModel
+	for _, cm := range m.models {
+		if cm.Visibility != "public" {
+			continue
+		}
+		if cm.TenantID == 0 || cm.TenantID == tenantID {
+			result = append(result, cm)
+		}
+	}
+	return result
+}
+
+// GetVisibleModelsByBrandID 公开面按品牌取车型（仅 visibility=public）
+func (m *KnowledgeCacheManager) GetVisibleModelsByBrandID(tenantID uint, brandID uint) []model.CarModel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []model.CarModel
+	for _, cm := range m.models {
+		if cm.Visibility != "public" || cm.BrandID != brandID {
+			continue
+		}
+		if cm.TenantID == 0 || cm.TenantID == tenantID {
+			result = append(result, cm)
+		}
+	}
+	return result
+}
+
+// GetVisibleModelByID 公开面单车型（仅 visibility=public；不可见或跨租户返回 nil）
+func (m *KnowledgeCacheManager) GetVisibleModelByID(tenantID uint, id uint) *model.CarModel {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for i := range m.models {
+		if m.models[i].ID != id || m.models[i].Visibility != "public" {
+			continue
+		}
+		if m.models[i].TenantID == 0 || m.models[i].TenantID == tenantID {
+			cm := m.models[i]
+			return &cm
+		}
+	}
+	return nil
+}
+
+// GetVisibleComparesByModelID 公开面竞品对比（仅 visibility=public——竞品优劣话术默认 private）
+func (m *KnowledgeCacheManager) GetVisibleComparesByModelID(tenantID uint, ourModelID uint) []model.CompetitorCompare {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var result []model.CompetitorCompare
+	for _, c := range m.compares {
+		if c.Visibility != "public" || c.OurModelID != ourModelID {
+			continue
+		}
+		if c.TenantID == 0 || c.TenantID == tenantID {
+			result = append(result, c)
+		}
+	}
+	return result
+}

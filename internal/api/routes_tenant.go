@@ -51,7 +51,12 @@ func registerTenantAuthenticated(v1 *gin.RouterGroup) {
 		customers.DELETE("/:id/tags/:tag_id", RemoveCustomerTag)
 	}
 
-	// 对话相关
+	// 对话相关（登录态入口，挂在 v1.Use(JWTAuth) 之后——匿名访客会被 401）
+	// C1 双链路（PLAN_FIX_2026-09-21）：C 端访客实际走公开组的 POST /api/v1/chat/test
+	// （chat_testhandler.go，含 visitor_key 自证），本组 /chat 当前**前端零消费者**，
+	// 本组 /chat 当前**前端零消费者**，但 smoke 第二十七节已用登录态覆盖（断言
+	// merged 抑制与落库），不存在"零测试"风险；真正待收敛的是"两条链路能力重叠
+	// 而鉴权语义不同"这个架构债，删除任一条前需先让另一条覆盖对等的访客/登录态场景。
 	chat := v1.Group("/chat")
 	{
 		chat.POST("", Chat)

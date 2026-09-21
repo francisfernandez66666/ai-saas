@@ -1,4 +1,13 @@
-// 对话测试API：免登录测试入口与 mock 对话 handler。
+// 对话核心 API（C 端访客入口）：客户端 Client.tsx 实际调用的链路，经
+// POST /api/v1/chat/test 暴露（路由名含 test 是历史遗留，**不是测试桩**）。
+//
+// C1 双链路说明（PLAN_FIX_2026-09-21）：
+//   本文件 = C 端访客主链路（免登录 + visitor_key 自证 + Turnstile + IP 限流，
+//     已含会话竞态保护/四层分流/延迟清零/留资检测/OneID 合并，能力是完整的）；
+//   chat_main.go 的 POST /api/v1/chat = 登录态入口（挂在 v1.Use(JWTAuth) 之后，
+//     **匿名访客会被 401**，前端零消费者）。
+// 两者功能重叠而鉴权语义不同，收敛需架构决策（见 PLAN_FIX C1）；在此之前不要
+// 凭本文件旧注释"测试入口"误判它是可下线/可忽略的旁路。
 package api
 
 import "ai-scrm/internal/pii"

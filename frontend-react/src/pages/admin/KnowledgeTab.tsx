@@ -28,6 +28,7 @@ function BrandTab() {
       { colKey: 'founded_year', title: '成立年', width: 90 },
       { colKey: 'description', title: '描述', ellipsis: true },
       { colKey: 'status', title: '状态', width: 90, cell: ({ row }: CellProps) => statusTag(row) },
+      { colKey: 'visibility', title: '可见性', width: 110, cell: ({ row }: CellProps) => (row.visibility === 'public' ? <Tag theme="success">公开</Tag> : <Tag theme="default">私有</Tag>) },
     ]}
     createFields={[
       { key: 'name', label: '品牌名称', required: true },
@@ -38,6 +39,7 @@ function BrandTab() {
       { key: 'status', label: '状态', type: 'number', defaultValue: 1 },
       { key: 'sort', label: '排序', type: 'number' },
       { key: 'description', label: '描述', type: 'textarea' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     editFields={[
       { key: 'name', label: '品牌名称', required: true },
@@ -46,6 +48,7 @@ function BrandTab() {
       { key: 'logo', label: 'Logo URL' },
       { key: 'sort', label: '排序', type: 'number' },
       { key: 'description', label: '描述', type: 'textarea' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     rowToForm={(row) => defaultRowToForm(BRAND_ALL_FIELDS, row)}
   />
@@ -59,6 +62,7 @@ const BRAND_ALL_FIELDS: FieldSpec[] = [
   { key: 'status', label: '状态', type: 'number' },
   { key: 'sort', label: '排序', type: 'number' },
   { key: 'description', label: '描述' },
+  { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
 ]
 
 /** 知识库车型维护 Tab。 */
@@ -77,6 +81,7 @@ function ModelTab({ brandOptions }: { brandOptions: Option[] }) {
       { colKey: 'body_type', title: '车身', width: 90 },
       { colKey: 'fuel_type', title: '能源', width: 90 },
       { colKey: 'status', title: '状态', width: 90, cell: ({ row }: CellProps) => statusTag(row) },
+      { colKey: 'visibility', title: '可见性', width: 110, cell: ({ row }: CellProps) => (row.visibility === 'public' ? <Tag theme="success">公开</Tag> : <Tag theme="default">私有</Tag>) },
     ]}
     createFields={[
       { key: 'brand_id', label: '所属品牌', type: 'select', required: true, options: brandOptions },
@@ -88,6 +93,7 @@ function ModelTab({ brandOptions }: { brandOptions: Option[] }) {
       { key: 'fuel_type', label: '能源类型', placeholder: '增程式/插混/纯电' },
       { key: 'status', label: '状态', type: 'number', defaultValue: 1 },
       { key: 'sort', label: '排序', type: 'number' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     editFields={[
       { key: 'name', label: '车型名称', required: true },
@@ -96,6 +102,7 @@ function ModelTab({ brandOptions }: { brandOptions: Option[] }) {
       { key: 'body_type', label: '车身形式' },
       { key: 'fuel_type', label: '能源类型' },
       { key: 'sort', label: '排序', type: 'number' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     rowToForm={(row) => defaultRowToForm(MODEL_ALL_FIELDS, row)}
   />
@@ -110,6 +117,7 @@ const MODEL_ALL_FIELDS: FieldSpec[] = [
   { key: 'fuel_type', label: '能源类型' },
   { key: 'status', label: '状态', type: 'number' },
   { key: 'sort', label: '排序', type: 'number' },
+  { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
 ]
 
 /** 知识库车型参数维护 Tab。 */
@@ -181,6 +189,7 @@ function CompareTab({ modelOptions }: { modelOptions: Option[] }) {
       { colKey: 'contains_price', title: '含价格', width: 90, cell: ({ row }: CellProps) => <Tag theme={row.contains_price ? 'primary' : 'default'}>{boolToInt(row.contains_price) ? '是' : '否'}</Tag> },
       { colKey: 'content', title: '对比项', width: 220, ellipsis: true, cell: ({ row }: CellProps) => <span className="text-xs text-gray-500">{parseJsonArray(row.content).length || '—'} 项</span> },
       { colKey: 'status', title: '状态', width: 90, cell: ({ row }: CellProps) => statusTag(row) },
+      { colKey: 'visibility', title: '可见性', width: 110, cell: ({ row }: CellProps) => (row.visibility === 'public' ? <Tag theme="success">公开</Tag> : <Tag theme="default">私有</Tag>) },
     ]}
     createFields={[
       { key: 'our_model_id', label: '我方车型', type: 'select', required: true, options: modelOptions },
@@ -190,6 +199,7 @@ function CompareTab({ modelOptions }: { modelOptions: Option[] }) {
       { key: 'contains_price', label: '含价格', type: 'bool', defaultValue: false },
       { key: 'status', label: '状态', type: 'number', defaultValue: 1 },
       { key: 'items', label: '对比项 JSON', type: 'json', placeholder: '[{"aspect":"续航","our_value":"1200km","their_value":"1100km","conclusion":"更优"}]', defaultValue: '[\n  {"aspect":"","our_value":"","their_value":"","conclusion":""}\n]' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     editFields={[
       { key: 'competitor_brand', label: '竞品品牌', required: true },
@@ -197,6 +207,7 @@ function CompareTab({ modelOptions }: { modelOptions: Option[] }) {
       { key: 'compare_type', label: '对比类型' },
       { key: 'contains_price', label: '含价格', type: 'bool' },
       { key: 'items', label: '对比项 JSON', type: 'json' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     rowToForm={(row) => ({
       our_model_id: row.our_model_id,
@@ -229,6 +240,7 @@ function FragmentTab() {
       { colKey: 'tags', title: '标签', width: 180, cell: ({ row }: CellProps) => <span className="text-xs text-gray-500">{parseJsonArray(row.tags).join('、') || '—'}</span> },
       { colKey: 'vectorized', title: '向量', width: 90, cell: ({ row }: CellProps) => <Tag theme={row.vectorized ? 'success' : 'warning'}>{row.vectorized ? '已向量化' : '待向量化'}</Tag> },
       { colKey: 'status', title: '状态', width: 90, cell: ({ row }: CellProps) => statusTag(row) },
+      { colKey: 'visibility', title: '可见性', width: 110, cell: ({ row }: CellProps) => (row.visibility === 'public' ? <Tag theme="success">公开</Tag> : <Tag theme="default">私有</Tag>) },
     ]}
     createFields={[
       { key: 'title', label: '标题', required: true },
@@ -238,6 +250,7 @@ function FragmentTab() {
       { key: 'applicable_models', label: '适用车型', type: 'list', placeholder: '逗号分隔' },
       { key: 'status', label: '状态', type: 'number', defaultValue: 1 },
       { key: 'sort', label: '排序', type: 'number' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     editFields={[
       { key: 'title', label: '标题', required: true },
@@ -246,6 +259,7 @@ function FragmentTab() {
       { key: 'tags', label: '标签', type: 'list' },
       { key: 'applicable_models', label: '适用车型', type: 'list' },
       { key: 'sort', label: '排序', type: 'number' },
+      { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
     ]}
     rowToForm={(row) => defaultRowToForm(FRAGMENT_ALL_FIELDS, row)}
   />
@@ -258,6 +272,7 @@ const FRAGMENT_ALL_FIELDS: FieldSpec[] = [
   { key: 'applicable_models', label: '适用车型', type: 'list' },
   { key: 'status', label: '状态', type: 'number' },
   { key: 'sort', label: '排序', type: 'number' },
+  { key: 'visibility', label: '公开可见性', type: 'select', options: [{ label: '公开(匿名可见)', value: 'public' }, { label: '私有(仅内部)', value: 'private' }] },
 ]
 
 export default function KnowledgeTab() {

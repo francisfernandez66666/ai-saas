@@ -78,12 +78,39 @@ func ContainsKeywordForTenant(text string, words []string) bool {
 	return containsKeyword(text, words)
 }
 
-// IndustryPriceKeywordsForTenant 租户级询价敏感词（行业包可配置；空回退汽车默认）
+// IndustryPriceKeywordsForTenant 租户级询价敏感词（行业包可配置；空按租户族别回退）
+// PLAN_FIX_2026-09-21 B1：与 IndustryPriceRepliesForTenant 的话术分流对齐——
+// 此前话术已按 TenantUsesAutoTalk 分流（非 auto 包走中立口径），但**关键词仍恒回退
+// 汽车词表**（含"落地价/车价/多少钱一辆/多少钱一台"），属同类点漏改：edu/wedding/realty
+// 等租户的询价拦截用的是汽车语义词表，语义与话术口径自相矛盾。
 func IndustryPriceKeywordsForTenant(tenantID uint) []string {
-	return industryKeywordList(tenantID, IndustryPriceKeywords, defaultPriceKeywords)
+	return industryKeywordList(tenantID, IndustryPriceKeywords, priceKeywordsFallback(tenantID))
 }
 
-// defaultPriceKeywords 询价敏感词默认值（行业包缺省→汽车版关键词）
+// priceKeywordsFallback 询价敏感词兜底口径分流（与 priceReplyFallback 同谓词）：
+//   - tenantID == 0（无租户上下文：单测/内部调用）→ 沿用汽车版默认。
+//     兼容性说明：`strategy.IsPriceInquiry`（route.go:57 走本函数）在 behavior_test.go
+//     断言"落地价多少"=true，该调用无租户上下文；若此处改中立词表会打断既有行为断言。
+//   - 绑定汽车族包 → 汽车版；其余（含非 auto 包租户）→ 行业中立版。
+func priceKeywordsFallback(tenantID uint) []string {
+	if tenantID == 0 {
+		return defaultPriceKeywords
+	}
+	if TenantUsesAutoTalk(tenantID) {
+		return defaultPriceKeywords
+	}
+	return neutralPriceKeywords
+}
+
+// neutralPriceKeywords 中立口径·询价敏感词（行业无关）
+// 只保留"问价格"这一意图的通用表达，剔掉"落地价/车价/多少钱一辆/多少钱一台/售价多少"
+// 等汽车交易专属词——非汽车行业命中它们既无意义，也会让词表与中立话术口径打架。
+var neutralPriceKeywords = []string{
+	"多少钱", "什么价", "报价", "价格", "价位", "售价", "贵不贵",
+	"怎么卖", "怎么算", "优惠多少", "便宜多少", "费用", "收费标准",
+}
+
+// defaultPriceKeywords 询价敏感词默认值（汽车族租户缺省→汽车版关键词）
 var defaultPriceKeywords = []string{
 	"多少钱", "什么价", "报价", "价格", "价位", "售价", "贵不贵",
 	"怎么卖", "怎么算", "落地价", "优惠多少", "便宜多少",
