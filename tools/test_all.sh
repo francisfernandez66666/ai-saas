@@ -121,6 +121,23 @@ else
   verdict "gofmt -l 门禁（CI 同口径）" 0
 fi
 
+# ---------- 阶段零：AI 黄金问答集门禁（D1，2026-09-21 新增）----------
+# 动机：AI 行为（询价词表 / 路由判定 / 话术评分口径）改动"看起来没事但实际改坏"极其常见，
+# 而既有断言脚本只覆盖接口契约与落库，覆盖不到"判定语义有没有漂"。
+# 本门禁跑 internal/golden 的冻结集（80 条：routing/keyword/reply/safety 四家族），
+# **不联网、不读库、不烧 token**，故可进每次提交；通过率低于阈值即红。
+# 双向自证（2026-09-21 实测）：正常集 → RC=0；故意写错 want_route → RC=1；
+# 非法用例（缺 id/want_route）→ RC=2。另注：本门禁首次上手即抓到 RouteFish 不可达缺陷。
+step "AI 黄金问答集门禁：tools/eval_golden.sh（阈值 95%）"
+./tools/eval_golden.sh >/tmp/test_all_golden.log 2>&1
+GOLDEN_RC=$?
+if [ "$GOLDEN_RC" -eq 0 ]; then
+  grep -E '用例数|门禁通过' /tmp/test_all_golden.log | head -3
+else
+  echo "  详情见 /tmp/test_all_golden.log（失败用例表在报告尾部）"
+fi
+verdict "AI 黄金问答集门禁（D1）" $GOLDEN_RC
+
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... >/tmp/test_all_vet.log 2>&1
