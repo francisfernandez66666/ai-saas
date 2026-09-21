@@ -59,9 +59,10 @@ MOCK_PID=$!
 AI_MOCK_MODE=true SERVER_PORT="$CPORT" GIN_MODE=debug "$ROOT/bin/ai-scrm-chan" >"$SLOG" 2>&1 &
 SRV_PID=$!
 
-# 等待健康
+# 等待健康（必须显式判 200：`curl -s` 无 -f 时 5xx/502 也算退出 0，会把"端口刚绑定、
+# env 代理尚未就绪"的 502 误判成已就绪，导致后续全部断言连锁失败——2026-09-21 实测踩中）
 for i in $(seq 1 30); do
-  curl -s --max-time 2 "$B/health" >/dev/null 2>&1 && break
+  [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 2 "$B/health" 2>/dev/null)" = "200" ] && break
   sleep 1
 done
 HC=$(curl -s -o /dev/null -w "%{http_code}" "$B/health")

@@ -15,6 +15,9 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / E10 租户 OpenAPI 文档站：spec 端点可用+结构完整+内部面零泄露+缓存头 5 断言（二十五，2026-09-19 增强二批）
 #       / 2026-09-20 审计批：公开面 IP/Key 限流 429+换Key不误伤 3 断言（二十六）
 #       / 2026-09-20 审计批三 P2-1：相似消息「仅在途批次」抑制护栏 2 断言（二十七）
+#       / 2026-09-21 B2：知识库公开面 visibility 收敛 3 断言（二十八）
+#       / 2026-09-21 D2：AI 贡献度看板口径自洽 6 断言（二十九，含"会话数与消息量
+#         必须同零或同正"的缺陷复现断言 + 跨租户隔离；断言逻辑已用历史数字双向自证）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -742,6 +745,45 @@ joined='\n'.join(n)
 print('OK' if ('数据范围裁剪' in joined and '同窗同源' in joined) else 'BAD')
 " 2>/dev/null)
 [ "$SC_NOTES" = "OK" ] && check "口径说明下发且含范围/同源限定" y y || check "口径说明下发且含范围/同源限定" y "${SC_NOTES:-PARSE_FAIL}"
+
+# (5) 跨租户隔离 + 正向控制：一次性租户里只造「1 条会话（1 AI + 1 客户消息，无人工回复）」，
+#     断言返回的正是 1 而非全库口径。为什么不用 acme 做"应为 0"的断言：acme 跨运行会累积数据，
+#     拿它断言 0 会随时间变脆；而"精确等于 1"这种正向控制即使库里已有大量数据也稳定成立，
+#     且能同时证明两件事——聚合确实生效（不是恒返 0）、租户过滤确实生效（不是泄漏别家数字）。
+#     用 smoke 前缀命名，cleanup_test_tenants.sh 可回收残留；本段结束自行删除，幂等。
+AISC_CODE="smoke_aisc_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('AI贡献度隔离验证', '${AISC_CODE}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+AISC_TID=$($PSQL "SELECT id FROM tenants WHERE code='${AISC_CODE}'" | tr -d '[:space:]')
+# ★建数据必须用**单条 CTE 语句**，不要分三步各自 RETURNING id：
+#   实测 psql -tAc "INSERT ... RETURNING id" 仍会输出命令标签（INSERT 0 1），
+#   tr -d '[:space:]' 会把它粘成 "2229INSERT01"，后续 SQL 直接语法错。
+#   CTE 一条语句内部串联 tenant→customer→conversation→message，不经过 shell 解析，天然免疫。
+$PSQL "WITH t AS (SELECT id FROM tenants WHERE code='${AISC_CODE}'),
+             c AS (INSERT INTO customers (tenant_id, name, journey_stage, created_at, updated_at)
+                   SELECT id, '隔离验证客户', 'lead_captured', NOW(), NOW() FROM t RETURNING id, tenant_id),
+             cv AS (INSERT INTO conversations (tenant_id, customer_id, status, mode, created_at, updated_at)
+                    SELECT tenant_id, id, 'active', 'ai', NOW(), NOW() FROM c RETURNING id, tenant_id, customer_id)
+       INSERT INTO messages (tenant_id, conversation_id, customer_id, sender_type, content, created_at, updated_at)
+       SELECT tenant_id, id, customer_id, 'ai', '隔离验证AI消息', NOW(), NOW() FROM cv
+       UNION ALL
+       SELECT tenant_id, id, customer_id, 'customer', '隔离验证客户消息', NOW(), NOW() FROM cv;" >/dev/null 2>&1
+AISC_J=$(curl -s -m 15 "$B/api/v1/stats/ai-contribution?days=30" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${AISC_TID}")
+AISC_ACT=$(echo "$AISC_J" | jsonget "['data']['active_conversations']")
+AISC_AIMSG=$(echo "$AISC_J" | jsonget "['data']['ai_messages']")
+AISC_LEAD=$(echo "$AISC_J" | jsonget "['data']['ai_leads']")
+[ "${AISC_ACT:-x}" = "1" ] && check "隔离租户活跃会话恰为1(未泄漏别租户)" y y || check "隔离租户活跃会话恰为1(未泄漏别租户)" 1 "${AISC_ACT:-x}"
+[ "${AISC_AIMSG:-x}" = "1" ] && check "隔离租户AI消息恰为1(精确作用域)" y y || check "隔离租户AI消息恰为1(精确作用域)" 1 "${AISC_AIMSG:-x}"
+[ "${AISC_LEAD:-x}" = "1" ] && check "隔离租户AI留资归因恰为1(聚合确实生效)" y y || check "隔离租户AI留资归因恰为1(聚合确实生效)" 1 "${AISC_LEAD:-x}"
+# 现场回收（顺序：消息→会话→客户→租户，避免外键残留）。
+# 用 code 子查询而非 $AISC_TID：建租户若失败，AISC_TID 为空会让 "tenant_id=" 直接语法错，
+# 把一段本来只是"没造成污染"的收尾变成假红。
+$PSQL "DELETE FROM messages WHERE tenant_id=(SELECT id FROM tenants WHERE code='${AISC_CODE}');
+       DELETE FROM conversations WHERE tenant_id=(SELECT id FROM tenants WHERE code='${AISC_CODE}');
+       DELETE FROM customers WHERE tenant_id=(SELECT id FROM tenants WHERE code='${AISC_CODE}');
+       DELETE FROM tenants WHERE code='${AISC_CODE}';" >/dev/null 2>&1
+AISC_LEFT=$($PSQL "SELECT COUNT(*) FROM tenants WHERE code='${AISC_CODE}'" | tr -d '[:space:]')
+[ "${AISC_LEFT:-1}" = "0" ] && check "隔离验证租户已回收(无残留)" y y || check "隔离验证租户已回收(无残留)" 0 "${AISC_LEFT:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

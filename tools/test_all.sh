@@ -15,6 +15,16 @@
 #   - 前端 vitest 层：pages/__tests__/smoke.test.tsx 10 核心页 jsdom 冒烟 + 登录漏斗；
 #   - CI go job 另有 govulncheck 供应链扫描（首月观察模式，不在本编排内）。
 #
+# 2026-09-21 商业化批（D1/D2）纳入的自动化内容：
+#   - 阶段零新增两道独立门禁（都不依赖服务在跑，秒级失败定位）：
+#     · D1 AI 黄金问答集：tools/eval_golden.sh（80 条冻结集，阈值 95%，退出码 0/1/2 三态）；
+#     · 导出面中文文档注释棘轮：tools/check_doc_comments.py（Go 38 处 + 前端 38 处基线，只降不升）。
+#   - smoke.sh +6 断言（第二十九节）：AI 贡献度看板口径自洽——含"会话数与消息量
+#     必须同零或同正"的缺陷复现断言（该断言用历史数字 0/261 双向自证过）。
+#   - 前端 vitest +6 例：AIContributionCard（展示值禁复算/窗口切换真发请求/失败态可见）。
+#   - playwright +2 例：AI 贡献度卡片真浏览器断言（超管须先选代管租户，否则租户作用域
+#     Tab 被橙条顶替，DashboardTab 根本不挂载——首跑即踩到，已记入 spec 注释）。
+#
 # 用法：
 #   ./tools/test_all.sh            # 完整回归（含 uat，耗时约 20-40 分钟）
 #   ./tools/test_all.sh --fast     # 快回归：单测+构建+smoke/org/saas，跳过 uat
@@ -137,6 +147,16 @@ else
   echo "  详情见 /tmp/test_all_golden.log（失败用例表在报告尾部）"
 fi
 verdict "AI 黄金问答集门禁（D1）" $GOLDEN_RC
+
+# ---------- 阶段零：导出面中文文档注释棘轮（2026-09-21 新增，注释全量化配套）----------
+# 为什么放在阶段零：它是纯静态扫描（不依赖服务/DB），秒级出结果，失败时定位到具体文件+成员名。
+# 棘轮口径（只降不升）而非"必须为 0"，与 check_api_contract.sh 的 any 基线同思路；
+# 当前基线已清零，故等价于"任何新增导出成员都必须带中文文档注释"。
+step "静态门禁：导出面中文文档注释（tools/check_doc_comments.py）"
+python3 tools/check_doc_comments.py >/tmp/test_all_doccom.log 2>&1
+DOCCOM_RC=$?
+tail -3 /tmp/test_all_doccom.log
+verdict "导出面中文文档注释棘轮" $DOCCOM_RC
 
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
@@ -263,14 +283,14 @@ pkill -f '^\./ai-scrm' >/dev/null 2>&1 || true
 sleep 1
 nohup ./ai-scrm > ai-scrm.log 2>&1 &
 echo $! > .pid
-for i in $(seq 1 60); do sleep 2; curl -s -o /dev/null -m 2 "http://localhost:$PORT/health" && break; done
+for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m 2 "http://localhost:$PORT/health" 2>/dev/null)" = "200" ] && break; done
 # D9 修复(2026-09-16B，见 AUDIT_UAT_VERIFY_2026-09-16B)：各脚本各自清 flag、smoke.sh 执行中
 # 还会置 admin=true（B4 改密用例），个别脚本中断即残留，卡死后续所有套件的登录（403）。
 # E2E 前置统一复位（admin + 出厂弱密码 sales*，与各套件自清口径一致）。
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（146 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七）"
+step "E2E 层：smoke.sh（156 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"
@@ -295,7 +315,7 @@ step "E2E 层：uat_advisor.sh（顾问工作台字节级 73 断言，2026-09-20
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
 
-step "E2E 层：playwright 真浏览器 E2E（14 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式）"
+step "E2E 层：playwright 真浏览器 E2E（16 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言）"
 # 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。
 # 无 chromium 缓存时 SKIP（不 FAIL——离线机器不该被下载卡死），CI e2e job 已显式安装。
 case "$(uname)" in Darwin) PW_CACHE="$HOME/Library/Caches/ms-playwright";; *) PW_CACHE="$HOME/.cache/ms-playwright";; esac
