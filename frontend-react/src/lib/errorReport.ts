@@ -126,6 +126,9 @@ export async function reportClientError(err: unknown, route: string, componentSt
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     const token = localStorage.getItem(TOKEN_KEY) || '';
     if (token) headers.Authorization = 'Bearer ' + token;
+    // C3 豁免（有意保留裸 fetch）：本函数是错误上报通道自身——若改走 apiFetch，
+    // 一旦请求层内部出错会触发上报、上报又走请求层，形成"失败→上报→再失败"递归。
+    // 上报通道必须是最底层、无依赖的直连，故不收口（已登记在 .bare_fetch_baseline 口径内）。
     await fetch('/api/v1/client-errors', { method: 'POST', headers, body: JSON.stringify(body) });
   } catch {
     // 上报失败不能继续触发异常，静默丢弃

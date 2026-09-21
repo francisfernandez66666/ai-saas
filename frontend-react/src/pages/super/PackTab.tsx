@@ -61,6 +61,9 @@ export function PackTab() {
     try {
       const fd = new FormData()
       fd.append('file', file)
+      // C3 豁免（有意保留裸 fetch）：FormData 上传依赖浏览器自动填充带 boundary 的
+      // Content-Type；apiFetch 会默认注入 'application/json' 覆盖掉它，导致服务端
+      // 解析不到 multipart。文件上传类请求不收口（已登记在 .bare_fetch_baseline 口径内）。
       const r = await fetch('/api/v1/super/packs', { method: 'POST', headers: authHeaders(), body: fd })
       const j = await r.json().catch(() => null) as { code?: number; message?: string } | null
       if (j && j.code === 0) {

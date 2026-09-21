@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react'
 import { confirmDialog } from '../../lib/confirm'
 import { Button, Dialog, Input, MessagePlugin, Select, Table, Tag, Textarea } from 'tdesign-react'
-import { authHeaders } from '../../lib/api'
+import { apiFetch } from '../../lib/api'
 import type { CellProps } from '../../types'
 
 type ChannelView = {
@@ -45,15 +45,16 @@ export function ChannelsTab() {
   const [created, setCreated] = useState<CreateChannelResp | null>(null)
 
   // 统一鉴权头（Authorization + 超管代管时 X-Tenant-ID）
-  const auth = (): Record<string, string> => authHeaders()
+  // C3(PLAN_FIX_2026-09-21)：统一请求层收口——auth() 手工拼 Authorization 改为 apiFetch，
+  // 后者自带 token / 超管代管 X-Tenant-ID / 30s 超时 / 401 登出 / 403 分流。
 
   // 并行拉取通道列表与出站死信列表，回填两个表格
   async function load() {
     setLoading(true)
     try {
       const [cr, dr] = await Promise.all([
-        fetch('/api/v1/admin/channels', { headers: auth() }),
-        fetch('/api/v1/admin/channel-dlq', { headers: auth() }),
+        apiFetch('/api/v1/admin/channels'),
+        apiFetch('/api/v1/admin/channel-dlq'),
       ])
       const cj = (await cr.json().catch(() => null)) as ApiResp<{ list: ChannelView[] }> | null
       const dj = (await dr.json().catch(() => null)) as ApiResp<{ list: OutboundView[] }> | null
@@ -112,7 +113,7 @@ export function ChannelsTab() {
     setSaving(true)
     try {
       const url = editingId ? `/api/v1/admin/channels/${editingId}` : '/api/v1/admin/channels'
-      const r = await fetch(url, { method: editingId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json', ...auth() }, body: JSON.stringify(body) })
+      const r = await apiFetch(url, { method: editingId ? 'PUT' : 'POST', body: JSON.stringify(body) })
       const j = (await r.json().catch(() => null)) as ApiResp<CreateChannelResp | null> | null
       if (j?.code !== 0) { MessagePlugin.error(j?.message || '保存失败'); return }
       if (!editingId) {
@@ -130,7 +131,7 @@ export function ChannelsTab() {
 
   // 连通测试：调后端 verify 端点试拿 access_token，成功/失败提示并刷新列表状态
   async function verify(ch: ChannelView) {
-    const r = await fetch(`/api/v1/admin/channels/${ch.id}/verify`, { method: 'POST', headers: auth() })
+    const r = await apiFetch(`/api/v1/admin/channels/${ch.id}/verify`, { method: 'POST' })
     const j = (await r.json().catch(() => null)) as ApiResp<{ ok?: boolean; detail?: string }> | null
     if (j?.code === 0 && j.data?.ok) MessagePlugin.success('连通成功')
     else MessagePlugin.warning(j?.data?.detail || j?.message || '连通失败')
@@ -138,7 +139,7 @@ export function ChannelsTab() {
   }
   // 启用/停用通道（active↔disabled），停用后入站回调与出站投递不再处理
   async function setStatus(ch: ChannelView, status: 'active' | 'disabled') {
-    const r = await fetch(`/api/v1/admin/channels/${ch.id}/status?status=${status}`, { method: 'PUT', headers: auth() })
+    const r = await apiFetch(`/api/v1/admin/channels/${ch.id}/status?status=${status}`, { method: 'PUT' })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '状态更新失败')
     load()
@@ -146,7 +147,7 @@ export function ChannelsTab() {
   // 删除通道：二次确认后调 DELETE，回调地址随即失效（提示已写明）
   async function del(ch: ChannelView) {
     if (!(await confirmDialog(`确认删除通道「${ch.name}」？删除后回调地址会失效。`))) return
-    const r = await fetch(`/api/v1/admin/channels/${ch.id}`, { method: 'DELETE', headers: auth() })
+    const r = await apiFetch(`/api/v1/admin/channels/${ch.id}`, { method: 'DELETE' })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '删除失败')
     else MessagePlugin.success('已删除')
@@ -154,7 +155,7 @@ export function ChannelsTab() {
   }
   // 死信重发：把出站队列里超上限失败的投递重新入队投递一次
   async function retryDeadLetter(row: OutboundView) {
-    const r = await fetch(`/api/v1/admin/channel-dlq/${row.id}/retry`, { method: 'POST', headers: auth() })
+    const r = await apiFetch(`/api/v1/admin/channel-dlq/${row.id}/retry`, { method: 'POST' })
     const j = (await r.json().catch(() => null)) as ApiResp<null> | null
     if (j?.code !== 0) MessagePlugin.error(j?.message || '重发失败')
     else MessagePlugin.success('已重发')

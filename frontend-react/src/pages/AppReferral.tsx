@@ -5,6 +5,7 @@
  */
 import { useState, useEffect } from 'react'
 import { AUTH, getToken } from '../lib/api'
+import { apiFetch } from '../lib/api'
 import { useBrand } from '../lib/branding'
 import type { ApiResp, ReferralInfo, ReferralRecord } from '../types'
 
@@ -41,9 +42,8 @@ export default function AppReferral() {
     // `<img src={url}>` 带不上 localStorage 里的 token，JWTAuth 只认头→必然 401 破图。
     ;(async () => {
       try {
-        const res = await fetch('/api/v1/advisor/referral/qrcode?size=240', {
-          headers: getToken() ? { Authorization: 'Bearer ' + getToken() } : {},
-        })
+        // C3：apiFetch 自动带 Authorization，去掉手工拼头
+        const res = await apiFetch('/api/v1/advisor/referral/qrcode?size=240')
         if (!res.ok) return
         const blob = await res.blob()
         if (!alive) return

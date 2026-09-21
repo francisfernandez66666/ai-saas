@@ -4,6 +4,7 @@
  * 支持自定义 CSS/JS 注入，实现 SaaS 多租户白标能力
  */
 import { createContext, useContext, useEffect, useState } from 'react'
+import { apiFetch } from './api'
 
 // BrandingResp /api/v1/public/branding 的 data 契约（白标配置字段，均可选）
 // PLATFORM_DEFAULT_BRAND 平台出厂品牌名（P2-14 收口：原散点硬编码 4+1 处，哨兵比对一改即漂移）。
@@ -74,7 +75,7 @@ export function BrandingProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     // 按当前 Host 拉取租户白标配置（接口匿名可访问，用于登录前展示）
-    fetch('/api/v1/public/branding')
+    apiFetch('/api/v1/public/branding')
       .then((r) => (r.ok ? r.json() : null))
       .then((res) => {
         if (!res) return

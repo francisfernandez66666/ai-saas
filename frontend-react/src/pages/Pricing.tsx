@@ -5,6 +5,7 @@
  */
 import { useState, useEffect } from 'react'
 import { useBrand } from '../lib/branding'
+import { apiFetch } from '../lib/api'
 
 // 租户套餐类型（定价页展示）
 type Plan = { name: string; price_monthly_cents: number; highlights?: string; max_users: number; max_customers: number; max_departments: number }
@@ -33,7 +34,7 @@ export default function Pricing() {
     // 加载套餐与商业包数据（P2-90：data 统一信封 {plans, packages}）
     let dead = false
     setLoadErr(false)
-    fetch('/api/v1/plans').then((r) => r.json()).then((j) => {
+    apiFetch('/api/v1/plans').then((r) => r.json()).then((j) => {
       if (dead) return
       const d = j.data || {}
       setPlans(Array.isArray(d) ? d : d.plans || [])

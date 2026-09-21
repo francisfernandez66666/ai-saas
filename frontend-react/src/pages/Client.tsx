@@ -7,7 +7,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { useBrand } from '../lib/branding'
 import { useClientWS } from '../lib/realtime'
-import { getToken } from '../lib/api'
+import { apiFetch, getToken } from '../lib/api'
 import { ConfirmDialog } from '../lib/ui'
 import { confirmDialog, uiAlert } from '../lib/confirm'
 import { Msg } from '../types'
@@ -85,7 +85,7 @@ export default function Client() {
    * 同时更新 localIds（防重复）和 convId（会话 ID）
    */
   async function loadHistory() {
-    const r = await fetch(`${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`)
+    const r = await apiFetch(`${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`)
     const j = await r.json()
     if (j.code === 0 && j.data) {
       setMsgs(j.data)
@@ -106,7 +106,7 @@ export default function Client() {
     // body 里——匿名访客的 welcome 一直 403，页面显示的其实是本文件兜底欢迎语，
     // 真实欢迎消息/会话复用从未生效。改走 query，与 history/chat.test 口径一致。
     const vkQ = encodeURIComponent(localStorage.getItem(LS_KEY) || '')
-    const r = await fetch(`${API}/chat/welcome?visitor_key=${vkQ}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current }) })
+    const r = await apiFetch(`${API}/chat/welcome?visitor_key=${vkQ}`, { method: 'POST', body: JSON.stringify({ customer_id: custId.current }) })
     const j = await r.json()
     if (j.code === 0 && j.data) {
       const cid = j.data.conversation_id || 0
@@ -128,7 +128,7 @@ export default function Client() {
     const cid = convIdRef.current
     const url = cid ? `${API}/chat/history?conversation_id=${cid}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50` : `${API}/chat/history?customer_id=${custId.current}&visitor_key=${localStorage.getItem(LS_KEY) || ''}&limit=50`
     try {
-      const r = await fetch(url); const j = await r.json()
+      const r = await apiFetch(url); const j = await r.json()
       if (j.code === 0 && j.data && j.data.length) {
         // 从历史全量里挑出"未见过"的新消息（按 ID 去重，只追加不替换）
         const fresh = collectFreshMessages(j.data as Msg[], localIds.current)
@@ -167,7 +167,9 @@ export default function Client() {
     try {
       const vk = localStorage.getItem(LS_KEY) || ''
       // visitor_key 走 query（CheckVisitorKey 仅读 query），与 history/welcome 一致
-      const r = await fetch(`${API}/chat/test?visitor_key=${encodeURIComponent(vk)}`, { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, tsHeaders()), body: JSON.stringify({ customer_id: custId.current, content }) })
+      // C3：改走统一请求层；但 AI 生成链路耗时可远超默认 30s（smoke 侧 --max-time 60），
+      // 故对本条显式 timeoutMs:0 禁用超时，避免"收口即截断"的功能回归。
+      const r = await apiFetch(`${API}/chat/test?visitor_key=${encodeURIComponent(vk)}`, { method: 'POST', headers: tsHeaders(), timeoutMs: 0, body: JSON.stringify({ customer_id: custId.current, content }) })
       const j = await r.json()
       if (j.code === 0 && j.data) {
         if (j.data.conversation_id) { setConvId(j.data.conversation_id); convIdRef.current = j.data.conversation_id }
@@ -215,8 +217,8 @@ export default function Client() {
     setHumanBusy(true)
     try {
       const vk = localStorage.getItem(LS_KEY) || ''
-      const r = await fetch(`${API}/chat/request-human?visitor_key=${encodeURIComponent(vk)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer_id: custId.current }),
+      const r = await apiFetch(`${API}/chat/request-human?visitor_key=${encodeURIComponent(vk)}`, {
+        method: 'POST', body: JSON.stringify({ customer_id: custId.current }),
       })
       const j = await r.json()
       if (j?.code === 0) {
@@ -238,7 +240,7 @@ export default function Client() {
    */
   async function initTurnstile() {
     try {
-      const r = await fetch(`${API}/turnstile/sitekey`); const j = await r.json()
+      const r = await apiFetch(`${API}/turnstile/sitekey`); const j = await r.json()
       if (!j.data?.enabled || !j.data?.site_key) return
       setTsEnabled(true)
       const s = document.createElement('script')
@@ -271,7 +273,7 @@ export default function Client() {
         try {
           // 访客创建去重：复用模块级进行中的请求，StrictMode 双挂载不重复建客
           if (!guestPromise) {
-            guestPromise = fetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }).then((r) => r.json()).finally(() => { guestPromise = null })
+            guestPromise = apiFetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }).then((r) => r.json()).finally(() => { guestPromise = null })
           }
           const j = await guestPromise
           // G-13 信封统一(2026-09-11)：/chat/guest 响应已收口到 RespOK 的 {code,data} 形态，
@@ -312,7 +314,7 @@ export default function Client() {
       const token = getToken()
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (token) headers.Authorization = 'Bearer ' + token
-      const r = await fetch(`${API}/privacy/deletion-request`, {
+      const r = await apiFetch(`${API}/privacy/deletion-request`, {
         method: 'POST',
         headers,
         body: JSON.stringify({

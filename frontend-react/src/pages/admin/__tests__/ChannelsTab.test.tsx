@@ -3,9 +3,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ChannelsTab } from '../ChannelsTab'
 
+// C3(PLAN_FIX_2026-09-21)：ChannelsTab 改走统一请求层 apiFetch，mock 需补该导出。
+// 这里让 apiFetch 薄封装转发到下方 stubGlobal 的 fetch，既保持"断言 fetch 调用与参数"
+// 的既有语义，又覆盖到真实调用路径（不再直连 fetch）。
 vi.mock('../../../lib/api', () => ({
   getToken: () => 'test-token',
   authHeaders: () => ({ Authorization: 'Bearer test-token' }),
+  apiFetch: (url: string, opts: RequestInit = {}) => fetch(url, opts),
 }))
 
 const channel = {
