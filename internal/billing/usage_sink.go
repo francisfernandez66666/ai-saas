@@ -18,14 +18,15 @@
 //	token_billing_enabled=true 且 billing_enforced=true  —— 真正扣减三桶
 //
 // P0-1 改造（2026-09-20 审计批）：强制计费路径"写前挂账"——
-//   flush 先按租户把合计数写 usage_flush_retry（迁移/建表见 model.UsageFlushRetry），
-//   再逐租户在**同一事务**内"锁定行(SKIP LOCKED)→DELETE→三桶扣减"原子核销。
-//   扣减失败/进程崩溃时欠账以行形态存活：快速重投 3 次 → 60s sweep 补扫 →
-//   启动即全量补扫（上次崩溃遗留），超 30 分钟未清账群催办人工介入。
-//   弃批从"永久漏账"降级为"延后扣"。影子余额同步升级为 Redis 共享计数
-//   （sink:shadow:<tid>，多实例一致；未启用 Redis 退回内存 map）。
-//   残余窗口（如实声明）：Record 入内存缓冲后、flush 落表前被 SIGKILL，
-//   丢 ≤1 个 flush 周期（2s/200 条）；SIGTERM 走 Stop() 最终 flush 无损。
+//
+//	flush 先按租户把合计数写 usage_flush_retry（迁移/建表见 model.UsageFlushRetry），
+//	再逐租户在**同一事务**内"锁定行(SKIP LOCKED)→DELETE→三桶扣减"原子核销。
+//	扣减失败/进程崩溃时欠账以行形态存活：快速重投 3 次 → 60s sweep 补扫 →
+//	启动即全量补扫（上次崩溃遗留），超 30 分钟未清账群催办人工介入。
+//	弃批从"永久漏账"降级为"延后扣"。影子余额同步升级为 Redis 共享计数
+//	（sink:shadow:<tid>，多实例一致；未启用 Redis 退回内存 map）。
+//	残余窗口（如实声明）：Record 入内存缓冲后、flush 落表前被 SIGKILL，
+//	丢 ≤1 个 flush 周期（2s/200 条）；SIGTERM 走 Stop() 最终 flush 无损。
 package billing
 
 import (
@@ -568,7 +569,7 @@ func settleRetryRows(ids []uint) []uint {
 // tenantsOfRetryRows 读出给定挂账行 ID 对应的租户 → 合计量（告警口径用）。
 func tenantsOfRetryRows(ids []uint) map[uint]int64 {
 	type agg struct {
-		TID   uint
+		TID    uint
 		Tokens int64
 	}
 	var rows []agg

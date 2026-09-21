@@ -106,6 +106,21 @@ fi
 python3 tools/check_tenant_stamp.py; verdict "D6 盖章护栏（db.DB 写租户表漏章检测）" $?
 verdict "G-6 防回潮断言" $G6_FAIL
 
+# ---------- 阶段零：CI 同口径 gofmt 门禁（2026-09-21 补，PLAN_FIX A2）----------
+# 教训（2026-09-21 实测）：test_all 全绿 ≠ CI 绿灯。CI go job 的 gofmt 检查是**独立门禁**
+# 且不参与编译——批四提交时 6 个文件未格式化（注释列对齐/import 字典序/doc 注释缩进），
+# 被「构建 0 错 + 单测全绿 + 9 套 E2E 全过」完全掩盖，合入即 CI go job 红。
+# 此处按 CI 同口径（全仓 Go，排除 vendor/frontend-react）内置，把该形态挡在本地。
+step "静态门禁：gofmt -l（与 CI go job 同口径）"
+UNFMT="$(gofmt -l $(find . -name '*.go' -not -path './vendor/*' -not -path './frontend-react/*') 2>/dev/null)"
+if [ -n "$UNFMT" ]; then
+  echo "  FAIL  gofmt 未格式化（本地执行 gofmt -w 修复）："
+  echo "$UNFMT" | head -10
+  verdict "gofmt -l 门禁（CI 同口径）" 1
+else
+  verdict "gofmt -l 门禁（CI 同口径）" 0
+fi
+
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... >/tmp/test_all_vet.log 2>&1

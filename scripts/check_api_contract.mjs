@@ -74,8 +74,35 @@ const methodMismatch = new Set()
 
 for (const file of walk('frontend-react/src')) {
   const text = readFileSync(file, 'utf8')
-  for (const m of text.matchAll(PATH_RE)) {
-    let raw = m[1]
+  // PLAN_FIX_2026-09-21 A4/L1：原提取器只认「以 /api/v1 开头的完整字面量」，而前端大量端点
+  // 靠前缀常量拼接消费——Client.tsx `const API='/api/v1'` + `${API}/chat/test`、
+  // Advisor.tsx `const API='/api/v1/advisor'` + `API + '/chat/toggle-ai-reply'`——提取器看不见，
+  // 反向清单被"提取盲区"虚增（一度把在用的 C 端主链路 POST /chat/test 报成前端零消费，
+  // 并据此写出错误的 P1 结论）。这里按文件解析前缀常量：模板 `${NAME}/x` 与拼接
+  // `NAME + '/x'` 均还原成完整路径后再参与比对。
+  const prefixConsts = new Map()
+  for (const m of text.matchAll(/const\s+([A-Za-z_$][\w$]*)\s*=\s*['"`](\/(?:api|openapi)\/[^'"`\s]*)['"`]/g)) {
+    prefixConsts.set(m[1], m[2].replace(/\/+$/, ''))
+  }
+  const cands = []
+  for (const m of text.matchAll(PATH_RE)) cands.push({ raw: m[1], idx: m.index })
+  for (const m of text.matchAll(/`\$\{([A-Za-z_$][\w$]*)\}([^`]*)`/g)) {
+    const v = prefixConsts.get(m[1])
+    if (!v) continue
+    cands.push({ raw: v + m[2], idx: m.index })
+  }
+  // 支持二段拼接：`API + '/customer/' + detailId + '/tags'` —— Advisor.tsx 的客户详情
+  // 子操作全走这个形态（tags/stage/followup/info），单段解析会把它们误报成零消费。
+  // 中间变量段以 X 占位，路由侧 `:id` 编译为 `[^/]+`，可正常命中。
+  for (const m of text.matchAll(
+    /\b([A-Za-z_$][\w$]*)\s*\+\s*['"`](\/[^'"`]*)['"`](?:\s*\+\s*[A-Za-z_$][\w$]*\s*\+\s*['"`](\/[^'"`]+)['"`])?/g,
+  )) {
+    const v = prefixConsts.get(m[1])
+    if (!v) continue
+    cands.push({ raw: v + m[2] + (m[3] ? 'X' + m[3] : ''), idx: m.index })
+  }
+  for (const cm of cands) {
+    let raw = cm.raw
     raw = raw.replace(/\$\{[^}]*\}/g, 'X') // 完整模板段 → 占位
     raw = raw.replace(/\?.*$/, '') // 去 query
     // 拼接动态尾段：'/x/' + id 归一化为 '/x/X'（否则误判成列表路由的方法）
@@ -99,7 +126,7 @@ for (const file of walk('frontend-react/src')) {
       for (const meth of methods) supported.add(meth)
       canonical.push(path)
     }
-    const tail = text.slice(m.index, m.index + 200)
+    const tail = text.slice(cm.idx, cm.idx + 200)
     let meth = 'GET'
     const mm = tail.match(METHOD_RE)
     const vf = tail.match(VERB_FN_RE)
@@ -125,6 +152,16 @@ for (const file of walk('frontend-react/src')) {
     const b = m[1].replace(/\/+$/, '')
     referenced.add(`POST ${b}/:id/enable`)
     referenced.add(`POST ${b}/:id/disable`)
+    // PLAN_FIX_2026-09-21 A4/L2：P2-18 只登记了启停，CRUD 主体仍是盲区——
+    // knowledge 5 张表 + tags 3 张表 + strategy templates 共 27 条被误报"前端零消费"。
+    // EntityCrud 是通用表格组件（列表/新建/更新/删除全走 base），按全套 CRUD 登记。
+    // 已知局限（如实声明）：这是**登记制**而非解析制——若某 base 后端只实现了子集，
+    // 登记全套会掩盖该子集的真孤儿；启用/停用的方法级核对仍依赖上方静态路径解析。
+    // 不登记 `GET ${b}/:id`：EntityCrud 是"列表整行编辑"模式，行数据来自列表响应，
+    // 不会按 id 单条回拉——登记它会把 knowledge/tags/templates 的单条 GET 从真孤儿
+    // 名单里洗掉（实测触发 2 条 STALE 白名单告警），属过度登记。
+    for (const meth of ['GET', 'POST']) referenced.add(`${meth} ${b}`)
+    for (const meth of ['PUT', 'DELETE']) referenced.add(`${meth} ${b}/:id`)
   }
 }
 
@@ -148,7 +185,9 @@ const REVERSE_WHITELIST = {
   'POST /api/v1/admin/config/init': '配置初始化/回滚是灾难恢复动作，刻意只留 CLI/超管接口，防管理页误触清配置',
   'POST /api/v1/admin/config/rollback': '同上（回滚）；ConfigPanel 仅 PUT 保存，恢复链路走 tools/ 脚本与超管流程',
   'GET /api/v1/advisor/list': '与在用 /advisor/customers 列表口径重复，前端零消费属实（后端收敛候选，批三 P2 评估删除或合并）',
-  'GET /api/v1/advisor/followups': '前端实为常量拼接消费（Advisor.tsx `API + \'/followups\'`），PATH_RE 只认完整字面量故提取不到——登记为提取器盲区而非真孤儿',
+  // 'GET /api/v1/advisor/followups' 原登记为"提取器盲区"（Advisor.tsx `API + '/followups'`）；
+  // PLAN_FIX_2026-09-21 A4 提取器已支持前缀常量拼接还原，该条目被真实引用命中并触发
+  // STALE，故移出白名单。
 }
 const reverse = []
 for (const [path, { methods }] of entries) {

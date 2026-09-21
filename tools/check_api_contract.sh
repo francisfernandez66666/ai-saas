@@ -7,6 +7,24 @@
 set -u
 cd "$(dirname "$0")/.."
 
+# ---- 0. grep 方言自证（PLAN_FIX_2026-09-21 A3）----
+# 本机命令执行环境的 PATH 会被注入 toybox 版 grep（不支持 GNU 扩展 \s / \b，也不支持
+# BRE 的 \| 交替），且**静默返回 0 命中不报错**：
+#   · EXPLICIT_ANY 恒算成 0 → 又被"下降自动收紧"规则写进基线（实测 26→0），
+#     下次在 GNU/BSD grep 下跑必然 FAIL——污染的是棘轮这类长期机制；
+#   · 裸 fetch 的 `grep -v "apiFetch\|lib/api.ts"` 在 toybox 下当字面量、过滤失效
+#     （实测 20→22）→ 本机假红，而 CI（GNU grep）是 20，本地与 CI 结论相反。
+# 这里先用已知样本自证方言，不通就回退到系统 grep（BSD/GNU 均支持本脚本用到的扩展）。
+probe_grep() {
+  printf ': any\nas any\n' | "$1" -E -o ':\s*any\b' 2>/dev/null | head -1 | grep -q any 2>/dev/null
+}
+GREP=grep
+if ! probe_grep "$GREP"; then
+  for cand in /usr/bin/grep /bin/grep; do
+    if [ -x "$cand" ] && probe_grep "$cand"; then GREP="$cand"; break; fi
+  done
+fi
+
 FAIL=0
 
 # ---- 1. golden 路由清单 ----
@@ -55,7 +73,7 @@ fi
 # 基线治理的对象是业务代码的类型逃逸，测试里用 any 做 mock 断言是合理逃生舱；
 # 原口径把 13 处测试 any 计入，HEAD 深审批未动业务基线却把门禁顶红（34→39），
 # CI contract job 自合入起必红。排除后由"只降不升"规则自动收紧到新基线。
-EXPLICIT_ANY=$(grep -rhoE "(:\s*any\b|\bas any\b)" frontend-react/src --include="*.ts" --include="*.tsx" --exclude-dir="__tests__" --exclude="*.test.ts" --exclude="*.test.tsx" | wc -l | tr -d ' ')
+EXPLICIT_ANY=$($GREP -rhoE "(:\s*any\b|\bas any\b)" frontend-react/src --include="*.ts" --include="*.tsx" --exclude-dir="__tests__" --exclude="*.test.ts" --exclude="*.test.tsx" | wc -l | tr -d ' ')
 BASELINE_FILE="frontend-react/src/.as_any_baseline"
 if [ ! -f "$BASELINE_FILE" ]; then
   echo "$EXPLICIT_ANY" > "$BASELINE_FILE"
@@ -75,9 +93,9 @@ fi
 # 统一请求层 lib/api.ts 负责 30s 超时/401 登出/租户头；业务页裸 fetch( 每多一处
 # 就多一个击穿点（DashboardTab 超管代管 400 静默即坐实例）。存量 46 处分批迁移，
 # 此处封新增（对照 .as_any_baseline 模式，下降自动收紧基线）。
-BARE_FETCH=$(grep -rn "fetch(" frontend-react/src --include="*.ts" --include="*.tsx" \
+BARE_FETCH=$($GREP -rn "fetch(" frontend-react/src --include="*.ts" --include="*.tsx" \
   --exclude-dir="__tests__" --exclude="*.test.ts" --exclude="*.test.tsx" \
-  | grep -v "apiFetch\|lib/api.ts" | wc -l | tr -d ' ')
+  | $GREP -vE "apiFetch|lib/api\.ts" | wc -l | tr -d ' ')
 FETCH_BASELINE_FILE="frontend-react/src/.bare_fetch_baseline"
 if [ ! -f "$FETCH_BASELINE_FILE" ]; then
   echo "$BARE_FETCH" > "$FETCH_BASELINE_FILE"

@@ -7,10 +7,10 @@ import "time"
 
 // UsageFlushRetry 一行 = 一个租户一笔待核销的 token 扣减欠账。
 type UsageFlushRetry struct {
-	ID        uint      `gorm:"primaryKey" json:"id"`          // 主键ID
-	TenantID  uint      `gorm:"index" json:"tenant_id"`        // 租户ID（显式落列，后台链路无请求 ctx）
-	Tokens    int64     `json:"tokens"`                        // 待扣 token 数（>0）
-	CreatedAt time.Time `gorm:"index" json:"created_at"`       // 挂账时间（sweep 按龄告警用）
+	ID        uint      `gorm:"primaryKey" json:"id"`    // 主键ID
+	TenantID  uint      `gorm:"index" json:"tenant_id"`  // 租户ID（显式落列，后台链路无请求 ctx）
+	Tokens    int64     `json:"tokens"`                  // 待扣 token 数（>0）
+	CreatedAt time.Time `gorm:"index" json:"created_at"` // 挂账时间（sweep 按龄告警用）
 }
 
 // TableName 指定表名

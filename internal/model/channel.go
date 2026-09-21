@@ -50,8 +50,8 @@ const (
 	// OutboundSending 取单预占态（P2-3，2026-09-20 批三）：FOR UPDATE SKIP LOCKED 取单同事务置
 	// sending，"取到即锁定"消除多实例/崩溃换主窗口的双发；持有者崩溃由 worker 按 updated_at 超 5min 复活回 pending
 	OutboundSending = "sending"
-	OutboundSent    = "sent"    // 已发送
-	OutboundFailed  = "failed"  // 超过最大重试，进死信（/admin 通道页可见，可人工重发）
+	OutboundSent    = "sent"   // 已发送
+	OutboundFailed  = "failed" // 超过最大重试，进死信（/admin 通道页可见，可人工重发）
 )
 
 // ChannelOutbound 出站消息队列：把"回复产生"与"通道发送"解耦，可靠性靠 main.go 后台 ticker 出站 worker 重试。

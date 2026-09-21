@@ -72,9 +72,9 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 		if err := db.DB.Model(&model.Conversation{}).
 			Where("id = ? AND tenant_id = ?", conversation.ID, conversation.TenantID).
 			Updates(map[string]interface{}{
-				"mode":             "ai",
-				"is_human_locked":  false,
-				"pending_handoff":  false,
+				"mode":            "ai",
+				"is_human_locked": false,
+				"pending_handoff": false,
 			}).Error; err != nil {
 			log.Printf("[对话-告警] 会话%d 人工超时AI接管落库失败(下轮将重复判定): %v", conversation.ID, err)
 		}
