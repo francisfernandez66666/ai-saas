@@ -7,6 +7,7 @@ import (
 	"ai-scrm/internal/model"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"gorm.io/driver/postgres"
@@ -127,39 +128,82 @@ ensureTenantUniqueIndexes 把多租户复合唯一索引真正落到库上
 处置：显式 DROP 错索引 → CREATE UNIQUE INDEX IF NOT EXISTS 正确复合索引。
 两步都幂等，且建索引失败只告警不阻断启动（存量脏数据要先由运营清理，
 启动阶段硬失败会把整个服务拖死）。
+
+⚠ 但"删自己再建自己"这条路径必须禁止（2026-09-23 假红根因）：上表的 drop 列里
+混着正确索引自己的名字（idx_tag_tenant_name / idx_brand_tenant_name 等，历史存量里
+它们曾承载单列定义），于是每次 Init 都会先 DROP 掉一个**已经是正确形态**的索引再重建。
+DROP 与 CREATE 各自 autocommit，中间是一段无约束空窗：
+  - 多个 go test 进程并行（每个都跑一遍 Init）、或多实例同时重启时，另一进程的
+    pg_indexes 结构断言正好落在空窗里 → 报"缺少含 tenant_id 的复合唯一索引"（假红）；
+  - 更糟的是空窗内真实写入可以插进重复数据，令随后的 CREATE UNIQUE INDEX 永久失败
+    （只告警不阻断），约束就真的没了。
+
+故改为"先看现状再决定动作"：已是 (tenant_id, …) 正确复合唯一的索引一律不删，
+目标索引定义正确时连 CREATE 都不重发（避免无谓的锁与索引重建）。
 */
 func ensureTenantUniqueIndexes() {
-	type tenantUnique struct {
-		table string   // 表名
-		drop  []string // 需删除的历史错索引（单列全局唯一 / 同名旧版）
-		index string   // 正确的复合唯一索引名
-		cols  string   // 索引列，tenant_id 必须为首字母列
-	}
-	targets := []tenantUnique{
-		// tags：库里曾同时存在 idx_tags_name/code（旧命名）与 idx_tag_tenant_name/code（单列版）
-		{"tags", []string{"idx_tags_name", "idx_tags_code", "idx_tag_tenant_name", "idx_tag_tenant_code"},
-			"idx_tag_tenant_name", "(tenant_id, name)"},
-		{"tags", nil, "idx_tag_tenant_code", "(tenant_id, code)"},
-		{"brands", []string{"idx_brands_name", "idx_brands_code", "idx_brand_tenant_name", "idx_brand_tenant_code"},
-			"idx_brand_tenant_name", "(tenant_id, name)"},
-		{"brands", nil, "idx_brand_tenant_code", "(tenant_id, code)"},
-		// car_models：正确版 idx_carmodel_tenant_code 已存在，这里只清错的两条
-		{"car_models", []string{"idx_car_models_code", "idx_model_tenant_code"},
-			"idx_carmodel_tenant_code", "(tenant_id, code)"},
-		{"cdp_tag_definitions", []string{"idx_cdp_tag_tenant_code"},
-			"idx_cdp_tag_tenant_code", "(tenant_id, code)"},
-		{"cdp_profiles", []string{"idx_cdp_profile_tenant_cdpid"},
-			"idx_cdp_profile_tenant_cdpid", "(tenant_id, cdp_id)"},
-		{"flow_definitions", []string{"idx_flow_definitions_code", "idx_flow_tenant_code"},
-			"idx_flow_tenant_code", "(tenant_id, code)"},
-	}
+	ensureTenantUniqueIndexesFor(tenantUniqueTargets)
+}
+
+// tenantUnique 描述一条"租户级列该按 (tenant_id, col) 唯一"的收敛目标。
+type tenantUnique struct {
+	table string   // 表名
+	drop  []string // 需删除的历史错索引（单列全局唯一 / 同名旧版）
+	index string   // 正确的复合唯一索引名
+	cols  string   // 索引列，tenant_id 必须为首列
+}
+
+// tenantUniqueTargets 收敛目标清单（与 internal/db 结构断言测试的清单同源）。
+// 抽成包级变量+下方 For 变体，是为了让"错定义被重建、正确定义绝不被删"
+// 这两条能在临时表上被测到——否则本函数只能靠真库快照证明，无法构造"故意建错"。
+var tenantUniqueTargets = []tenantUnique{
+	// tags：库里曾同时存在 idx_tags_name/code（旧命名）与 idx_tag_tenant_name/code（单列版）
+	{"tags", []string{"idx_tags_name", "idx_tags_code", "idx_tag_tenant_name", "idx_tag_tenant_code"},
+		"idx_tag_tenant_name", "(tenant_id, name)"},
+	{"tags", nil, "idx_tag_tenant_code", "(tenant_id, code)"},
+	{"brands", []string{"idx_brands_name", "idx_brands_code", "idx_brand_tenant_name", "idx_brand_tenant_code"},
+		"idx_brand_tenant_name", "(tenant_id, name)"},
+	{"brands", nil, "idx_brand_tenant_code", "(tenant_id, code)"},
+	// car_models：正确版 idx_carmodel_tenant_code 已存在，这里只清错的两条
+	{"car_models", []string{"idx_car_models_code", "idx_model_tenant_code"},
+		"idx_carmodel_tenant_code", "(tenant_id, code)"},
+	{"cdp_tag_definitions", []string{"idx_cdp_tag_tenant_code"},
+		"idx_cdp_tag_tenant_code", "(tenant_id, code)"},
+	{"cdp_profiles", []string{"idx_cdp_profile_tenant_cdpid"},
+		"idx_cdp_profile_tenant_cdpid", "(tenant_id, cdp_id)"},
+	{"flow_definitions", []string{"idx_flow_definitions_code", "idx_flow_tenant_code"},
+		"idx_flow_tenant_code", "(tenant_id, code)"},
+}
+
+// ensureTenantUniqueIndexesFor 按给定目标清单收敛索引（见 ensureTenantUniqueIndexes 注释）。
+func ensureTenantUniqueIndexesFor(targets []tenantUnique) {
 	for _, t := range targets {
+		defs := currentIndexDefsByTable(t.table)
+		targetOK := isTenantUniqueOn(defs[t.index], t.cols)
 		for _, idx := range t.drop {
+			// 分两类判："目标索引自己"只要定义正确就绝不删（删→建空窗是本轮假红根因）；
+			// 定义不对才删掉重建，哪怕它已经挂着某个 (tenant_id, 别的列) 的错列组合。
+			if idx == t.index {
+				if targetOK {
+					continue
+				}
+			} else if isTenantUniqueOn(defs[idx], "(tenant_id, ") {
+				// 历史别名但已是租户级复合唯一：等价形态，留着它不伤隔离，删它反而造空窗
+				continue
+			}
+			if _, existed := defs[idx]; !existed {
+				continue // 库里根本没有这条索引：不发无意义的 DDL，也不打"已删除"误导排障
+			}
 			if err := DB.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", idx)).Error; err != nil {
 				log.Printf("[migrate] 删除历史错索引 %s 失败: %v", idx, err)
 			} else {
-				log.Printf("[migrate] 已删除历史错索引 %s", idx)
+				// 把被删掉的原定义一起记：下次再看到这条日志能直接判断"删的是错索引，
+				// 不是刚建好的正确索引"（本轮假红就是从这句无差别的"已删除"里查出来的）。
+				log.Printf("[migrate] 已删除历史错索引 %s（原定义: %s）", idx, defs[idx])
 			}
+		}
+		if targetOK {
+			continue
 		}
 		sql := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s %s", t.index, t.table, t.cols)
 		if err := DB.Exec(sql).Error; err != nil {
@@ -168,6 +212,35 @@ func ensureTenantUniqueIndexes() {
 			log.Printf("[migrate] 建复合唯一索引 %s(%s) 失败（需先清理同租户内重复数据）: %v", t.index, t.cols, err)
 		}
 	}
+}
+
+// currentIndexDefsByTable 取表上现有索引的 name => indexdef 快照（pg_indexes 权威口径）。
+// 查询失败返回空 map，调用方据此退化为"按原路径重建"——宁可多发一次幂等 DDL，
+// 也不要在看不见现状时盲删。
+func currentIndexDefsByTable(table string) map[string]string {
+	out := map[string]string{}
+	rows, err := DB.Raw("SELECT indexname, indexdef FROM pg_indexes WHERE tablename = ?", table).Rows()
+	if err != nil {
+		log.Printf("[migrate] 查询 %s 索引现状失败(将按重建路径处理): %v", table, err)
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name, def string
+		if err := rows.Scan(&name, &def); err != nil {
+			log.Printf("[migrate] 扫描 %s 索引行失败(将按重建路径处理): %v", table, err)
+			return map[string]string{}
+		}
+		out[name] = def
+	}
+	return out
+}
+
+// isTenantUniqueOn 判断 indexdef 是否是"以 tenant_id 为首列、列序与 cols 完全一致"的 UNIQUE 索引。
+// cols 传 "(tenant_id, name)" 这类目标列串，或传 "(tenant_id, " 这类前缀（用于"任一租户级唯一都别删"）。
+// 必须同时含 UNIQUE：非唯一同名索引若被当作正确形态跳过，约束就永久缺失了。
+func isTenantUniqueOn(def, cols string) bool {
+	return def != "" && strings.Contains(def, "UNIQUE") && strings.Contains(def, cols)
 }
 
 // autoMigrate 自动迁移所有数据表
