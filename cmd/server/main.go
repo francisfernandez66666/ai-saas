@@ -62,6 +62,13 @@ import (
 // startTime 进程启动时间（/status 观测用）
 var startTime time.Time
 
+// appVersion 对外声明的产品版本号唯一真源（/status、/status/detail、Sentry Release 三处共读）。
+// 此前这三处各写一份字面量且都停在 v2.16.0，而 README 变更日志已记到 v2.28.0——
+// 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
+// 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
+// （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
+const appVersion = "v2.28.0"
+
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
 // 一个对账/清理任务的偶发崩溃不该带走全站。此处 recover 后打全栈日志，循环继续下一轮。
@@ -718,8 +725,10 @@ func main() {
 	// WaitForDelivery=false 保证上报异步不拖慢请求。
 	if dsn := strings.TrimSpace(config.GlobalConfig.Server.SentryDSN); dsn != "" {
 		if err := sentry.Init(sentry.ClientOptions{
-			Dsn:         dsn,
-			Release:     "ai-scrm@v2.16.0",
+			Dsn: dsn,
+			// Release 与 /status 同读 appVersion 单点：此前这里另写一份 v2.16.0，
+			// 于是探针报 v2.28.0、错误却按 ai-scrm@v2.16.0 分组——按版本排查缺陷会翻到空release。
+			Release:     "ai-scrm@" + appVersion,
 			Environment: config.GlobalConfig.Server.Mode,
 			// 采样与面包屑用 SDK 默认；PII 红线：不采集请求 body（默认即关），
 			// 错误消息里的手机号由后端既有脱敏在入日志前完成，Sentry 只见已净化文本
@@ -729,7 +738,7 @@ func main() {
 		} else {
 			r.Use(sentrygin.New(sentrygin.Options{Repanic: true, WaitForDelivery: false}))
 			defer sentry.Flush(2 * time.Second)
-			log.Printf("[E2] Sentry 错误上报已启用（release=ai-scrm@v2.16.0）")
+			log.Printf("[E2] Sentry 错误上报已启用（release=ai-scrm@%s）", appVersion)
 		}
 	}
 	// 顺序：CORS → TenantResolver（全局，fail-closed）
@@ -853,8 +862,8 @@ func registerRoutes(r *gin.Engine) {
 			status = "warn"
 		}
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
-			// 版本真源：与 README 更新日志主版本线保持一致，逐批手动 bump（此前 v2.3.0 系历史遗留未同步）
-			"version":    "v2.16.0",
+			// 版本真源见文件头 appVersion（此处曾各写一份字面量并漂移 12 个小版本）
+			"version":    appVersion,
 			"uptime_sec": int(time.Since(startTime).Seconds()),
 			"status":     status,
 			"ok":         snap.DBOK,
@@ -892,7 +901,7 @@ func registerRoutes(r *gin.Engine) {
 		// 让"清没清干净"可被冒烟脚本稳定断言（旧口径只能人肉查库，迁移 019 回填后无回归护栏）。
 		orphanMsgs, archiveBacklog, archiveOn := metrics.DataHygiene()
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
-			"version":             "v2.16.0",
+			"version":             appVersion,
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
 			"db_ok":               snap.DBOK,
 			"orphan_messages":     orphanMsgs,

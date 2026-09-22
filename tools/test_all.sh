@@ -106,6 +106,15 @@ fi
 if grep -rn --include="*.go" 'gin\.Mode()' internal/ | grep -v '_test.go' | grep -v '//' | grep -q .; then
   echo "  FAIL  P2-1: gin.Mode() 谓词残留（应统一 config.IsDevModeConfirmed）"; grep -rn --include="*.go" 'gin\.Mode()' internal/ | grep -v '_test.go' | grep -v '//' | head -5; G6_FAIL=1
 fi
+# 3.7 版本号字面量防分叉（2026-09-23 收尾批）：对外版本曾有**三处**字面量
+#     （/status、/status/detail、Sentry Release），全部停在 v2.16.0，而 README 主版本线已 v2.28.0——
+#     探针报旧版本会让运维核对错发布批次，Sentry 按旧 release 分组会让按版本排缺陷翻到空组。
+#     现统一读 cmd/server/main.go 的 appVersion 常量；此断言封"再写一份字面量"。
+#     负向 grep 只判非注释行（注释里保留 v2.16.0 作为事故形态说明，属预期）。
+G6_VER=$(grep -rnE --include="*.go" '"version":[[:space:]]*"v[0-9]+\.[0-9]+\.[0-9]|ai-scrm@v' cmd/ internal/ 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//')
+if [ -n "$G6_VER" ]; then
+  echo "  FAIL  版本号字面量分叉（应统一用 appVersion 常量）："; echo "$G6_VER" | head -5; G6_FAIL=1
+fi
 # 4. D6 盖章护栏（2026-09-16）：db.DB.Create/Save 写租户表必须显式 TenantID——
 #    C7 事故形态（无 ctx 盖章落 0）历史上命中两次（C7、P1-5），接入即第三次被抓现行
 #    （message_queue.go WriteDegradedNotice，已修）。精准模式检测，见脚本头注释。
@@ -332,7 +341,7 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（189 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一）"
+step "E2E 层：smoke.sh（191 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁））"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"

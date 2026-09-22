@@ -952,6 +952,17 @@ esac
 # 反漏护栏：数据形态字段只准出现在带令牌的详情端点，公开 /status 仍是"存活+版本"四件套。
 B6LEAK=$(curl -s "$B/status" | grep -c "orphan_messages\|archive_backlog\|redis_enabled" 2>/dev/null)
 check "公开/status不泄露数据层观测位" 0 "${B6LEAK:-1}"
+# 版本声明单点锁（2026-09-23 收尾批）：/status 与 /status/detail 此前各写一份字面量，
+# 两份都停在 v2.16.0 而变更日志已记到 v2.28.0——探针报的版本比真实构建老 12 个小版本，
+# 运维照它核对发布批次会核对错对象。现在三处（含 E2 Sentry Release，见 test_all G-6·3.7 负向 grep）
+# 都读 cmd/server/main.go 的 appVersion 常量。
+# 只锁"两处一致 + vX.Y.Z 形态"（防有人再写回各自硬编码），**不锁"等于 README 版本号"**：
+# README.md 未入库（.gitignore 第 2 行 `*.md`），CI 侧根本拿不到它，锁上去就是永久性假红。
+B6VER1=$(curl -s "$B/status" | jsonget "['data']['version']" 2>/dev/null)
+B6VER2=$(echo "$B6DETAIL" | jsonget "['data']['version']" 2>/dev/null)
+B6VERSHAPE=$(printf '%s' "$B6VER1" | grep -cE '^v[0-9]+\.[0-9]+\.[0-9]+$' 2>/dev/null)
+check "/status版本回显为vX.Y.Z形态" 1 "${B6VERSHAPE:-0}"
+check "/status与/status/detail版本一致(appVersion单点真源)" "$B6VER1" "$B6VER2"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1
