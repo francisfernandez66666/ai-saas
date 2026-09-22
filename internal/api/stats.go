@@ -35,6 +35,8 @@ GetOverview 获取统计概览
   - data: StatsOverview 结构体
 */
 // GetOverview 返回运营总览指标。
+// apidump:ts StatsOverview
+// 工作台概览指标，口径见 schema.StatsOverview。
 func GetOverview(c *gin.Context) {
 	// 总客户数（有效客户：status=1）
 	var totalCustomers int64

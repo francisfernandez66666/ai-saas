@@ -18,6 +18,13 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / 2026-09-21 B2：知识库公开面 visibility 收敛 3 断言（二十八）
 #       / 2026-09-21 D2：AI 贡献度看板口径自洽 6 断言（二十九，含"会话数与消息量
 #         必须同零或同正"的缺陷复现断言 + 跨租户隔离；断言逻辑已用历史数字双向自证）
+#       / 2026-09-22~23 批五/批六：AI 销售闭环开关面 5 断言 + 四开关租户往返 12 断言
+#         + L1 判优卡片"租户级参数真生效"3 断言（三十：默认门槛下判功效不足、租户降门槛即出结论
+#         leading/suggest_review、奖励指标越白名单仍按 lead 出卡防 reward hacking；含量纲改版
+#         存量纠偏断言 step=0.2→10 / max=3→100，本段合成数据自清理）
+#       / 2026-09-23 批六：数据层治理与运维观测面 7 断言（三十一：迁移 017/018/019 台账与列/索引实存、
+#         访客密钥补签零残留、orphan_messages=0、归档关闭不伪装零积压、Redis 声明一致性观测位、
+#         公开 /status 反泄露）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -784,6 +791,167 @@ $PSQL "DELETE FROM messages WHERE tenant_id=(SELECT id FROM tenants WHERE code='
        DELETE FROM tenants WHERE code='${AISC_CODE}';" >/dev/null 2>&1
 AISC_LEFT=$($PSQL "SELECT COUNT(*) FROM tenants WHERE code='${AISC_CODE}'" | tr -d '[:space:]')
 [ "${AISC_LEFT:-1}" = "0" ] && check "隔离验证租户已回收(无残留)" y y || check "隔离验证租户已回收(无残留)" 0 "${AISC_LEFT:-1}"
+
+# ---------- 第三十节：AI 销售闭环四开关 + 判优参数按租户生效（PLAN_FIX_2026-09-22 批五/批六护栏）----------
+# 立此段的原因有两层：
+#  ① 开关面：批五把"择臂(L2 前置)/自动晋升/销售路径机/话术挖掘"四条自动化链路一次接进主程序，
+#     全部默认关。默认值一旦被误改（比如把 experiment_auto_promote 播种成 true），
+#     系统就会在无人审核的情况下自动改话术权重、自动烧真实 token 出稿——这是"能演示"与"敢投产"的分界。
+#  ② 参数读写层：这批 experiment_*/talkmining_* 键都**不是**平台级键（租户后台就能改，
+#     写 (tenant_id,key) 覆盖层），但装配判优/晋升参数的代码原先读的是系统默认层
+#     （SafeCfg*）——于是"租户改了参数、行为照旧"，不报错、不 panic，纯静默失效
+#     （与本仓 email_verify_enabled 当年同一课）。批六把读法统一到租户生效值，
+#     这里用**接口回显**证明它真的生效了（min_samples 从 2200 改成 1，卡片结论必须翻转），
+#     而不是只在 Go 单测里自证。
+echo "---- 三十、AI 销售闭环开关面与租户级判优参数 ----"
+B5SEED=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=0
+  AND ((key='template_bandit_enabled' AND value='false')
+    OR (key='experiment_auto_promote' AND value='false')
+    OR (key='sales_path_enabled' AND value='false')
+    OR (key='talkmining_draft_enabled' AND value='false'))" 2>/dev/null | tr -d '[:space:]')
+check "四开关出厂默认false已播种系统层(默认关=可投产前提)" 4 "$B5SEED"
+
+# 量纲纠偏：ab_weight 是 0~100 整数百分点。老库出厂值曾是"比例量纲"(step=0.2/max=3)，
+# ensureDefaults 只补漏键、不改存量，所以量纲改版必须走 retunedConfigValues 显式纠偏——
+# 否则 max=3 会被当真：自动晋升顶两轮就撞上限，此后**永远不再调权**且日志全绿。
+B5STEP=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='experiment_weight_step'" 2>/dev/null | tr -d '[:space:]')
+B5MAX=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='experiment_weight_max'" 2>/dev/null | tr -d '[:space:]')
+check "experiment_weight_step 出厂值=10(百分点量纲,存量0.2已纠偏)" 10 "$B5STEP"
+check "experiment_weight_max 出厂值=100(百分点量纲,存量3已纠偏)" 100 "$B5MAX"
+B5CD=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='experiment_promote_cooldown_hours'" 2>/dev/null | tr -d '[:space:]')
+check "晋升冷却默认72h(防小时级复利冲顶)" 72 "$B5CD"
+# 终局观察窗是"跨租户一趟扫"的全局 SQL 参数，做不到按租户分窗，因此必须标平台级；
+# 若哪天有人把它从 PlatformLevelKeys 里删掉，租户后台就会多出一个改了不生效的键（本行钉住）。
+B5OUT=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='outcome_window_days'" 2>/dev/null | tr -d '[:space:]')
+check "outcome_window_days 出厂30(终局标签观察窗)" 30 "$B5OUT"
+
+# 四开关租户往返：开→租户层生效&系统层不被污染→关回默认
+for B5K in template_bandit_enabled experiment_auto_promote sales_path_enabled talkmining_draft_enabled; do
+  B5PU=$(curl -s -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+    -H "Content-Type: application/json" -d "[{\"key\":\"$B5K\",\"value\":\"true\"}]")
+  check "开关$B5K 租户层可开(code=0)" 0 "$(echo "$B5PU" | jsonget "['code']" 2>/dev/null)"
+  B5TEN=$($PSQL "SELECT replace(value,'\"','') FROM system_configs WHERE tenant_id=1 AND key='$B5K'" 2>/dev/null | tr -d '[:space:]')
+  B5SYS=$($PSQL "SELECT replace(value,'\"','') FROM system_configs WHERE tenant_id=0 AND key='$B5K'" 2>/dev/null | tr -d '[:space:]')
+  [ "$B5TEN" = "true" ] && check "开关$B5K 已落到租户覆盖层" y y || check "开关$B5K 已落到租户覆盖层" y "${B5TEN:-缺行}"
+  [ "$B5SYS" = "false" ] && check "开关$B5K 未污染系统默认层" y y || check "开关$B5K 未污染系统默认层" false "$B5SYS"
+done
+
+# L1 判优卡片：造"同锚两话术、n=500、留资率 0.30 vs 0.10"的最小判优场景（租户 1）。
+# 为什么自己插数据：pack_stats 是小时任务产物，真实库里既有数据不可控（可能 0 行→卡片为空→断言空过），
+# 用合成行 + 精确 sample/率，才能把"结论随门槛翻转"这条租户级参数生效链跑实。
+B5TA="smoke_b5_$$_a"
+B5TB="smoke_b5_$$_b"
+$PSQL "INSERT INTO templates (id, tenant_id, anchor_type, name, prompt_template, status, ab_group, ab_weight, priority, created_at, updated_at)
+       VALUES ('${B5TA}', 1, 2, '冒烟判优胜者', '冒烟话术A', 1, 'smoke_b5', 50, 1, NOW(), NOW()),
+              ('${B5TB}', 1, 2, '冒烟判优败者', '冒烟话术B', 1, 'smoke_b5', 50, 1, NOW(), NOW());
+       INSERT INTO pack_stats (tenant_id, pack_code, pack_version, template_id, sample_count, hook_rate, lead_rate, computed_at)
+       VALUES (1, 'smoke_b5', '1.0.0', '${B5TA}', 500, 0.40, 0.30, NOW()),
+              (1, 'smoke_b5', '1.0.0', '${B5TB}', 500, 0.40, 0.10, NOW());" >/dev/null 2>&1
+b5stat() { curl -s -m 15 "$B/api/v1/admin/packs/stats?pack_code=smoke_b5" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"; }
+# 默认门槛 2200：n=500 不足 → 必须明确"不下结论"（这是"不假装精确"口径的接口回显）
+B5J=$(b5stat)
+B5DEF=$(echo "$B5J" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {}).get('suggestions') or []
+mine=[s for s in d if s['template_id'] in ('$B5TA','$B5TB')]
+if len(mine)!=2: print('ROWS=%d'%len(mine)); raise SystemExit
+print('OK' if all(s['status']=='insufficient_samples' and s['min_samples']==2200 for s in mine) else json.dumps(mine))
+" 2>/dev/null)
+[ "$B5DEF" = "OK" ] && check "默认门槛2200下n=500判功效不足(不假装精确)" y y || check "默认门槛2200下n=500判功效不足(不假装精确)" y "${B5DEF:-PARSE_FAIL}"
+# 租户把门槛降到 1：同一份数据必须立刻出结论 → 证明 experiment_min_samples_lead 走的是租户生效值
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"experiment_min_samples_lead","value":"1"}]'
+B5J2=$(b5stat)
+B5LOW=$(echo "$B5J2" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {}).get('suggestions') or []
+mine={s['template_id']:s for s in d if s['template_id'] in ('$B5TA','$B5TB')}
+if len(mine)!=2: print('ROWS=%d'%len(mine)); raise SystemExit
+a,b=mine['$B5TA'],mine['$B5TB']
+if a['min_samples']!=1: print('MIN=%s'%a['min_samples']); raise SystemExit
+print('OK' if a['status']=='leading' and b['status']=='suggest_review' else json.dumps([a['status'],b['status']]))
+" 2>/dev/null)
+[ "$B5LOW" = "OK" ] && check "★租户降门槛即出结论(胜者leading/败者suggest_review)" y y || check "★租户降门槛即出结论(胜者leading/败者suggest_review)" y "${B5LOW:-PARSE_FAIL}"
+# 奖励红线：租户把奖励指标改成 intent（意向分是模型自己写的近端信号，拿来当奖励=reward hacking）
+# 接口必须无视之、仍按 lead 口径出卡——白名单收敛从"代码里有"升级为"打接口能验"。
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"experiment_reward_metric","value":"\"intent\""}]'
+B5WL=$(echo "$(b5stat)" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {}).get('suggestions') or []
+mine=[s for s in d if s['template_id'] in ('$B5TA','$B5TB')]
+print('OK' if mine and all(s['metric']=='lead' for s in mine) else json.dumps([s.get('metric') for s in mine]))
+" 2>/dev/null)
+[ "$B5WL" = "OK" ] && check "奖励指标越白名单仍按lead出卡(防reward hacking)" y y || check "奖励指标越白名单仍按lead出卡(防reward hacking)" y "${B5WL:-PARSE_FAIL}"
+
+# 现场回收：合成模板/快照 + 本段写过的租户覆盖行一律删除，留 0 条才算不打脏库
+$PSQL "DELETE FROM pack_stats WHERE tenant_id=1 AND pack_code='smoke_b5';
+       DELETE FROM templates WHERE tenant_id=1 AND id IN ('${B5TA}','${B5TB}');
+       DELETE FROM system_configs WHERE tenant_id=1 AND key IN
+         ('template_bandit_enabled','experiment_auto_promote','sales_path_enabled','talkmining_draft_enabled',
+          'experiment_min_samples_lead','experiment_reward_metric');" >/dev/null 2>&1
+B5LEFT=$($PSQL "SELECT (SELECT count(*) FROM templates WHERE id LIKE 'smoke_b5_%')
+              + (SELECT count(*) FROM pack_stats WHERE pack_code='smoke_b5')
+              + (SELECT count(*) FROM system_configs WHERE tenant_id=1 AND key IN
+                 ('template_bandit_enabled','experiment_auto_promote','sales_path_enabled','talkmining_draft_enabled',
+                  'experiment_min_samples_lead','experiment_reward_metric'))" 2>/dev/null | tr -d '[:space:]')
+check "本段合成数据与租户覆盖行已清零" 0 "${B5LEFT:-1}"
+
+# ---------- 第三十一节：批六数据层治理 + 运维观测面（迁移 017/018/019 与 /status/detail）----------
+# 立此段的原因：批六把"数据形态"第一次做成了可观测的东西（孤儿消息计数、归档积压、Redis 声明与实际连接
+# 是否一致），并且靠迁移 017/018/019 把存量债一次性清掉。这类东西的失败模式全是**静默**的——
+# 迁移没跑上、索引没建上、观测位字段名改了，都不会有任何报错，只会在半年后以
+# "贡献度口径又对不上""探测把 messages 全表扫了一遍"的形式回来。所以这一段只断言**事实存在**，
+# 且全部走 DB 直查 + 详情端点回显，不依赖单测的注入接缝（单测证逻辑，本段证真库真接口）。
+echo "---- 三十一、批六数据层治理与运维观测面 ----"
+# 迁移台账：三笔必须登记在案（internal/db/migrations.go 按文件名升序执行并写 schema_migrations）。
+# 只查台账不查列：台账是"部署是否走到这一版"的真相源，列在下一行单独核。
+B6MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version IN
+  ('017_visitor_key_backfill','018_attribution_outcome_labels','019_orphan_message_reassign')" 2>/dev/null | tr -d '[:space:]')
+check "迁移017/018/019已登记台账" 3 "$B6MIG"
+# 018：终局标签四列 + pack_stats 两列终局率（择臂/判优的奖励来源，缺列则回填 SQL 直接 42703）
+B6COL=$($PSQL "SELECT count(*) FROM information_schema.columns
+  WHERE (table_name='reply_attributions' AND column_name IN ('arrived_at','dealt_at','outcome_stage','outcome_checked_at'))
+     OR (table_name='pack_stats' AND column_name IN ('arrive_rate','deal_rate'))" 2>/dev/null | tr -d '[:space:]')
+check "终局标签列齐(归因4列+包统计2列)" 6 "$B6COL"
+# 019 配套部分索引：无它则每次健康探测全表扫 messages（全站最大的表），
+# 有了它孤儿计数在索引内完成，正常态近乎零成本。
+B6IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname='idx_messages_orphan_no_conv'" 2>/dev/null | tr -d '[:space:]')
+check "孤儿消息计数部分索引已建" 1 "$B6IDX"
+# 017：访客密钥补签残留必须为 0——写入口收紧后，空密钥客户等于永久不可用（迁移自带 EXCEPTION 自检，
+# 这里再断一次是防"迁移被人改名后端点已收紧"这种半吊子部署）。
+# 口径修正（首跑即抓到）：空 visitor_key 有两类**合法**来源，都不是迁移没跑上——
+#   ① PIPL 删除权匿名化会主动清空 visitor_key（internal/privacy 置 remark='anon:'），
+#      这是"身份已撤销"的正确形态，若断言 count=0 就会每次跑完 uat 的注销流程假红；
+#   ② 通道客户以 external_userid 为身份锚，本就不发 web 访客密钥（smoke_chat_identity 8.9 拿它做负向用例）。
+# 所以要断的是"**未被匿名化的行**一律有密钥"，即空密钥只可能出现在匿名化行上。
+B6VK=$($PSQL "SELECT count(*) FROM customers WHERE (visitor_key IS NULL OR visitor_key='')
+  AND remark NOT LIKE 'anon:%' AND (external_user_id IS NULL OR external_user_id='')" 2>/dev/null | tr -d '[:space:]')
+check "活跃(非匿名化)客户无空访客密钥残留(017补签到位)" 0 "$B6VK"
+# 019 的产物直接读观测位：孤儿行=0 才算"账真清了"（不是靠迁移注释里那句"已清零"）。
+B6HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+B6DETAIL=$(curl -s -H "X-Health-Token: $B6HT" "$B/status/detail")
+check "/status/detail orphan_messages=0(孤儿消息已治理)" 0 "$(echo "$B6DETAIL" | jsonget "['data']['orphan_messages']" 2>/dev/null)"
+# 归档观测位：message_archive_days=0（默认关）时必须报"未启用"而不是 0——
+# 0 会被读成"没有积压"，而真相是"根本没在归档"，这两种状态对运维是两个决定。
+B6ARCHOFF=$(echo "$B6DETAIL" | jsonget "['data']['archive_enabled']" 2>/dev/null)
+[ "$B6ARCHOFF" = "False" ] && check "归档关闭时archive_enabled显式报False(不伪装成零积压)" y y || check "归档关闭时archive_enabled显式报False(不伪装成零积压)" False "$B6ARCHOFF"
+# Redis 声明与实际连接一致性：单机开发态只准 not_declared / connected，
+# declared_but_down 是"配置说开了、客户端其实没连上"——多实例下会让锁/广播各实例单干，属 crit。
+B6REDIS=$(echo "$B6DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin); d=d.get('data',d)
+for c in d.get('readiness',[]):
+    if c.get('name')=='redis_declared_but_down': print(c.get('value')); break
+else: print('ABSENT')
+" 2>/dev/null)
+case "$B6REDIS" in
+  not_declared|connected) check "Redis一致性观测位健康($B6REDIS)" y y ;;
+  *) check "Redis一致性观测位健康" "not_declared|connected" "$B6REDIS" ;;
+esac
+# 反漏护栏：数据形态字段只准出现在带令牌的详情端点，公开 /status 仍是"存活+版本"四件套。
+B6LEAK=$(curl -s "$B/status" | grep -c "orphan_messages\|archive_backlog\|redis_enabled" 2>/dev/null)
+check "公开/status不泄露数据层观测位" 0 "${B6LEAK:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

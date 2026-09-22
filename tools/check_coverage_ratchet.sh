@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Go 覆盖率棘轮门禁（P1-5，2026-09-22）：总覆盖率只升不降。
 #
-# 背景：全仓 go test 覆盖率 22.4%（2026-09-22 实测），纯逻辑包高（80–96%）而骨架包低
-# （api 4.4% / llm 4.7% 等）。没有棘轮，覆盖率回升后必然回吐。本门禁与仓库既有的
-# .as_any_baseline / .doc_comments_baseline / .bare_db_baseline 同口径：基线只降不升。
+# 背景：纯逻辑包高（80–96%）而骨架包低（api 6.2% / llm 4.7% 等）。没有棘轮，覆盖率回升后必然回吐。
+# 本门禁与仓库既有的 .as_any_baseline / .doc_comments_baseline / .bare_db_baseline 同口径：
+# 基线只降不升。真实水位与来历记于 .coverage_baseline（2026-09-22 审计复位：曾把 billing
+# panic 导致的残缺产物 20.6% 误读成全站水位，nil 守卫修复后实为 22.9~23.1%）。
 #
 # 用法：
 #   tools/check_coverage_ratchet.sh                    # 门禁检查（CI/阶段零用）

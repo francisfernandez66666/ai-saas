@@ -22,6 +22,9 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 		auth.POST("/email-code", middleware.TurnstileGuard(), middleware.IPRateLimit("reset_email_code", 5, 10*time.Minute), SendRegisterEmailCode)
 		auth.POST("/reset-password", middleware.IPRateLimit("reset_pwd", 5, 10*time.Minute), SendResetCode)
 		auth.POST("/verify-reset-code", middleware.IPRateLimit("verify_reset", 10, 10*time.Minute), VerifyResetCode)
+		// S2（2026-09-23 批二）：前端登录页文案改由"实际生效通道"驱动，不再硬编码"查看服务端日志"。
+		// 只回通道种类（smtp|log），无敏感值，故免限流（与 register-config 同型静态读）。
+		auth.GET("/reset-channel", GetResetChannel)
 		// 注册期鉴权记录：登录/注册/验证码均为免登录，仅人机验证或 IP 限流。
 		RecordAuth("POST", "/api/v1/auth/login", "ip_limit")
 		RecordAuth("POST", "/api/v1/auth/register", "visitor_key", "ip_limit")
@@ -29,6 +32,7 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 		RecordAuth("POST", "/api/v1/auth/email-code", "visitor_key", "ip_limit")
 		RecordAuth("POST", "/api/v1/auth/reset-password", "ip_limit")
 		RecordAuth("POST", "/api/v1/auth/verify-reset-code", "ip_limit")
+		RecordAuth("GET", "/api/v1/auth/reset-channel", "public")
 	}
 
 	// 邮箱换绑（登录态）：向新邮箱发码 → 校验完成绑定

@@ -61,6 +61,31 @@ type PackEffectRow = PackTemplateStat & {
   lead_delta?: number
 }
 
+// 判优层行动建议卡片（批五 C·L1，只读展示）：与后端 strategy.TemplateSuggestion 对齐
+type PackSuggestionView = {
+  pack_code: string
+  pack_version: string
+  template_id: string
+  anchor_type: number
+  status: string
+  sample_count: number
+  reward_rate: number
+  anchor_median_rate: number
+  metric: string
+  min_samples: number
+  confidence: number
+  reason: string
+}
+
+// 建议状态 → 徽标文案与 TDesign Tag 主题（走语义主题色，不硬编码色值）
+const SUGGESTION_UI: Record<string, { label: string; theme: 'danger' | 'success' | 'warning' | 'default' }> = {
+  suggest_review: { label: '建议下线/改稿', theme: 'danger' },
+  leading: { label: '主力话术', theme: 'success' },
+  keep_watching: { label: '保持观察', theme: 'default' },
+  insufficient_samples: { label: '样本积累中', theme: 'warning' },
+  no_peer: { label: '无同锚对照', theme: 'default' },
+}
+
 /** 把部门树扁平化为级联选择器可用的 options。 */
 function flattenDepts(nodes: DeptNode[]): { label: string; value: number }[] {
   const out: { label: string; value: number }[] = []
@@ -120,6 +145,7 @@ export default function IndustryPackTab() {
   const [departmentPacks, setDepartmentPacks] = useState<Pack[]>([])
   const [depts, setDepts] = useState<{ label: string; value: number }[]>([])
   const [packStats, setPackStats] = useState<PackTemplateStat[]>([])
+  const [packSuggestions, setPackSuggestions] = useState<PackSuggestionView[]>([])
   const [packCode, setPackCode] = useState('')
   const [packVersion, setPackVersion] = useState('')
   const [industryPackId, setIndustryPackId] = useState<number | ''>('')
@@ -183,12 +209,16 @@ export default function IndustryPackTab() {
     setPackVersion(version)
     if (!code) {
       setPackStats([])
+      setPackSuggestions([])
       return
     }
     ;(async () => {
       const q = new URLSearchParams({ days: '90', pack_code: code })
       const j = await AUTH(`/api/v1/admin/packs/stats?${q.toString()}`)
-      if (j?.code === 0) setPackStats((j.data?.list || []) as PackTemplateStat[])
+      if (j?.code === 0) {
+        setPackStats((j.data?.list || []) as PackTemplateStat[])
+        setPackSuggestions((j.data?.suggestions || []) as PackSuggestionView[])
+      }
     })()
   }, [current])
 
@@ -395,6 +425,24 @@ export default function IndustryPackTab() {
             <div className="rounded-md border border-gray-200 p-3"><div className="text-xs text-gray-500">接钩率</div><div className="text-lg font-bold text-blue-600">{formatPercent(packSummary.hookRate)}</div></div>
             <div className="rounded-md border border-gray-200 p-3"><div className="text-xs text-gray-500">留资率</div><div className="text-lg font-bold text-emerald-600">{formatPercent(packSummary.leadRate)}</div></div>
             <div className="rounded-md border border-gray-200 p-3"><div className="text-xs text-gray-500">待人工率</div><div className="text-lg font-bold text-amber-600">{formatPercent(packSummary.pendingRate)}</div></div>
+          </div>
+        )}
+        {packSuggestions.length > 0 && (
+          <div className="mt-4 rounded-md border border-gray-200 p-3">
+            <div className="text-xs font-bold text-gray-700 mb-2">判优建议（仅建议，人工确认后才生效）</div>
+            <div className="space-y-1.5">
+              {packSuggestions.slice(0, 8).map((s) => {
+                const ui = SUGGESTION_UI[s.status] || { label: s.status, theme: 'default' as const }
+                return (
+                  <div key={`${s.pack_code}-${s.pack_version}-${s.template_id}`} className="flex flex-wrap items-center gap-2 text-xs">
+                    <Tag theme={ui.theme}>{ui.label}</Tag>
+                    <span className="text-gray-700 font-medium">{s.template_id}</span>
+                    <span className="text-gray-500">锚 {s.anchor_type} · {s.metric} {formatPercent(s.reward_rate)}（同锚中位 {formatPercent(s.anchor_median_rate)} · n={s.sample_count}）</span>
+                    <span className="text-gray-400">{s.reason}</span>
+                  </div>
+                )
+              })}
+            </div>
           </div>
         )}
         <div className="mt-4 overflow-x-auto">

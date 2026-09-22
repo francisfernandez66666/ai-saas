@@ -15,6 +15,8 @@ import (
 	"strings"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/notify"
+	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/runtimecfg"
 )
 
@@ -166,7 +168,43 @@ func computeReadinessChecks() []HealthCheck {
 		map[bool]string{true: "configured", false: "missing"}[smtpReady || !emailVerifyOn], StatusWarn,
 		"email_verify_enabled=true 但 SMTP 未配置：注册/重置密码验证码发不出去"))
 
+	// R9 找回密码通道安全性（S2，2026-09-23 批二）：
+	// 判"实际生效通道"而非配置值——reset_code_channel=smtp 但 SMTP 环境变量缺失时实现会降级 log，
+	// 只看配置会误判为安全。log 通道=一次性重置码明文进服务端日志，拥有日志读取权者
+	// 可对任意"已绑定邮箱"的账号完成改密；同时真实用户根本无法自助找回密码（拿不到码）。
+	// 判 Warn 不判 Crit：管理员仍可代改，属"生产可用性 + 运维卫生"缺口而非资金洞。
+	resetKind := notify.ResetSenderKind()
+	checks = append(checks, readinessCheck("reset_code_channel_secure", resetKind == "smtp", resetKind, StatusWarn,
+		"重置码走 log 通道：用户无法自助找回密码且验证码明文落日志。请配 SMTP_HOST/SMTP_USER 并设 reset_code_channel=smtp（见 DEPLOY_CHECKLIST）"))
+
+	// R10 多实例协调层（O1-a，2026-09-23 批六）：REDIS_ENABLED=true 却连不上 = "声明了多实例语义、
+	// 实际各实例单干"（合并队列裁决/跨实例 WS 广播/登录锁全部退化），比没配更危险——
+	// 没配是明知单机，配了没连上是静默降级。旧实现探测一次定终身，compose 里 app 先于 redis ready
+	// 就永久降级；现 redisclient 有后台自愈，故这里按"当前是否已连通"实时判定：
+	// 未连通判 Crit（多副本会双处理），自愈恢复后本项自动转绿。
+	checks = append(checks, redisReadiness())
+
 	return checks
+}
+
+// redisReadiness Redis 声明位与连通位对账（O1-a）。
+// 未声明启用属设计内单机模式，判 OK 只作展示，不计红。
+func redisReadiness() HealthCheck {
+	if !redisclient.DeclaredEnabled() {
+		return HealthCheck{
+			Name: "redis_declared_but_down", Status: StatusOK, Value: "not_declared",
+			WarnAt: "-", CritAt: "-",
+			Desc: "REDIS_ENABLED=false：单机内存模式（多副本部署必须开 Redis，否则队列/锁/广播各实例单干）",
+		}
+	}
+	if redisclient.IsEnabled() {
+		return HealthCheck{
+			Name: "redis_declared_but_down", Status: StatusOK, Value: "connected",
+			WarnAt: "-", CritAt: "-", Desc: "Redis 已连通，多实例协调语义生效",
+		}
+	}
+	return readinessCheck("redis_declared_but_down", false, "declared_but_down", StatusCrit,
+		"REDIS_ENABLED=true 但当前未连通：合并队列/跨实例广播/登录锁退化为单实例语义，正在后台自愈重探。请确认 Redis 服务可达（compose 须给 redis 加 healthcheck 并让 app depends_on redis）")
 }
 
 // ReadinessSummary 汇总就绪结论：ready=无 crit；worst=最严重级别名

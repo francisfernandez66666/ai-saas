@@ -263,6 +263,11 @@ func (s *UsageSink) flushSafe() {
 // 由启动即扫 + 60s sweep 补扣。弃批从"永久漏账"降级为"延后扣"。
 // 残余窗口（如实声明）：Record 入内存缓冲后、本 flush 落表前被 SIGKILL，丢 ≤1 个 flush 周期
 // （2s/200 条）的挂账；SIGTERM 走 Stop() 最终 flush 无损。
+//
+// M1 修复批注(2026-09-22)：上面"失败即行存活"此前对**三桶余额不足**并不成立——
+// deductTokensInTx 旧实现在扣不动时 `log + return nil`，事务照常提交，:545 的 DELETE 已把
+// 挂账行删掉，于是"行灭账未扣"，注释与实现相互矛盾。现该分支改为返回哨兵错误使事务回滚
+// （行保留待 sweep），部分扣减的差额则同事务补写新挂账行，总额守恒。
 func (s *UsageSink) flush() {
 	s.mu.Lock()
 	if len(s.buf) == 0 {
@@ -542,6 +547,8 @@ func settleRetryRows(ids []uint) []uint {
 				Select("COALESCE(SUM(tokens),0)").Row().Scan(&lockTok); err != nil {
 				return err
 			}
+			// M1(2026-09-22)：本 DELETE 与下面的扣减同事务——扣减任何失败（含三桶皆空的
+			// errTokenDebtUnsettled 哨兵）都会回滚本删除，绝不会出现"行灭账未扣"。
 			if err := tx.Where("id IN ?", locked).Delete(&model.UsageFlushRetry{}).Error; err != nil {
 				return err
 			}

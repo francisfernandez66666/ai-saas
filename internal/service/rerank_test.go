@@ -35,16 +35,24 @@ func (f *fakeRerankClient) Rerank(query string, docs []string) ([]RerankItem, er
 	return f.items, nil
 }
 
-// withRerankEnv 临时装配全局客户端+热开关，测试结束恢复
+// withRerankEnv 临时装配全局客户端+热开关，测试结束恢复。
+// 为什么连 config.GlobalConfig 也要钉住（2026-09-23 修环境脆弱）：applyRerank 有
+// MockMode fail-open 分支读的是全局配置，而该值由包内**任何其他测试**（或 .env 里
+// AI_MOCK_MODE 的真实取值）遗留而来——不钉住时 `go test -run Rerank` 单跑绿、
+// 整包跑就红，等于门禁看运气。这里统一钉成"非模拟态"，需要 MockMode 的用例
+// 自行在本函数之后再覆写。
 func withRerankEnv(t *testing.T, client RerankClient, cfg map[string]string) {
 	t.Helper()
 	oldClient := DefaultRerankClient
 	oldSvc := runtimecfg.DefaultSystemConfigService
+	oldCfg := config.GlobalConfig
 	DefaultRerankClient = client
 	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(cfg, nil)
+	config.GlobalConfig = &config.Config{AI: config.AIConfig{MockMode: false}}
 	t.Cleanup(func() {
 		DefaultRerankClient = oldClient
 		runtimecfg.DefaultSystemConfigService = oldSvc
+		config.GlobalConfig = oldCfg
 	})
 }
 
@@ -101,11 +109,10 @@ func TestApplyRerankSwitchOffKeepsOrder(t *testing.T) {
 
 // MockMode 短路：测试/模拟环境不打真实端点
 func TestApplyRerankMockModeShortCircuits(t *testing.T) {
-	old := config.GlobalConfig
-	config.GlobalConfig = &config.Config{AI: config.AIConfig{MockMode: true}}
-	defer func() { config.GlobalConfig = old }()
 	fake := &fakeRerankClient{items: []RerankItem{{Index: 2, Score: 1}}}
 	withRerankEnv(t, fake, map[string]string{"kb_rerank": "true"})
+	// 必须在 withRerankEnv 之后覆写：后者会把全局配置钉成非模拟态（见其注释）
+	config.GlobalConfig = &config.Config{AI: config.AIConfig{MockMode: true}}
 	got := applyRerank("q", fragsOf(1, 2, 3))
 	if !eqIDs(idsOf(got), []uint{1, 2, 3}) || fake.calls != 0 {
 		t.Fatalf("MockMode 应短路原序，得 %v calls=%d", idsOf(got), fake.calls)

@@ -51,6 +51,8 @@ GetAIContribution 返回租户级 AI 贡献度指标。
 权限：登录态任意角色（与 /stats/overview 口径一致——这是聚合看板，不含客户明细）。
 */
 // GetAIContribution 返回 AI 贡献度指标。
+// apidump:ts AIContribution
+// AI 贡献度全量指标 + 后端口径说明 notes。
 func GetAIContribution(c *gin.Context) {
 	days := contributionDefaultDays
 	if v := c.Query("days"); v != "" {

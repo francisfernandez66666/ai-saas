@@ -20,6 +20,8 @@ import (
 
 // GetCustomerList 获取客户列表
 // 支持分页、关键词搜索、条件筛选
+// apidump:ts Paginated<Customer>
+// 客户分页列表，list 元素为 model.Customer（tenant_id/visitor_key 为 json:"-" 不下发）。
 func GetCustomerList(c *gin.Context) {
 	var req schema.CustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -73,6 +75,8 @@ func GetCustomerList(c *gin.Context) {
 }
 
 // GetCustomer 获取客户详情
+// apidump:ts Customer
+// 单条客户档案。
 func GetCustomer(c *gin.Context) {
 	// P2-28 修复：非数字 id 直打 PG 触发 22P02→500。统一 PathUintID 收口（非法→400）
 	id, ok := PathUintID(c)
@@ -97,6 +101,8 @@ func GetCustomer(c *gin.Context) {
 }
 
 // CreateCustomer 创建客户
+// apidump:ts Customer
+// 创建成功回整行客户。
 func CreateCustomer(c *gin.Context) {
 	var req schema.CreateCustomerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -197,6 +203,8 @@ func CreateCustomer(c *gin.Context) {
 }
 
 // UpdateCustomer 更新客户信息
+// apidump:ts Customer
+// 更新成功回整行客户。
 func UpdateCustomer(c *gin.Context) {
 	// P2-28 修复：非数字 id 直打 PG 22P02→500。统一 PathUintID
 	id, ok := PathUintID(c)
@@ -277,7 +285,35 @@ func UpdateCustomer(c *gin.Context) {
 	tVector := customer.GetTVector()
 	customer.SaveTVector(tVector)
 
-	db.RQ(c).Save(&customer)
+	// 字段级更新，不用整行 Save（2026-09-23 批六收口，与 chat_human/advisor 那批 9 处同修法）：
+	// 编辑表单打开时的 customer 行是"快照"，Save 会把快照整行写回，覆盖编辑窗口内
+	// 聊天链路对该行的实时改动——最典型的是 intent_score / journey_stage /
+	// assignment_reason（AI 判意向、留资分配、接管转回都在写它们），
+	// 运营在后台改个备注就把客户刚推进的旅程阶段打回原形，且不会再有任何日志提示。
+	// 只写本表单真正拥有的列，未列出的列一律不碰（含 tenant_id/visitor_key/
+	// external_user_id/created_at/updated_at 由 GORM 自管）。
+	if err := db.RQ(c).Model(&model.Customer{}).Where("id = ?", id).Updates(map[string]any{
+		"name":             customer.Name,
+		"phone":            customer.Phone,
+		"gender":           customer.Gender,
+		"age":              customer.Age,
+		"region":           customer.Region,
+		"career":           customer.Career,
+		"interest_model":   customer.InterestProduct, // 泛行业化后 Go 字段改名，列名沿用旧名
+		"budget":           customer.Budget,
+		"decision_cycle":   customer.DecisionCycle,
+		"intent_score":     customer.IntentScore,
+		"trust_level":      customer.TrustLevel,
+		"resistance_type":  customer.ResistanceType,
+		"remark":           customer.Remark,
+		"assigned_user_id": customer.AssignedUserID,
+		"status":           customer.Status,
+		"tags":             customer.Tags,
+		"t_vector":         customer.TVectorJSON,
+	}).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
+		return
+	}
 
 	RespOK(c, "更新成功", customer)
 }
@@ -303,14 +339,20 @@ func DeleteCustomer(c *gin.Context) {
 		return
 	}
 
-	// 软删除：状态设为0
-	customer.Status = 0
-	db.RQ(c).Save(&customer)
+	// 软删除：只写 status 一列（2026-09-23 批六收口）。
+	// 原先读整行再 Save，会把上面 First 那一刻的快照整行写回——聊天链路正在改的
+	// intent_score/journey_stage/assigned_user_id 会被一并覆掉，删除动作不该有这种副作用。
+	if err := db.RQ(c).Model(&model.Customer{}).Where("id = ?", id).Update("status", 0).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "删除失败")
+		return
+	}
 
 	RespOK(c, "删除成功", nil)
 }
 
 // GetCustomerConversations 获取客户的会话列表
+// apidump:ts Conversation[]
+// 该客户的会话列表（created_at 倒序，上限 50 条）。
 func GetCustomerConversations(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
 

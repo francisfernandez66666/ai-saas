@@ -420,7 +420,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Paginated<Tag>"
     },
     {
       "method": "GET",
@@ -430,7 +431,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Tag"
     },
     {
       "method": "GET",
@@ -490,7 +492,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "Paginated<AdvisorCustomerRow>"
     },
     {
       "method": "GET",
@@ -500,7 +503,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "FollowUpRow[]"
     },
     {
       "method": "GET",
@@ -510,7 +514,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "AdvisorRef[]"
     },
     {
       "method": "GET",
@@ -550,7 +555,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "AdvisorStatItem[]"
     },
     {
       "method": "GET",
@@ -570,7 +576,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "Paginated<Tag>"
     },
     {
       "method": "GET",
@@ -580,7 +587,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "TestDriveRow"
     },
     {
       "method": "GET",
@@ -590,7 +598,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "TestDriveRow[]"
     },
     {
       "method": "GET",
@@ -606,6 +615,15 @@
       "path": "/api/v1/auth/register-config",
       "group": "auth",
       "handler": "RegisterConfig",
+      "auth": [
+        "public"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/auth/reset-channel",
+      "group": "auth",
+      "handler": "GetResetChannel",
       "auth": [
         "public"
       ]
@@ -711,7 +729,8 @@
       "handler": "GetConversationList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Paginated<Conversation>"
     },
     {
       "method": "GET",
@@ -720,7 +739,8 @@
       "handler": "GetMessages",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "ChatMessage[]"
     },
     {
       "method": "GET",
@@ -729,7 +749,8 @@
       "handler": "GetCustomerList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Paginated<Customer>"
     },
     {
       "method": "GET",
@@ -738,7 +759,8 @@
       "handler": "GetCustomer",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Customer"
     },
     {
       "method": "GET",
@@ -747,7 +769,8 @@
       "handler": "GetCustomerConversations",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Conversation[]"
     },
     {
       "method": "GET",
@@ -756,7 +779,8 @@
       "handler": "GetCustomerTags",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "CustomerTagRow[]"
     },
     {
       "method": "GET",
@@ -765,7 +789,8 @@
       "handler": "GetFlowList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Paginated<FlowDefinition>"
     },
     {
       "method": "GET",
@@ -774,7 +799,8 @@
       "handler": "GetFlow",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "FlowDefinition"
     },
     {
       "method": "GET",
@@ -783,7 +809,8 @@
       "handler": "GetFlowInstanceList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "FlowInstance[]"
     },
     {
       "method": "GET",
@@ -792,7 +819,8 @@
       "handler": "GetFlowInstance",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "FlowInstance"
     },
     {
       "method": "GET",
@@ -902,7 +930,8 @@
       "handler": "GetAIContribution",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "AIContribution"
     },
     {
       "method": "GET",
@@ -911,7 +940,8 @@
       "handler": "GetOverview",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "StatsOverview"
     },
     {
       "method": "GET",
@@ -920,7 +950,8 @@
       "handler": "GetFeatureList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Paginated<SellingFeature>"
     },
     {
       "method": "GET",
@@ -929,7 +960,8 @@
       "handler": "GetAnchorStats",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "AnchorStat[]"
     },
     {
       "method": "GET",
@@ -938,7 +970,8 @@
       "handler": "GetTemplateList",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Paginated<TalkTemplate>"
     },
     {
       "method": "GET",
@@ -947,7 +980,8 @@
       "handler": "GetTemplate",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "TalkTemplate"
     },
     {
       "method": "GET",
@@ -1567,7 +1601,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Tag"
     },
     {
       "method": "POST",
@@ -1577,7 +1612,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Tag"
     },
     {
       "method": "POST",
@@ -1587,7 +1623,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Tag"
     },
     {
       "method": "POST",
@@ -1657,7 +1694,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "AiReplyToggle"
     },
     {
       "method": "POST",
@@ -1667,7 +1705,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "FollowUpRow"
     },
     {
       "method": "POST",
@@ -1677,7 +1716,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "TestDriveRow"
     },
     {
       "method": "POST",
@@ -1870,7 +1910,8 @@
       "handler": "HumanReply",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "ChatMessage"
     },
     {
       "method": "POST",
@@ -1898,7 +1939,8 @@
       "handler": "TransferToAI",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Conversation"
     },
     {
       "method": "POST",
@@ -1907,7 +1949,8 @@
       "handler": "TransferToHuman",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Conversation"
     },
     {
       "method": "POST",
@@ -1954,7 +1997,8 @@
       "handler": "CreateCustomer",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Customer"
     },
     {
       "method": "POST",
@@ -1963,7 +2007,8 @@
       "handler": "AddTagsToCustomer",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "TagNames"
     },
     {
       "method": "POST",
@@ -1990,7 +2035,8 @@
       "handler": "AdvanceFlow",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "FlowInstance"
     },
     {
       "method": "POST",
@@ -1999,7 +2045,8 @@
       "handler": "StartFlow",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "FlowInstance"
     },
     {
       "method": "POST",
@@ -2039,7 +2086,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "TalkTemplate"
     },
     {
       "method": "POST",
@@ -2297,7 +2345,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "Tag"
     },
     {
       "method": "PUT",
@@ -2327,7 +2376,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "Customer"
     },
     {
       "method": "PUT",
@@ -2337,7 +2387,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "Customer"
     },
     {
       "method": "PUT",
@@ -2347,7 +2398,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "CustomerTagRow[]"
     },
     {
       "method": "PUT",
@@ -2357,7 +2409,8 @@
       "auth": [
         "jwt",
         "readonly_write"
-      ]
+      ],
+      "data_ts": "TestDriveRow"
     },
     {
       "method": "PUT",
@@ -2366,7 +2419,8 @@
       "handler": "UpdateCustomer",
       "auth": [
         "jwt"
-      ]
+      ],
+      "data_ts": "Customer"
     },
     {
       "method": "PUT",
@@ -2396,7 +2450,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "TalkTemplate"
     },
     {
       "method": "PUT",

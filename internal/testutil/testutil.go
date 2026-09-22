@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -167,6 +168,44 @@ func randInviteCode() string {
 	return string(out)
 }
 
+// discoverTenantOnce 保护发现结果只查一次（schema 在测试进程内不变）
+var (
+	discoverTenantOnce   sync.Once
+	discoveredTenantTbls []string
+)
+
+// discoverTenantTables 动态发现"含 tenant_id 列的业务表"，减去调用方已显式列出的表。
+// 排除 tenants 本体（主表删除由调用方在最后统一做，且它没有 tenant_id 列，这里是双保险）。
+func discoverTenantTables(explicit []string) []string {
+	discoverTenantOnce.Do(func() {
+		var names []string
+		// SQL 先常量再起调用：跨行反引号串会让 G-12 分类器的语句拼接断在半截，
+		// 这一处属元数据自省（information_schema）本就无租户归属，豁免标记须落在调用行上。
+		const discoverSQL = `
+			SELECT table_name FROM information_schema.columns
+			WHERE table_schema='public' AND column_name='tenant_id'
+			  AND table_name NOT IN ('tenants')
+			GROUP BY table_name ORDER BY table_name`
+		if err := db.DB.Raw(discoverSQL).Scan(&names).Error; err != nil { // g12:platform
+			log.Printf("[testutil] 租户表动态发现失败（退化为只清显式清单）: %v", err)
+			names = nil
+		}
+		discoveredTenantTbls = names
+	})
+	seen := make(map[string]bool, len(explicit)*2)
+	for _, tb := range explicit {
+		seen[tb] = true
+	}
+	out := make([]string, 0, len(discoveredTenantTbls))
+	for _, tb := range discoveredTenantTbls {
+		if seen[tb] {
+			continue
+		}
+		out = append(out, tb)
+	}
+	return out
+}
+
 // CleanupTenant 删除单测租户（幂等，测试收尾清理）
 // P2-82 修复(2026-09-09)：原只 Delete tenants 主表——tenant_users/customer/conversation 等
 // 子表行成孤儿残留，污染后续测试的全局统计与标签。改为按租户子表清单级联清理后再删主表。
@@ -194,6 +233,23 @@ func CleanupTenant(t *testing.T, id uint) {
 		if err := db.DB.Exec("DELETE FROM "+tb+" WHERE tenant_id = ?", id).Error; err != nil {
 			// 个别表可能无该列/不存在（版本演进），忽略
 			log.Printf("[testutil] 级联清理跳过 %s: %v", tb, err)
+		}
+	}
+	// 清单外的 tenant_id 表：动态发现补齐（2026-09-23 批六）。
+	// 为什么不再靠手写清单：上面那份清单是 2026-09 之前的表快照，此后新增的
+	// templates / tenant_audit_logs / channels / api_keys / brands 等 30+ 张含 tenant_id
+	// 的表全都不在里面——用例写完模板行就永久留在共享库里（templates 主键是字符串 ID，
+	// 第二轮直接 23505 撞主键，本批新加的 L2 晋升用例即被此坑住）。动态发现让
+	// "加表忘加清理"这一类漂移一次性归零，与 cleanup_test_tenants.sh 同一口径。
+	// 两轮删除：第一轮可能因外键顺序失败（父表先于子表），第二轮子表已空即可通过。
+	extra := discoverTenantTables(tenantChildTables)
+	for pass := 0; pass < 2; pass++ {
+		for _, tb := range extra {
+			if err := db.DB.Exec("DELETE FROM "+tb+" WHERE tenant_id = ?", id).Error; err != nil {
+				if pass == 0 {
+					log.Printf("[testutil] 级联清理待二轮 %s: %v", tb, err)
+				}
+			}
 		}
 	}
 	// 测试订单（tenant 直属）+ 其引用的测试包：此前不清理导致 packages 表被

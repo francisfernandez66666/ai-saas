@@ -169,13 +169,13 @@ export interface Customer {
   t_vector_json?: string
   remark?: string
   assigned_user_id?: number
-  tenant_id?: number
-  visitor_key?: string
-  external_user_id?: string
+  external_user_id?: string // 外部渠道用户ID（OpenAPI 对话端点）
   assignment_reason?: string
   status?: number // 1-正常 0-无效
   created_at?: string
   updated_at?: string
+  // 注：Go 侧 TenantID / VisitorKey 标了 json:"-"，**从不上线**（P0-7 防 /customers 整体拖走访客密钥）。
+  // 此前这里声明过这两个字段，属于纯虚构口径，已删（2026-09-23 批五 E 契约批）。
 }
 
 // 客户列表项（顾问/管理端列表展示用）
@@ -529,8 +529,28 @@ export interface PackStatRow {
   hook_rate: number
   lead_rate: number
   pending_human_rate: number
+  // 终局率（批五 A，2026-09-23）：到店/成交率，由归因行 arrived_at/dealt_at 回填后聚合
+  arrive_rate: number
+  deal_rate: number
   avg_intent_delta: number
   avg_eval_score?: number
+}
+
+/** 判优层行动建议卡片（批五 C·L1）：status=建议下线改稿/领先/观察/样本不足/无对照 */
+export interface PackSuggestionRow {
+  tenant_id: number
+  pack_code: string
+  pack_version: string
+  template_id: string
+  anchor_type: number
+  status: 'suggest_review' | 'leading' | 'keep_watching' | 'insufficient_samples' | 'no_peer'
+  sample_count: number
+  reward_rate: number
+  anchor_median_rate: number
+  metric: string
+  min_samples: number
+  confidence: number
+  reason: string
 }
 
 /** 包质量统计响应：list 为包/模板维度效果行，sample_min 为出数门槛，total_samples 为总样本量 */
@@ -538,6 +558,8 @@ export interface PackStatsResp {
   list: PackStatRow[]
   sample_min: number
   total_samples?: number
+  // 判优建议卡片（批五 C·L1）：样本不足时仅回显 insufficient_samples，不出判优结论
+  suggestions?: PackSuggestionRow[]
 }
 
 /** 通道接入视图（F11）：凭据仅回显掩码列，明文只在创建响应中出现一次 */
@@ -631,11 +653,199 @@ export interface AdminConfigItem {
 }
 
 // AI 接待策略模板（strategy/templates 列表项）
-export interface StrategyTemplate {
-  id: number
+// 批五 E 契约批（2026-09-23）改写：原声明 `id: number` 与后端 model.Template 的
+// **字符串主键**（`ID string gorm:"primaryKey;size:50"`）对不上，且缺 anchor_type /
+// prompt_template / ab_group / ab_weight 等实际下发字段——按 model.Template 的 json tag 全量重写。
+export interface TalkTemplate {
+  id: string
+  tenant_id?: number
+  anchor_type: number // 0-6 锚类型
+  sub_type?: string // 对比锚子类型 spec/service
   name: string
-  content?: string
+  category?: string
+  trigger_tags?: string // JSON 数组字符串
+  required_tags?: string
+  min_intent?: number
+  max_intent?: number
+  applicable_models?: string
+  prompt_template: string // 抛话术
+  hook_template?: string // 钩话术
+  hook_fields?: string
+  required_features?: string
+  ab_group?: string // E4 实验组名，空=不参与实验
+  ab_weight?: number // 组内分流权重 0-100
+  department_id?: number | null // null=租户级；非空=部门专属
+  priority?: number
+  usage_count?: number
+  status?: number // 1-启用 0-禁用 2-草稿（E4）
+  version?: string
+  created_at?: string
+  updated_at?: string
+}
+
+// 卖点（features 表，对齐 model.Feature json tag）
+export interface SellingFeature {
+  id: string
+  tenant_id?: number
+  feature_name: string
+  category?: string
+  desc_template: string
+  short_desc?: string
+  params?: string // JSON 对象字符串
+  applicable_tags?: string
+  applicable_models?: string
+  department_id?: number | null
+  priority?: number
   status?: number
   created_at?: string
   updated_at?: string
+}
+
+// 锚类型统计项（schema.AnchorStats，strategy/stats/anchors 列表元素）
+export interface AnchorStat {
+  anchor_type: number
+  anchor_name: string
+  usage_count: number
+  hook_rate: number // 该锚消息占全部 AI 消息的比例（近似值）
+  conversion_rate: number // 当前实现未填，恒 0，保留字段与后端结构一致
+}
+
+// 工作台概览（schema.StatsOverview，stats/overview）
+export interface StatsOverview {
+  total_customers: number
+  new_customers_today: number
+  active_conversations: number
+  conversion_rate: number
+  avg_intent_score: number
+  human_transfer_rate: number
+}
+
+// AI 贡献度（schema.AIContribution，stats/ai-contribution，D2）。
+// Go 侧字段无 omitempty，故线上恒为全字段必现——这里按必填声明，
+// 页面若拿到缺字段即编译期暴露，而不是运行时 undefined 静默渲染。
+export interface AIContribution {
+  period_days: number
+  since: string
+  until: string
+  new_conversations: number
+  active_conversations: number
+  ai_served_customers: number
+  human_served_customers: number
+  ai_serve_share: number
+  handoff_rate: number
+  ai_leads: number
+  assisted_leads: number
+  ai_lead_rate: number
+  assisted_lead_rate: number
+  ai_arrived: number
+  ai_ordered: number
+  ai_arrive_rate: number
+  ai_order_rate: number
+  ai_messages: number
+  human_messages: number
+  customer_messages: number
+  ai_message_share: number
+  pending_handoff_now: number
+  notes: string[]
+}
+
+// 流程实例（model.FlowInstance，flows/instances 与 start/advance 响应）
+export interface FlowInstance {
+  id: number
+  tenant_id?: number
+  flow_def_id: number
+  conversation_id?: number
+  customer_id?: number
+  current_node_id?: string
+  status?: string // running/completed/suspended
+  state_json?: string
+  started_at?: string
+  ended_at?: string | null
+  created_at?: string
+  updated_at?: string
+}
+
+// 试驾单（model.TestDrive，advisor/test-drives）
+export interface TestDriveRow {
+  id: number
+  tenant_id?: number
+  customer_id: number
+  advisor_id: number
+  status?: string // pending/completed/cancelled
+  scheduled_at?: string
+  model_name?: string
+  contact_name?: string
+  contact_phone?: string
+  location?: string
+  note?: string
+  result?: string
+  created_at?: string
+  updated_at?: string
+}
+
+// 跟进记录（model.FollowUp，advisor/followups 与创建响应）
+export interface FollowUpRow {
+  id: number
+  tenant_id?: number
+  customer_id: number
+  conversation_id?: number
+  user_id: number
+  type?: string // manual/ai_triggered
+  method?: string // phone/wechat/store/email
+  content?: string
+  result?: string
+  next_follow_at?: string | null
+  intent_change?: number
+  created_at?: string
+  updated_at?: string
+}
+
+// 客户标签关联（model.CustomerTag，advisor/customer/:id/tags 与 customers/:id/tags）
+export interface CustomerTagRow {
+  id: number
+  tenant_id?: number
+  customer_id: number
+  tag_id: number
+  tag_name?: string
+  source?: string // manual/auto/ai
+  weight?: number
+  expire_at?: string
+  created_at?: string
+}
+
+// 顾问统计卡（advisor/stats 内联 statItem：后端匿名结构体）
+// color 为必填：Go 侧六项 statItem 全部显式设色（blue/green/purple/orange/red），无一留空。
+export interface AdvisorStatItem {
+  label: string
+  value: number
+  color: string
+}
+
+// 顾问下拉项（advisor/list 内联 advisorItem）
+export interface AdvisorRef {
+  id: number
+  real_name?: string
+  username?: string
+}
+
+// 顾问切换 AI 回复的结果（advisor/chat/toggle-ai-reply：后端 gin.H 三键，非整行会话）
+export interface AiReplyToggle {
+  is_ai_reply_enabled: boolean
+  mode: string // ai/human/fish
+  is_human_locked: boolean
+}
+
+// 打标接口回传的标签名列表（customers/:id/tags）。
+// 单独命名而非直接写 string[]：gen_api_types 用标识符正则从 data_ts 抽导入名，
+// 小写 `string` 会被当成待导入类型、生成物随即编译失败。
+export type TagNames = string[]
+
+// 顾问客户列表行（advisor/customers：model.Customer 展开 + 后端附加列）
+export interface AdvisorCustomerRow extends Customer {
+  last_message?: string // 超 50 字后端已截断加省略号
+  conv_mode?: string // ai/human
+  lead_status?: string // journey_stage 中文名
+  lead_sub_status?: string // 已试驾/已报价/空
+  assigned_user_name?: string
+  last_message_at?: string
 }

@@ -35,6 +35,15 @@ services:
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
       - redisdata:/data
+    # O1-b(2026-09-23 批六)：redis 此前既无 healthcheck 也不在 app 依赖里——
+    # app 抢在 redis 就绪前启动就吃 Ping 失败（旧实现一次定终身，永久跑成单机）。
+    # 现补就绪探测 + 下方 depends_on service_healthy，把竞态从"靠运气"变成编排保证。
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   app:
     build:
@@ -44,12 +53,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       SERVER_PORT: "8080"
       GIN_MODE: release
       # P1-4(2026-09-22)：显式声明生产环境，触发 main.go 启动断言
       # （APP_ENV=prod 且 GIN_MODE!=release 直接拒启）
       APP_ENV: prod
+      # O1-b(2026-09-23)：副本数声明位——扩到多副本必须同步改这里，
+      # 否则 main.go G6 告警与 /status 的"多实例但无 Redis"红灯都不会亮。
+      # 默认 1（单实例安全），`APP_REPLICAS=3 docker compose ... up -d --scale app=3` 时必填。
+      APP_REPLICAS: ${APP_REPLICAS:-1}
       # C2：生产必须显式关闭模拟模式，否则不会调用真实 AI
       AI_MOCK_MODE: "false"
       # C1：生产必须配置强随机 JWT 密钥（未设置则启动直接失败）
@@ -67,8 +82,28 @@ services:
     volumes:
       - ./packs:/app/packs:ro        # 行业包目录（.aipack）
       - ./keys:/keys:ro              # 引擎侧密钥（验签公钥+解封私钥）
+    # O1-b(2026-09-23)：宿主发布端口改用 APP_PUBLISH_PORT，不再复用 SERVER_PORT——
+    # 旧写法读 .env 的 SERVER_PORT（模板值 9090）当宿主端口，容器内却固定监听 8080，
+    # 于是"宿主端口"随 .env 漂移：CI prod-compose-smoke 按 8080 探测即永远探测不到，
+    # 该 job 自合入起从未真正通过（被 continue-on-error 吞掉）。
     ports:
-      - "${SERVER_PORT:-8080}:8080"
+      - "${APP_PUBLISH_PORT:-8080}:8080"
+    # O1-b：容器级就绪探针（/health 免鉴权、只读）——让 compose/orchestrator 与
+    # CI prod-compose-smoke 判"服务真的能应答"，而不是判"进程还在"。
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    # O1-b：资源上限（docker compose v2 的 `up` 即按 deploy.resources.limits 下发到容器；
+    # swarm 部署同键复用）——
+    # 防单实例 OOM 拖垮同宿主的 PG/Redis（三者同机是本编排的默认形态）
+    deploy:
+      resources:
+        limits:
+          cpus: "${APP_CPU_LIMIT:-2}"
+          memory: ${APP_MEM_LIMIT:-2g}
 
 volumes:
   pgdata:

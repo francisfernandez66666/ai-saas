@@ -14,9 +14,17 @@ if [ -f "$PID_FILE" ]; then
     rm -f "$PID_FILE"
 else
     # 没有pid文件，按端口杀
-    if lsof -i :8080 -t > /dev/null 2>&1; then
-        lsof -i :8080 -t | xargs kill
-        echo "AI-SCRM 已停止"
+    # 修复(2026-09-23)：兜底端口曾硬编码 8080，而 .env SERVER_PORT=9090 —— 于是"未发现运行中的进程"
+    # 与实际在跑的实例并存，旧进程带着旧二进制继续服务（改代码不生效的假象）。
+    # 与 start.sh 的 L6 修复同口径：端口从 .env 读，缺省 8080。
+    PORT=8080
+    if [ -f "$PROJECT_DIR/.env" ]; then
+        ENV_PORT=$(grep -E '^[[:space:]]*SERVER_PORT=' "$PROJECT_DIR/.env" | head -1 | cut -d= -f2 | tr -d ' "')
+        [ -n "$ENV_PORT" ] && PORT="$ENV_PORT"
+    fi
+    if lsof -i :$PORT -t > /dev/null 2>&1; then
+        lsof -i :$PORT -t | xargs kill
+        echo "AI-SCRM 已停止 (端口 $PORT)"
     else
         echo "未发现运行中的AI-SCRM进程"
     fi

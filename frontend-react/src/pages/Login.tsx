@@ -1,10 +1,10 @@
 /**
  * Login.tsx：登录/改密/找回密码页
  * 支持租户码登录、首登强改密、验证码找回密码四种模式
- * 依赖接口：/api/v1/auth/login、/api/v1/auth/change-password、/api/v1/auth/reset-password、/api/v1/auth/verify-reset-code
+ * 依赖接口：/api/v1/auth/login、/api/v1/auth/change-password、/api/v1/auth/reset-password、/api/v1/auth/verify-reset-code、/api/v1/auth/reset-channel
  * 后端 MustChangePasswordGuard 拦截后由 api.ts 跳转 /login?mcp=1，本页据此直接进入改密表单
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON, setToken, redirectByRole } from '../lib/api'
 import { useBrand } from '../lib/branding'
@@ -32,6 +32,23 @@ export default function Login() {
   const [reset, setReset] = useState({ username: '', contact: '', code: '', new_password: '' })
   // 提交按钮加载状态
   const [loading, setLoading] = useState(false)
+  // 找回密码实际生效通道（S2 修复，2026-09-23 批二）：由后端 GET /auth/reset-channel 驱动。
+  // 原页面把"验证码将输出到服务端日志（开发模式）"硬编码给最终用户——既泄露实现细节，
+  // 又在 SMTP 已配好的生产环境说假话（用户去翻日志、其实邮件已发出）。
+  // null 表示尚未取到：此时不渲染通道相关提示，宁可少说也不说错。
+  const [resetChannel, setResetChannel] = useState<'smtp' | 'log' | null>(null)
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      const { json } = await apiJSON<ApiResp<{ channel?: string }>>('/api/v1/auth/reset-channel')
+      if (!alive) return
+      // 后端只在"配置 smtp 且 SMTP 环境变量齐"时才回 smtp；取不到响应保持 null（不猜）
+      if (json?.code === 0 && json.data?.channel) setResetChannel(json.data.channel === 'smtp' ? 'smtp' : 'log')
+    })()
+    return () => {
+      alive = false
+    }
+  }, [])
 
   /**
    * 执行登录：调用 /api/v1/auth/login 接口
@@ -214,14 +231,22 @@ export default function Login() {
             <Button theme="primary" type="submit" loading={loading} style={{ width: '100%', marginTop: 22 }}>
               发送验证码
             </Button>
-            <div style={{ fontSize: 12, color: '#718096', marginTop: 6 }}>验证码将输出到服务端日志（开发模式），10分钟内有效</div>
+            {/* S2：文案按后端实际生效通道渲染，不再向最终用户暴露"服务端日志"这一内部实现 */}
+            <div style={{ fontSize: 12, color: '#718096', marginTop: 6 }}>
+              {resetChannel === 'smtp'
+                ? '验证码将发送至账号绑定的邮箱，10分钟内有效'
+                : resetChannel === 'log'
+                  ? '当前未开通邮件自助通道，请联系管理员协助重置'
+                  : '验证码 10 分钟内有效'}
+            </div>
           </form>
         )}
 
         {/* 找回密码第二步：输入验证码和新密码 */}
         {mode === 'resetConfirm' && (
           <form onSubmit={doResetConfirm}>
-            <Label>验证码（查看服务端日志）</Label>
+            {/* S2：不再提示"查看服务端日志"——smtp 态应看邮箱，log 态该找管理员，两者都不该看到内部实现 */}
+            <Label>{resetChannel === 'log' ? '验证码（管理员提供）' : '邮箱验证码'}</Label>
             <Input value={reset.code} onChange={(v) => setReset({ ...reset, code: v })} />
             <Label>新密码</Label>
             <Input type="password" value={reset.new_password} onChange={(v) => setReset({ ...reset, new_password: v })} />

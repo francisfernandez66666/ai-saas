@@ -13,15 +13,18 @@ import { ROLES } from './roles'
 //   - 命中已标注 data 类型的端点 → 精确类型（同路径多方法时取联合）；
 //   - 未标注（unknown）/ 路径未登记 → 退化为 any，避免 unknown 属性访问编译报错。
 // 调用点写法：AUTH<ApiEnvelope<'/api/v1/customers'>>(url)
-type RouteData<P extends string> = ApiRoutes[Extract<keyof ApiRoutes, `${string} ${P}`>]
+// 第二参可选按方法收敛（批五 E 契约批，2026-09-23）：同路径 GET 返回列表、POST 返回单条时，
+// 联合类型会让 `.list` 之类的访问在 tsc 下报错——此时写 ApiEnvelope<'/api/v1/admin/tags','GET'>。
+// 默认 string 保持"该路径全方法联合"的原口径，既有调用点行为不变。
+type RouteData<P extends string, M extends string = string> = ApiRoutes[Extract<keyof ApiRoutes, `${M} ${P}`>]
 
 // ApiEnvelope 按纯路径取响应信封：命中等价于 ApiResp<RouteData<P>>，
 // 路径未登记（never）或 data 未标注（unknown）时统一退化为 ApiResp<any>，
 // 保证既有调用点的属性访问在 tsc 下不报错、已标注端点获得精确类型。
-export type ApiEnvelope<P extends string> = [RouteData<P>] extends [never]
+export type ApiEnvelope<P extends string, M extends string = string> = [RouteData<P, M>] extends [never]
   ? ApiResp<any>
-  : RouteData<P> extends object
-    ? ApiResp<RouteData<P>>
+  : RouteData<P, M> extends object
+    ? ApiResp<RouteData<P, M>>
     : ApiResp<any>
 
 // 重新导出契约类型，使 api.d.ts 在业务代码中被真正消费（重构前零 import）

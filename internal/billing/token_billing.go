@@ -21,6 +21,7 @@ import "ai-scrm/internal/pii"
 // ============================================================
 
 import (
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/runtimecfg"
 	"bytes"
 	"encoding/json"
@@ -129,6 +130,14 @@ func DeductTokensActual(tenantID uint, tokens int64) error {
 	return nil
 }
 
+// errTokenDebtUnsettled 三桶全空时的哨兵错误（M1 修复，2026-09-22 全量修复批）：
+// 旧实现此处 `log + return nil`，在 UsageSink「锁定→SUM→DELETE→扣减」同事务里等于
+// "挂账行已删、账却一分未扣"——欠账被静默吞掉，与 P0-1 写前挂账的设计承诺相反。
+// 现在返回本哨兵让外层事务回滚：DELETE 撤销，挂账行继续存活，由 60s sweep 补扣、
+// 超 30 分钟走群告警人工介入（前置闸 TokenBillingAvailable 已拦三桶全空的请求，
+// 故落到这里的都是末次请求超出额度的尾差，充值后即可清账，不会无限堆积）。
+var errTokenDebtUnsettled = errors.New("三桶均无余额，扣减未完成（挂账行保留待补扣）")
+
 // deductTokensInTx 三桶扣减事务本体（P0-1 重构，2026-09-20 审计批）：
 // 从 DeductTokensActual 抽出，供 UsageSink"挂账行核销 + 扣减"同事务复用——
 // 行锁在事务内先锁租户，保证与挂账 DELETE 的原子配对（崩溃不会双扣/漏扣）。
@@ -168,8 +177,11 @@ func deductTokensInTx(tx *gorm.DB, tenantID uint, tokens int64) error {
 	}
 	total := r.FromFree + r.FromMonthly + r.FromBalance
 	if total <= 0 {
-		log.Printf("[TokenBilling] 租户%d 三桶均无余额，本次 %d tokens 未扣（欠账留痕）", tenantID, tokens)
-		return nil // 不产生负余额；前置检查本应拦截，此处兜底
+		// M1 修复(2026-09-22)：旧实现 return nil = 静默吞账（挂账行已被同事务 DELETE，
+		// 扣减却没发生，账目永久对不上）。改为返回哨兵错误回滚事务，欠账以行形态存活。
+		metrics.AddTokenDebtTokens(uint64(tokens))
+		log.Printf("[TokenBilling][WARN] 租户%d 三桶均无余额，本次 %d tokens 转入挂账待补扣", tenantID, tokens)
+		return errTokenDebtUnsettled
 	}
 	res := tx.Model(&model.Tenant{}).Where("id = ?", tenantID).Updates(map[string]interface{}{
 		"free_token_balance": t.FreeTokenBalance - r.FromFree,
@@ -180,7 +192,16 @@ func deductTokensInTx(tx *gorm.DB, tenantID uint, tokens int64) error {
 		return res.Error
 	}
 	if rem > 0 {
-		log.Printf("[TokenBilling] 租户%d 余额不足欠账 %d tokens（建议触发充值触达）", tenantID, rem)
+		// M1 修复(2026-09-22)：部分扣减后的余额差额旧实现只打日志即吞。
+		// 与调用方"扣成功才删挂账行"配对：本事务内补写一行差额挂账，
+		// 已扣部分随行删除而结清、未扣部分以新行继续排队补扣，总额守恒不漏账。
+		// 后台链路无请求 ctx，TenantID 必须显式落列（C7 事务内写租户表红线）。
+		debt := model.UsageFlushRetry{TenantID: tenantID, Tokens: rem}
+		if err := tx.Create(&debt).Error; err != nil {
+			return err
+		}
+		metrics.AddTokenDebtTokens(uint64(rem))
+		log.Printf("[TokenBilling] 租户%d 余额不足欠账 %d tokens（已转挂账行 id=%d 待补扣）", tenantID, rem, debt.ID)
 	}
 	log.Printf("[TokenBilling] 扣减完成 tenant=%d tokens=%d [%s]", tenantID, tokens, r)
 	return nil

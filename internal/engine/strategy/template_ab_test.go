@@ -38,7 +38,7 @@ var abZeroT [32]float64
 
 func recallFor(t *testing.T, templates []model.Template, customerID uint) string {
 	t.Helper()
-	got, _ := Step4_RecallTemplate(2, abTags, abZeroT, templates, customerID)
+	got, _ := Step4_RecallTemplate(2, abTags, abZeroT, templates, customerID, 0)
 	if got == nil {
 		t.Fatalf("召回为空，期望命中模板")
 	}

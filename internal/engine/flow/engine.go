@@ -2,6 +2,9 @@
 // 只看 route 字段跳节点，不关心决策细节；决策由 strategy 包负责。
 // 负责启动/推进流程实例、节点执行分发、与 state_machine 状态机同步心跳。
 // 编排层（orchestrate.go）统一收事件、拉画像、调 strategy 大脑，业务层唯一合法大脑通道。
+// A4 实装(2026-09-23)：sales_path.go 为本包新增的"销售路径机"——节点=客户旅程阶段、
+// 边=转化条件（读真实信号），输出经 OrchestrateReply 每轮消费注入回复链路；
+// 审计裁定（PLAN_FIX_2026-09-22 §5-A4/§8-Q3）据此从"装饰"转为"真相源之一"。
 package flow
 
 import (

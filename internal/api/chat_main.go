@@ -101,6 +101,9 @@ type chatSessionCtx struct {
 	leadCapturedResult   int
 	customerMsgID        uint
 	customerMsgCreatedAt time.Time
+
+	// takeover 人工锁定态裁决（A1，chatEnsureConversation 判定 / chatSaveInbound 消费）
+	takeover chatflow.TakeoverDecision
 }
 
 // Chat POST /api/v1/chat 正式对话入口（JWT链；硬边界→快速通道→简单消息→合并队列四层分流）
@@ -170,7 +173,7 @@ func (s *chatSessionCtx) chatResolveCustomer() bool {
 
 // chatEnsureConversation 步骤2：竞态保护下的查找或创建会话。
 // 副作用：会话不存在(404) / 冷启动创建失败(500)时响应并 return true；
-// 否则填充 s.conversation，并对人工超时接管做内存回写（等价原 CheckHumanTimeout 段）。
+// 否则填充 s.conversation，并产出人工锁定态裁决 s.takeover（A1：判定即落库，见 chatflow.HumanTakeoverDecide）。
 func (s *chatSessionCtx) chatEnsureConversation() bool {
 	var conversation model.Conversation
 
@@ -267,87 +270,52 @@ func (s *chatSessionCtx) chatEnsureConversation() bool {
 	s.conversation = conversation
 
 	// 3. 检查是否人工超时接管
-	humanTimeout := chatflow.CheckHumanTimeout(&s.conversation)
-	if humanTimeout {
+	// A1 修复(2026-09-22 批四)：旧实现在这里只写内存
+	// （s.conversation.Mode="ai" / IsHumanLocked=false）却不落库——请求结束即丢，下一轮从 DB
+	// 重载又是锁定态，正式链的客户被永久卡在"顾问正在赶来"；且与免登录链（真落库重开 AI）
+	// 给出不同动作，同样本不可比。现统一走 chatflow.HumanTakeoverDecide（判定即落库）。
+	// CheckHumanTimeout 仍保留：它管的是软接管 pending_handoff 的超时回退，语义与本裁决正交。
+	if chatflow.CheckHumanTimeout(&s.conversation) {
 		log.Printf("[对话] 人工超时，AI接管会话: %d", s.conversation.ID)
-		s.conversation.Mode = "ai"
-		s.conversation.IsHumanLocked = false
 	}
+	s.takeover = chatflow.HumanTakeoverDecide(&s.conversation)
 	return false
 }
 
 // chatMergeSuppress 步骤3前：相似消息合并为一次回答（合并时间窗 + 在途批次护栏）。
 // 副作用：命中合并时落库 suppressed 消息并响应 return true；否则 return false 继续。
+// A2 重构(2026-09-22 批四)：窗口计算与重叠度判定下沉到 chatflow.FindSimilarInflightMessage，
+// 与免登录 C 端链共用同一实现（此前那段逻辑只存在于本文件，C 端链没有）。
+// 本链在消息落库**之前**判定，故 excludeMsgID 传 0。
 func (s *chatSessionCtx) chatMergeSuppress() bool {
-	mergeSuppressWindow := 2 * 25 * time.Second
-	if runtimecfg.DefaultSystemConfigService != nil {
-		mw := runtimecfg.DefaultSystemConfigService.GetIntForTenant(
-			db.EffectiveTenantIDFromGin(s.c), "merge_window_seconds", 25)
-		mergeSuppressWindow = time.Duration(mw*2) * time.Second
-	}
-	if mergeSuppressWindow < 2*time.Minute {
-		mergeSuppressWindow = 2 * time.Minute
-	}
-	if mergeSuppressWindow > 10*time.Minute {
-		mergeSuppressWindow = 10 * time.Minute
-	}
-	var recentCustomerMsgs []model.Message
-	// P2-1 修复(2026-09-20 批三)：相似抑制仅在"确有在途批次会回答"时才允许 merged。
 	inflightBatch := service.DefaultMessageQueueService != nil &&
 		service.DefaultMessageQueueService.HasInflightBatch(s.tenantID, s.customer.ID)
-	if err := db.RQ(s.c).Where("customer_id = ? AND sender_type = ? AND created_at > ?",
-		s.customer.ID, "customer", time.Now().Add(-mergeSuppressWindow)).
-		Order("id DESC").Limit(2).Find(&recentCustomerMsgs).Error; err == nil {
-		currentKeywords := chatflow.ExtractKeywords(s.req.Content)
-		if len(currentKeywords) > 0 {
-			for _, pastMsg := range recentCustomerMsgs {
-				pastKeywords := chatflow.ExtractKeywords(pastMsg.Content)
-				if len(pastKeywords) == 0 {
-					continue
-				}
-				overlapCount := 0
-				for _, w := range currentKeywords {
-					for _, pw := range pastKeywords {
-						if w == pw {
-							overlapCount++
-							break
-						}
-					}
-				}
-				overlapRate := float64(overlapCount) / float64(len(currentKeywords))
-				if overlapRate > 0.5 {
-					if !inflightBatch {
-						log.Printf("[相似消息合并] 客户%d 重叠度%.0f%%但无在途批次，不抑制、正常入队（P2-1）",
-							s.customer.ID, overlapRate*100)
-						break
-					}
-					log.Printf("[相似消息合并] 客户%d 当前:%q 与历史:%q 重叠度%.0f%%, 合并为一次回答",
-						s.customer.ID, logx.Safe(s.req.Content, 40), logx.Safe(pastMsg.Content, 40), overlapRate*100)
-
-					suppressedMsg := model.Message{
-						ConversationID: s.conversation.ID,
-						CustomerID:     s.customer.ID,
-						SenderType:     "customer",
-						Content:        s.req.Content,
-						MessageType:    "text",
-						RouteResult:    "merged_suppressed",
-						Emotion:        strategy.DetectEmotion(s.req.Content),
-						CreatedAt:      time.Now(),
-					}
-					db.RQ(s.c).Create(&suppressedMsg)
-
-					RespOK(s.c, "success", schema.ChatResponse{
-						ConversationID: s.conversation.ID,
-						Merged:         true,
-						MergedNote:     "相似消息已合并处理",
-						CustomerMsgID:  suppressedMsg.ID,
-					})
-					return true
-				}
-			}
-		}
+	hit, ok := chatflow.FindSimilarInflightMessage(db.RQ(s.c), s.tenantID, s.customer.ID, s.req.Content, inflightBatch, 0)
+	if !ok {
+		return false
 	}
-	return false
+	log.Printf("[相似消息合并] 客户%d 当前:%q 与历史:%q 重叠度%.0f%%, 合并为一次回答",
+		s.customer.ID, logx.Safe(s.req.Content, 40), logx.Safe(hit.PastContent, 40), hit.OverlapRate*100)
+
+	suppressedMsg := model.Message{
+		ConversationID: s.conversation.ID,
+		CustomerID:     s.customer.ID,
+		SenderType:     "customer",
+		Content:        s.req.Content,
+		MessageType:    "text",
+		RouteResult:    "merged_suppressed",
+		Emotion:        strategy.DetectEmotion(s.req.Content),
+		CreatedAt:      time.Now(),
+	}
+	db.RQ(s.c).Create(&suppressedMsg)
+
+	RespOK(s.c, "success", schema.ChatResponse{
+		ConversationID: s.conversation.ID,
+		Merged:         true,
+		MergedNote:     "相似消息已合并处理",
+		CustomerMsgID:  suppressedMsg.ID,
+	})
+	return true
 }
 
 // chatSaveInbound 步骤3-4：落库客户消息 + 回填接钩归因 + WS 推送 + 持续打标。
@@ -388,15 +356,30 @@ func (s *chatSessionCtx) chatSaveInbound() bool {
 	s.customerMsgID = customerMsg.ID
 	s.customerMsgCreatedAt = customerMsg.CreatedAt
 
-	// 5. 如果是人工模式，直接返回（等人工回复）
-	if s.conversation.Mode == "human" && s.conversation.IsHumanLocked {
+	// 5. 人工锁定态：按 A1 统一裁决决定是否让 AI 代答
+	// A1 修复(2026-09-22 批四)：旧条件 `Mode=="human" && IsHumanLocked` 一旦成立就无条件
+	// 回"正在赶来"——既不看顾问是否已超时未回，也不做留资检测，客户留了手机号也石沉大海。
+	// 现由 chatflow.HumanTakeoverDecide 统一裁决：能代答的已经在上一步落库解锁并放行，
+	// 走到这里说明确实该等人；路由标记与免登录链取同一字面量（归因口径对齐），
+	// 文案沿用正式链既有话术（客户无感，不需改口径）。
+	if s.takeover.Action == chatflow.TakeoverSkipAI {
+		db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
+			Update("last_message_at", now)
+		// 与免登录链同款：锁定期客户甩手机号也要即时留资，不能因为"等人"而漏接
+		if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
+			s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
+			if leadResult := chatflow.DetectLeadCapture(s.req.Content, &s.customer); leadResult != 0 {
+				log.Printf("[对话-留资检测-human_locked] 客户 %d 已留资+分配顾问", s.customer.ID)
+			}
+		}
+		log.Printf("[对话] 会话%d 人工锁定，本轮跳过AI(route=%s)", s.conversation.ID, s.takeover.Route)
 		RespOK(s.c, "success", schema.ChatResponse{
 			ConversationID: s.conversation.ID,
 			Message: gin.H{
 				"sender_type": "system",
 				"content":     "已收到你的消息，销售顾问正在赶来的路上，请稍候~",
 			},
-			RouteResult: "human",
+			RouteResult: s.takeover.Route,
 			Mode:        "human",
 		})
 		return true

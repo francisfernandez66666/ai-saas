@@ -154,6 +154,24 @@ DOCCOM_RC=$?
 tail -3 /tmp/test_all_doccom.log
 verdict "导出面中文文档注释棘轮" $DOCCOM_RC
 
+# ---------- 阶段零：显式 DB ctx 透传棘轮（AI 链 ctx 批，2026-09-23 批六）----------
+# 与上一条同为纯静态扫描（不依赖服务/DB）。口径：`db.DB.WithContext(` 透传点只升不降，
+# 与 G-12 裸 db.DB 白名单（只降不升）同向，防"把带 ctx 的写法改回裸句柄"这种静默回退。
+step "静态门禁：显式 DB ctx 透传棘轮（tools/check_withcontext_ratchet.sh）"
+bash tools/check_withcontext_ratchet.sh
+CTX_RC=$?
+verdict "显式 DB ctx 透传棘轮" $CTX_RC
+
+# ---------- 阶段零：工作树卫生护栏（O2 配套，2026-09-23 批六）----------
+# 钉三件本次审计实际踩到过的事，全部 fail-closed（缺 git 时 SKIP 不假红）：
+#   1. 未跟踪的 .go/.sh 没有对应文档条目 —— 新工具/新包不写进 AGENTS.md 就等于不存在；
+#   2. 工作树不得残留 *.bak 之类的批量编辑中间产物（会把损坏的旧代码留在树里）；
+#   3. 生成物/基线文件不得裸 000 权限（批量脚本写文件的常见事故）。
+step "静态门禁：工作树卫生（未跟踪产物 / .bak 残留 / 异常权限）"
+bash tools/check_worktree_hygiene.sh
+HYG_RC=$?
+verdict "工作树卫生护栏" $HYG_RC
+
 # ---------- 阶段一：单元测试层 ----------
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... >/tmp/test_all_vet.log 2>&1
@@ -218,11 +236,27 @@ verdict "go test ./...（覆盖率见下方）" $GO_TEST_RC
 # ---------- 覆盖率棘轮（P1-5，2026-09-22 新增） ----------
 # 复用上方 -coverprofile 产物，总覆盖率只升不降（基线 .coverage_baseline，2026-09-22 落 22.8）。
 step "单元测试层：覆盖率棘轮门禁（tools/check_coverage_ratchet.sh）"
-if [ "$GO_TEST_RC" -eq 0 ] && [ -f /tmp/ai_scrm_coverage.out ]; then
-  COV_PROFILE=/tmp/ai_scrm_coverage.out bash "$ROOT/tools/check_coverage_ratchet.sh"
-  verdict "覆盖率棘轮（只升不降）" $?
+# G1-a 修复（2026-09-22 全量审计）：原实现写成
+#   `if GO_TEST_RC==0 && 产物存在 → 判定 else verdict 0`
+# ——单测一红就跳过并直接打 PASS，属于"恒真假绿门禁"（与本轮已改造的裸 db.DB 内联段同族）。
+# 而独立模式的 check_coverage_ratchet.sh 本来在 go test 不绿时 exit 1，两口径互斥。
+# 新口径（三条，任一不满足即 FAIL，绝不以跳过冒充通过）：
+#   ① 缺产物 = 从未测量 → FAIL；
+#   ② 单测未全绿 = 判定前提不成立（红包可能中止测试二进制、覆盖率贡献丢失，实测曾把 23.1 读成 20.6）
+#      → 照常跑出数字供参考，但总账记 FAIL，与上方 go test 那条同时红；
+#   ③ 全绿且产物齐 → 只升不降正常判定。
+if [ ! -f /tmp/ai_scrm_coverage.out ]; then
+  echo "  FAIL 覆盖率棘轮: 缺 /tmp/ai_scrm_coverage.out（单测未产出覆盖率，禁止按通过计）"
+  verdict "覆盖率棘轮（缺产物，拒绝判定）" 1
 else
-  verdict "覆盖率棘轮（跳过：go test 未全绿或无覆盖率产物）" 0
+  COV_PROFILE=/tmp/ai_scrm_coverage.out bash "$ROOT/tools/check_coverage_ratchet.sh"
+  COV_RC=$?
+  if [ "$GO_TEST_RC" -ne 0 ]; then
+    echo "  ⚠ 覆盖率判定前提不成立：go test 有 FAIL（上方红项），其覆盖率数字可能因包内 panic/中止而偏低"
+    verdict "覆盖率棘轮（单测未全绿，判定不可信）" 1
+  else
+    verdict "覆盖率棘轮（只升不降）" $COV_RC
+  fi
 fi
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
 # 跳过统计（§八-7）：非零必须显式报警，DB 不可用时"全绿"不再是可信信号
@@ -298,13 +332,13 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（156 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九）"
+step "E2E 层：smoke.sh（189 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"
 ./tools/smoke_perm.sh "$PORT" >/tmp/test_all_perm.log 2>&1; verdict "smoke_perm.sh" $?; tail -2 /tmp/test_all_perm.log
 
-step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸 22 项）"
+step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸+A1 锁定超时落库 24 项）"
 ./tools/smoke_chat_identity.sh "$PORT" >/tmp/test_all_identity.log 2>&1; verdict "smoke_chat_identity.sh" $?; tail -2 /tmp/test_all_identity.log
 
 step "E2E 层：smoke_org.sh（11 项）"
@@ -313,7 +347,7 @@ step "E2E 层：smoke_org.sh（11 项）"
 step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
 ./tools/smoke_saas.sh "$PORT" >/tmp/test_all_saas.log 2>&1; verdict "smoke_saas.sh" $?; tail -2 /tmp/test_all_saas.log
 
-step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全 37 项）"
+step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移 41 项）"
 ./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
 
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 40 项，自建 9091+mockwx）"
@@ -323,8 +357,11 @@ step "E2E 层：uat_advisor.sh（顾问工作台字节级 75 断言，2026-09-20
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
 
-step "E2E 层：playwright 真浏览器 E2E（16 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言）"
+step "E2E 层：playwright 真浏览器 E2E（17 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言；2026-09-23 批二补 S2 找回密码文案、第 9/10 项改断 S1 匿名写 400）"
 # 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。
+# ⚠ 9090 托管的是 frontend-react/dist **产物**而非源码：改完 .tsx 必须先 build 再跑本套件，
+#   否则断言打的是旧 bundle（2026-09-23 实踩：S2 文案已改、页面仍渲染"服务端日志"，误判成修复无效）。
+#   编排器在本 step 之前的「前端 vite build」阶段已构建，故 test_all 路径天然安全；单独跑本套件才需手动 build。
 # 无 chromium 缓存时 SKIP（不 FAIL——离线机器不该被下载卡死），CI e2e job 已显式安装。
 case "$(uname)" in Darwin) PW_CACHE="$HOME/Library/Caches/ms-playwright";; *) PW_CACHE="$HOME/.cache/ms-playwright";; esac
 if ls "$PW_CACHE" >/dev/null 2>&1 && ls "$PW_CACHE" | grep -q '^chromium'; then
@@ -335,7 +372,7 @@ else
 fi
 
 if [ "$MODE" != "fast" ]; then
-  step "E2E 层：uat.sh（95 断言全场景，较长）"
+  step "E2E 层：uat.sh（98 断言全场景，较长；含 M1 账目守恒与 A1 正式链落库双入口）"
   # uat 含真实 AI 调用与长时间等待，默认纳入 full 模式；CI 建议 --fast
   ./tools/uat.sh "$PORT" >/tmp/test_all_uat.log 2>&1; verdict "uat.sh" $?; tail -3 /tmp/test_all_uat.log
 else

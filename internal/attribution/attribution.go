@@ -201,6 +201,8 @@ func Stats(f StatFilter, gdb ...*gorm.DB) ([]model.PackTemplateStat, error) {
 			AVG(CASE WHEN r.hooked THEN 1.0 ELSE 0.0 END) AS hook_rate,
 			AVG(CASE WHEN r.lead_captured THEN 1.0 ELSE 0.0 END) AS lead_rate,
 			AVG(CASE WHEN r.pending_human THEN 1.0 ELSE 0.0 END) AS pending_human_rate,
+			AVG(CASE WHEN r.arrived_at IS NOT NULL THEN 1.0 ELSE 0.0 END) AS arrive_rate,
+			AVG(CASE WHEN r.dealt_at IS NOT NULL THEN 1.0 ELSE 0.0 END) AS deal_rate,
 			AVG(r.intent_after - r.intent_before) AS avg_intent_delta,
 			AVG(CASE WHEN r.eval_score >= 0 THEN CAST(r.eval_score AS DOUBLE PRECISION) ELSE NULL END) AS avg_eval_score
 		`).
@@ -246,14 +248,18 @@ func SyncPackStats(gdb ...*gorm.DB) error {
 	now := time.Now()
 	for _, r := range rows {
 		snap := model.PackStatSnapshot{
-			TenantID:       r.TenantID,
-			PackCode:       r.PackCode,
-			PackVersion:    r.PackVersion,
-			TemplateID:     r.TemplateID,
-			SampleCount:    r.SampleCount,
-			HookRate:       r.HookRate,
-			LeadRate:       r.LeadRate,
-			PendingRate:    r.PendingRate,
+			TenantID:    r.TenantID,
+			PackCode:    r.PackCode,
+			PackVersion: r.PackVersion,
+			TemplateID:  r.TemplateID,
+			SampleCount: r.SampleCount,
+			HookRate:    r.HookRate,
+			LeadRate:    r.LeadRate,
+			PendingRate: r.PendingRate,
+			// 终局率（批五 A）：分母同为 sample_count，来源是 BackfillOutcomes 回填的
+			// arrived_at/dealt_at 非空判定——未终判窗口内的行按"未发生"计，率会随巡检爬坡，属预期语义。
+			ArriveRate:     r.ArriveRate,
+			DealRate:       r.DealRate,
 			AvgIntentDelta: r.AvgIntentDelta,
 			AvgEvalScore:   r.AvgEvalScore,
 			ComputedAt:     now,
@@ -261,7 +267,7 @@ func SyncPackStats(gdb ...*gorm.DB) error {
 		if err := d.Clauses(clause.OnConflict{
 			Columns: []clause.Column{{Name: "tenant_id"}, {Name: "pack_code"}, {Name: "pack_version"}, {Name: "template_id"}},
 			DoUpdates: clause.AssignmentColumns([]string{
-				"sample_count", "hook_rate", "lead_rate", "pending_human_rate", "avg_intent_delta", "avg_eval_score", "computed_at",
+				"sample_count", "hook_rate", "lead_rate", "pending_human_rate", "arrive_rate", "deal_rate", "avg_intent_delta", "avg_eval_score", "computed_at",
 			}),
 		}).Create(&snap).Error; err != nil {
 			return err

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"ai-scrm/config"
@@ -26,10 +28,67 @@ import (
 //
 // 降级策略：Enabled=false 或连接失败 → IsEnabled()=false，
 // 所有调用方走纯内存路径（单实例模式，行为与改造前一致）
+//
+// O1-a(2026-09-23 批六)：连接失败不再"一次定终身"——声明启用（REDIS_ENABLED=true）
+// 却 Ping 失败时启动后台自愈重探，Redis 起来后自动恢复多实例语义（编排竞态：
+// docker compose 里 app 可能先于 redis 就绪，旧行为是永久降级成单实例）。
+// 未声明启用（false）绝不重探，本地/CI 单实例部署零行为变化。
 // ============================================================
 
-// rdb 全局 Redis 客户端（nil 表示未启用，所有方法自动降级为单实例内存路径）
-var rdb *redis.Client
+// rdbPtr 全局 Redis 客户端（nil 表示未启用，所有方法自动降级为单实例内存路径）。
+// O1-a 引入后台自愈后，写入方不再只有启动序列（Init/自愈 goroutine 都会写），
+// 故用 atomic.Pointer 承载，读侧一律经 client() 取快照，避免数据竞争。
+var rdbPtr atomic.Pointer[redis.Client]
+
+// client 取当前 Redis 客户端快照（nil=未启用/未连通，调用方已按 IsEnabled 降级）
+func client() *redis.Client { return rdbPtr.Load() }
+
+// setClient 发布/清空客户端（唯一写入口）
+func setClient(c *redis.Client) { rdbPtr.Store(c) }
+
+// declaredEnabled 记录"配置是否声明启用 Redis"（与是否已连通解耦）：
+// 自愈循环只在 true 时跑，readiness 位也靠它区分"没配"与"配了但连不上"。
+var declaredEnabled bool
+
+// 建连与探测接缝（单测注入：先失败后成功，验证自愈链路真的能恢复）
+var (
+	newClientFn = func(cfg config.RedisConfig) (*redis.Client, error) {
+		c := redis.NewClient(&redis.Options{Addr: cfg.Addr, Password: cfg.Password, DB: cfg.DB})
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := c.Ping(ctx).Err(); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		return c, nil
+	}
+
+	// selfHealInterval 自愈重探周期（单测下调以免拖慢回归）
+	selfHealInterval = 10 * time.Second
+)
+
+// 自愈循环状态：同一进程只起一个 goroutine（重复 Init 不叠加）
+var (
+	healRunning bool
+	healStop    chan struct{}
+	healMu      sync.Mutex
+	// recoverHooks 恢复回调（自愈成功时按注册顺序触发，用于广播"多实例语义恢复"）
+	recoverHooks []func()
+)
+
+// OnRecover 注册"Redis 由不可用恢复为可用"时的回调（幂等探测语义，回调内禁止阻塞）。
+// 由装配层用于刷醒一次性降级告警；包本身不反向依赖 metrics，避免 import 环。
+func OnRecover(fn func()) {
+	if fn == nil {
+		return
+	}
+	healMu.Lock()
+	recoverHooks = append(recoverHooks, fn)
+	healMu.Unlock()
+}
+
+// DeclaredEnabled 配置是否声明启用 Redis（不代表已连通；连不通时由自愈与 readiness 暴露）。
+func DeclaredEnabled() bool { return declaredEnabled }
 
 // instanceID 本实例标识（锁值，安全解锁用：只删自己的锁）
 var instanceID string
@@ -42,35 +101,109 @@ func init() {
 }
 
 // Init 初始化 Redis 连接
-// cfg.Enabled=false 时不开连接；连接失败仅告警并保持禁用（不阻断启动）
+// cfg.Enabled=false 时不开连接；连接失败仅告警并保持禁用（不阻断启动），
+// 但会起后台自愈循环周期重探（O1-a，见上方包注释）。
 func Init(cfg config.RedisConfig) {
+	declaredEnabled = cfg.Enabled
 	if !cfg.Enabled {
 		log.Println("[Redis] 未启用（REDIS_ENABLED=false），使用单实例内存模式")
 		return
 	}
-	rdb = redis.NewClient(&redis.Options{
-		Addr:     cfg.Addr,
-		Password: cfg.Password,
-		DB:       cfg.DB,
-	})
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		log.Printf("[Redis] 连接失败（降级为内存模式）: %v", err)
-		rdb = nil
+	setClient(nil)
+	c, err := newClientFn(cfg)
+	if err != nil {
+		log.Printf("[Redis] 连接失败（临时降级为内存模式，后台每 %s 自愈重探）: %v", selfHealInterval, err)
+		startSelfHeal(cfg)
 		return
 	}
+	setClient(c)
 	log.Printf("[Redis] 连接成功: %s（多实例模式）", cfg.Addr)
+}
+
+// startSelfHeal 启动后台重探循环（幂等：已在跑则不重复起）。
+// 循环在连通后立即退出，不常驻消耗连接。
+func startSelfHeal(cfg config.RedisConfig) {
+	healMu.Lock()
+	if healRunning {
+		healMu.Unlock()
+		return
+	}
+	healRunning = true
+	healStop = make(chan struct{})
+	// stop 在锁内取快照并作为参数交给循环：goroutine 不得再读全局 healStop
+	// （StopSelfHeal 会置 nil，并发读写即数据竞争）
+	stop := healStop
+	healMu.Unlock()
+	// 一次性取参数快照后交给循环：自愈 goroutine 内不再读包级测试接缝
+	// （用例并发改写 newClientFn/selfHealInterval 会与后台读构成数据竞争，-race 直接报）
+	go healLoop(cfg, stop, selfHealInterval, newClientFn)
+}
+
+// healLoop 自愈重探循环：连上即发布客户端、触发恢复回调并退出（一次性，非常驻健康检查）。
+func healLoop(cfg config.RedisConfig, stop <-chan struct{}, interval time.Duration, dial func(config.RedisConfig) (*redis.Client, error)) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			// 已连通说明别处已完成装配（如运维手工重跑初始化），只收尾退出。
+			healMu.Lock()
+			if IsEnabled() {
+				hooks := append([]func(){}, recoverHooks...)
+				healRunning = false
+				healMu.Unlock()
+				notifyRecovered(hooks)
+				return
+			}
+			healMu.Unlock()
+			c, err := dial(cfg)
+			if err != nil {
+				log.Printf("[Redis] 自愈重探仍失败（下一轮 %s 后再试）: %v", interval, err)
+				continue
+			}
+			setClient(c)
+			log.Printf("[Redis] ✅ 自愈成功：已恢复多实例协调语义（锁/消息转交/缓存失效跨实例生效）")
+			healMu.Lock()
+			hooks := append([]func(){}, recoverHooks...)
+			healRunning = false
+			healMu.Unlock()
+			notifyRecovered(hooks)
+			return
+		}
+	}
+}
+
+// notifyRecovered 依次触发恢复回调（panic 吞掉，回调失败不得影响协调层本身）
+func notifyRecovered(hooks []func()) {
+	for _, fn := range hooks {
+		func() {
+			defer func() { _ = recover() }()
+			fn()
+		}()
+	}
+}
+
+// StopSelfHeal 停止后台自愈循环（测试与优雅停机用；未运行时 no-op）。
+func StopSelfHeal() {
+	healMu.Lock()
+	defer healMu.Unlock()
+	if healRunning && healStop != nil {
+		close(healStop)
+	}
+	healRunning = false
+	healStop = nil
 }
 
 // IsEnabled Redis 是否可用
 func IsEnabled() bool {
-	return rdb != nil
+	return rdbPtr.Load() != nil
 }
 
 // Client 返回原生客户端（谨慎使用；nil 表示未启用）
 func Client() *redis.Client {
-	return rdb
+	return client()
 }
 
 // ctxDefault 统一超时上下文（Redis 操作不允许阻塞业务请求过久）
@@ -130,7 +263,7 @@ func TryLockE(key string, ttl time.Duration) (*LockHandle, error) {
 	value := instanceID + ":" + randomHex(4)
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	ok, err := rdb.SetNX(ctx, key, value, ttl).Result()
+	ok, err := client().SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
 		// Redis 故障：显式返回错误，调用方禁止按"没抢到"处理
 		return nil, fmt.Errorf("Redis SetNX 失败 key=%s: %w", key, err)
@@ -155,7 +288,7 @@ func TryLockE(key string, ttl time.Duration) (*LockHandle, error) {
 				return
 			case <-ticker.C:
 				rctx, rcancel := ctxDefault()
-				res, rerr := luaRenew.Run(rctx, rdb, []string{key}, value, ttl.Milliseconds()).Result()
+				res, rerr := luaRenew.Run(rctx, client(), []string{key}, value, ttl.Milliseconds()).Result()
 				rcancel()
 				// P1-41 缺口①(2026-09-09)：续期失败不再被吞——连续失败说明锁可能已过期易主，
 				// 原持有者继续执行有并发写风险。计数暴露 + 告警日志（fencing token 需任务侧
@@ -189,7 +322,7 @@ func (h *LockHandle) Unlock() {
 	<-h.closed // 等看门狗退出，避免释放后续期复活
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	_, _ = luaUnlock.Run(ctx, rdb, []string{h.key}, h.value).Result()
+	_, _ = luaUnlock.Run(ctx, client(), []string{h.key}, h.value).Result()
 }
 
 // LockExists 查询锁是否被持有（任意实例）
@@ -199,7 +332,7 @@ func LockExists(key string) bool {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.Exists(ctx, key).Result()
+	n, err := client().Exists(ctx, key).Result()
 	return err == nil && n > 0
 }
 
@@ -214,7 +347,7 @@ func Get(key string) (string, bool) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	v, err := rdb.Get(ctx, key).Result()
+	v, err := client().Get(ctx, key).Result()
 	if err != nil {
 		return "", false
 	}
@@ -228,7 +361,7 @@ func SetEx(key, value string, ttl time.Duration) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	_ = rdb.SetEx(ctx, key, value, ttl).Err()
+	_ = client().SetEx(ctx, key, value, ttl).Err()
 }
 
 // Del 删除键
@@ -238,7 +371,7 @@ func Del(key string) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	_ = rdb.Del(ctx, key).Err()
+	_ = client().Del(ctx, key).Err()
 }
 
 // Incr 自增并返回新值（缓存版本戳用）
@@ -248,7 +381,7 @@ func Incr(key string) int64 {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.Incr(ctx, key).Result()
+	n, err := client().Incr(ctx, key).Result()
 	if err != nil {
 		return 0
 	}
@@ -262,7 +395,7 @@ func GetInt(key string) int64 {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.Get(ctx, key).Int64()
+	n, err := client().Get(ctx, key).Int64()
 	if err != nil {
 		return 0
 	}
@@ -277,12 +410,12 @@ func IncrWithTTL(key string, ttl time.Duration) int64 {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.Incr(ctx, key).Result()
+	n, err := client().Incr(ctx, key).Result()
 	if err != nil {
 		return 0
 	}
 	if n <= 1 {
-		_ = rdb.Expire(ctx, key, ttl).Err()
+		_ = client().Expire(ctx, key, ttl).Err()
 	}
 	return n
 }
@@ -295,7 +428,7 @@ func SetNXEx(key, value string, ttl time.Duration) bool {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	ok, err := rdb.SetNX(ctx, key, value, ttl).Result()
+	ok, err := client().SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
 		return false
 	}
@@ -311,12 +444,12 @@ func DecrByWithTTL(key string, delta int64, ttl time.Duration) (int64, bool) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.DecrBy(ctx, key, delta).Result()
+	n, err := client().DecrBy(ctx, key, delta).Result()
 	if err != nil {
 		return 0, false
 	}
 	// 每次扣减都续 TTL：影子是缓存不是账本，活跃租户不应因 TTL 掉 seed 竞争
-	_ = rdb.Expire(ctx, key, ttl).Err()
+	_ = client().Expire(ctx, key, ttl).Err()
 	return n, true
 }
 
@@ -329,7 +462,7 @@ func SetNXExE(key, value string, ttl time.Duration) (bool, error) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	ok, err := rdb.SetNX(ctx, key, value, ttl).Result()
+	ok, err := client().SetNX(ctx, key, value, ttl).Result()
 	if err != nil {
 		return false, err
 	}
@@ -343,7 +476,7 @@ func LPush(key, value string) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	_ = rdb.LPush(ctx, key, value).Err()
+	_ = client().LPush(ctx, key, value).Err()
 }
 
 // RPushRightPush 右侧推入列表
@@ -355,7 +488,7 @@ func RPush(key, value string) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	_ = rdb.RPush(ctx, key, value).Err()
+	_ = client().RPush(ctx, key, value).Err()
 }
 
 // LLen 返回列表当前长度（Redis 未启用或出错一律 0，只读探测语义 fail-open）。
@@ -366,7 +499,7 @@ func LLen(key string) int64 {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	n, err := rdb.LLen(ctx, key).Result()
+	n, err := client().LLen(ctx, key).Result()
 	if err != nil {
 		return 0
 	}
@@ -386,7 +519,7 @@ func DrainList(key string) []string {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	res, err := luaDrainList.Run(ctx, rdb, []string{key}).Result()
+	res, err := luaDrainList.Run(ctx, client(), []string{key}).Result()
 	if err != nil {
 		return nil
 	}
@@ -409,7 +542,7 @@ func Publish(channel, payload string) {
 	}
 	ctx, cancel := ctxDefault()
 	defer cancel()
-	if err := rdb.Publish(ctx, channel, payload).Err(); err != nil {
+	if err := client().Publish(ctx, channel, payload).Err(); err != nil {
 		log.Printf("[redisclient] Publish %s 失败: %v", channel, err)
 	}
 }
@@ -421,7 +554,7 @@ func Subscribe(channel string) <-chan string {
 		return nil
 	}
 	ctx, cancel := ctxDefault()
-	pubsub := rdb.Subscribe(ctx, channel)
+	pubsub := client().Subscribe(ctx, channel)
 	if _, err := pubsub.Receive(ctx); err != nil {
 		log.Printf("[redisclient] Subscribe %s 失败(降级无广播): %v", channel, err)
 		_ = pubsub.Close()

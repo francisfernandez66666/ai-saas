@@ -71,24 +71,36 @@ jobs:
   prod-compose-smoke:
     name: 生产编排全新库冒烟（防 dev/CI 镜像漂移，P0-1）
     runs-on: ubuntu-latest
-    # 容错：本 job 验证生产编排能否对全新库起服务；若仓库现状暂无法直连 up 生产编排
-    # （如缺少 secrets/外部依赖），仅告警不阻断主流水线，失败步骤已 dump app 日志供排查。
-    continue-on-error: true
+    # O2(2026-09-23 批六)：转阻断。此前 continue-on-error=true 掩盖的是一个真缺陷——
+    # compose 用 .env 的 SERVER_PORT(模板值 9090) 当宿主发布端口、容器内却监听 8080，
+    # 探测打 8080 故本 job 自合入起从未通过。端口口径已修（APP_PUBLISH_PORT），
+    # 且判活改为"看容器 healthcheck 状态"（O1-b 已给 app 补 /health 探针），
+    # 不再用"ps -q 有输出"（那只证明进程存在，不证明能应答）。
     steps:
       - uses: actions/checkout@v4
       - name: 生产编排全新库冒烟
         run: |
           cp .env.example .env
+          # O2(2026-09-23 批六)：必须覆写 JWT_SECRET——.env.example 的占位值含 "change-me"，
+          # 而 config.go 的弱密钥守卫在 release（本编排 GIN_MODE=release）下直接 log.Fatalf 拒启。
+          # 这是 prod-compose-smoke 从未真正通过的第二个原因（第一个是宿主端口漂移）。
+          # 仅 CI 冒烟用的一次性密钥，不构成生产密钥样板。
+          echo 'JWT_SECRET=ci-prod-smoke-9f2c74ab1d8e46f0b3c5a7d2e91f4680' >> .env
+          # keys/packs 为空挂载源：CI 检出里没有这两个目录，docker 会以 root 建空目录，
+          # 显式 mkdir 免得读者误以为缺目录就是失败原因（缺私钥只影响解封，不影响起服）
+          mkdir -p keys packs
           docker compose -f docker-compose.prod.yml up -d --build
-          for i in $(seq 1 30); do
-            if [ -n "$(docker compose -f docker-compose.prod.yml ps -q app)" ] && \
-               curl -sf http://localhost:8080/health >/dev/null; then
-              echo "prod-compose-smoke OK"
+          for i in $(seq 1 40); do
+            st=$(docker compose -f docker-compose.prod.yml ps --format '{{.Service}} {{.State}} {{.Health}}' app | awk '{print $3}')
+            if [ "$st" = "healthy" ] && curl -sf http://localhost:8080/health >/dev/null; then
+              echo "prod-compose-smoke OK（healthcheck=healthy，/health 应答 200）"
               exit 0
             fi
+            echo "[$i/40] app health=$st"
             sleep 5
           done
-          docker compose -f docker-compose.prod.yml logs --tail 100 app
+          docker compose -f docker-compose.prod.yml ps -a
+          docker compose -f docker-compose.prod.yml logs --tail 150 app
           exit 1
 
   frontend:

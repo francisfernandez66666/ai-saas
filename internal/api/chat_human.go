@@ -69,6 +69,8 @@ func assertConversationScope(c *gin.Context, conversation *model.Conversation) e
 // 9. 返回结果
 
 // Chat POST /api/v1/chat 正式对话入口（JWT链；硬边界→快速通道→简单消息→合并队列四层分流）
+// apidump:ts ChatMessage
+// 人工回复落库后的整条消息。
 func HumanReply(c *gin.Context) {
 	var req struct {
 		ConversationID uint   `json:"conversation_id" binding:"required"`
@@ -132,6 +134,8 @@ func HumanReply(c *gin.Context) {
 }
 
 // GetMessages 获取会话消息列表
+// apidump:ts ChatMessage[]
+// 会话消息（时间正序，上限 200 条）。
 func GetMessages(c *gin.Context) {
 	// 健壮性收口(2026-09-05)：conversation_id 为 uint 列，非法 ID 直接 400，不再打进 PG(22P02)
 	conversationID, ok := PathUintID(c)
@@ -193,6 +197,8 @@ func scopeConversationsByCustomer(c *gin.Context, query *gorm.DB) *gorm.DB {
 }
 
 // GetConversationList 获取会话列表
+// apidump:ts Paginated<Conversation>
+// 会话分页列表。
 func GetConversationList(c *gin.Context) {
 	var req schema.ConversationListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -231,6 +237,8 @@ func GetConversationList(c *gin.Context) {
 }
 
 // TransferToHuman 手动转人工
+// apidump:ts Conversation
+// 转人工后回整行会话（含 mode/pending_handoff）。
 func TransferToHuman(c *gin.Context) {
 	var req struct {
 		ConversationID uint `json:"conversation_id" binding:"required"`
@@ -264,6 +272,8 @@ func TransferToHuman(c *gin.Context) {
 }
 
 // TransferToAI 切回AI
+// apidump:ts Conversation
+// 切回 AI 后回整行会话。
 func TransferToAI(c *gin.Context) {
 	var req struct {
 		ConversationID uint `json:"conversation_id" binding:"required"`

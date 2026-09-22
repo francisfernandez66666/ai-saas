@@ -131,6 +131,9 @@ func ChatUnauthorized(c *gin.Context) {
 	if s.chatUnauthorizedStoreVisit() {
 		return
 	}
+	if s.chatUnauthorizedSimilarSuppress() {
+		return
+	}
 	if s.chatUnauthorizedEnqueue() {
 		return
 	}
@@ -143,8 +146,8 @@ func ChatUnauthorized(c *gin.Context) {
 	s.chatUnauthorizedSaveAndReturn()
 }
 
-// chatUnauthorizedResolve 身份校验：绑定入参、解析客户ID(默认1)、查客户、访客密钥防线。
-// 副作用：绑定失败(400)/客户不存在(404)/访客密钥不匹配(403)时响应并 return true；否则填充 s.customer / s.req。
+// chatUnauthorizedResolve 身份校验：绑定入参、解析客户ID(必填)、查客户、访客密钥防线(无条件)。
+// 副作用：绑定失败/缺 customer_id(400)/客户不存在(404)/访客密钥不匹配(403)时响应并 return true；否则填充 s.customer / s.req。
 func (s *chatUnauthorizedCtx) chatUnauthorizedResolve() bool {
 	var req struct {
 		CustomerID uint   `json:"customer_id"`
@@ -156,22 +159,31 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedResolve() bool {
 	}
 	s.req = req
 
-	// 默认用1号客户
+	// S1 收口（2026-09-22 批二，Q2 决策=保留别名但强制自证身份）：
+	// 原"缺省即 1 号客户"是 README 时代的测试便利残留——匿名请求不带 customer_id
+	// 就会把消息写进 1 号客户会话。现要求显式传 customer_id（两步：先 /chat/guest 领身份）。
 	customerID := req.CustomerID
 	if customerID == 0 {
-		customerID = 1
+		RespErr(s.c, http.StatusBadRequest, 400, "缺少 customer_id：请先调 /chat/guest 建立访客身份，取回 customer_id 与 visitor_key 后再发消息")
+		return true
 	}
 
 	// 查询客户
 	var customer model.Customer
 	result := db.RQ(s.c).First(&customer, customerID)
 	if result.Error != nil {
-		RespErr(s.c, http.StatusNotFound, 404, "客户不存在，可用customer_id=1测试")
+		RespErr(s.c, http.StatusNotFound, 404, "客户不存在")
 		return true
 	}
 
 	// P0-7 修复(2026-09-09)：C 端正式对话写入口的身份防线。
-	if customer.VisitorKey != "" && !middleware.CheckVisitorKey(s.c, customer.VisitorKey) {
+	// S1 收口（2026-09-22 批二）：删掉旧写的 `customer.VisitorKey != ""` 前置短路——
+	// 该短路令"空密钥客户"直接放行任意匿名写入，而库里 303 个客户中 302 个 visitor_key 为空，
+	// 实测仅带 X-Tenant-ID 即可向他人会话写消息并触发出站 AI（读侧 /chat/history 同客户却 403，
+	// 即"写读不对称"）。CheckVisitorKey 语义（middleware/ip_limit.go:153-163）已够用：
+	// 登录态 user_id>0 短路放行；匿名必须带 visitor_key 且与目标逐字节一致；expected 空串一律拒。
+	// 存量空密钥客户由迁移 017_visitor_key_backfill 补签，故收紧顺序为"先迁移、后收口"。
+	if !middleware.CheckVisitorKey(s.c, customer.VisitorKey) {
 		RespErr(s.c, http.StatusForbidden, 403, "访客身份校验失败，请重新进入对话")
 		return true
 	}
@@ -499,6 +511,68 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedLeadCapture(phoneMatchTest string,
 	return true
 }
 
+// chatUnauthorizedSimilarSuppress A2 补齐(2026-09-22 批四)：免登录 C 端链的相似消息抑制。
+//
+// 此前这段"客户连发近似句只答一次"的判定只写在正式链（chat_main），本链完全没有：
+// 同一客户在 2min 内问两句近似的话，正式链合并、本链各答一遍，既吵又让归因样本不可比。
+// 判定本体复用 chatflow.FindSimilarInflightMessage（与正式链同一函数），并沿用 P2-1 纪律：
+// **只在确有在途批次会回答时**才抑制，绝不再出现历史相似句静默丢答。
+//
+// 顺序说明：本链是"先入队后建会话"（与正式链相反），所以这里只做**只读**定位活跃会话，
+// 不调 EnsureActiveConversation——否则新会话被本分支抢先建出，后面 EnsureProcessing 的
+// isNewConversation 变 false，默认流程 StartFlow 就再也不会执行（行为回归）。
+// 定位不到活跃会话即客户首条消息，本就不可能存在相似历史，直接放行。
+func (s *chatUnauthorizedCtx) chatUnauthorizedSimilarSuppress() bool {
+	if service.DefaultMessageQueueService == nil ||
+		!service.DefaultMessageQueueService.HasInflightBatch(s.tenantID, s.customer.ID) {
+		return false
+	}
+	hit, ok := chatflow.FindSimilarInflightMessage(db.RQ(s.c), s.tenantID, s.customer.ID, s.req.Content, true, 0)
+	if !ok {
+		return false
+	}
+	// 留痕消息要挂会话：只读定位该客户当前活跃会话（上面已确认有在途批次，正常都存在）
+	var conv model.Conversation
+	if ferr := db.RQ(s.c).Where("tenant_id = ? AND customer_id = ? AND status = ?",
+		s.tenantID, s.customer.ID, "active").Order("id DESC").First(&conv).Error; ferr != nil {
+		// D5(2026-09-23 批六)：定位不到活跃会话时**不抑制也不写留痕**。
+		// 旧写法把 First 的 error 丢掉，conv 是零值 → 消息以 conversation_id=0 落库，
+		// 既污染"客户消息数"口径（D2 贡献度看板虚增的那类孤儿行），又留下一条永不关联会话的记录。
+		// 本链"先入队后建会话"，此处刻意不调 EnsureActiveConversation（会抢建会话致默认流程不再启动），
+		// 故唯一正确动作是放行：让消息走正常链路，由后面的会话保障落正确的 conversation_id。
+		log.Printf("[相似消息合并] 客户%d 活跃会话定位失败（%v），本次不抑制：留痕消息无处可挂，写孤儿行比多答一句更糟",
+			s.customer.ID, ferr)
+		return false
+	}
+
+	log.Printf("[相似消息合并] 客户%d 当前:%q 与历史:%q 重叠度%.0f%%, 合并为一次回答",
+		s.customer.ID, logx.Safe(s.req.Content, 40), logx.Safe(hit.PastContent, 40), hit.OverlapRate*100)
+
+	suppressedMsg := model.Message{
+		ConversationID: conv.ID,
+		CustomerID:     s.customer.ID,
+		SenderType:     "customer",
+		Content:        s.req.Content,
+		MessageType:    "text",
+		RouteResult:    "merged_suppressed",
+		Emotion:        strategy.DetectEmotion(s.req.Content),
+		CreatedAt:      time.Now(),
+	}
+	db.RQ(s.c).Create(&suppressedMsg)
+	s.c.JSON(http.StatusOK, schema.Response{
+		Code:    0,
+		Message: "success",
+		Data: schema.ChatResponse{
+			ConversationID:    conv.ID,
+			Merged:            true,
+			MergedNote:        "相似消息已合并处理",
+			CustomerMsgID:     suppressedMsg.ID,
+			AssistantMessages: []model.Message{},
+		},
+	})
+	return true
+}
+
 // chatUnauthorizedEnqueue 第三层+第四层：先存客户消息到DB，再 EnqueueAndWait；
 // 简单消息/合并等待命中时直接响应 return true；否则（拿到处理权）填充合并产物后 return false。
 func (s *chatUnauthorizedCtx) chatUnauthorizedEnqueue() bool {
@@ -653,110 +727,94 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedEnsureProcessing() {
 	_ = attribution.MarkHookedBeforeMessage(s.tenantID, conversation.ID, s.testCustomerMsgID)
 }
 
-// chatUnauthorizedHumanTakeover 人工接管模式：顾问超时未回则AI回复，已回则跳过AI；
-// 持处理权早退必须归还批次。命中早退路径时响应并 return true；否则 return false 继续走 AI 生成。
+// chatUnauthorizedHumanTakeover 人工接管模式：裁决统一走 chatflow.HumanTakeoverDecide（A1，
+// 与正式链共用唯一真相实现）；跳过 AI 时补齐留资检测/落库/推送并归还处理权，
+// 命中早退路径 return true，否则 return false 继续走 AI 生成。
 func (s *chatUnauthorizedCtx) chatUnauthorizedHumanTakeover() bool {
 	// 人工接管模式：顾问超时未回则AI回复，已回则跳过AI
 	aiTimeout := runtimecfg.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
-	aiTimeoutDur := time.Duration(aiTimeout) * time.Second
-	aiAutoReply := runtimecfg.DefaultSystemConfigService.GetBool("assigned_lead_ai_auto_reply", true)
-
-	if s.conversation.Mode == "human" && s.conversation.IsHumanLocked {
-		// IsAiReplyEnabled=false → 单人模式，仅顾问回复
-		if !s.conversation.IsAiReplyEnabled {
-			if s.conversation.PendingHandoff && s.conversation.LastHumanReplyAt != nil &&
-				time.Since(*s.conversation.LastHumanReplyAt) >= aiTimeoutDur {
-				// 超时自动重开AI
-				s.conversation.IsAiReplyEnabled = true
-				s.conversation.IsHumanLocked = false
-				s.conversation.Mode = "ai"
-				s.conversation.PendingHandoff = false
-				db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
-					"is_ai_reply_enabled": true,
-					"is_human_locked":     false,
-					"mode":                "ai",
-					"pending_handoff":     false,
-				})
-				log.Printf("[ChatUnauthorized] 会话%d 顾问超时%d秒未回复，自动重开AI回复", s.conversation.ID, aiTimeout)
-				// 继续走正常流程（不return）
-			} else {
-				log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管且AI回复已关闭(IsAiReplyEnabled=false)，跳过AI",
-					s.customer.ID, s.conversation.ID)
-				// 客户消息中包含手机号 → 在此处提前调用留资检测
-				if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
-					s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
-					leadResult := chatflow.DetectLeadCapture(s.req.Content, &s.customer)
-					if leadResult != 0 {
-						log.Printf("[ChatUnauthorized-留资检测-human_locked] 客户 %d 已留资+分配顾问", s.customer.ID)
-						if leadResult > 0 {
-							log.Printf("[ChatUnauthorized-留资检测-OneID] 前端需切换customer_id → %d", leadResult)
-						}
-					}
-				}
-				now := time.Now()
-				s.conversation.LastMessageAt = &now
-				db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
-					Update("last_message_at", now)
-				db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
-				var lockedCustMsg model.Message
-				db.RQ(s.c).First(&lockedCustMsg, s.testCustomerMsgID)
-				if lockedCustMsg.ID > 0 {
-					notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", lockedCustMsg.ID, lockedCustMsg.Content, s.customer.Name, lockedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
-				}
-				s.c.JSON(http.StatusOK, schema.Response{
-					Code:    0,
-					Message: "success",
-					Data: schema.ChatResponse{
-						ConversationID:    s.conversation.ID,
-						AssistantMessages: []model.Message{},
-						RouteResult:       "human_locked_no_ai",
-						Mode:              "human",
-						CustomerMsgID:     s.testCustomerMsgID,
-					},
-				})
-				// 处理权早退必须归还队列锁
-				service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
-				return true
-			}
+	// A1(2026-09-22)：本函数原有的三段判定（单人模式超时重开 / 单人模式静默 / 顾问窗内已回静默）
+	// 已抽到 chatflow.HumanTakeoverDecide，此处只保留"跳过 AI 时怎么应答"的链路副作用。
+	dec := chatflow.HumanTakeoverDecide(&s.conversation)
+	if dec.Action == chatflow.TakeoverAReply {
+		if dec.Reopened {
+			log.Printf("[ChatUnauthorized] 会话%d 顾问超时%d秒未回复，自动重开AI回复", s.conversation.ID, aiTimeout)
+		} else if s.conversation.Mode == "human" && s.conversation.IsHumanLocked {
+			// 顾问未回复或超时，AI自动回复
+			log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，AI自动回复(timeout=%ds)",
+				s.customer.ID, s.conversation.ID, aiTimeout)
 		}
-
-		if s.conversation.IsAiReplyEnabled && aiAutoReply && s.conversation.LastHumanReplyAt != nil {
-			sinceLastReply := time.Since(*s.conversation.LastHumanReplyAt)
-			if sinceLastReply < aiTimeoutDur {
-				log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，顾问%ds内已回复，跳过AI（客户消息已入库顾问秒看）",
-					s.customer.ID, s.conversation.ID, int(sinceLastReply.Seconds()))
-				now := time.Now()
-				s.conversation.LastMessageAt = &now
-				db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
-					Update("last_message_at", now)
-				db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
-				var skipCustMsg model.Message
-				db.RQ(s.c).First(&skipCustMsg, s.testCustomerMsgID)
-				if skipCustMsg.ID > 0 {
-					notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", skipCustMsg.ID, skipCustMsg.Content, s.customer.Name, skipCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
-				}
-
-				s.c.JSON(http.StatusOK, schema.Response{
-					Code:    0,
-					Message: "success",
-					Data: schema.ChatResponse{
-						ConversationID:    s.conversation.ID,
-						AssistantMessages: []model.Message{},
-						RouteResult:       "human_skip_ai",
-						Mode:              "human",
-						CustomerMsgID:     s.testCustomerMsgID,
-					},
-				})
-				// 处理权早退必须归还队列锁
-				service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
-				return true
-			}
-		}
-		// 顾问未回复或超时，AI自动回复
-		log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，AI自动回复(配置=%v timeout=%ds)",
-			s.customer.ID, s.conversation.ID, aiAutoReply, aiTimeout)
+		return false
 	}
-	return false
+
+	if dec.Route == chatflow.RouteHumanLockedNoAI {
+		log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管且AI回复已关闭(IsAiReplyEnabled=false)，跳过AI",
+			s.customer.ID, s.conversation.ID)
+		// 客户消息中包含手机号 → 在此处提前调用留资检测
+		if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
+			s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
+			leadResult := chatflow.DetectLeadCapture(s.req.Content, &s.customer)
+			if leadResult != 0 {
+				log.Printf("[ChatUnauthorized-留资检测-human_locked] 客户 %d 已留资+分配顾问", s.customer.ID)
+				if leadResult > 0 {
+					log.Printf("[ChatUnauthorized-留资检测-OneID] 前端需切换customer_id → %d", leadResult)
+				}
+			}
+		}
+		now := time.Now()
+		s.conversation.LastMessageAt = &now
+		db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
+			Update("last_message_at", now)
+		db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
+		var lockedCustMsg model.Message
+		db.RQ(s.c).First(&lockedCustMsg, s.testCustomerMsgID)
+		if lockedCustMsg.ID > 0 {
+			notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", lockedCustMsg.ID, lockedCustMsg.Content, s.customer.Name, lockedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+		}
+		s.c.JSON(http.StatusOK, schema.Response{
+			Code:    0,
+			Message: "success",
+			Data: schema.ChatResponse{
+				ConversationID:    s.conversation.ID,
+				AssistantMessages: []model.Message{},
+				RouteResult:       chatflow.RouteHumanLockedNoAI,
+				Mode:              "human",
+				CustomerMsgID:     s.testCustomerMsgID,
+			},
+		})
+		// 处理权早退必须归还队列锁
+		service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
+		return true
+	}
+
+	// RouteHumanSkipAI：顾问在超时窗内已回复，AI 不抢答
+	log.Printf("[ChatUnauthorized] 客户%d 会话%d 人工接管，顾问%ds内已回复，跳过AI（客户消息已入库顾问秒看）",
+		s.customer.ID, s.conversation.ID, aiTimeout)
+	now := time.Now()
+	s.conversation.LastMessageAt = &now
+	db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
+		Update("last_message_at", now)
+	db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
+	var skipCustMsg model.Message
+	db.RQ(s.c).First(&skipCustMsg, s.testCustomerMsgID)
+	if skipCustMsg.ID > 0 {
+		notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", skipCustMsg.ID, skipCustMsg.Content, s.customer.Name, skipCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+	}
+
+	s.c.JSON(http.StatusOK, schema.Response{
+		Code:    0,
+		Message: "success",
+		Data: schema.ChatResponse{
+			ConversationID:    s.conversation.ID,
+			AssistantMessages: []model.Message{},
+			RouteResult:       chatflow.RouteHumanSkipAI,
+			Mode:              "human",
+			CustomerMsgID:     s.testCustomerMsgID,
+		},
+	})
+	// 处理权早退必须归还队列锁
+	service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
+	return true
 }
 
 // chatUnauthorizedLeadIntercept 处理权段的硬拦截留资检测（手机号校验+分配顾问）。

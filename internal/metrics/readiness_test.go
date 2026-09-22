@@ -4,6 +4,9 @@ package metrics
 import (
 	"os"
 	"testing"
+
+	"ai-scrm/config"
+	"ai-scrm/internal/redisclient"
 )
 
 func findCheck(checks []HealthCheck, name string) *HealthCheck {
@@ -85,5 +88,38 @@ func TestReadinessReleaseLevels(t *testing.T) {
 	}
 	if os.Getenv("SMTP_HOST") == "" && findCheck(checks, "smtp").Status != StatusWarn {
 		t.Fatalf("SMTP 缺失应 warn")
+	}
+}
+
+// TestReadinessRedisDeclaredButDown O1-a(2026-09-23 批六)：Redis 声明位与连通位对账。
+// 口径：未声明启用=设计内单机（判 OK 只展示）；声明了却连不上=静默降级成单实例语义，
+// release 判 Crit（多副本会双处理/丢广播），debug 由统一降档规则转 Warn。
+func TestReadinessRedisDeclaredButDown(t *testing.T) {
+	t.Cleanup(func() {
+		redisclient.StopSelfHeal()
+		redisclient.Init(config.RedisConfig{Enabled: false}) // 复位声明位，别污染同包其他用例
+	})
+
+	redisclient.Init(config.RedisConfig{Enabled: true, Addr: "127.0.0.1:1"}) // 必然连不上
+	redisclient.StopSelfHeal()                                               // 单测不留后台重探
+	if redisclient.IsEnabled() {
+		t.Skip("本机 127.0.0.1:1 意外可连，跳过降级态断言")
+	}
+
+	SetDeploymentContext(1, true)
+	defer SetDeploymentContext(1, false)
+	c := findCheck(ComputeReadiness(), "redis_declared_but_down")
+	if c == nil {
+		t.Fatalf("readiness 缺 redis_declared_but_down 观测位")
+	}
+	if c.Status != StatusCrit || c.Value != "declared_but_down" {
+		t.Errorf("声明启用却未连通应判 Crit(declared_but_down)，实际 %s/%s", c.Status, c.Value)
+	}
+
+	// 未声明启用：判 OK 且明示单机语义（不得刷红，本地/CI 默认态）
+	redisclient.Init(config.RedisConfig{Enabled: false})
+	c = findCheck(ComputeReadiness(), "redis_declared_but_down")
+	if c.Status != StatusOK || c.Value != "not_declared" {
+		t.Errorf("REDIS_ENABLED=false 应判 OK(not_declared)，实际 %s/%s", c.Status, c.Value)
 	}
 }

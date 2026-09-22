@@ -300,6 +300,29 @@ ALI_FORM_BAD=$(echo "$ALI_FORM_BAD" | sed 's/total_amount=0.01/total_amount=99.0
 H12=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/alipay" \
   -H "Content-Type: application/x-www-form-urlencoded" --data "$ALI_FORM_BAD")
 check "篡改通知金额被拒(403)" 403 "$H12"
+
+# 12.5 M2(2026-09-22 批三)：nonce 消费点必须在**验签之后**——旧顺序下任何人拿一个 notify_id
+# 抢先打一发假签名就能把真通知的槽位占死（真到账永久 409），且验签失败后支付宝重推也永久 409。
+# 断言三态：假签名→403 且**不消费** → 同 notify_id 真签名→正常到账 → 再同 notify_id→409（证明不是"根本不消费"）。
+ALI_NO2="BO${WTAG}A2"
+NID_M2="ni_m2_${WTAG}_$$"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${ALI_NO2}',${WT_ID},${PKG},100,'once','alipay','pending',NOW(),NOW())" >/dev/null
+ALI_M2_PARAMS="{\"app_id\":\"2021smoke\",\"out_trade_no\":\"$ALI_NO2\",\"trade_status\":\"TRADE_SUCCESS\",\"total_amount\":\"0.01\",\"notify_id\":\"$NID_M2\"}"
+# 先用"签 0.01 后改成 99.00"造一次签名不匹配（等价于攻击者的伪造通知）
+ALI_FORGED=$(PRIV_FILE="$WORK/ali_priv.pem" PARAMS="$ALI_M2_PARAMS" node "$WORK/alisign.js" | sed 's/total_amount=0.01/total_amount=99.00/')
+H12M2A=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/alipay" \
+  -H "Content-Type: application/x-www-form-urlencoded" --data "$ALI_FORGED")
+check "M2伪造签名同notify_id→403" 403 "$H12M2A"
+# 真通知（金额与订单一致）用同一 notify_id 重推：必须正常入账，不得被 409 挡在门外
+ALI_REAL=$(PRIV_FILE="$WORK/ali_priv.pem" PARAMS="{\"app_id\":\"2021smoke\",\"out_trade_no\":\"$ALI_NO2\",\"trade_status\":\"TRADE_SUCCESS\",\"total_amount\":\"1.00\",\"notify_id\":\"$NID_M2\"}" node "$WORK/alisign.js")
+R12M2=$(curl -s -X POST "$B/api/v1/billing/webhook/alipay" \
+  -H "Content-Type: application/x-www-form-urlencoded" --data "$ALI_REAL")
+check "M2验签失败后真通知同notify_id仍可入账(code=0)" 0 "$(echo "$R12M2" | jget "d.get('code')")"
+check "M2该单已到账(paid)" paid "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$ALI_NO2'" | tr -d '[:space:]')"
+# 到账后同 notify_id 第三次重推必须 409：证明"归还 nonce"只发生在失败路径，防重放本身没有被一起拆掉
+H12M2C=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/alipay" \
+  -H "Content-Type: application/x-www-form-urlencoded" --data "$ALI_REAL")
+check "M2到账后同notify_id重放仍409(防重放未失守)" 409 "$H12M2C"
 echo "  [cleanup] 一次性租户 $WT_ID 由 trap 级联回收"
 
 echo ""

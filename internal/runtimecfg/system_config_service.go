@@ -8,6 +8,7 @@ import (
 	"log"
 	"math/rand"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -65,6 +66,23 @@ func (s *SystemConfigService) ensureDefaults() {
 		res := db.DB.Where("tenant_id = 0 AND \"key\" IN ?", keys).Delete(&model.SystemConfig{})
 		if res.Error == nil && res.RowsAffected > 0 {
 			retiredDeleted = int(res.RowsAffected)
+		}
+	}
+
+	// 出厂值改版纠偏（2026-09-23 批六）：ensureDefaults 只补"缺失键"，改过的出厂默认值在老库里
+	// 会永久停留旧值，量纲变更时代码按新量纲解读旧数字=静默失效。
+	// 只对"值仍等于旧出厂值"的系统层行动手，运营明确改过的值与租户覆盖层一律不动，
+	// 详见 config_defaults.go 的 retunedConfigValues 注释块。
+	for _, r := range retunedConfigValues {
+		res := db.DB.Model(&model.SystemConfig{}).
+			Where("tenant_id = 0 AND \"key\" = ? AND value = ?", r.Key, r.From).
+			Updates(map[string]any{"value": r.To, "default_value": r.To})
+		if res.Error != nil {
+			log.Printf("[系统配置] 出厂值纠偏失败 key=%s: %v", r.Key, res.Error)
+			continue
+		}
+		if res.RowsAffected > 0 {
+			log.Printf("[系统配置] 出厂值纠偏: key=%s %s→%s（存量旧默认值随量纲变更升级，运营改过的值不受影响）", r.Key, r.From, r.To)
 		}
 	}
 
@@ -140,7 +158,13 @@ func (s *SystemConfigService) ForceResetDefaults() error {
 
 // Reload 从DB重新加载所有配置到内存缓存
 // 每次Admin API更新配置后调用，实现热加载
+// nil 守卫（2026-09-22 G3）：单例未初始化时无内存缓存可刷，直接空转返回。
+// 写方法（BatchUpdate/ResetAll 等）末尾都调本方法，守卫在此即让整条写链不再因 nil 崩；
+// 此时 DB 行仍写成功，进程重启后由 InitSystemConfigService 加载生效。
 func (s *SystemConfigService) Reload() {
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -179,7 +203,11 @@ func (s *SystemConfigService) Reload() {
 
 // GetAll 获取所有配置（含元信息）
 // 返回完整的配置列表，用于Admin API返回
+// nil 守卫（2026-09-22 G3）：单例未初始化时返回空列表而非 panic
 func (s *SystemConfigService) GetAll() []model.SystemConfig {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -193,6 +221,9 @@ func (s *SystemConfigService) GetAll() []model.SystemConfig {
 // category: reply_speed / strategy / mental_stage / ai_chain
 // GetByCategory 按分类返回当前生效的系统配置项。
 func (s *SystemConfigService) GetByCategory(category string) []model.SystemConfig {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -208,6 +239,9 @@ func (s *SystemConfigService) GetByCategory(category string) []model.SystemConfi
 // GetByKey 按key获取单个配置
 // 返回配置对象指针，未找到返回nil
 func (s *SystemConfigService) GetByKey(key string) *model.SystemConfig {
+	if s == nil {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -236,7 +270,11 @@ func (s *SystemConfigService) GetByKey(key string) *model.SystemConfig {
 // ============================================================
 
 // lookupTenant 解析租户生效值：租户覆盖层 → 系统默认层
+// nil 守卫（2026-09-22 G3）：四个 GetXxxForTenant 都经此出口，守卫加在这里即全覆盖
 func (s *SystemConfigService) lookupTenant(tenantID uint, key string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if tenantID > 0 {
@@ -248,6 +286,34 @@ func (s *SystemConfigService) lookupTenant(tenantID uint, key string) (string, b
 	}
 	v, ok := s.cache[key]
 	return v, ok
+}
+
+// AnyTenantFlagOn 是否有**任一租户覆盖层**把该布尔键置为 true（系统默认层不参与判定）。
+//
+// 为什么需要它：后台周期任务的入口写法是"全局开关关 → 本轮零查询"（默认态必须真的零成本）。
+// 但这些开关允许租户自开，入口若只看系统层就会出现"租户在后台开了、作业永远不转"——
+// 与 email_verify_enabled 当年"写租户层读系统层永远看不到变更"是同一类静默失效。
+// 实现是纯内存扫描（Reload 时已分好层），零 DB、每轮入口廉价调用。
+func (s *SystemConfigService) AnyTenantFlagOn(key string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, tm := range s.tenantCache {
+		if v, ok := tm[key]; ok && parseBoolLiteral(v) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseBoolLiteral 宽松解析存量布尔值：JSON 形态 true / "true" 都算真。
+// 历史上裸串与带引号串都写过库（见 normalizeConfigValue 的 P2-55 说明），判定时两种都要认。
+func parseBoolLiteral(v string) bool {
+	v = strings.TrimSpace(v)
+	v = strings.Trim(v, `"`)
+	return strings.EqualFold(v, "true")
 }
 
 // GetIntForTenant 租户级 int 配置
@@ -366,6 +432,12 @@ func SafeCfgBool(key string, defaultValue bool) bool {
 	return DefaultSystemConfigService.GetBool(key, defaultValue)
 }
 
+// SafeAnyTenantFlagOn 安全版"任一租户已开"探测（单例未初始化=没有任何租户覆盖，返回 false）。
+// 供后台任务入口使用：系统层总闸关着、但某租户自己开了，任务仍需进入并按租户逐个判定。
+func SafeAnyTenantFlagOn(key string) bool {
+	return DefaultSystemConfigService.AnyTenantFlagOn(key)
+}
+
 // SafeCfgInt 安全读 int 配置（P2-52）
 func SafeCfgInt(key string, defaultValue int) int {
 	if DefaultSystemConfigService == nil {
@@ -400,6 +472,9 @@ func SafeCfgIntSlice(key string, defaultValue []int) []int {
 
 // GetFloat 获取 float 配置值（key 不存在回退默认值）
 func (s *SystemConfigService) GetFloat(key string, defaultValue float64) float64 {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -419,6 +494,9 @@ func (s *SystemConfigService) GetFloat(key string, defaultValue float64) float64
 // key: 配置键名，如 "theta_rounds"
 // defaultValue: key不存在时的兜底值
 func (s *SystemConfigService) GetInt(key string, defaultValue int) int {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -439,6 +517,9 @@ func (s *SystemConfigService) GetInt(key string, defaultValue int) int {
 // key: 配置键名，如 "mock_mode"
 // defaultValue: key不存在时的兜底值
 func (s *SystemConfigService) GetBool(key string, defaultValue bool) bool {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -458,6 +539,9 @@ func (s *SystemConfigService) GetBool(key string, defaultValue bool) bool {
 // key: 配置键名
 // defaultValue: key不存在时的兜底值
 func (s *SystemConfigService) GetString(key string, defaultValue string) string {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -477,6 +561,9 @@ func (s *SystemConfigService) GetString(key string, defaultValue string) string 
 // key: 配置键名，如 "l3_simple_delay"
 // defaultValue: key不存在时的兜底值
 func (s *SystemConfigService) GetIntSlice(key string, defaultValue []int) []int {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -508,6 +595,9 @@ func (s *SystemConfigService) GetIntSlice(key string, defaultValue []int) []int 
 // key: 配置键名，如 "model_priority"
 // defaultValue: key不存在时的兜底值
 func (s *SystemConfigService) GetStringSlice(key string, defaultValue []string) []string {
+	if s == nil {
+		return defaultValue
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()
@@ -528,6 +618,10 @@ func (s *SystemConfigService) GetStringSlice(key string, defaultValue []string) 
 // 用法：var weights []AnchorWeight; svc.GetJSON("anchor_weights", &weights)
 // 修复：锚权重等复杂配置从硬编码→后台可调，需要通用JSON读取能力
 func (s *SystemConfigService) GetJSON(key string, target interface{}) bool {
+	if s == nil {
+		// 未初始化视为"读不到该键"，调用方走自身兜底（与 !exists 同语义）
+		return false
+	}
 	s.mu.RLock()
 	val, exists := s.cache[key]
 	s.mu.RUnlock()

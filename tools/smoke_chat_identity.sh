@@ -4,6 +4,8 @@
 # 覆盖：正确 VK→200 / 错误 VK→403 / 匿名无 VK→403 / A 的 VK 访问 B→403 /
 #       登录态数据范围门禁（sales 访问他人客户→403，P1-15）/ 超管全量可读 /
 #       /chat/clear-delay 身份闸四路矩阵+跨租户404（2026-09-18 浏览器实测批护栏，ace130d）
+#       / 空VK通道客户四路矩阵（批一 P1-1）/ 人工锁定态"判定即落库"端到端 2 断言
+#         （8.10，批四 A1：超时解除必须写回 conversations 四列，窗内不得抢答——原缺陷是只改内存永不落库）
 # 契约同步说明（旧脚本 1/6 全灭根因）：
 #   - /chat/test 升级后强制 visitor_key（A1-A4 契约收口），旧脚本裸调 → 客户根本没建成，
 #     后续全部拿 customer_id='' 打出 400。现改经 /chat/guest 建客户（响应信封 data.*）。
@@ -142,6 +144,40 @@ if [ -n "$CID_NVK" ]; then
   CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/chat/request-human" -H "Authorization: Bearer $ST" -H "Content-Type: application/json" -d "{\"customer_id\":$CID_NVK}")
   check "空VK客户登录态request-human→403(C端专用口径)" 403 "$CODE"
   $PSQL "DELETE FROM customers WHERE id=$CID_NVK" >/dev/null 2>&1
+fi
+
+# ---- 8.10 人工锁定态「判定即落库」端到端（A1 实装 2026-09-22 批四，本批唯一 HTTP 级证据）----
+# 原缺陷：正式链在 CheckHumanTimeout 之后只把 Mode/IsHumanLocked 改在**内存**里、请求结束即丢，
+# 于是超时分支既重开不了 AI、也永不再进锁定判定——客户被卡在无人应答的会话里，接口全程 200、日志全绿。
+# 单侧静态守卫（chat_takeover_guard_test.go）锁住了"必须委托 chatflow.HumanTakeoverDecide"，
+# 但"判定结果真的写回 conversations 表"这一步只有打真链路 + 查真库才能证明，故立此段。
+# 口径：assigned_lead_ai_timeout 默认 300s，用"把 last_human_reply_at 往前推 400s"造超时，不改全局热配
+# （本仓 E2E 惯例：不动全局开关就不存在"改完忘恢复"的互踩风险）。
+CONV_A=$($PSQL "SELECT id FROM conversations WHERE tenant_id=1 AND customer_id=$CID_A AND status='active' ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+if [ -n "$CONV_A" ]; then
+  # (a) 锁定 + 单人模式 + 顾问 400 秒前最后回复（已过 300s 窗）→ 本轮必须解除锁定并落库
+  $PSQL "UPDATE conversations SET mode='human', is_human_locked=true, is_ai_reply_enabled=false,
+         pending_handoff=true, last_human_reply_at=now()-interval '400 seconds', updated_at=now() WHERE id=$CONV_A" >/dev/null 2>&1
+  curl -s -o /dev/null --max-time 120 -X POST "$B/api/v1/chat/unauthorized?visitor_key=$VK_A" -H "X-Tenant-ID: 1" \
+    -H "Content-Type: application/json" -d "{\"customer_id\":$CID_A,\"content\":\"A1 锁定态超时重开断言\"}"
+  A10_REOPEN=$($PSQL "SELECT (mode='ai' AND is_human_locked=false AND is_ai_reply_enabled=true AND pending_handoff=false)::text FROM conversations WHERE id=$CONV_A" | tr -d '[:space:]')
+  [ "$A10_REOPEN" = "true" ] && check "锁定超时后接管四列已落库解除(原缺陷复现点)" y y || check "锁定超时后接管四列已落库解除(原缺陷复现点)" true "$A10_REOPEN"
+
+  # (b) 锁定 + 单人模式 + 顾问刚刚回复（窗内）→ AI 不得抢答，锁定态必须原样保留
+  $PSQL "UPDATE conversations SET mode='human', is_human_locked=true, is_ai_reply_enabled=false,
+         pending_handoff=true, last_human_reply_at=now(), updated_at=now() WHERE id=$CONV_A" >/dev/null 2>&1
+  curl -s -o /dev/null --max-time 120 -X POST "$B/api/v1/chat/unauthorized?visitor_key=$VK_A" -H "X-Tenant-ID: 1" \
+    -H "Content-Type: application/json" -d "{\"customer_id\":$CID_A,\"content\":\"A1 窗内不抢答断言\"}"
+  A10_HOLD=$($PSQL "SELECT (mode='human' AND is_human_locked=true AND is_ai_reply_enabled=false)::text FROM conversations WHERE id=$CONV_A" | tr -d '[:space:]')
+  [ "$A10_HOLD" = "true" ] && check "顾问窗内回复时锁定态保持(不越权抢答)" y y || check "顾问窗内回复时锁定态保持(不越权抢答)" true "$A10_HOLD"
+
+  # 现场恢复：这条会话回到 AI 态，避免残留锁定态污染后续脚本对同一客户的判定
+  $PSQL "UPDATE conversations SET mode='ai', is_human_locked=false, is_ai_reply_enabled=true,
+         pending_handoff=false WHERE id=$CONV_A" >/dev/null 2>&1
+else
+  # 前置 §2 的 /chat/test 必然经 EnsureActiveConversation 建过活跃会话；查无会话说明入口链路已断，
+  # 这里**判红而不是跳过**——静默 SKIP 会让这段护栏在链路坏掉时永远"绿"。
+  check "A 存在活跃会话(§8.10 前置)" y n
 fi
 
 # ---- 9. 清理：停用测试客户（数据保留供核查，对齐惯例）----

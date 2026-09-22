@@ -18,6 +18,29 @@ var retiredConfigKeys = map[string]bool{
 	"off_work_multiplier": true, "weekend_multiplier": true,
 }
 
+// configRetune 一条"出厂值改版"纠偏记录：Key 当前值仍等于 From（=旧出厂值）时改写为 To。
+type configRetune struct {
+	Key  string
+	From string // 旧出厂值（DB 里存量行的样子）
+	To   string // 新技术出厂值，必须与 DefaultConfigs 里该键的 Value 一致（有单测钉住）
+}
+
+// retunedConfigValues 出厂默认值改版后的存量纠偏表（2026-09-23 批六，量纲变更专项）。
+//
+// 为什么需要这一段：ensureDefaults 的语义是"键缺失才插入、存在即不动"——它保护运营手动
+// 改过的值，代价是**代码里的出厂值改了，老库读到的仍是旧值**。本批把 L2 自动调权的两个键
+// 从"比例量纲"（step=0.2、max=3）换成"百分点量纲"（step=10、max=100，与 templates.ab_weight
+// 的 0~100 分流权重同量纲）。老库不纠偏的后果：step=0.2 经 SafeCfgInt 解析失败会回落代码
+// 默认 10（恰好无害），但 max=3 会被当成"权重上限 3 百分点"当真——自动晋升顶两轮就撞顶，
+// 此后永远不再调权，**静默失效比报错更难发现**（开关是开的、日志是绿的、数字不动）。
+//
+// 纪律：只改"值仍等于旧出厂值"的行（运营明确改过的绝不覆盖），只作用于系统层 tenant_id=0
+// （租户覆盖层是租户自己的决定），且 To 必须等于当前出厂默认（单测钉住，防改一处漏一处）。
+var retunedConfigValues = []configRetune{
+	{Key: "experiment_weight_step", From: "0.2", To: "10"},
+	{Key: "experiment_weight_max", From: "3", To: "100"},
+}
+
 // ============================================================
 // 默认配置定义
 // 当DB中无数据时，使用这些默认值初始化
@@ -188,6 +211,42 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "notify", Key: "register_ip_daily_limit", Value: "3", ValueType: "number", Description: "同IP每日注册租户上限(0=不限)", DefaultValue: "3", SortOrder: 6},
 	{Category: "notify", Key: "register_ip_min_interval_sec", Value: "60", ValueType: "number", Description: "同IP两次注册最小间隔秒(0=不限)", DefaultValue: "60", SortOrder: 7},
 	{Category: "notify", Key: "registration_review", Value: "false", ValueType: "bool", Description: "注册审核开关(true=新租户待审核不发试用包,超管grant-trial放行)", DefaultValue: "false", SortOrder: 8},
+
+	// ---- AI 销售闭环（PLAN_FIX_2026-09-22 批五，2026-09-23 新增）----
+	// 设计口径完全对齐 kb_rerank 惯例：默认关 + 全路径 fail-open（无样本/无开关/异常一律退回
+	// 原静态规则分），因此播种默认值必须是"零行为变化"的一侧。
+	// 终局标签窗口：销售是周级因果，回填窗口不足会把"还没到店"错标成"没成"，故给 30 天。
+	{Category: "strategy", Key: "outcome_window_days", Value: "30", ValueType: "number", Description: "归因终局标签(到店/成交)回填观察窗口天数,窗口内归因行不判为失败", DefaultValue: "30", SortOrder: 40},
+	// 择臂层三键：enabled 总开关 / mode 采样策略 / min_samples 冷启动门槛（不足即退规则）
+	{Category: "strategy", Key: "template_bandit_enabled", Value: "false", ValueType: "bool", Description: "Step4 模板择臂层开关(false=静态Priority规则召回,默认关)", DefaultValue: "false", SortOrder: 41},
+	{Category: "strategy", Key: "template_bandit_mode", Value: "\"ucb\"", ValueType: "string", Description: "择臂策略:ucb=置信上界(确定性,可复现)|thompson=Beta后验采样", DefaultValue: "\"ucb\"", SortOrder: 42},
+	{Category: "strategy", Key: "template_bandit_min_samples", Value: "50", ValueType: "number", Description: "择臂启用的最小样本数(pack_stats.sample_count低于此值退规则分)", DefaultValue: "50", SortOrder: 43},
+	// 判优层：奖励指标只允许用终局三选一（arrive/deal/lead）——intent_after/eval_score 是策略自身
+	// 输出，用作奖励即 reward hacking（策略学会"说让规则加分的话"）。门槛按指标分别定：
+	// 留资率 5%→7% 需 ≈2200/组，接钩率 30%→35% 需 ≈1400/组，故 hook 用小门槛、lead/arrive 用大门槛。
+	{Category: "strategy", Key: "experiment_reward_metric", Value: "\"lead\"", ValueType: "string", Description: "实验择优奖励指标:lead=留资率|arrive=到店率|deal=成交率(禁用intent/eval,防reward hacking)", DefaultValue: "\"lead\"", SortOrder: 44},
+	{Category: "strategy", Key: "experiment_min_samples_lead", Value: "2200", ValueType: "number", Description: "稀疏指标(留资/到店/成交)判优最小样本/组,不足即输出继续观察", DefaultValue: "2200", SortOrder: 45},
+	{Category: "strategy", Key: "experiment_min_samples_hook", Value: "400", ValueType: "number", Description: "稠密指标(接钩率)判优最小样本/组", DefaultValue: "400", SortOrder: 46},
+	{Category: "strategy", Key: "experiment_confidence", Value: "0.95", ValueType: "number", Description: "实验判优置信度(Beta后验P(B>A)或双侧检验阈值)", DefaultValue: "0.95", SortOrder: 47},
+	// L2 自动调权：默认关，开则胜出组 ab_weight 按步长上调（带上限与冷却），人工一键回滚
+	{Category: "strategy", Key: "experiment_auto_promote", Value: "false", ValueType: "bool", Description: "L2自动调权开关(false=只出建议卡片,人工确认才写权重)", DefaultValue: "false", SortOrder: 48},
+	{Category: "strategy", Key: "experiment_weight_step", Value: "10", ValueType: "number", Description: "自动晋升时 ab_weight 单次上调步长(整数百分点,与 0~100 分流权重同量纲;带上限 experiment_weight_max)", DefaultValue: "10", SortOrder: 49},
+	{Category: "strategy", Key: "experiment_weight_max", Value: "100", ValueType: "number", Description: "模板 ab_weight 自动上调上限(百分点,最大 100=该模板独占分流)", DefaultValue: "100", SortOrder: 50},
+	// 冷却锚点是"该模板上一次 pack_experiment_promote 审计时刻"。为什么非要有：小时任务×步长10
+	// 若无冷却，一条 leading 话术 10 天内就会被顶到 100 独占分流——而它的领先样本可能是一周前的
+	// 行情。冷却把"自动"限制在"每周期最多挪一格"，给人工复核留出时间窗。
+	{Category: "strategy", Key: "experiment_promote_cooldown_hours", Value: "72", ValueType: "number", Description: "同一模板两次自动晋升的最小间隔(小时),不足即 blocked_reason=cooldown 跳过", DefaultValue: "72", SortOrder: 55},
+	// ---- 销售路径机（A4 实装 2026-09-23，engine/flow 节点=旅程阶段/边=转化条件）----
+	// 惯例同 kb_rerank/template_bandit：默认关 + 全路径 fail-open（关闭/查库错/阶段未知/超时
+	// 一律退回现状链路，输出逐字节等价）；租户级可覆盖（各家销售节奏不同，读取走 GetXxxForTenant）。
+	{Category: "strategy", Key: "sales_path_enabled", Value: "false", ValueType: "bool", Description: "销售路径机开关(true=每轮按客户旅程阶段+转化信号评估下一阶段与下一步动作并注入回复prompt,默认关零行为变化)", DefaultValue: "false", SortOrder: 51},
+	{Category: "strategy", Key: "sales_path_hook_days", Value: "30", ValueType: "number", Description: "销售路径机接钩动能窗口(天):窗口内reply_attributions有hooked=true即标记推进动能加大", DefaultValue: "30", SortOrder: 52},
+	// ---- 金牌顾问话术挖掘出稿（批五 D 作业接线 2026-09-23）----
+	// 默认关：出稿会调 LLM（烧真实 token）且产物要人审，未点头前不该自动跑。
+	{Category: "strategy", Key: "talkmining_draft_enabled", Value: "false", ValueType: "bool", Description: "顾问话术挖掘出稿作业开关(true=每日聚簇高转人工回复并生成模板草稿status=2,默认关)", DefaultValue: "false", SortOrder: 53},
+	{Category: "strategy", Key: "talkmining_window_days", Value: "30", ValueType: "number", Description: "话术挖掘回溯窗口(天):只挖窗口内的顾问人工回复", DefaultValue: "30", SortOrder: 54},
+	{Category: "strategy", Key: "talkmining_max_drafts_per_run", Value: "20", ValueType: "number", Description: "单租户单轮最多出稿数(防人审队列被一次性灌满)", DefaultValue: "20", SortOrder: 57},
+	{Category: "strategy", Key: "talkmining_min_samples", Value: "5", ValueType: "number", Description: "出候选簇的最小去重客户样本数(不足即只统计不出稿)", DefaultValue: "5", SortOrder: 56},
 }
 
 // PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）
@@ -239,6 +298,7 @@ var PlatformLevelKeys = map[string]bool{
 	"pay_alipay_public_key":            true,
 	"pay_alipay_notify_url":            true,
 	"pay_alipay_seller_id":             true, // P0-1复核批(2026-09-15)：回调核对商户归属(平台级)——租户可改它等于伪造全站到账核对
+	"outcome_window_days":              true, // 批五A(2026-09-23)：终局标签观察窗在 BackfillOutcomes 里算成**一条全局 cutoff** 进 SQL（跨租户一趟扫），做不到按租户分窗；键留全局读，故必须归平台级，否则租户管理员改了不生效（静默失效同 email_verify_enabled）
 	"contentsafety_enabled":            true, // C1(2026-09-12)：内容安全闸门总开关(平台级，租户不可各自关闭合规)
 	"contentsafety_mode":               true, // C1：shadow|enforce 模式(平台级统一灰度节奏)
 	"evals_pack_alert_enabled":         true, // D9(2026-09-13)：包质量低分告警开关(平台级统一触达)

@@ -25,16 +25,20 @@ import (
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
+	"ai-scrm/internal/strategytypes"
 )
 
 // OrchestrateReply 编排层统一话术入口（业务层唯一合法的大脑调用通道）
 // 职责：解析 OneID → 刷新状态表心跳（真实活动）→ 拉 CDP 标签摘要注入决策上下文
 //
-//	→ 单线调用策略引擎生成话术 → 返回
+//	→ 销售路径机每轮评估（A4 实装 2026-09-23，默认关）→ 单线调用策略引擎生成话术 → 返回
 //
 // ctx（E3，2026-09-19）：trace-only context，原样下传 strategy.GenerateReply（红线链路不变）。
+// ctx（A4）：路径机决策经 strategytypes.WithSalesPath 挂同一 ctx 下传，llm 组 prompt 时消费；
+// 开关关闭/评估失败时 ctx 不被装饰，输出与现状逐字节等价。
 func (e *Engine) OrchestrateReply(ctx context.Context, customer *model.Customer, conversationID uint, userInput string, out *strategy.StrategyOutput, deptIDs []uint) string {
 	tid := customer.TenantID
 	oneID := cdp.ResolveOneID(tid, customer.ID)
@@ -50,8 +54,44 @@ func (e *Engine) OrchestrateReply(ctx context.Context, customer *model.Customer,
 		log.Printf("[编排] decision_context 注入CDP标签 one=%s tags=%v", oneID, tags)
 	}
 
-	// 3. 单线调用策略引擎（大脑被动被编排层调用）
+	// 3. 销售路径机（A4 实装 2026-09-23）：每轮评估「当前阶段→目标转化→下一步动作」。
+	//    热开关 sales_path_enabled 默认关——关闭时在起协程之前就短路返回 nil，零查询零装饰；
+	//    开启后同样受 200ms 预算约束（同标签摘要的降级语义），绝不让路径机拖垮回复。
+	if decision := fetchSalesPath(tid, customer); decision != nil {
+		ctx = strategytypes.WithSalesPath(ctx, decision)
+		log.Printf("[销售路径] 每轮消费 customer=%d %s(%s)→%s 信号=%s 接钩动能=%v",
+			customer.ID, decision.CurrentStage, decision.CurrentStageName,
+			decision.TargetStage, decision.ConversionSignal, decision.HookedRecently)
+	}
+
+	// 4. 单线调用策略引擎（大脑被动被编排层调用）
 	return strategy.GenerateReply(ctx, customer, conversationID, userInput, out, deptIDs)
+}
+
+// fetchSalesPath 带 200ms 预算评估销售路径机（独立 goroutine + select 兜底，
+// 写法对齐 fetchTagSummary：超时/panic 一律降级 nil＝本轮不注入，回复链路照常）。
+func fetchSalesPath(tenantID uint, customer *model.Customer) (decision *strategytypes.SalesPathDecision) {
+	// 开关前置短路：默认关闭时不产生任何 DB 查询与协程开销
+	if !runtimecfg.DefaultSystemConfigService.GetBoolForTenant(tenantID, "sales_path_enabled", false) {
+		return nil
+	}
+	ch := make(chan *strategytypes.SalesPathDecision, 1)
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[销售路径] 评估 panic(fail-open 回现状): %v", r)
+				ch <- nil
+			}
+		}()
+		ch <- EvaluateSalesPath(customer)
+	}()
+	select {
+	case d := <-ch:
+		return d
+	case <-time.After(200 * time.Millisecond):
+		log.Printf("[销售路径] 评估超时(>200ms)，本轮降级不注入 customer=%d", customer.ID)
+		return nil
+	}
 }
 
 // fetchTagSummary 带 200ms 超时拉取标签摘要（独立 goroutine + select 兜底）

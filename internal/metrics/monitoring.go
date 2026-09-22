@@ -147,6 +147,10 @@ func ComputeHealth() HealthSnapshot {
 		monitorCfgInt("monitor_goroutine_warn", 1000), monitorCfgInt("monitor_goroutine_crit", 3000),
 		"运行时 goroutine 数"))
 
+	// 5. 数据层卫生（D5 批六，2026-09-23）：孤儿消息行数 + 归档前瞻积压。
+	// 放在汇总循环之前，让两项天然参与 HasWarn/HasCrit 判定（本项设计上只到 warn）。
+	snap.Checks = append(snap.Checks, hygieneChecks()...)
+
 	for _, c := range snap.Checks {
 		if c.Status == StatusCrit {
 			snap.HasCrit = true

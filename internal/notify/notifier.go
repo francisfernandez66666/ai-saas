@@ -187,6 +187,28 @@ func base64Std(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
 }
 
+// smtpConfigured 判断 SMTP 是否真的可用（Host+User 齐备）。
+// 抽出来的原因：通道"配置值"与"实际生效值"可能不一致——smtp 配了但环境变量缺失会降级 log，
+// 前端文案与身份校验必须按实际生效值走，否则会对用户承诺"邮件已发送"而码其实只落在日志里（S2）。
+func smtpConfigured() bool {
+	s := NewSMTPSenderFromEnv()
+	return s.Host != "" && s.User != ""
+}
+
+// ResetSenderKind 返回**实际生效**的重置码通道："smtp" 或 "log"（S2，2026-09-23）。
+// 与直接读配置的区别：配置写 smtp 但 SMTP 环境变量缺失时，DefaultResetSender 会降级 log，
+// 本函数如实报 log——调用方据此决定文案与"是否需要 contact 自证"。
+func ResetSenderKind() string {
+	channel := "log"
+	if runtimecfg.DefaultSystemConfigService != nil {
+		channel = runtimecfg.DefaultSystemConfigService.GetString("reset_code_channel", "log")
+	}
+	if channel == "smtp" && smtpConfigured() {
+		return "smtp"
+	}
+	return "log"
+}
+
 // DefaultResetSender 当前生效的发送通道（按 reset_code_channel 配置解析）
 func DefaultResetSender() ResetCodeSender {
 	channel := "log"

@@ -98,6 +98,8 @@ type strategyRecommendRequest struct {
 // 返回销售的核心指标：跟进中/已到店/已试驾/已报价等
 // ============================================================
 // GetAdvisorStats 返回顾问工作台核心统计。
+// apidump:ts AdvisorStatItem[]
+// 顾问工作台指标卡（label/value/color）。
 func GetAdvisorStats(c *gin.Context) {
 	// user_id参数：指定顾问ID，只统计分配给该顾问的客户
 	userIDStr := c.Query("user_id")
@@ -181,6 +183,8 @@ func GetAdvisorStats(c *gin.Context) {
 // 场景：顾问忙碌时关闭AI回复，空闲或下班时打开AI接住客户
 // ============================================================
 // ToggleAiReply 切换顾问会话的 AI 自动回复开关。
+// apidump:ts AiReplyToggle
+// 切换结果三字段（is_ai_reply_enabled/mode/is_human_locked），非整行会话。
 func ToggleAiReply(c *gin.Context) {
 	var req struct {
 		ConversationID uint  `json:"conversation_id" binding:"required"`
@@ -258,6 +262,8 @@ type createTestDriveRequest struct {
 }
 
 // CreateTestDrive POST /api/v1/advisor/test-drive 创建试驾单
+// apidump:ts TestDriveRow
+// 创建成功回整行试驾单。
 func CreateTestDrive(c *gin.Context) {
 	var req createTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -311,6 +317,8 @@ func CreateTestDrive(c *gin.Context) {
 }
 
 // GetTestDrives GET /api/v1/advisor/test-drives 试驾单列表（按客户筛选）
+// apidump:ts TestDriveRow[]
+// 试驾单列表（按预约时间倒序）。
 func GetTestDrives(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Query("customer_id"))
 	status := c.Query("status")
@@ -339,6 +347,8 @@ func GetTestDrives(c *gin.Context) {
 }
 
 // GetTestDrive GET /api/v1/advisor/test-drive/:id 试驾单详情
+// apidump:ts TestDriveRow
+// 单条试驾单。
 func GetTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
@@ -376,6 +386,8 @@ type updateTestDriveRequest struct {
 }
 
 // UpdateTestDrive PUT /api/v1/advisor/test-drive/:id 更新试驾单（状态流转）
+// apidump:ts TestDriveRow
+// 更新成功回整行试驾单。
 func UpdateTestDrive(c *gin.Context) {
 	id := c.Param("id")
 	var td model.TestDrive
@@ -506,6 +518,8 @@ func canOperateCustomer(c *gin.Context, assignedUserID uint) bool {
 }
 
 // GetAdvisorCustomers GET /api/v1/advisor/customers 工作台客户列表（按角色数据范围裁剪）
+// apidump:ts Paginated<AdvisorCustomerRow>
+// 顾问客户列表：model.Customer 展开 + last_message/conv_mode/lead_status 等附加列。
 func GetAdvisorCustomers(c *gin.Context) {
 	var req advisorCustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -737,6 +751,8 @@ func GetAdvisorCustomerDetail(c *gin.Context) {
 // 覆盖更新客户标签（传入完整标签列表）
 // ============================================================
 // EditCustomerTags 编辑客户标签。
+// apidump:ts CustomerTagRow[]
+// 覆盖式打标后回传的最终标签关联。
 func EditCustomerTags(c *gin.Context) {
 	id := c.Param("id")
 
@@ -777,6 +793,8 @@ func EditCustomerTags(c *gin.Context) {
 // 更新客户基本信息（姓名、手机号、兴趣车型等）
 // ============================================================
 // EditCustomerInfo 编辑客户资料。
+// apidump:ts Customer
+// 资料更新后回整行客户。
 func EditCustomerInfo(c *gin.Context) {
 	id := c.Param("id")
 
@@ -836,7 +854,28 @@ func EditCustomerInfo(c *gin.Context) {
 	tVector := customer.GetTVector()
 	customer.SaveTVector(tVector)
 
-	db.RQ(c).Save(&customer)
+	// 字段级更新，不用整行 Save（2026-09-23 批六收口，与 admin 侧 EditCustomerInfo 同修法）：
+	// 顾问在工作台打开资料面板到提交的这段窗口里，聊天链路正在实时写 intent_score /
+	// trust_level / assignment_reason / journey_sub_stage，整行 Save 会用打开那一刻的
+	// 快照把这些列覆回去（AI 刚判出的意向变化静默消失，且没有任何日志）。
+	// 这里只写资料表单真正拥有的列；journey_stage 例外——它是本表单的可选字段（顾问手改阶段）。
+	if err := db.RQ(c).Model(&model.Customer{}).Where("id = ?", id).Updates(map[string]any{
+		"name":           customer.Name,
+		"phone":          customer.Phone,
+		"gender":         customer.Gender,
+		"age":            customer.Age,
+		"region":         customer.Region,
+		"city":           customer.City,
+		"career":         customer.Career,
+		"interest_model": customer.InterestProduct, // 泛行业化后 Go 字段改名，列名沿用旧名
+		"budget":         customer.Budget,
+		"remark":         customer.Remark,
+		"journey_stage":  customer.JourneyStage,
+		"t_vector":       customer.TVectorJSON,
+	}).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "客户信息更新失败")
+		return
+	}
 
 	RespOK(c, "客户信息更新成功", customer)
 }
@@ -853,6 +892,8 @@ type updateStageRequest struct {
 }
 
 // UpdateCustomerStage PUT /api/v1/advisor/customer/:id/stage 修改到店子状态（已到店/已试驾/已报价）
+// apidump:ts Customer
+// 阶段推进后回整行客户。
 func UpdateCustomerStage(c *gin.Context) {
 	id := c.Param("id")
 
@@ -948,6 +989,8 @@ func UpdateCustomerStage(c *gin.Context) {
 // 创建一条跟进记录，并设置下次跟进时间
 // ============================================================
 // CreateFollowup 创建客户跟进记录。
+// apidump:ts FollowUpRow
+// 新建跟进记录整行。
 func CreateFollowup(c *gin.Context) {
 	id := c.Param("id")
 	customerID, _ := strconv.Atoi(id)
@@ -1007,6 +1050,8 @@ func CreateFollowup(c *gin.Context) {
 // 返回待跟进列表，支持按日期筛选
 // ============================================================
 // GetFollowups 返回客户跟进列表。
+// apidump:ts FollowUpRow[]
+// 指定顾问/日期的跟进记录。
 func GetFollowups(c *gin.Context) {
 	userID, _ := strconv.Atoi(c.Query("user_id"))
 	dateStr := c.Query("date") // 格式：2006-01-02，默认今天
@@ -1571,6 +1616,8 @@ func GetChatHistory(c *gin.Context) {
 // 返回所有role=sales的用户列表(id, real_name, username)
 // ============================================================
 // GetAdvisorList 返回可分配顾问列表。
+// apidump:ts AdvisorRef[]
+// 顾问下拉列表（id/real_name/username）。
 func GetAdvisorList(c *gin.Context) {
 	var users []model.User
 	// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。

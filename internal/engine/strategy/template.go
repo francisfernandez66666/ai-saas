@@ -30,14 +30,15 @@ type RecalledTemplate struct {
 }
 
 // Step4_RecallTemplate 话术模板召回
-// 输入：选定的锚类型、客户标签、客户T向量、客户ID（E4 实验分桶用，0=无法分桶退确定性最高分）
+// 输入：选定的锚类型、客户标签、客户T向量、客户ID（E4 实验分桶用，0=无法分桶退确定性最高分）、
+// 租户ID（批五 B 择臂层用：pack_stats 后验按租户读取，0=无租户语境只走规则分）
 // 输出：最佳匹配的话术模板
 //
 // 召回逻辑：
 //  1. 先按锚类型过滤
 //  2. 再按标签匹配度排序
 //  3. 再按适用条件（意向分范围、车型等）过滤
-//  4. 取综合得分最高的
+//  4. 择臂层重排（template_bandit_enabled，默认关→纯规则）后取最高
 //  5. E4：最高分若落在实验组（ab_group 非空）且组内有并列 variant，
 //     按 fnv32(customerID|ab_group) % 权重和 稳定分桶择一（同一客户恒定同组）
 func Step4_RecallTemplate(
@@ -46,6 +47,7 @@ func Step4_RecallTemplate(
 	tVector [32]float64,
 	templates []model.Template,
 	customerID uint,
+	tenantID uint,
 ) (*model.Template, float64) {
 
 	// 候选模板列表
@@ -106,13 +108,11 @@ func Step4_RecallTemplate(
 		return nil, 0
 	}
 
-	// 按匹配度排序，取最高的
-	best := candidates[0]
-	for _, c := range candidates[1:] {
-		if c.MatchScore > best.MatchScore {
-			best = c
-		}
-	}
+	// 按匹配度排序，取最高的——"取最高"之前插入批五 B 择臂层（bandit.go）：
+	// template_bandit_enabled=false（默认）时 rankRecallCandidates 返回的规则序与旧
+	// 「首个最大分」选择逻辑逐位等价（稳定降序排序的头部即原循环选出的 best），零行为变化
+	ranked := rankRecallCandidates(candidates, tenantID)
+	best := ranked[0]
 
 	// E4 实验分桶：最高分落在实验组且组内有同分并列 variant 时，按客户稳定哈希择一；
 	// 未设实验组（现状绝大多数）走不到这里的多分支——零漂移

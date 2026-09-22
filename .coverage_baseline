@@ -1,3 +1,15 @@
-# 初始基线 22.4% 为 2026-09-22 审计实测值；落地时因 Chat() 拆分重组语句数微降 0.1pp，
-# 以拆分后真实值 22.3 起棘（后续 api 补测目标 >=25% 会拉动总覆盖上行，届时收紧基线）。
+# 覆盖率棘轮基线（P1-5，与 tools/check_coverage_ratchet.sh 同为 `go tool cover -func | tail -1` 口径）
+#
+# 来历（2026-09-22 全量审计 G1/G3 修复后复位，删除此前不可复现的三个互斥数字 22.4/22.3/22.8 注释）：
+#   - 审计时测得 20.6% 是**残缺产物**：internal/billing 的 TestUpgradeOrderRejectsConcurrentBase
+#     在 billing_order.go 的 nil 单例上确定性 panic，该包测试二进制中止 → 覆盖率贡献丢失。
+#     同期 test_all.sh 又因"单测未全绿"跳过棘轮判定并打 PASS，两处叠加把水位读低了 2.2pp。
+#   - runtimecfg 读方法加 nil-receiver 守卫（G3）后全套 go test 绿，连续两次实跑：
+#       run1 = 23.1% / run2 = 22.9%（本机 PG 可用、零 skip）
+#     即真实水位约 22.9~23.1，**22.8 恰在其下**：门禁今天就是可信且通过的，无需下调。
+#   - 基线取 22.8 而非峰值 23.1：留 0.2~0.3pp 抖动余量（随机延迟区间分支、DB 不可用时的
+#     testutil skip 会造成 ±0.2pp 浮动），避免门禁变成偶发假红。
+# 只升不降：补测后跑 `bash tools/check_coverage_ratchet.sh --update-baseline` 收紧。
+# 后续目标（审计 D3）：internal/api 仅 6.2%（17.7k 行/76 文件），
+#   knowledge.go/org.go/strategy.go/openapi_chat.go 四个 0% 文件优先补测，届时本行应上抬。
 22.8

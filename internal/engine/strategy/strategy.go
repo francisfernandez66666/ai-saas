@@ -396,6 +396,7 @@ afterAnchorSelection:
 			input.TVector,
 			tenantTemplates,
 			input.CustomerID, // E4：实验分桶按客户稳定哈希，0=退确定性最高分
+			input.TenantID,   // 批五 B：择臂层按租户读 pack_stats 后验（开关默认关=纯规则）
 		)
 
 		if template != nil {

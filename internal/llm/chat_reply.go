@@ -197,6 +197,16 @@ func generateAIReplyInner(ctx context.Context, customer *model.Customer, convers
 	// 2. 策略指令（锚方向 + 话术参考 + 条件交换 + 知识库素材）
 	strategyPrompt := ai.BuildStrategyPrompt(strategyOutput, customer.GetTags(), modelID, hasArrived, canPromote, chatflow.IsLeadCaptured(customer))
 
+	// A4 实装(2026-09-23)：销售路径机（engine/flow）输出的每轮消费点——
+	// 决策由 OrchestrateReply 评估后经 ctx 下传（strategytypes 中立承载，避免 llm→flow 反向依赖）。
+	// 热开关 sales_path_enabled 默认关，关闭时 ctx 恒无值、本段整体跳过，prompt 逐字节等价现状；
+	// 开启时仅向策略指令追加「当前阶段→推进目标→下一步动作」结构化约束，不改既有指令分节。
+	if sp := strategytypes.SalesPathFromContext(ctx); sp != nil && sp.PromptDirective != "" {
+		strategyPrompt += "\n\n" + sp.PromptDirective
+		log.Printf("[销售路径] customer=%d 注入路径决策 %s→%s(信号=%s)",
+			customer.ID, sp.CurrentStage, sp.TargetStage, sp.ConversionSignal)
+	}
+
 	// 3. 构建对话上下文
 	// 对话历史轮数由 system_configs 的 chat_history_rounds 控制（DB 默认 3 轮）
 	// =0 时改用核心内容摘要注入 system prompt，避免模型记忆偏移

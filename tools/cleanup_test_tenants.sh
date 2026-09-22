@@ -133,6 +133,33 @@ else
   echo "[dry-run] 待回收孤儿业务数据 $ORPHAN_PREVIEW 行（tenant_id 指向已删除租户）。"
 fi
 
+# ---------- B2. 悬空会话消息回收（D5 批六，2026-09-23 新增）----------
+# 背景：B 段只按 tenant_id 判孤儿，收不到"租户还在、但所属会话已被硬删"的消息行——
+# 这类行挂在已不存在的 conversation_id 上，会话历史按 conversation 取，因此永不可达，
+# 却仍在 messages 热表里占体积、并虚增以 messages 为真相源的统计（D2 贡献度同类口径坑）。
+# 实测本机库另有 15 行 conversation_id=0 的孤儿（该形态不在此段处理：迁移 019 负责回填，
+# 剩余量由 /status/detail 的 orphan_messages 观测位盯住，只准降不准升）。
+# 处置方式：搬进 messages_archive 而不是 DELETE——归档表与热表结构全量对齐（迁移 011），
+# 且 PIPL 匿名化已同时覆盖两表；热表就此减负，数据一行不丢（可回溯取证）。
+DANGLING_SQL="conversation_id <> 0 AND conversation_id NOT IN (SELECT id FROM conversations)"
+if [ "$APPLY" = "1" ]; then
+  MOVED=$(psql "$DBURL" -tAc "
+    WITH picked AS (
+      SELECT * FROM messages WHERE $DANGLING_SQL
+    )
+    INSERT INTO messages_archive SELECT *, now() FROM picked
+    RETURNING id;" 2>/dev/null | grep -c . || true)
+  if [ "${MOVED:-0}" != "0" ]; then
+    psql "$DBURL" -tAc "DELETE FROM messages WHERE $DANGLING_SQL;" >/dev/null 2>&1 || true
+  fi
+  echo "已归档悬空会话消息 ${MOVED:-0} 行（搬入 messages_archive，热表删除）。"
+else
+  # dry-run：归档表不存在（全新库未跑迁移 011）时不得炸脚本，只报计数
+  HAS_ARCH=$(psql "$DBURL" -tAc "SELECT count(*) FROM information_schema.tables WHERE table_name='messages_archive';" 2>/dev/null | tr -d '[:space:]')
+  DANGLING=$(psql "$DBURL" -tAc "SELECT COUNT(*) FROM messages WHERE $DANGLING_SQL;" 2>/dev/null | tr -d '[:space:]')
+  echo "[dry-run] 悬空会话消息 ${DANGLING:-0} 行（归档表${HAS_ARCH:-0} 存在则可搬入 messages_archive）。"
+fi
+
 # ---------- C. 陈旧测试包 / 残留行业包回收（2026-09-21 提到早退分支之前）----------
 # packages 是全局目录表不挂租户；testutil.CleanupTenant 带 1h 年龄窗，长期不跑单测的环境残留
 # 由此兜底——仅回收无任何订单引用的测试包，绝不触碰真实在售包。

@@ -10,33 +10,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Tag } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+import type { AIContribution } from '../../types'
 
-/** 后端 schema.AIContribution 的展示侧镜像（仅取用到的字段，全部可选以防旧版后端）。 */
-export type Contribution = {
-  period_days?: number
-  since?: string
-  until?: string
-  new_conversations?: number
-  active_conversations?: number
-  ai_served_customers?: number
-  human_served_customers?: number
-  ai_serve_share?: number
-  handoff_rate?: number
-  ai_leads?: number
-  assisted_leads?: number
-  ai_lead_rate?: number
-  assisted_lead_rate?: number
-  ai_arrived?: number
-  ai_ordered?: number
-  ai_arrive_rate?: number
-  ai_order_rate?: number
-  ai_messages?: number
-  human_messages?: number
-  customer_messages?: number
-  ai_message_share?: number
-  pending_handoff_now?: number
-  notes?: string[]
-}
+/** 后端 schema.AIContribution 的展示侧镜像：批五 E 契约批起直接复用 types.ts 的共享口径，
+ *  不再在本文件维护第二份字段表（两份字段表正是"两个口径"的起点）。 */
+export type Contribution = AIContribution
 
 /** 可选统计窗口（天）。与后端 (0,365] 约束一致。 */
 const WINDOW_OPTIONS = [7, 30, 90] as const

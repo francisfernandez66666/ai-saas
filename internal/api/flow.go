@@ -23,6 +23,8 @@ import (
 // GetFlowList 获取当前租户的流程定义列表
 // 按ID降序返回，包含所有状态的流程定义（草稿/已发布/已归档）
 // P2-29 修复(2026-09-09)：加统一分页，防拖全表
+// apidump:ts Paginated<FlowDefinition>
+// 流程定义分页列表。
 func GetFlowList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
@@ -39,6 +41,8 @@ func GetFlowList(c *gin.Context) {
 
 // GetFlow 获取单个流程定义详情
 // 根据URL参数ID查询，不存在时返回404
+// apidump:ts FlowDefinition
+// 单个流程定义（节点/连线以 *_json 字符串下发）。
 func GetFlow(c *gin.Context) {
 	// 健壮性收口(2026-09-05)：FlowDefinition 为 uint 主键，非法 ID 直接 400，不再打进 PG(22P02)
 	id, ok := PathUintID(c)
@@ -58,6 +62,8 @@ func GetFlow(c *gin.Context) {
 // StartFlow 启动一个新流程实例
 // 请求体包含流程编码、客户ID、会话ID
 // 流程引擎根据流程编码找到定义，创建实例并执行第一个节点
+// apidump:ts FlowInstance
+// 新建流程实例整行。
 func StartFlow(c *gin.Context) {
 	var req schema.FlowStartRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -98,6 +104,8 @@ func StartFlow(c *gin.Context) {
 // AdvanceFlow 推进流程到下一个节点
 // 请求体包含实例ID和路由选择（决定走向哪个分支）
 // 路由结果会影响流程引擎的节点跳转逻辑
+// apidump:ts FlowInstance
+// 推进后的流程实例整行。
 func AdvanceFlow(c *gin.Context) {
 	var req schema.FlowAdvanceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -129,6 +137,8 @@ func AdvanceFlow(c *gin.Context) {
 
 // GetFlowInstance 获取单个流程实例详情
 // 根据实例ID查询，用于查看流程执行状态和历史
+// apidump:ts FlowInstance
+// 单个流程实例。
 func GetFlowInstance(c *gin.Context) {
 	// 健壮性收口(2026-09-05)：uint 主键入口校验，非法不再触 DB
 	id, ok := PathUintID(c)
@@ -147,6 +157,8 @@ func GetFlowInstance(c *gin.Context) {
 
 // GetFlowInstanceList 获取当前租户的流程实例列表
 // 最多返回最近100条记录，按ID降序排列
+// apidump:ts FlowInstance[]
+// 流程实例列表。
 func GetFlowInstanceList(c *gin.Context) {
 	var instances []model.FlowInstance
 	db.PQ(c).Order("id DESC").Limit(100).Find(&instances)

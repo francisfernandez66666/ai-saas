@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { ApiResp, AuthResult, ChannelListResp, CreateChannelResp, OutboundListResp, PackStatsResp } from '../types'
+import type { AIContribution, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, PackStatsResp, Paginated, SellingFeature, StatsOverview, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -44,26 +44,27 @@ export interface ApiRoutes {
   "GET /api/v1/admin/privacy/deletion-requests": unknown
   "GET /api/v1/admin/tag-rules": unknown
   "GET /api/v1/admin/tag-weights": unknown
-  "GET /api/v1/admin/tags": unknown
-  "GET /api/v1/admin/tags/:id": unknown
+  "GET /api/v1/admin/tags": Paginated<Tag>
+  "GET /api/v1/admin/tags/:id": Tag
   "GET /api/v1/admin/tenant/branding": unknown
   "GET /api/v1/admin/usage/summary": unknown
   "GET /api/v1/admin/webhooks": unknown
   "GET /api/v1/admin/webhooks/:id/deliveries": unknown
   "GET /api/v1/advisor/customer/:id": unknown
-  "GET /api/v1/advisor/customers": unknown
-  "GET /api/v1/advisor/followups": unknown
-  "GET /api/v1/advisor/list": unknown
+  "GET /api/v1/advisor/customers": Paginated<AdvisorCustomerRow>
+  "GET /api/v1/advisor/followups": FollowUpRow[]
+  "GET /api/v1/advisor/list": AdvisorRef[]
   "GET /api/v1/advisor/referral/info": unknown
   "GET /api/v1/advisor/referral/qrcode": unknown
   "GET /api/v1/advisor/referral/records": unknown
-  "GET /api/v1/advisor/stats": unknown
+  "GET /api/v1/advisor/stats": AdvisorStatItem[]
   "GET /api/v1/advisor/strategy/recommend": unknown
-  "GET /api/v1/advisor/tags": unknown
-  "GET /api/v1/advisor/test-drive/:id": unknown
-  "GET /api/v1/advisor/test-drives": unknown
+  "GET /api/v1/advisor/tags": Paginated<Tag>
+  "GET /api/v1/advisor/test-drive/:id": TestDriveRow
+  "GET /api/v1/advisor/test-drives": TestDriveRow[]
   "GET /api/v1/auth/me": unknown
   "GET /api/v1/auth/register-config": unknown
+  "GET /api/v1/auth/reset-channel": unknown
   "GET /api/v1/billing/my-package": unknown
   "GET /api/v1/billing/orders": unknown
   "GET /api/v1/billing/orders/:id": unknown
@@ -74,16 +75,16 @@ export interface ApiRoutes {
   "GET /api/v1/channel/wecom/context": unknown
   "GET /api/v1/channel/wecom/jsconfig": unknown
   "GET /api/v1/chat/history": unknown
-  "GET /api/v1/conversations": unknown
-  "GET /api/v1/conversations/:id/messages": unknown
-  "GET /api/v1/customers": unknown
-  "GET /api/v1/customers/:id": unknown
-  "GET /api/v1/customers/:id/conversations": unknown
-  "GET /api/v1/customers/:id/tags": unknown
-  "GET /api/v1/flows": unknown
-  "GET /api/v1/flows/:id": unknown
-  "GET /api/v1/flows/instances": unknown
-  "GET /api/v1/flows/instances/:id": unknown
+  "GET /api/v1/conversations": Paginated<Conversation>
+  "GET /api/v1/conversations/:id/messages": ChatMessage[]
+  "GET /api/v1/customers": Paginated<Customer>
+  "GET /api/v1/customers/:id": Customer
+  "GET /api/v1/customers/:id/conversations": Conversation[]
+  "GET /api/v1/customers/:id/tags": CustomerTagRow[]
+  "GET /api/v1/flows": Paginated<FlowDefinition>
+  "GET /api/v1/flows/:id": FlowDefinition
+  "GET /api/v1/flows/instances": FlowInstance[]
+  "GET /api/v1/flows/instances/:id": FlowInstance
   "GET /api/v1/knowledge/brands": unknown
   "GET /api/v1/knowledge/compares": unknown
   "GET /api/v1/knowledge/fragments/search": unknown
@@ -95,12 +96,12 @@ export interface ApiRoutes {
   "GET /api/v1/packages": unknown
   "GET /api/v1/plans": unknown
   "GET /api/v1/public/branding": unknown
-  "GET /api/v1/stats/ai-contribution": unknown
-  "GET /api/v1/stats/overview": unknown
-  "GET /api/v1/strategy/features": unknown
-  "GET /api/v1/strategy/stats/anchors": unknown
-  "GET /api/v1/strategy/templates": unknown
-  "GET /api/v1/strategy/templates/:id": unknown
+  "GET /api/v1/stats/ai-contribution": AIContribution
+  "GET /api/v1/stats/overview": StatsOverview
+  "GET /api/v1/strategy/features": Paginated<SellingFeature>
+  "GET /api/v1/strategy/stats/anchors": AnchorStat[]
+  "GET /api/v1/strategy/templates": Paginated<TalkTemplate>
+  "GET /api/v1/strategy/templates/:id": TalkTemplate
   "GET /api/v1/super/agreements": unknown
   "GET /api/v1/super/audit-logs": unknown
   "GET /api/v1/super/billing/refund-requests": unknown
@@ -162,18 +163,18 @@ export interface ApiRoutes {
   "POST /api/v1/admin/tag-weights": unknown
   "POST /api/v1/admin/tag-weights/:id/disable": unknown
   "POST /api/v1/admin/tag-weights/:id/enable": unknown
-  "POST /api/v1/admin/tags": unknown
-  "POST /api/v1/admin/tags/:id/disable": unknown
-  "POST /api/v1/admin/tags/:id/enable": unknown
+  "POST /api/v1/admin/tags": Tag
+  "POST /api/v1/admin/tags/:id/disable": Tag
+  "POST /api/v1/admin/tags/:id/enable": Tag
   "POST /api/v1/admin/tags/reload": unknown
   "POST /api/v1/admin/webhooks": unknown
   "POST /api/v1/admin/webhooks/:id/test": unknown
   "POST /api/v1/advisor/chat/ai-reply": unknown
   "POST /api/v1/advisor/chat/send": unknown
   "POST /api/v1/advisor/chat/takeover": unknown
-  "POST /api/v1/advisor/chat/toggle-ai-reply": unknown
-  "POST /api/v1/advisor/customer/:id/followup": unknown
-  "POST /api/v1/advisor/test-drive": unknown
+  "POST /api/v1/advisor/chat/toggle-ai-reply": AiReplyToggle
+  "POST /api/v1/advisor/customer/:id/followup": FollowUpRow
+  "POST /api/v1/advisor/test-drive": TestDriveRow
   "POST /api/v1/auth/change-password": unknown
   "POST /api/v1/auth/email-code": unknown
   "POST /api/v1/auth/email/change": unknown
@@ -193,25 +194,25 @@ export interface ApiRoutes {
   "POST /api/v1/chat": unknown
   "POST /api/v1/chat/clear-delay": unknown
   "POST /api/v1/chat/guest": unknown
-  "POST /api/v1/chat/human/reply": unknown
+  "POST /api/v1/chat/human/reply": ChatMessage
   "POST /api/v1/chat/request-human": unknown
   "POST /api/v1/chat/test": unknown
-  "POST /api/v1/chat/transfer/ai": unknown
-  "POST /api/v1/chat/transfer/human": unknown
+  "POST /api/v1/chat/transfer/ai": Conversation
+  "POST /api/v1/chat/transfer/human": Conversation
   "POST /api/v1/chat/unauthorized": unknown
   "POST /api/v1/chat/welcome": unknown
   "POST /api/v1/client-errors": unknown
   "POST /api/v1/collector": unknown
-  "POST /api/v1/customers": unknown
-  "POST /api/v1/customers/:id/tags": unknown
+  "POST /api/v1/customers": Customer
+  "POST /api/v1/customers/:id/tags": TagNames
   "POST /api/v1/feedback": unknown
   "POST /api/v1/feedback/rating": unknown
-  "POST /api/v1/flows/advance": unknown
-  "POST /api/v1/flows/start": unknown
+  "POST /api/v1/flows/advance": FlowInstance
+  "POST /api/v1/flows/start": FlowInstance
   "POST /api/v1/org/departments": unknown
   "POST /api/v1/org/users": unknown
   "POST /api/v1/privacy/deletion-request": unknown
-  "POST /api/v1/strategy/templates": unknown
+  "POST /api/v1/strategy/templates": TalkTemplate
   "POST /api/v1/strategy/test": unknown
   "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
   "POST /api/v1/super/billing/orders/:id/refund": unknown
@@ -237,17 +238,17 @@ export interface ApiRoutes {
   "PUT /api/v1/admin/knowledge/specs/:id": unknown
   "PUT /api/v1/admin/tag-rules/:id": unknown
   "PUT /api/v1/admin/tag-weights/:id": unknown
-  "PUT /api/v1/admin/tags/:id": unknown
+  "PUT /api/v1/admin/tags/:id": Tag
   "PUT /api/v1/admin/tenant/branding": unknown
   "PUT /api/v1/admin/webhooks/:id": unknown
-  "PUT /api/v1/advisor/customer/:id/info": unknown
-  "PUT /api/v1/advisor/customer/:id/stage": unknown
-  "PUT /api/v1/advisor/customer/:id/tags": unknown
-  "PUT /api/v1/advisor/test-drive/:id": unknown
-  "PUT /api/v1/customers/:id": unknown
+  "PUT /api/v1/advisor/customer/:id/info": Customer
+  "PUT /api/v1/advisor/customer/:id/stage": Customer
+  "PUT /api/v1/advisor/customer/:id/tags": CustomerTagRow[]
+  "PUT /api/v1/advisor/test-drive/:id": TestDriveRow
+  "PUT /api/v1/customers/:id": Customer
   "PUT /api/v1/org/departments/:id": unknown
   "PUT /api/v1/org/users/:id": unknown
-  "PUT /api/v1/strategy/templates/:id": unknown
+  "PUT /api/v1/strategy/templates/:id": TalkTemplate
   "PUT /api/v1/super/packages/:id": unknown
   "PUT /api/v1/super/packs/:id/share": unknown
   "PUT /api/v1/super/packs/:id/status": unknown

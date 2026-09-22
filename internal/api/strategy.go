@@ -25,6 +25,8 @@ import (
 // ============================================================
 
 // GetTemplateList 获取话术模板列表
+// apidump:ts Paginated<TalkTemplate>
+// 响应 data 为分页信封，list 元素是 model.Template 全字段（含 E4 的 ab_group/ab_weight）。
 func GetTemplateList(c *gin.Context) {
 	var req schema.TemplateListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -70,6 +72,8 @@ func GetTemplateList(c *gin.Context) {
 }
 
 // GetTemplate 获取话术模板详情
+// apidump:ts TalkTemplate
+// 单条模板全字段；字符串主键故走显式 Where（见函数体注释）。
 func GetTemplate(c *gin.Context) {
 	// E4 冒烟捕获（2026-09-19）：Template 主键为字符串，First(&t, id) 会把非数字串
 	// 当裸 SQL 条件拼进 WHERE（42703→恒404）。与 DeleteTemplate 2026-08-25 修口对齐，显式 Where。
@@ -86,6 +90,8 @@ func GetTemplate(c *gin.Context) {
 }
 
 // CreateTemplate 创建话术模板
+// apidump:ts TalkTemplate
+// 创建成功回整行模板（含默认 status/priority 等落库后的真实值）。
 func CreateTemplate(c *gin.Context) {
 	var req schema.CreateTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -162,6 +168,8 @@ func CreateTemplate(c *gin.Context) {
 }
 
 // UpdateTemplate 更新话术模板
+// apidump:ts TalkTemplate
+// 更新后回整行模板（前端表单以返回值刷新本地态）。
 func UpdateTemplate(c *gin.Context) {
 	// E4 冒烟捕获（2026-09-19）：字符串主键禁用 First(&t, id)——非数字串被 GORM 当裸
 	// 条件拼 SQL（42703→恒404），改显式 Where（同 GetTemplate/DeleteTemplate 口径）
@@ -218,7 +226,40 @@ func UpdateTemplate(c *gin.Context) {
 		template.RequiredFeatures = toJSON(req.RequiredFeatures)
 	}
 
-	db.RQ(c).Save(&template)
+	// 字段级更新，不用整行 Save（2026-09-23 批六收口，同 chat_human/advisor 那批 9 处修法）：
+	// 本处理器读的是编辑表单"打开那一刻"的模板行，Save 会把读到的陈旧值整行写回，
+	// 覆盖编辑期间被别的写入方改动的列——
+	//   - usage_count：召回路径每命中一次 +1，模板编辑窗口内必然在动；
+	//   - ab_weight：批五 C 的 L2 自动晋升巡检每轮改写 leading 模板权重，
+	//     运营一边看后台一边改话术时，晋升成果会被这次 Save 静默打回旧值。
+	// 只写表单真正拥有的列，未列出的列（含 tenant_id/department_id/created_at/version）不碰。
+	fields := map[string]any{
+		"anchor_type":     template.AnchorType,
+		"sub_type":        template.SubType,
+		"name":            template.Name,
+		"category":        template.Category,
+		"min_intent":      template.MinIntent,
+		"max_intent":      template.MaxIntent,
+		"prompt_template": template.PromptTemplate,
+		"hook_template":   template.HookTemplate,
+		"priority":        template.Priority,
+		"status":          template.Status,
+		"ab_group":        template.AbGroup,
+		"ab_weight":       template.AbWeight,
+	}
+	for col, val := range map[string]string{
+		"trigger_tags":      template.TriggerTags,
+		"required_tags":     template.RequiredTags,
+		"applicable_models": template.ApplicableModels,
+		"hook_fields":       template.HookFields,
+		"required_features": template.RequiredFeatures,
+	} {
+		fields[col] = val // 上方 if 块已按"空则保留原值"处理过，这里写回的是最终态
+	}
+	if err := db.RQ(c).Model(&model.Template{}).Where("id = ?", id).Updates(fields).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "更新失败")
+		return
+	}
 
 	// 重新加载策略引擎数据
 	strategy.DefaultEngine.ReloadData()
@@ -387,6 +428,8 @@ func detectResistanceFromText(text string) int {
 
 // GetFeatureList 获取卖点列表
 // P2-29 修复(2026-09-09)：加统一分页，防拖全表
+// apidump:ts Paginated<SellingFeature>
+// 卖点分页列表，list 元素为 model.Feature。
 func GetFeatureList(c *gin.Context) {
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize := schema.NormalizePageSize(atoiDefault(c.DefaultQuery("page_size", "20")))
@@ -402,6 +445,8 @@ func GetFeatureList(c *gin.Context) {
 }
 
 // GetAnchorStats 获取锚类型统计
+// apidump:ts AnchorStat[]
+// 各锚类型使用次数与近似接钩率，元素为 schema.AnchorStats。
 func GetAnchorStats(c *gin.Context) {
 	// 从消息表统计各锚类型使用情况
 	type anchorStat struct {

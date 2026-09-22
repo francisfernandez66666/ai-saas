@@ -248,6 +248,30 @@ $PSQL "UPDATE tenants SET token_balance=0 WHERE id=$UB_ID" >/dev/null
 round "全空降级测试"
 grep "三桶余额不足" ai-scrm.log | tail -1 | grep -q "降级规则话术" && R=y || R=n
 check "全空→降级规则话术" y "$R"
+# M1(2026-09-22 批三)字节级护栏：三桶全空时旧实现"挂账行已 DELETE、扣减却没发生"=静默吞账。
+# 现口径是哨兵错误回滚整笔结算，欠账必须以挂账行形态**留在自己租户名下**。
+# 两条断言各守一侧：① 余额不得被扣成负数（负账与吞账同样是账目失真）；
+# ② 后台补写的挂账行必须带 tenant_id（C7 事务内写租户表红线：漏盖章＝跨租户可见）。
+NEG_OK=$($PSQL "SELECT (free_token_balance>=0 AND token_balance>=0 AND monthly_token_used<=monthly_token_quota)::text FROM tenants WHERE id=$UB_ID" | tr -d '[:space:]')
+check "全空后三桶未被扣成负数/超用(M1账目守恒)" true "$NEG_OK"
+DEBT_UNSTAMPED=$($PSQL "SELECT count(*) FROM usage_flush_retry WHERE tenant_id=0 OR tenant_id IS NULL" | tr -d '[:space:]')
+check "挂账行无tenant_id=0漏盖章(C7红线)" 0 "$DEBT_UNSTAMPED"
+# A1(2026-09-22 批四)双入口对齐的第二条腿：人工锁定态裁决已收进 chatflow.HumanTakeoverDecide，
+# smoke_chat_identity §8.10 证的是免登录链(/chat/unauthorized)，本段在**正式链(/chat, 登录态)**上
+# 复现同一条"判定即落库"断言——两条链必须同判，否则 reply_attributions 同样本不可比（批五择臂会在噪声上学）。
+# 此刻三桶全空，重开 AI 后只会走降级话术，不产生真实模型调用（零 token 成本），断言只查库。
+CONV_B=$($PSQL "SELECT id FROM conversations WHERE tenant_id=$UB_ID AND customer_id=$CUST_B AND status='active' ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+if [ -n "$CONV_B" ]; then
+  $PSQL "UPDATE conversations SET mode='human', is_human_locked=true, is_ai_reply_enabled=false,
+         pending_handoff=true, last_human_reply_at=now()-interval '400 seconds' WHERE id=$CONV_B" >/dev/null
+  round "A1 正式链超时重开断言"
+  A1_MAIN=$(Q "SELECT (mode='ai' AND is_human_locked=false AND is_ai_reply_enabled=true AND pending_handoff=false)::text FROM conversations WHERE id=$CONV_B" | tr -d '[:space:]')
+  check "正式链锁定超时同样落库解除(A1双入口)" true "$A1_MAIN"
+  $PSQL "UPDATE conversations SET mode='ai', is_human_locked=false, is_ai_reply_enabled=true,
+         pending_handoff=false WHERE id=$CONV_B" >/dev/null
+else
+  check "乙租户活跃会话存在(A1正式链前置)" y n
+fi
 
 echo ""
 echo "== 九、对话分支：留资合并 + 快捷通道 =="

@@ -1,5 +1,6 @@
-// Playwright 真浏览器 E2E（14 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
-// 外加 390px 窄屏三台（Admin/Super 折叠下拉、Org 单栏不炸版，P1-10 批二）。需 9090 服务在跑。
+// Playwright 真浏览器 E2E（17 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
+// 外加 390px 窄屏三台（Admin/Super 折叠下拉、Org 单栏不炸版，P1-10 批二）、D2 AI 贡献度卡片、
+// S2 找回密码通道文案（2026-09-23 批二：页面上不得再出现"服务端日志"这类内部实现提示）。需 9090 服务在跑。
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
 
@@ -103,21 +104,26 @@ test('health check endpoint returns OK', async ({ request }) => {
 // 9. Chat test endpoint responds (may require visitor session)
 // C1(PLAN_FIX_2026-09-21)：主路由由 /chat/test 改名 /chat/unauthorized（语义自解释：
 // 未授权/未留资访客的聊天入口，不是测试桩）；旧路径作为 deprecated 兼容别名保留一版。
-test('chat unauthorized endpoint responds', async ({ request }) => {
-  const r = await request.post(`${BASE}/api/v1/chat/unauthorized`, {
-    data: { content: '你好' },
-  });
-  // Endpoint may return 403 (visitor auth required) or 200；
-  // 429 也属正常响应：test_all 顺序跑八套 E2E 时同源 IP 桶可能已满，
-  // 限流生效本身即证明端点在位（单跑复现 403，整跑偶发 429，见 2026-09-18 实测批）。
-  expect([200, 403, 429]).toContain(r.status());
+// S1 收口(2026-09-23 批二)：这里刻意**不带 customer_id** 打匿名请求，断言被 400 拒——
+// 旧行为是"缺省即写进 1 号客户会话"（README 时代的测试便利），任何匿名访客都能往
+// 真实客户会话灌消息。正确链路两步：先 /chat/guest 领 customer_id + visitor_key。
+// 本用例因此零 AI 成本（400 在入队/生成之前就返回），也不受 20/min IP 桶影响。
+async function expectAnonymousChatRejected(request: APIRequestContext, path: string) {
+  const r = await request.post(`${BASE}${path}`, { data: { content: '你好' } });
+  // 429 属正常：test_all 顺序跑八套 E2E 时同源 IP 桶可能已满，限流生效本身即证明端点在位
+  expect([400, 429]).toContain(r.status());
+  if (r.status() === 429) return;
+  const j = await r.json();
+  expect(j.error_code).toBe('param_error');
+  expect(j.message).toMatch(/customer_id/);
+}
+
+test('chat unauthorized 拒绝无 customer_id 的匿名写(S1)', async ({ request }) => {
+  await expectAnonymousChatRejected(request, '/api/v1/chat/unauthorized');
 });
 
 test('chat test 旧别名仍在位(deprecated 兼容)', async ({ request }) => {
-  const r = await request.post(`${BASE}/api/v1/chat/test`, {
-    data: { content: '你好' },
-  });
-  expect([200, 403, 429]).toContain(r.status());
+  await expectAnonymousChatRejected(request, '/api/v1/chat/test');
 });
 
 // 10. Strategy test endpoint works
@@ -222,4 +228,27 @@ test('D2 admin AI 贡献度卡片渲染且窗口切换发真实请求', async ({
   await expect.poll(() => hits.some((u) => u.includes('days=7')), { timeout: 10000 }).toBeTruthy();
   const body = await page.locator('body').innerText();
   expect(body).not.toMatch(/NaN|Infinity/);
+});
+
+// 17. S2 找回密码提示按后端真实通道渲染，不再向最终用户暴露"服务端日志"（2026-09-23 批二）
+// 根因回放：旧页面把"验证码将输出到服务端日志（开发模式）"写死成给最终用户看的文案——
+// 既泄露内部实现，又在 SMTP 已配好的生产环境说假话（用户去翻日志，其实邮件早发出去了）。
+// 现在通道由 GET /auth/reset-channel 决定，页面上任何一处都不该再出现"服务端日志"。
+// 之所以用真浏览器：这条契约的失败形态是"页面上多了一句话"，接口断言与 vitest jsdom 都测不准
+// （异步 useEffect + 两条分支文案），必须按用户实际看到的文本判。
+test('S2 找回密码页不再出现服务端日志字样', async ({ page, request }) => {
+  // 先钉住后端确有该端点（返回 log 或 smtp 都算通道在位；缺失/500 说明驱动源断了）
+  const r = await request.get(`${BASE}/api/v1/auth/reset-channel`);
+  expect(r.ok()).toBeTruthy();
+  const j = await r.json();
+  expect(['smtp', 'log']).toContain(j?.data?.channel);
+
+  await page.goto('/login');
+  await page.getByText('忘记密码').click();
+  await expect(page.getByRole('button', { name: '发送验证码' })).toBeVisible({ timeout: 10000 });
+  const body = await page.locator('body').innerText();
+  expect(body).not.toMatch(/服务端日志/);
+  // 正向锁：光"没有那句话"不够（整页空白也能过），必须看到通道驱动的那句提示真的渲染出来了。
+  // smtp → 指引看邮箱；log → 指引找管理员；两者之一即证明 /auth/reset-channel 已接线。
+  expect(body).toMatch(/验证码将发送至账号绑定的邮箱|请联系管理员协助重置|验证码 10 分钟内有效/);
 });

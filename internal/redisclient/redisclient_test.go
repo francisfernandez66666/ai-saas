@@ -15,6 +15,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -29,12 +30,17 @@ func TestMain(m *testing.M) {
 	os.Exit(testutil.RunMain(m))
 }
 
-// forceDisabled 把全局客户端置回"未启用"并在用例结束后恢复（测试不得互相依赖）
+// forceDisabled 把全局客户端置回"未启用"并在用例结束后恢复（测试不得互相依赖）。
+// 同时停掉后台自愈循环：O1-a 起 Init(连不上) 会常驻重探，不停会让后续用例看到半路恢复。
 func forceDisabled(t *testing.T) {
 	t.Helper()
-	old := rdb
-	rdb = nil
-	t.Cleanup(func() { rdb = old })
+	old := Client()
+	setClient(nil)
+	StopSelfHeal()
+	t.Cleanup(func() {
+		StopSelfHeal()
+		setClient(old)
+	})
 }
 
 // TestInitDisabledKeepsSingleInstanceMode Enabled=false 不开连接、不 panic
@@ -57,8 +63,12 @@ func TestInitUnreachableDegradesToMemoryMode(t *testing.T) {
 	if IsEnabled() {
 		t.Errorf("连不上时必须降级为内存模式（IsEnabled=false）")
 	}
-	if rdb != nil {
+	if Client() != nil {
 		t.Errorf("降级后全局客户端应置 nil，否则后续调用会走半死连接")
+	}
+	// O1-a：连不上≠没配——声明位必须为 true，readiness 靠它区分"未配"与"配了但连不上"
+	if !DeclaredEnabled() {
+		t.Errorf("Enabled=true 时 DeclaredEnabled 应为 true（供 /status 暴露 redis_declared_but_down）")
 	}
 	// 降级后 API 仍安全
 	if _, err := TryLockE("any:key", time.Second); err != nil {
@@ -162,10 +172,92 @@ func TestClientAccessorConsistency(t *testing.T) {
 		t.Errorf("未启用时两者应一致为 nil/false")
 	}
 	// 手工注入客户端只验口径，不发命令（不打真实 Redis）
-	old := rdb
-	rdb = redis.NewClient(&redis.Options{Addr: "127.0.0.1:6399"})
-	defer func() { rdb = old }()
+	old := Client()
+	setClient(redis.NewClient(&redis.Options{Addr: "127.0.0.1:6399"}))
+	defer setClient(old)
 	if !IsEnabled() || Client() == nil {
 		t.Errorf("有客户端时两者应一致为 true/非 nil")
+	}
+}
+
+// TestSelfHealRecoversAfterDeclaredFailure O1-a(2026-09-23 批六)：
+// 声明启用但首探失败 → 后台自愈必须能在 Redis 起来后恢复多实例语义，并触发一次恢复回调。
+// 这是编排竞态的唯一兜底（compose 里 app 先于 redis ready 时，旧实现永久降级成单机）。
+func TestSelfHealRecoversAfterDeclaredFailure(t *testing.T) {
+	forceDisabled(t)
+	oldFn, oldInterval := newClientFn, selfHealInterval
+	t.Cleanup(func() { newClientFn, selfHealInterval = oldFn, oldInterval })
+
+	// 探测次数用原子计数——勿用带缓冲 channel 当信号：生产者写满即阻塞，
+	// 且消费方"取到信号但未及看到状态"会永久等不到下一次推送（首版即踩此坑致用例挂死）。
+	var probes, recovered int32
+	newClientFn = func(config.RedisConfig) (*redis.Client, error) {
+		if atomic.AddInt32(&probes, 1) < 2 {
+			return nil, fmt.Errorf("模拟：Redis 尚未就绪")
+		}
+		// 只验指针发布语义，不发命令（addr 指向空闲端口，永不实际连通）
+		return redis.NewClient(&redis.Options{Addr: "127.0.0.1:6399"}), nil
+	}
+	selfHealInterval = 5 * time.Millisecond
+	OnRecover(func() { atomic.AddInt32(&recovered, 1) })
+
+	Init(config.RedisConfig{Enabled: true, Addr: "127.0.0.1:6399"})
+	if IsEnabled() {
+		t.Fatalf("首探失败后应立即降级（IsEnabled=false）")
+	}
+	if got := atomic.LoadInt32(&probes); got != 1 {
+		t.Fatalf("Init 应恰好探测一次，实际 %d 次", got)
+	}
+
+	// 自愈必须在限期内把连接恢复回来（否则就是被修掉的"探测一次定终身"缺陷）
+	waitFor(t, 3*time.Second, func() bool { return IsEnabled() },
+		"自愈循环未在限期内恢复连接（声明启用却永久降级）")
+	waitFor(t, 2*time.Second, func() bool { return atomic.LoadInt32(&recovered) == 1 },
+		"恢复回调未触发（装配层收不到多实例语义恢复提示）")
+
+	// 连上即退出，不常驻重探：再等 20 个周期也不应新增探测
+	before := atomic.LoadInt32(&probes)
+	time.Sleep(100 * time.Millisecond)
+	if got := atomic.LoadInt32(&probes); got != before {
+		t.Errorf("自愈成功后应立即退出循环，不应常驻重探（新增 %d 次探测）", got-before)
+	}
+	if n := atomic.LoadInt32(&recovered); n != 1 {
+		t.Errorf("恢复回调应恰好触发一次，实际 %d 次", n)
+	}
+}
+
+// waitFor 轮询等待条件成立（超时即 Fatalf；勿写死 sleep，慢机器会假红）
+func waitFor(t *testing.T, timeout time.Duration, ok func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("%s（等待 %s 超时）", msg, timeout)
+}
+
+// TestInitDisabledDoesNotStartSelfHeal REDIS_ENABLED=false 时绝不重探（本地/CI 单实例零行为变化）
+func TestInitDisabledDoesNotStartSelfHeal(t *testing.T) {
+	forceDisabled(t)
+	oldFn, oldInterval := newClientFn, selfHealInterval
+	t.Cleanup(func() { newClientFn, selfHealInterval = oldFn, oldInterval })
+
+	var dialed int32
+	newClientFn = func(config.RedisConfig) (*redis.Client, error) {
+		atomic.AddInt32(&dialed, 1)
+		return nil, fmt.Errorf("不应被调用")
+	}
+	selfHealInterval = 5 * time.Millisecond
+
+	Init(config.RedisConfig{Enabled: false, Addr: "127.0.0.1:6399"})
+	if DeclaredEnabled() {
+		t.Errorf("Enabled=false 时 DeclaredEnabled 应为 false")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if got := atomic.LoadInt32(&dialed); got != 0 {
+		t.Errorf("未声明启用却重探了 %d 次（会把未配 Redis 的部署拖进无谓连接风暴）", got)
 	}
 }

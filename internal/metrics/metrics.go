@@ -116,8 +116,24 @@ var addressPoliteTotal uint64
 // IncAddressPolite AI 回复含「您」已兜底替换 +1（llm.sanitizeAddress 调用）
 func IncAddressPolite() { atomic.AddUint64(&addressPoliteTotal, 1) }
 
-// ---- C1 内容安全闸门计数 ----
-// contentSafetyHitTotal 命中词库/机审次数（含 shadow 观察）
+// ---- 批二 S2：找回密码"不安全通道"命中计数（2026-09-23）----
+// resetCodeInsecureTotal release 模式下重置码落到 log 通道的次数。
+// log 通道=验证码明文写进服务端日志，任何有日志读取权的人可为任意绑定邮箱账号改密；
+// 生产环境该计数非 0 就说明 SMTP 未配或 reset_code_channel 未切 smtp，用户其实无法自助找回密码。
+var resetCodeInsecureTotal uint64
+
+// IncResetCodeInsecure 生产态走了 log 通道发重置码 +1（api.SendResetCode 调用）
+func IncResetCodeInsecure() { atomic.AddUint64(&resetCodeInsecureTotal, 1) }
+
+// ---- 批三 M1：Token 欠账计数（2026-09-23）----
+// tokenDebtTokensTotal 因三桶余额皆空而**未能扣减**、仍挂在欠账表里的 token 累计量。
+// 落账失败=公司侧漏收（客户白用 AI），此前静默 return nil 无人知晓，故必须显式暴露成指标。
+var tokenDebtTokensTotal uint64
+
+// AddTokenDebtTokens 记入未扣减成功的欠账 token 量（billing 扣减三桶皆空时调用）
+func AddTokenDebtTokens(n uint64) { atomic.AddUint64(&tokenDebtTokensTotal, n) }
+
+// ---- C1 内容安全闸门计数 ----// contentSafetyHitTotal 命中词库/机审次数（含 shadow 观察）
 var contentSafetyHitTotal uint64
 
 // contentSafetyBlockTotal enforce 模式实际拦截（转人工/丢弃）次数
@@ -459,6 +475,16 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_address_polite_total AI replies containing 您 sanitized on exit\n"...)
 	b = append(b, "# TYPE ai_scrm_address_polite_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_address_polite_total %d\n", atomic.LoadUint64(&addressPoliteTotal))...)
+
+	// ---- 批二 S2 指标：重置码不安全通道（release 下命中 log）----
+	b = append(b, "# HELP ai_scrm_reset_code_insecure_total password reset codes delivered via insecure log channel in release mode\n"...)
+	b = append(b, "# TYPE ai_scrm_reset_code_insecure_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_reset_code_insecure_total %d\n", atomic.LoadUint64(&resetCodeInsecureTotal))...)
+
+	// ---- 批三 M1 指标：Token 欠账（三桶皆空未扣减量，公司侧漏收）----
+	b = append(b, "# HELP ai_scrm_token_debt_tokens_total tokens accrued but not deducted because all balance buckets were empty\n"...)
+	b = append(b, "# TYPE ai_scrm_token_debt_tokens_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_token_debt_tokens_total %d\n", atomic.LoadUint64(&tokenDebtTokensTotal))...)
 
 	// ---- C1 指标：内容安全 ----
 	b = append(b, "# HELP ai_scrm_contentsafety_hit_total AI replies hitting content-safety filter\n"...)

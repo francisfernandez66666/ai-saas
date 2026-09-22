@@ -72,6 +72,10 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 	switch payMode {
 	case "static_qr":
 		order.Channel = "manual"
+		// G2 修复（2026-09-22）：本行曾是 nil panic 现场——GetPayMode 在配置服务未就绪时
+		// 按"安全侧"返回 static_qr（不再回退 mock），随即裸调未初始化单例即崩。
+		// 现由 runtimecfg 读方法的 nil-receiver 守卫兜底（返回默认值 ""），
+		// 语义为"收款码未配置 → 无码可展示"，下单本身仍然成立。
 		qrContent = runtimecfg.DefaultSystemConfigService.GetString("static_qr_image", "")
 	case "sdk":
 		// 真实支付网关：向 PSP 下单，把返回的支付 URL 作为收银台凭证

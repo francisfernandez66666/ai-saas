@@ -4,7 +4,6 @@ package api
 import "ai-scrm/internal/notify"
 
 import (
-	"ai-scrm/internal/runtimecfg"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
@@ -17,7 +16,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"ai-scrm/config"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 
@@ -166,7 +167,18 @@ func SendResetCode(c *gin.Context) {
 		return
 	}
 
-	channel := runtimecfg.DefaultSystemConfigService.GetString("reset_code_channel", "log")
+	// S2 修复（2026-09-23 批二）：通道判定从"读配置"改为"读实际生效通道"。
+	// 原写法在 reset_code_channel=smtp 但 SMTP 环境变量缺失时仍按 smtp 分支走——
+	// 实际发送方 DefaultResetSender 已降级 log，于是既跳过了 contact 自证、
+	// 又对用户回"验证码已发送至绑定邮箱"，而码其实只在服务端日志里（用户永远收不到=生产不可自助）。
+	channel := notify.ResetSenderKind()
+	if channel == "log" && !config.IsDevModeConfirmed() {
+		// 生产态落到 log 通道=明文重置码进日志：任何有日志读取权的人可改任意绑定邮箱账号的密码。
+		// 不阻断（阻断会让本就无邮件通道的部署彻底无法重置），但要计数 + 打点，
+		// 并在 /status readiness 的 reset_code_channel_secure 观测位亮灯（见 metrics/readiness.go）。
+		metrics.IncResetCodeInsecure()
+		log.Printf("[重置码][SEC-WARN] 生产态使用 log 通道发送验证码 username=%s：请配 SMTP_HOST/SMTP_USER 并设 reset_code_channel=smtp", req.Username)
+	}
 
 	// log 通道防薅：必须匹配注册手机号/邮箱才发码（smtp 通道下选填，不阻断）
 	if channel == "log" {
@@ -206,9 +218,22 @@ func SendResetCode(c *gin.Context) {
 
 	msg := "验证码已发送至绑定邮箱 " + notify.MaskEmailAddr(user.Email) + "，10分钟内有效"
 	if channel == "log" {
-		msg = "验证码已生成（当前为日志通道，请查看服务端日志），10分钟内有效"
+		// S2 修复（2026-09-23）：旧文案"请查看服务端日志"把内部实现抛给最终用户——
+		// 真实用户没有日志读取权，等于告知"这条路走不通"却不给出口。
+		// 现按运维口径改：验证码仍照发（管理员/自助渠道可取），用户侧引导找管理员。
+		msg = "重置验证码已通过管理员通道下发，请联系客服或管理员协助完成改密（10分钟内有效）"
 	}
 	RespOK(c, msg, nil)
+}
+
+// GetResetChannel GET /api/v1/auth/reset-channel
+// 返回**实际生效**的找回密码通道（smtp|log），供前端决定文案（S2，2026-09-23 批二）。
+// 为什么需要这个端点：登录页原先把"验证码将输出到服务端日志（开发模式）"硬编码给最终用户，
+// 既泄露实现细节，又在邮件其实已配好的生产环境说假话。前端改为按本端点渲染后，
+// 文案与后端真实通道永不漂移。
+// 安全边界：只回通道种类，绝不回 SMTP 主机/账号/密钥等任何配置值。
+func GetResetChannel(c *gin.Context) {
+	RespOK(c, "", gin.H{"channel": notify.ResetSenderKind()})
 }
 
 // resetConfirmReq 重置密码确认请求体：用户名 + 验证码 + 新密码

@@ -32,6 +32,7 @@ import (
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
 	statemachine "ai-scrm/internal/state_machine"
+	"ai-scrm/internal/talkmining"
 	"ai-scrm/internal/webhook"
 	"ai-scrm/seed"
 	"context"
@@ -113,8 +114,20 @@ func main() {
 	}
 
 	// 2.5 初始化 Redis（多实例协调层：分布式锁/消息转交/缓存失效）
-	// 未启用(REDIS_ENABLED=false)或连接失败时自动降级为单实例内存模式
+	// 未启用(REDIS_ENABLED=false)→单实例内存模式；
+	// 声明启用却连不上→临时降级 + 后台自愈重探（O1-a，2026-09-23 批六）。
 	redisclient.Init(cfg.Redis)
+	// O1-a：声明位与连通位对账——旧实现只在 APP_REPLICAS>1 时 WARN，且 Ping 一次定终身，
+	// 于是 compose 里 app 抢在 redis ready 之前启动就永久跑成单机（双处理/丢广播）却无人知晓。
+	// 现在：①启动即点破降级事实；②注册恢复回调，自愈成功时通知一次并留痕。
+	redisclient.OnRecover(func() {
+		log.Printf("[Redis] ✅ 多实例协调语义已恢复（合并队列裁决/跨实例 WS 广播/缓存失效重新跨实例生效）")
+		notify.NotifyGroup("【运维】Redis 自愈成功：实例已恢复多实例协调语义（此前 REDIS_ENABLED=true 但连接失败，期间按单实例运行）")
+	})
+	if redisclient.DeclaredEnabled() && !redisclient.IsEnabled() {
+		log.Printf("⚠️  [O1] REDIS_ENABLED=true 但当前连不上（addr=%s）：已降级为单实例语义，后台每 10s 自愈重探，"+
+			"连上后自动恢复并通知。/status readiness 的 redis_declared_but_down 期间为红。", cfg.Redis.Addr)
+	}
 
 	// 2.6 初始化消息中心（SAAS_PLAN §2.5）：MQ_TYPE=log 降级 / kafka 真实总线
 	mq.Init(cfg.MQ)
@@ -212,6 +225,13 @@ func main() {
 			reasons = append(reasons, out.Note)
 		}
 		return out.Score, reasons
+	}
+
+	// 7.4 话术挖掘出稿的 LLM 归纳钩子（批五 D，2026-09-23 接线）：与 EvalLLMFunc 同形态，
+	// 经 strategy.GenerateEvals → llm.GenerateEvalsText 走 stage_models evals 阶段模型，
+	// 保证 talkmining 不直连 internal/llm（调用方向红线）。未注入时作业只统计不出稿。
+	talkmining.GenerateDraftFunc = func(tenantID uint, prompt string) (string, error) {
+		return strategy.GenerateEvals(tenantID, []ai.ChatMessage{{Role: "user", Content: prompt}}, 0.3)
 	}
 
 	// D9 包质量归因旁路：指标/群告警由组合根注入，归因包不直接依赖 service。
@@ -563,11 +583,26 @@ func main() {
 			return runtimecfg.DefaultSystemConfigService.GetInt(key, def)
 		}
 		runPackQuality := func() {
+			// 终局标签回填（批五 A，2026-09-23）：先于评分执行——arrive/deal 回填后
+			// SyncPackStats 当轮即可聚合出终局率；失败只记日志不中断后续步骤（同风格）。
+			if n, err := attribution.BackfillOutcomes(500); err != nil {
+				log.Printf("[PackQuality] 终局标签回填失败: %v", err)
+			} else if n > 0 {
+				log.Printf("[PackQuality] 终局标签回填 %d 行", n)
+			}
 			if _, err := attribution.ScoreReplyAttributions(500); err != nil {
 				log.Printf("[PackQuality] 离线评分失败: %v", err)
 			}
 			if err := attribution.SyncPackStats(); err != nil {
 				log.Printf("[PackQuality] 包效果快照失败: %v", err)
+			}
+			// L2 自动调权（批六补接线 2026-09-23）：必须排在 SyncPackStats 之后——判优读的就是
+			// 这份快照，排在前面会拿上一轮的旧率去改权重。
+			// experiment_auto_promote 默认 false，本调用在函数第一行返回，零查询零行为。
+			if n, err := strategy.RunAutoPromotionSweep(time.Now()); err != nil {
+				log.Printf("[PackQuality] 自动调权巡检失败: %v", err)
+			} else if n > 0 {
+				log.Printf("[PackQuality] 自动晋升 %d 条话术权重（详见 tenant_audit_logs:pack_experiment_promote）", n)
 			}
 			if !packCfgBool("evals_pack_alert_enabled", true) {
 				return
@@ -620,6 +655,44 @@ func main() {
 				}
 			} else {
 				safeRun("webhook:deliver", run)
+			}
+		}
+	}()
+
+	// 8.10 金牌顾问话术挖掘出稿（批五 D，2026-09-23）：每日一轮，把人工接管段的高转化顾问回复
+	// 按 (顾问 × 锚位/阶段 × 旅程阶段) 聚簇 → LLM 归纳 → 写入 templates 草稿（status=2）。
+	// 三层护栏：① 热开关 talkmining_draft_enabled 默认 false，关态在查库之前就短路；
+	// ② 只在 Redis 选主下执行（未启用 Redis 各实例直跑，幂等键 minedTemplateID 保证不重复出稿）；
+	// ③ 不在启动时跑——离线增强作业，避免每次重启都烧一轮真实 token。
+	go func() {
+		tk := time.NewTicker(24 * time.Hour)
+		defer tk.Stop()
+		for range tk.C {
+			// 入口闸按"系统层 or 任一租户覆盖"判定（2026-09-23 批六）：只看系统层会让
+			// "租户自己开了开关、作业永远不转"——真正的逐租户裁决在 RunDraftSweep 内部。
+			if !runtimecfg.SafeCfgBool("talkmining_draft_enabled", false) &&
+				!runtimecfg.SafeAnyTenantFlagOn("talkmining_draft_enabled") {
+				continue
+			}
+			run := func() {
+				st, err := talkmining.RunDraftSweep(
+					runtimecfg.SafeCfgInt("talkmining_window_days", 30),
+					runtimecfg.SafeCfgInt("talkmining_max_drafts_per_run", 20),
+					runtimecfg.SafeCfgInt("talkmining_min_samples", 0)) // 0 = 用包内默认门槛
+				if err != nil {
+					log.Printf("[话术挖掘] 本轮失败: %v", err)
+					return
+				}
+				log.Printf("[话术挖掘] 本轮完成 租户=%d(未开开关%d·失败%d) 新草稿=%d 样本不足=%d 已存在=%d LLM失败=%d",
+					st.Tenants, st.TenantsDisabled, st.TenantsFailed, st.Created, st.SkippedInsufficient, st.SkippedExisting, st.SkippedLLM)
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:talkmining:draft", 20*time.Hour); h != nil {
+					safeRun("talkmining:draft", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("talkmining:draft", run)
 			}
 		}
 	}()
@@ -815,10 +888,16 @@ func registerRoutes(r *gin.Engine) {
 		// 类开关代码化逐项体检，只展示不群告警（配置红灯重启前会常亮，刷群无意义）
 		readyChecks := metrics.ComputeReadiness()
 		ready, rCrit, rWarn := metrics.ReadinessSummary(readyChecks)
+		// 数据层卫生（D5 批六，2026-09-23）：孤儿消息行数与归档前瞻积压直出为字段，
+		// 让"清没清干净"可被冒烟脚本稳定断言（旧口径只能人肉查库，迁移 019 回填后无回归护栏）。
+		orphanMsgs, archiveBacklog, archiveOn := metrics.DataHygiene()
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
 			"version":             "v2.16.0",
 			"uptime_sec":          int(time.Since(startTime).Seconds()),
 			"db_ok":               snap.DBOK,
+			"orphan_messages":     orphanMsgs,
+			"archive_enabled":     archiveOn,
+			"archive_backlog":     archiveBacklog,
 			"redis_enabled":       redisclient.IsEnabled(),
 			"replicas":            config.GlobalConfig.Server.Replicas,
 			"critical_alerts_24h": crit24h,

@@ -29,6 +29,7 @@ import (
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
+	"ai-scrm/internal/logx"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/service"
@@ -57,117 +58,277 @@ func detectPhone(input string) string {
 	return chatflow.PhoneRegex.FindString(input)
 }
 
-// OpenAPIChatCompletions POST /openapi/v1/chat/completions
-// OpenAPIChatCompletions 通过 API Key 发起对话。
+// openAPIChatCtx A3 收敛（2026-09-22 批四）：OpenAPI 对话链路的阶段上下文。
+//
+// 为什么非改不可：本入口此前是全系统唯一"绕过合并队列"的对话写入口——直接
+// `Infer` + `OrchestrateReply`，既没有 batchID/epoch（无投递认领、无 SetReply 归还），
+// 也没有人工锁定态早退。后果是三件：
+//  1. 外部渠道客户连发 3 条 → 3 次 AI 调用、3 条互相矛盾的回答（web/通道链只会 1 条合并回答），配额白烧；
+//  2. 会话被顾问锁定后，OpenAPI 仍照常以 AI 身份抢答，人工接管形同虚设；
+//  3. 归因样本 reply_attributions 里 openapi 行的口径与 web 行不可比（批五择臂的前提被破坏）。
+//
+// 现在与两条 C 端链同构：入站落库 → 硬边界 → 人工锁定裁决 → 入队合并 → 持权者生成 →
+// SetReply 归还批次 → ClaimReplyDelivery 认领出站。响应契约（OpenAI chat/completions
+// 裸 JSON / SSE 逐帧）逐字不变，调用方无感。
+type openAPIChatCtx struct {
+	c            *gin.Context
+	tenantID     uint
+	trace        string // E3：入站 trace，透传给合并队列做同 trace 日志贯穿
+	req          openAPIChatReq
+	userInput    string // 本次请求最后一条 user 消息
+	channel      string
+	customer     *model.Customer
+	conversation *model.Conversation
+
+	mergedContent   string // 入队后本批次的合并内容（持权者据此生成）
+	processEpoch    uint64 // 批次代际：SetReply / ClaimReplyDelivery 的 fencing 凭据
+	holdsProcessing bool   // 是否持有处理权（true 时任何早退都必须 SetReply 归还）
+}
+
+// OpenAPI 出站面常量
+const (
+	// openAPIDeliveryChannel 投递认领的通道维度。取 0 与真实通道（tenant_channels.id 从 1 起）
+	// 天然分键：同一批次里"微信客服 worker 出站到微信"和"OpenAPI 同步回给渠道方"是两条
+	// 独立出站路径，彼此不该互斥；0 只用来封堵 OpenAPI 自身在同批内的重复落库/重复回包。
+	openAPIDeliveryChannel = 0
+	// openAPIDegradedReply 等待者兜底文案：与 MessageQueueService.WriteDegradedNotice 同源，
+	// 处理者实例宕机等极端场景下，同步调用方也要拿到一句人话而不是空 content。
+	openAPIDegradedReply = "系统繁忙，请稍等片刻再试一次"
+)
+
+// OpenAPIChatCompletions POST /openapi/v1/chat/completions —— 通过 API Key 发起对话。
+// 各阶段方法返回 true 表示已响应客户端，主流程直接 return。
 func OpenAPIChatCompletions(c *gin.Context) {
 	extendWriteDeadlineForAI(c) // D4：OpenAPI 对话同步等 AI 链，延长本连接写截止（调用方 http 超时自管）
-	tenantID := middleware.EffectiveTenantID(c)
-	trace := middleware.GetTraceID(c) // P1-3：全链路 trace
 
-	var req openAPIChatReq
-	if err := c.ShouldBindJSON(&req); err != nil {
-		log.Printf("[OpenAPI][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
-		RespErrBind(c, err)
+	s := &openAPIChatCtx{
+		c:        c,
+		tenantID: middleware.EffectiveTenantID(c),
+		trace:    middleware.GetTraceID(c), // P1-3/E3：全链路 trace
+	}
+	if s.openAPIBind() {
 		return
 	}
-	if req.ExternalUserID == "" {
-		RespErr(c, http.StatusBadRequest, 400, "external_user_id 必填")
+	if s.openAPIResolveParty() {
 		return
 	}
-	// 取最后一条用户消息作为本轮输入
-	userInput := ""
-	for i := len(req.Messages) - 1; i >= 0; i-- {
-		if req.Messages[i].Role == "user" && req.Messages[i].Content != "" {
-			userInput = req.Messages[i].Content
+	if s.openAPIStoreInbound() {
+		return
+	}
+	if s.openAPIHardBoundary() {
+		return
+	}
+	if s.openAPITakeover() {
+		return
+	}
+	if s.openAPIEnqueue() {
+		return
+	}
+	s.openAPIProcessAndReply()
+}
+
+// openAPIBind 解析请求体并取出本轮输入。副作用：绑定失败(400)/缺 external_user_id(400)/
+// messages 无用户内容(400) 时响应并 return true；否则填充 s.req / s.userInput / s.channel。
+func (s *openAPIChatCtx) openAPIBind() bool {
+	if err := s.c.ShouldBindJSON(&s.req); err != nil {
+		log.Printf("[OpenAPI][trace=%s] 参数绑定失败 tenant=%d: %v", s.trace, s.tenantID, err)
+		RespErrBind(s.c, err)
+		return true
+	}
+	if s.req.ExternalUserID == "" {
+		RespErr(s.c, http.StatusBadRequest, 400, "external_user_id 必填")
+		return true
+	}
+	// 取最后一条用户消息作为本轮输入（OpenAI 多轮数组里渠道方可能把历史一起发来，只回本轮）
+	for i := len(s.req.Messages) - 1; i >= 0; i-- {
+		if s.req.Messages[i].Role == "user" && s.req.Messages[i].Content != "" {
+			s.userInput = s.req.Messages[i].Content
 			break
 		}
 	}
-	if userInput == "" {
-		RespErr(c, http.StatusBadRequest, 400, "messages 中无用户内容")
-		return
+	if s.userInput == "" {
+		RespErr(s.c, http.StatusBadRequest, 400, "messages 中无用户内容")
+		return true
 	}
-	channel := req.Channel
-	if channel == "" {
-		channel = "openapi"
+	s.channel = s.req.Channel
+	if s.channel == "" {
+		s.channel = "openapi"
 	}
+	return false
+}
 
-	// 1. 解析/创建客户（external_user_id 租户内映射）
-	customer, err := resolveOpenAPICustomer(c, tenantID, channel, req.ExternalUserID)
+// openAPIResolveParty 解析/创建客户与会话。副作用：任一失败(500) 时响应并 return true。
+func (s *openAPIChatCtx) openAPIResolveParty() bool {
+	customer, err := resolveOpenAPICustomer(s.c, s.tenantID, s.channel, s.req.ExternalUserID)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "客户解析失败")
-		return
+		RespErr(s.c, http.StatusInternalServerError, 500, "客户解析失败")
+		return true
 	}
-	// 2. 解析/创建会话（external_user_id + session_id 隔离）
-	conversation, err := resolveOpenAPIConversation(c, tenantID, customer.ID, channel, req.SessionID)
-	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "会话解析失败")
-		return
-	}
+	s.customer = customer
 
-	// 3. 持久化客户消息
+	conversation, err := resolveOpenAPIConversation(s.c, s.tenantID, customer.ID, s.channel, s.req.SessionID)
+	if err != nil {
+		RespErr(s.c, http.StatusInternalServerError, 500, "会话解析失败")
+		return true
+	}
+	s.conversation = conversation
+	return false
+}
+
+// openAPIStoreInbound 客户消息落库 + 接钩归因回填 + 顾问端推送 + 持续打标。
+// 副作用：落库失败(500) 时响应并 return true。
+func (s *openAPIChatCtx) openAPIStoreInbound() bool {
 	now := time.Now()
 	customerMsg := model.Message{
-		TenantID:       tenantID,
-		ConversationID: conversation.ID,
-		CustomerID:     customer.ID,
+		TenantID:       s.tenantID,
+		ConversationID: s.conversation.ID,
+		CustomerID:     s.customer.ID,
 		SenderType:     "customer",
-		Content:        userInput,
+		Content:        s.userInput,
 		MessageType:    "text",
 		CreatedAt:      now,
 	}
-	if err := db.RQ(c).Create(&customerMsg).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "消息落库失败")
-		return
+	if err := db.RQ(s.c).Create(&customerMsg).Error; err != nil {
+		RespErr(s.c, http.StatusInternalServerError, 500, "消息落库失败")
+		return true
 	}
 	// D9：外部渠道客户回复同样回填上一轮 AI 接钩归因。
-	_ = attribution.MarkHookedBeforeMessage(tenantID, conversation.ID, customerMsg.ID)
+	_ = attribution.MarkHookedBeforeMessage(s.tenantID, s.conversation.ID, customerMsg.ID)
 	// P1-1 实时推送：外部渠道客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
-	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "customer",
-		customerMsg.ID, userInput, customer.Name, time.Now().Format("2006-01-02T15:04:05Z"))
+	notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer",
+		customerMsg.ID, s.userInput, s.customer.Name, now.Format("2006-01-02T15:04:05Z"))
 
-	// 4. 持续打标（与站内一致）
-	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(tenantID, customer.ID, userInput); tagErr == nil && len(autoTags) > 0 {
+	// 持续打标（与站内一致）
+	if autoTags, tagErr := service.DefaultTagService.AutoTagFromText(s.tenantID, s.customer.ID, s.userInput); tagErr == nil && len(autoTags) > 0 {
 		var uc model.Customer
-		if db.RQ(c).First(&uc, customer.ID).Error == nil {
-			service.DefaultTagService.ApplyTagWeightsToTVector(tenantID, &uc, uc.BuildBaseTVector())
-			db.RQ(c).Model(&uc).Update("t_vector", uc.TVectorJSON)
+		if db.RQ(s.c).First(&uc, s.customer.ID).Error == nil {
+			service.DefaultTagService.ApplyTagWeightsToTVector(s.tenantID, &uc, uc.BuildBaseTVector())
+			db.RQ(s.c).Model(&uc).Update("t_vector", uc.TVectorJSON)
 		}
 	}
+	return false
+}
 
-	// 5. 硬边界：无关话题拦截（0延迟，不走AI，不消耗配额）
-	if service.IsOffTopicForTenant(tenantID, userInput) {
-		reply := service.GetOffTopicReplyForTenant(tenantID, userInput)
-		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "offtopic_hardbound")
-		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
-		return
+// openAPIHardBoundary 第一层：无关话题硬边界（0 延迟，不入队、不消耗配额）。
+// 副作用：命中时落库 AI 消息并响应 return true。
+func (s *openAPIChatCtx) openAPIHardBoundary() bool {
+	if !service.IsOffTopicForTenant(s.tenantID, s.userInput) {
+		return false
+	}
+	reply := service.GetOffTopicReplyForTenant(s.tenantID, s.userInput)
+	persistOpenAPIAIMessage(s.c, s.conversation, s.customer.ID, s.tenantID, s.channel, reply, 0, "", "offtopic_hardbound")
+	openAIRespond(s.c, s.req.Stream, s.req.Model, reply, estimateTokens(s.userInput), estimateTokens(reply))
+	return true
+}
+
+// openAPITakeover 人工锁定态早退（A1 语义 + A3 补齐）。
+//
+// 放在入队**之前**：这轮既然不由 AI 应答，就不该为它开一个合并批次（开了就得再归还处理权，
+// 且会把后续真正的 AI 轮次并进一个"没人生成回复"的批）。裁决走唯一真相源
+// chatflow.HumanTakeoverDecide，与 web/C 端链同判（超时会由该函数自己落库重开 AI）。
+//
+// 跳过 AI 时不落库 AI 消息（顾问的话才是本轮答案，落一条 AI 冒充回复会污染历史与归因），
+// 只刷新会话活跃时间并回一句中性托管话术——OpenAPI 是同步接口，没有"静默不回包"这一选项。
+func (s *openAPIChatCtx) openAPITakeover() bool {
+	dec := chatflow.HumanTakeoverDecide(s.conversation)
+	if dec.Action != chatflow.TakeoverSkipAI {
+		if dec.Reopened {
+			log.Printf("[OpenAPI] 会话%d 顾问超时未回复，已自动重开AI回复", s.conversation.ID)
+		}
+		return false
+	}
+	log.Printf("[OpenAPI] 客户%d 会话%d 人工锁定态跳过AI(route=%s)", s.customer.ID, s.conversation.ID, dec.Route)
+	now := time.Now()
+	db.RQ(s.c).Model(&model.Conversation{}).Where("id = ? AND tenant_id = ?", s.conversation.ID, s.tenantID).
+		Update("last_message_at", now)
+	reply := service.GetHumanTakeoverReplyForTenant(s.tenantID, s.userInput)
+	openAIRespond(s.c, s.req.Stream, s.req.Model, reply, estimateTokens(s.userInput), estimateTokens(reply))
+	return true
+}
+
+// openAPIRelease 归还处理权（P0-8 纪律）：持权者的每条早退路径都必须 SetReply，
+// 否则同批等待者要挂到 processing_lock_timeout（默认 600s）才被自愈释放。
+// 有回复正文就带正文（等待者能直接复用），没有则带空串表示"本批不产出"。
+func (s *openAPIChatCtx) openAPIRelease(reply string) {
+	if s.holdsProcessing {
+		service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, reply)
+	}
+}
+
+// openAPIEnqueue 第三层：入合并队列并等窗口收账。
+// 副作用：三分支——简单消息直接快速回、等待者复用处理者回复、拿到处理权则继续走生成；
+// 前两支响应后 return true。
+//
+// 与 web 链的一处刻意的差异：本链不做"打字延迟/模拟真人延迟"（CancellableSleep）。
+// OpenAPI 的调用方是渠道服务端而非人类客户端，人为拖延只会撞对方的 http 超时，
+// 且外部渠道的话术人设由渠道侧自己渲染。
+func (s *openAPIChatCtx) openAPIEnqueue() bool {
+	logx.WithTrace(middleware.CtxWithTrace(s.c)).Info("openapi 入站", "tenant_id", s.tenantID, "customer_id", s.customer.ID)
+	mergedContent, shouldProcess, waiterReply, _, isSimple, _, epoch :=
+		service.DefaultMessageQueueService.EnqueueAndWait(s.tenantID, s.customer.ID, s.userInput, s.trace)
+	s.mergedContent = mergedContent
+	s.processEpoch = epoch
+
+	// 简单消息（"在吗"类）：不进批次、不与其它请求争锁
+	if isSimple {
+		defer service.DefaultMessageQueueService.SimpleMessageDone(s.tenantID, s.customer.ID)
+		simpleReply := service.GetSimpleReply(s.userInput)
+		persistOpenAPIAIMessage(s.c, s.conversation, s.customer.ID, s.tenantID, s.channel,
+			simpleReply, 0, "", "simple_fast")
+		openAIRespond(s.c, s.req.Stream, s.req.Model, simpleReply,
+			estimateTokens(s.userInput), estimateTokens(simpleReply))
+		return true
 	}
 
-	// 6. 到店倾向/留资（外部渠道同样捕获线索 → 合并+留资+分配顾问）
-	if service.IsStoreVisitIntentForTenant(tenantID, userInput) && !isCapturedStage(customer.JourneyStage) {
-		if phone := detectPhone(userInput); phone != "" {
+	// 等待者：本条已被并进别人持有的批次，回复由处理者生成并落库。
+	// 这里只回响应，绝不重复落库/重复扣费（重复落库会在站内历史里出现两条 AI 消息）。
+	if !shouldProcess {
+		txt := waiterReply
+		if txt == "" {
+			txt = openAPIDegradedReply
+		}
+		openAIRespond(s.c, s.req.Stream, s.req.Model, txt,
+			estimateTokens(s.userInput), estimateTokens(txt))
+		return true
+	}
+
+	s.holdsProcessing = true
+	return false
+}
+
+// openAPIProcessAndReply 持权者的正常流程：留资捕获 → 策略推理 → 人工分支早退 →
+// 编排层生成 → 内容安全闸门 → 投递认领 → 落库/归因 → SetReply 唤醒等待者 → 响应。
+// 输入一律用合并后的 s.mergedContent（不再用单条 s.userInput），与站内口径一致。
+func (s *openAPIChatCtx) openAPIProcessAndReply() {
+	tenantID, customer, conversation := s.tenantID, s.customer, s.conversation
+
+	// 到店倾向/留资（外部渠道同样捕获线索 → OneID 合并+留资+分配顾问）
+	if service.IsStoreVisitIntentForTenant(tenantID, s.mergedContent) && !isCapturedStage(customer.JourneyStage) {
+		if phone := detectPhone(s.mergedContent); phone != "" {
 			if mergedID := chatflow.MergeCustomerByPhone(customer, phone); mergedID > 0 {
 				var reloaded model.Customer
-				if db.RQ(c).First(&reloaded, mergedID).Error == nil {
+				if db.RQ(s.c).First(&reloaded, mergedID).Error == nil {
 					customer = &reloaded
+					s.customer = &reloaded
 					// 重新定位活跃会话（合并后可能切换）
 					var conv model.Conversation
-					if db.RQ(c).Where("customer_id = ? AND status = ?", customer.ID, "active").
+					if db.RQ(s.c).Where("customer_id = ? AND status = ?", customer.ID, "active").
 						Order("updated_at DESC").First(&conv).Error == nil {
 						conversation = &conv
+						s.conversation = &conv
 					}
 				}
 			}
-			applyOpenAPILeadCapture(c, customer, phone)
+			applyOpenAPILeadCapture(s.c, customer, phone)
 		}
 	}
 
-	// 7. 构建策略输入 → 推理 → 编排层统一话术入口（与顾问触发AI同链路）
+	// 构建策略输入 → 推理（与顾问触发 AI 同链路）
 	tVector := customer.BuildBaseTVector()
-	state := conversation.GetState()
 	strategyInput := strategy.StrategyInput{
 		TVector:        tVector,
-		State:          state,
-		CustomerInput:  userInput,
+		State:          conversation.GetState(),
+		CustomerInput:  s.mergedContent,
 		CustomerTags:   customer.GetTags(),
 		CustomerID:     customer.ID,
 		ConversationID: conversation.ID,
@@ -177,17 +338,23 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		DeptIDs:        nil, // 外部渠道无顾问部门链，纯租户语境（仅见行业+企业两层包）
 	}
 	strategyOutput := strategy.DefaultEngine.Infer(strategyInput)
+
 	// P2-21 修复(2026-09-09)：路由结果为 human/pending_human 时不再发 AI 话术——
 	// 原实现忽略 RouteResult 直接 OrchestrateReply，已留资线索被 AI 接管（与站内两分支语义矛盾）。
-	// 对齐站内：人工接管语义返回固定提示，不生成/不计数。
+	// A3 补充：本分支已持处理权，早退前必须 SetReply 归还，否则等待者挂死。
 	if strategyOutput.RouteResult == "human" || strategyOutput.RouteResult == "pending_human" {
-		reply := service.GetHumanTakeoverReplyForTenant(tenantID, userInput)
-		persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, reply, 0, "", "human_takeover")
+		reply := service.GetHumanTakeoverReplyForTenant(tenantID, s.mergedContent)
+		aiMsgID := persistOpenAPIAIMessage(s.c, conversation, customer.ID, tenantID, s.channel, reply, 0, "", "human_takeover")
 		_ = attribution.MarkPendingHuman(tenantID, conversation.ID, customer.ID)
-		openAIRespond(c, req.Stream, req.Model, reply, estimateTokens(userInput), estimateTokens(reply))
+		notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai",
+			aiMsgID, reply, "AI顾问", time.Now().Format("2006-01-02T15:04:05Z"))
+		s.openAPIRelease(reply)
+		openAIRespond(s.c, s.req.Stream, s.req.Model, reply,
+			estimateTokens(s.mergedContent), estimateTokens(reply))
 		return
 	}
-	aiReply := flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(c), customer, conversation.ID, userInput, &strategyOutput, nil)
+
+	aiReply := flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(s.c), customer, conversation.ID, s.mergedContent, &strategyOutput, nil)
 
 	// 内容安全闸门（C1）：外部渠道出站同样过滤；BLOCK 用退场语替换，绝不下发违规原文
 	if action, out := ContentsafetyGate(aiReply, conversation.ID); aiReply != "" && action != GatePass {
@@ -199,8 +366,19 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		}
 	}
 
-	// 8. 持久化 AI 消息
-	aiMsgID := persistOpenAPIAIMessage(c, conversation, customer.ID, tenantID, channel, aiReply,
+	// A3 投递认领：同批次同出站面只允许一次"落库 + 推送"。认领失败说明同批已有 OpenAPI
+	// 侧完成投递（极端：处理权被超时自愈转交后又复活），此时把已生成的文本回给调用方，
+	// 但不再重复写消息行——宁可外部渠道看到一条重复话术，也不在站内历史里留双行。
+	if !service.DefaultMessageQueueService.ClaimReplyDelivery(tenantID, customer.ID, s.processEpoch, openAPIDeliveryChannel) {
+		log.Printf("[OpenAPI] 客户%d 批次%d 投递权已被同批认领，本次不落库不推送", customer.ID, s.processEpoch)
+		s.openAPIRelease(aiReply)
+		openAIRespond(s.c, s.req.Stream, s.req.Model, aiReply,
+			estimateTokens(s.mergedContent), estimateTokens(aiReply))
+		return
+	}
+
+	// 持久化 AI 消息
+	aiMsgID := persistOpenAPIAIMessage(s.c, conversation, customer.ID, tenantID, s.channel, aiReply,
 		strategyOutput.FinalAnchor, strategyOutput.TemplateID, "ai_triggered_by_openapi")
 	// P1-1 实时推送：外部渠道 AI 回复通知客户端与顾问端（推送消息内容，前端即时更新）
 	notifyWSWithContent(tenantID, customer.ID, conversation.ID, "ai",
@@ -226,8 +404,12 @@ func OpenAPIChatCompletions(c *gin.Context) {
 		IntentAfter:    openIntentAfter,
 	})
 
-	// 9. 返回 OpenAI 兼容结构（stream=true 走 SSE 逐帧，false 全量 JSON）
-	openAIRespond(c, req.Stream, req.Model, aiReply, estimateTokens(userInput), estimateTokens(aiReply))
+	// 唤醒等待者（含其它实例转交来的消息）后再返回
+	s.openAPIRelease(aiReply)
+
+	// 返回 OpenAI 兼容结构（stream=true 走 SSE 逐帧，false 全量 JSON）
+	openAIRespond(s.c, s.req.Stream, s.req.Model, aiReply,
+		estimateTokens(s.mergedContent), estimateTokens(aiReply))
 }
 
 // openAIRespond 按 stream 决定返回形态：

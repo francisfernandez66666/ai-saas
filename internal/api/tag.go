@@ -23,6 +23,8 @@ import (
 // ============================================================
 
 // GetTagList 获取标签列表（分页+分类筛选+关键词搜索+状态筛选）
+// apidump:ts Paginated<Tag>
+// 标签字典分页列表。
 func GetTagList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -66,6 +68,8 @@ func GetTagList(c *gin.Context) {
 }
 
 // GetTagDetail 获取标签详情
+// apidump:ts Tag
+// 单个标签定义。
 func GetTagDetail(c *gin.Context) {
 	id := c.Param("id")
 
@@ -79,6 +83,8 @@ func GetTagDetail(c *gin.Context) {
 }
 
 // CreateTag 创建标签
+// apidump:ts Tag
+// 创建成功回整行标签。
 func CreateTag(c *gin.Context) {
 	var req struct {
 		Name        string  `json:"name" binding:"required"`
@@ -118,6 +124,8 @@ func CreateTag(c *gin.Context) {
 }
 
 // UpdateTag 更新标签
+// apidump:ts Tag
+// 更新成功回整行标签。
 func UpdateTag(c *gin.Context) {
 	id := c.Param("id")
 
@@ -183,6 +191,8 @@ func DeleteTag(c *gin.Context) {
 
 // EnableTag 启用标签
 // 上线后自动触发缓存热更新
+// apidump:ts Tag
+// 启用后回整行标签。
 func EnableTag(c *gin.Context) {
 	id := c.Param("id")
 
@@ -203,6 +213,8 @@ func EnableTag(c *gin.Context) {
 
 // DisableTag 下线标签
 // 下线后自动触发缓存热更新
+// apidump:ts Tag
+// 下线后回整行标签。
 func DisableTag(c *gin.Context) {
 	id := c.Param("id")
 
@@ -635,6 +647,8 @@ func DisableTagWeight(c *gin.Context) {
 // ============================================================
 
 // GetCustomerTags 获取客户标签列表（P1-8 修复：先校验客户租户归属再查）
+// apidump:ts CustomerTagRow[]
+// 客户身上的标签关联（含来源与权重）。
 func GetCustomerTags(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
 	tid := db.EffectiveTenantIDFromGin(c)
@@ -657,6 +671,8 @@ func GetCustomerTags(c *gin.Context) {
 
 // AddTagsToCustomer 手动给客户打标签
 // 接收tag_ids数组
+// apidump:ts TagNames
+// 打标成功后回传的标签名列表。
 func AddTagsToCustomer(c *gin.Context) {
 	customerID, _ := strconv.Atoi(c.Param("id"))
 	tid := db.EffectiveTenantIDFromGin(c)

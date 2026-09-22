@@ -287,7 +287,10 @@ func authOf(path string) []string {
 		"/api/v1/packages",
 		"/api/v1/public/branding",
 		"/api/v1/openapi/spec",
-		"/api/v1/turnstile/sitekey":
+		"/api/v1/turnstile/sitekey",
+		// S2（2026-09-22 批二）自助改密的渠道探测端点：故意公开（用户在"忘了密码"页调用，
+		// 此时不可能有登录态），注册在 routes_public.go 的免鉴权组——启发式须与注册期一致。
+		"/api/v1/auth/reset-channel":
 		add("public")
 		return out
 	}

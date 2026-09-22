@@ -89,6 +89,31 @@ else
   fi
 fi
 
+# ---- 4.5 生成物 unknown 棘轮（E-1，2026-09-23 批五门禁换目标）----
+# api.d.ts 是 codegen 产物：某路由的响应类型来自 handler 文档注释里的
+# `// apidump:ts <前端类型名>` 注解（cmd/apidump 扫描 → api.schema.json → gen_api_types.mjs）。
+# 没有注解就落成 unknown —— 前端拿 payload 只能自己 as 一遍，契约漂移在编译期无人守，
+# 这正是"payload 类型契约"名存实亡的形态（本轮实测 244 条 unknown / 250 条路由）。
+# 治理方式与 as-any/裸 fetch 同族：按页分批补注解 + 在 types.ts 落真接口，此处封住新增。
+# 注意 BSD grep 计零也退出 1，故不能用 `|| echo 0` 兜底（会拼出 "00"）；先取原样输出再判空。
+UNKNOWN_TYPES=$($GREP -cE '^[[:space:]]*"[A-Z]+ [^"]+": unknown$' frontend-react/src/types/api.d.ts || true)
+UNKNOWN_TYPES=$(printf '%s' "$UNKNOWN_TYPES" | tr -d '[:space:]')
+[ -z "$UNKNOWN_TYPES" ] && UNKNOWN_TYPES=0
+UNK_BASELINE_FILE="frontend-react/src/types/.api_dts_unknown_baseline"
+if [ ! -f "$UNK_BASELINE_FILE" ]; then
+  echo "$UNKNOWN_TYPES" > "$UNK_BASELINE_FILE"
+  echo "  INFO  api.d.ts unknown 基线已建立: $UNKNOWN_TYPES"
+else
+  UNK_BASELINE=$(tr -d '[:space:]' < "$UNK_BASELINE_FILE")
+  if [ "$UNKNOWN_TYPES" -gt "$UNK_BASELINE" ]; then
+    echo "  FAIL  api.d.ts 响应 unknown 数量上升: $UNK_BASELINE → ${UNKNOWN_TYPES}（新端点请在 handler 上补 apidump:ts 注解并在 types.ts 定义接口，只降不升）"
+    FAIL=1
+  elif [ "$UNKNOWN_TYPES" -lt "$UNK_BASELINE" ]; then
+    echo "  INFO  api.d.ts 响应 unknown 数量下降: $UNK_BASELINE → ${UNKNOWN_TYPES}（基线自动收紧）"
+    echo "$UNKNOWN_TYPES" > "$UNK_BASELINE_FILE"
+  fi
+fi
+
 # ---- 5. 裸 fetch 棘轮只降不升（P2-6，2026-09-19 审计批三）----
 # 统一请求层 lib/api.ts 负责 30s 超时/401 登出/租户头；业务页裸 fetch( 每多一处
 # 就多一个击穿点（DashboardTab 超管代管 400 静默即坐实例）。存量 46 处分批迁移，
@@ -112,6 +137,6 @@ else
 fi
 
 if [ "$FAIL" = "0" ]; then
-  echo "  PASS  T7 契约检查（golden/类型/路径/any 基线/裸 fetch 棘轮）"
+  echo "  PASS  T7 契约检查（golden/类型/路径/any 基线/unknown 棘轮/裸 fetch 棘轮）"
 fi
 exit $FAIL

@@ -578,10 +578,10 @@ func billingWebhookAlipay(c *gin.Context) {
 		RespErr(c, http.StatusBadRequest, 400, "通知缺少 notify_id")
 		return
 	}
-	if billing.WebhookNonceSeen(params["notify_id"]) {
-		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（notify_id 已消费）")
-		return
-	}
+	// M2 修复(2026-09-22)：nonce 消费点从"验签之前"下移到"验签通过之后"（对齐微信分支口径）。
+	// 旧顺序有两个后果：①任何人拿一个 notify_id 抢先打一发假签名，就能把真通知的槽位占死，
+	// 真到账永久 409；②结构性失败（公钥未配 503 / 验签失败 403）后支付宝按策略重推，
+	// 同 notify_id 一律 409 —— 配置修好后这笔钱也永远进不来。验签后消费则两者都消除。
 	pubPEM := getPayConf("pay_alipay_public_key", "PAY_ALIPAY_PUBLIC_KEY")
 	if pubPEM == "" {
 		RespErr(c, http.StatusServiceUnavailable, 503, "支付宝平台公钥未配置（pay_alipay_public_key），无法验签")
@@ -597,7 +597,12 @@ func billingWebhookAlipay(c *gin.Context) {
 		RespErr(c, http.StatusForbidden, 403, err.Error())
 		return
 	}
+	if billing.WebhookNonceSeen(params["notify_id"]) {
+		RespErr(c, http.StatusConflict, int(CodeBizErr), "重复回调（notify_id 已消费）")
+		return
+	}
 	if orderNo == "" {
+		billing.WebhookNonceRelease(params["notify_id"]) // 结构性失败归还：报文缺单号，重推仍应被处理
 		RespErr(c, http.StatusBadRequest, 400, "通知缺少 out_trade_no")
 		return
 	}
@@ -610,6 +615,7 @@ func billingWebhookAlipay(c *gin.Context) {
 	// 官方规范强制三项核对：app_id / total_amount / seller_id（金额按订单实付分毫比对）。
 	var payOrder model.BillingOrder
 	if err := db.DB.Where("order_no = ?", orderNo).First(&payOrder).Error; err != nil {
+		billing.WebhookNonceRelease(params["notify_id"]) // 404 结构性失败归还，订单补建后重推可入账
 		RespErr(c, http.StatusNotFound, 404, "订单不存在")
 		return
 	}
@@ -619,6 +625,7 @@ func billingWebhookAlipay(c *gin.Context) {
 		int64(payOrder.AmountCents)); verr != nil {
 		log.Printf("[Billing][ERROR] 支付宝回调参数核对失败 order=%s: %v", orderNo, verr)
 		notify.NotifyGroup(fmt.Sprintf("【支付安全】支付宝回调参数核对被拒：订单 %s（%v），疑似跨商户伪造到账，请核查", orderNo, verr))
+		// 403 是安全拒绝（伪造到账嫌疑），故意不归还 nonce：避免攻击者反复试探同一 notify_id
 		RespErr(c, http.StatusForbidden, 403, verr.Error())
 		return
 	}
