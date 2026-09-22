@@ -1,7 +1,7 @@
 // 客户线索 Tab（F1/F10）：阶段筛选、列表、详情抽屉、编辑、打标、导出。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Drawer, Input, InputNumber, MessagePlugin, Select, Tag, Textarea } from 'tdesign-react'
-import { apiFetch, AUTH } from '../../lib/api'
+import { apiFetch, AUTH, type ApiEnvelope } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import type { CrudRow } from '../../hooks/useCrud'
 import type { TableRowData } from '../../types'
@@ -82,7 +82,7 @@ export function CustomersTab() {
   useEffect(() => { void load() }, [load])
   useEffect(() => {
     ;(async () => {
-      const [t, u] = await Promise.all([AUTH('/api/v1/admin/tags?page_size=200'), AUTH('/api/v1/org/users')])
+      const [t, u] = await Promise.all([AUTH<ApiEnvelope<'/api/v1/admin/tags'>>('/api/v1/admin/tags?page_size=200'), AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')])
       // P1-9(2026-09-20)：选项 value 从标签名改为标签 ID——POST /customers/:id/tags 契约是 tag_ids，
       // 名称仍留在 label 里展示；旧的 PUT /advisor/customer/:id/tags（按名覆盖）保留给移动端工作台
       if (t?.code === 0) setTagOptions((t.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.id) })))
@@ -175,7 +175,7 @@ export function CustomersTab() {
         remark: form.remark || undefined,
       },
     })
-    const cust = await AUTH(`/api/v1/customers/${cid}`, {
+    const cust = await AUTH<ApiEnvelope<'/api/v1/customers/:id'>>(`/api/v1/customers/${cid}`, {
       method: 'PUT',
       body: {
         intent_score: Number(form.intent_score) || undefined,
@@ -242,7 +242,7 @@ export function CustomersTab() {
   async function submitCreate() {
     if (!String(create.name || '').trim() && !String(create.phone || '').trim()) { MessagePlugin.error('姓名或手机号至少填一项'); return }
     setSaving(true)
-    const j = await AUTH('/api/v1/customers', {
+    const j = await AUTH<ApiEnvelope<'/api/v1/customers'>>('/api/v1/customers', {
       method: 'POST',
       body: {
         name: create.name || undefined,

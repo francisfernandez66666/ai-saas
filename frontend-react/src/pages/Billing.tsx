@@ -8,6 +8,7 @@ import { Dialog, Button, Input, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { ConfirmDialog } from '../lib/ui'
 import { getToken, apiFetch } from '../lib/api'
+import { isStaff } from '../lib/roles'
 import type { TableRowData } from '../types'
 
 // 当前租户套餐用量类型（收银台顶部展示）
@@ -45,7 +46,7 @@ export default function Billing() {
   const brand = useBrand()
   // P1-42(2026-09-09)：订单订阅/支付接口须管理员权限——成员角色(sales/user)看/
   // /app/billing 不应 403 白屏：只展示额度与套餐信息（订阅/支付/订单区隐藏）
-  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(localStorage.getItem('role') || '')
+  const isAdmin = isStaff(localStorage.getItem('role') || '')
   // 当前套餐用量
   const [quota, setQuota] = useState<Quota | null>(null)
   // 商业包列表

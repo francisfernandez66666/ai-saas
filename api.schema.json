@@ -5,6 +5,7 @@
     "meta_endpoints": [
       "GET /health",
       "GET /status",
+      "GET /status/detail",
       "GET /metrics"
     ],
     "spa_fallback": true
@@ -17,7 +18,7 @@
       "handler": "AdminDeleteAPIKey",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -27,7 +28,7 @@
       "handler": "DeleteChannel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -37,7 +38,7 @@
       "handler": "TenantKBDelete",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -47,7 +48,7 @@
       "handler": "DeleteBrand",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -57,7 +58,7 @@
       "handler": "DeleteCompare",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -67,7 +68,7 @@
       "handler": "DeleteFragment",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -77,7 +78,7 @@
       "handler": "DeleteModel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -87,7 +88,7 @@
       "handler": "DeleteSpec",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -97,7 +98,7 @@
       "handler": "DeleteTagRule",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -107,7 +108,7 @@
       "handler": "DeleteTagWeight",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -117,7 +118,7 @@
       "handler": "DeleteTag",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -127,7 +128,7 @@
       "handler": "DeleteWebhook",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -164,7 +165,8 @@
       "group": "strategy",
       "handler": "DeleteTemplate",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -174,7 +176,7 @@
       "handler": "SuperPackageDelete",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -184,7 +186,7 @@
       "handler": "AdminListAPIKeys",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -194,7 +196,7 @@
       "handler": "AdminAuditLogs",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -204,7 +206,7 @@
       "handler": "ListChannelDeadLetters",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ],
       "data_ts": "OutboundListResp"
     },
@@ -215,7 +217,7 @@
       "handler": "ListChannels",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ],
       "data_ts": "ChannelListResp"
     },
@@ -226,7 +228,7 @@
       "handler": "GetSystemConfigs",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -236,7 +238,7 @@
       "handler": "AdminExportConversations",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -246,7 +248,7 @@
       "handler": "AdminExportCustomers",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -256,7 +258,7 @@
       "handler": "TenantKBMy",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -266,7 +268,7 @@
       "handler": "GetBrandList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -276,7 +278,7 @@
       "handler": "GetBrandDetail",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -286,7 +288,7 @@
       "handler": "GetCompareList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -296,7 +298,7 @@
       "handler": "GetFragmentList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -306,7 +308,7 @@
       "handler": "GetFragmentDetail",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -316,7 +318,7 @@
       "handler": "GetModelList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -326,7 +328,7 @@
       "handler": "GetModelDetail",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -336,7 +338,7 @@
       "handler": "GetSpecList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -346,7 +348,7 @@
       "handler": "GetAvailableModels",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -356,7 +358,7 @@
       "handler": "TenantPackList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -366,7 +368,7 @@
       "handler": "TenantPackCurrent",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -376,7 +378,7 @@
       "handler": "AdminPackStats",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ],
       "data_ts": "PackStatsResp"
     },
@@ -387,7 +389,7 @@
       "handler": "AdminListDeletionRequests",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -397,7 +399,7 @@
       "handler": "GetTagRuleList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -407,7 +409,7 @@
       "handler": "GetTagWeightList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -417,7 +419,7 @@
       "handler": "GetTagList",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -427,7 +429,7 @@
       "handler": "GetTagDetail",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -437,7 +439,7 @@
       "handler": "AdminGetBranding",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -447,7 +449,7 @@
       "handler": "AdminUsageSummary",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -457,7 +459,7 @@
       "handler": "ListWebhooks",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -467,7 +469,7 @@
       "handler": "ListWebhookDeliveries",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -476,7 +478,8 @@
       "group": "advisor",
       "handler": "GetAdvisorCustomerDetail",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -485,7 +488,8 @@
       "group": "advisor",
       "handler": "GetAdvisorCustomers",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -494,7 +498,8 @@
       "group": "advisor",
       "handler": "GetFollowups",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -503,7 +508,8 @@
       "group": "advisor",
       "handler": "GetAdvisorList",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -512,7 +518,8 @@
       "group": "advisor",
       "handler": "GetReferralInfo",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -521,7 +528,8 @@
       "group": "advisor",
       "handler": "GetReferralQRCode",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -530,7 +538,8 @@
       "group": "advisor",
       "handler": "GetReferralRecords",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -539,7 +548,8 @@
       "group": "advisor",
       "handler": "GetAdvisorStats",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -548,7 +558,8 @@
       "group": "advisor",
       "handler": "GetStrategyRecommend",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -557,7 +568,8 @@
       "group": "advisor",
       "handler": "GetTagList",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -566,7 +578,8 @@
       "group": "advisor",
       "handler": "GetTestDrive",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -575,7 +588,8 @@
       "group": "advisor",
       "handler": "GetTestDrives",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -611,7 +625,8 @@
       "group": "billing",
       "handler": "ListBillingOrders",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -620,7 +635,8 @@
       "group": "billing",
       "handler": "GetBillingOrder",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -656,7 +672,8 @@
       "group": "channel",
       "handler": "ChannelCallbackVerify",
       "auth": [
-        "channel_signature"
+        "channel_signature",
+        "ip_limit"
       ]
     },
     {
@@ -783,7 +800,7 @@
       "group": "knowledge",
       "handler": "GetPublicBrands",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -792,7 +809,7 @@
       "group": "knowledge",
       "handler": "GetPublicCompares",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -801,7 +818,7 @@
       "group": "knowledge",
       "handler": "SearchFragments",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -810,7 +827,7 @@
       "group": "knowledge",
       "handler": "GetPublicModels",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -819,7 +836,7 @@
       "group": "knowledge",
       "handler": "GetPublicModelDetail",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -939,7 +956,7 @@
       "handler": "SuperAgreementList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -949,7 +966,7 @@
       "handler": "SuperAuditLogs",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -959,7 +976,7 @@
       "handler": "SuperListRefundRequests",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -969,7 +986,7 @@
       "handler": "SuperFeedbackList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -979,7 +996,7 @@
       "handler": "SuperListInvoices",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -989,7 +1006,7 @@
       "handler": "SuperMaterialList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -999,7 +1016,7 @@
       "handler": "SuperMonitorHealth",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1009,7 +1026,7 @@
       "handler": "SuperPendingOrders",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1019,7 +1036,7 @@
       "handler": "SuperPackageList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1029,7 +1046,7 @@
       "handler": "SuperPackList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1039,7 +1056,7 @@
       "handler": "SuperPackStats",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ],
       "data_ts": "PackStatsResp"
     },
@@ -1050,7 +1067,7 @@
       "handler": "SuperPlans",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1060,7 +1077,7 @@
       "handler": "SuperTenantList",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1070,7 +1087,7 @@
       "handler": "SuperGetBranding",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1080,7 +1097,7 @@
       "handler": "SuperUsageCost",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -1089,7 +1106,7 @@
       "group": "tenant",
       "handler": "CheckTenantCode",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -1107,7 +1124,7 @@
       "group": "ws",
       "handler": "WSAdvisor",
       "auth": [
-        "jwt"
+        "ip_limit"
       ]
     },
     {
@@ -1116,7 +1133,7 @@
       "group": "ws",
       "handler": "WSClient",
       "auth": [
-        "jwt"
+        "ip_limit"
       ]
     },
     {
@@ -1166,7 +1183,7 @@
       "handler": "CancelAccount",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1176,7 +1193,7 @@
       "handler": "AdminCreateAPIKey",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1186,7 +1203,7 @@
       "handler": "AdminDisableAPIKey",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1196,7 +1213,7 @@
       "handler": "AdminEnableAPIKey",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1206,7 +1223,7 @@
       "handler": "RetryChannelDeadLetter",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1216,7 +1233,7 @@
       "handler": "CreateChannel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ],
       "data_ts": "CreateChannelResp"
     },
@@ -1227,7 +1244,7 @@
       "handler": "VerifyChannel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1237,7 +1254,8 @@
       "handler": "ForceInitSystemConfig",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required",
+        "super_required"
       ]
     },
     {
@@ -1247,7 +1265,8 @@
       "handler": "ResetSystemConfig",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required",
+        "super_required"
       ]
     },
     {
@@ -1257,7 +1276,7 @@
       "handler": "RollbackTenantConfig",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1267,7 +1286,7 @@
       "handler": "TenantKBUpload",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1277,7 +1296,7 @@
       "handler": "CreateBrand",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1287,7 +1306,7 @@
       "handler": "DisableBrand",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1297,7 +1316,7 @@
       "handler": "EnableBrand",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1307,7 +1326,7 @@
       "handler": "CreateCompare",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1317,7 +1336,7 @@
       "handler": "DisableCompare",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1327,7 +1346,7 @@
       "handler": "EnableCompare",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1337,7 +1356,7 @@
       "handler": "CreateFragment",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1347,7 +1366,7 @@
       "handler": "DisableFragment",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1357,7 +1376,7 @@
       "handler": "EnableFragment",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1367,7 +1386,7 @@
       "handler": "CreateModel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1377,7 +1396,7 @@
       "handler": "DisableModel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1387,7 +1406,7 @@
       "handler": "EnableModel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1397,7 +1416,7 @@
       "handler": "ReloadKnowledgeCache",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1407,7 +1426,7 @@
       "handler": "CreateSpec",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1417,7 +1436,7 @@
       "handler": "DisableSpec",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1427,7 +1446,7 @@
       "handler": "EnableSpec",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1437,7 +1456,7 @@
       "handler": "TenantPackBind",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1447,7 +1466,7 @@
       "handler": "TenantPackBindDept",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1457,7 +1476,7 @@
       "handler": "TenantPackUnbind",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1467,7 +1486,7 @@
       "handler": "TenantPackUnbindDept",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1477,7 +1496,7 @@
       "handler": "AdminExecuteDeletionRequest",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1487,7 +1506,7 @@
       "handler": "CreateTagRule",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1497,7 +1516,7 @@
       "handler": "DisableTagRule",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1507,7 +1526,7 @@
       "handler": "EnableTagRule",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1517,7 +1536,7 @@
       "handler": "CreateTagWeight",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1527,7 +1546,7 @@
       "handler": "DisableTagWeight",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1537,7 +1556,7 @@
       "handler": "EnableTagWeight",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1547,7 +1566,7 @@
       "handler": "CreateTag",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1557,7 +1576,7 @@
       "handler": "DisableTag",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1567,7 +1586,7 @@
       "handler": "EnableTag",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1577,7 +1596,7 @@
       "handler": "ReloadTagCache",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1587,7 +1606,7 @@
       "handler": "CreateWebhook",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1597,7 +1616,7 @@
       "handler": "TestWebhook",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -1606,7 +1625,8 @@
       "group": "advisor",
       "handler": "AdvisorTriggerAIReply",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1615,7 +1635,8 @@
       "group": "advisor",
       "handler": "AdvisorSendMessage",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1624,7 +1645,8 @@
       "group": "advisor",
       "handler": "AdvisorTakeover",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1633,7 +1655,8 @@
       "group": "advisor",
       "handler": "ToggleAiReply",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1642,7 +1665,8 @@
       "group": "advisor",
       "handler": "CreateFollowup",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1651,7 +1675,8 @@
       "group": "advisor",
       "handler": "CreateTestDrive",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -1669,7 +1694,8 @@
       "group": "auth",
       "handler": "SendRegisterEmailCode",
       "auth": [
-        "public"
+        "visitor_key",
+        "ip_limit"
       ]
     },
     {
@@ -1696,7 +1722,7 @@
       "group": "auth",
       "handler": "Login",
       "auth": [
-        "public"
+        "ip_limit"
       ],
       "data_ts": "AuthResult"
     },
@@ -1706,7 +1732,8 @@
       "group": "auth",
       "handler": "Register",
       "auth": [
-        "public"
+        "visitor_key",
+        "ip_limit"
       ]
     },
     {
@@ -1715,7 +1742,7 @@
       "group": "auth",
       "handler": "SendResetCode",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -1724,7 +1751,7 @@
       "group": "auth",
       "handler": "VerifyResetCode",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -1733,7 +1760,8 @@
       "group": "billing",
       "handler": "ManualConfirmPaid",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1742,7 +1770,8 @@
       "group": "billing",
       "handler": "CreateBillingOrder",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1751,7 +1780,8 @@
       "group": "billing",
       "handler": "RequestInvoice",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1760,7 +1790,8 @@
       "group": "billing",
       "handler": "RefundOrder",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1769,7 +1800,8 @@
       "group": "billing",
       "handler": "MockPayOrder",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1778,7 +1810,8 @@
       "group": "billing",
       "handler": "SubscribePackage",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -1787,7 +1820,8 @@
       "group": "billing",
       "handler": "BillingWebhook",
       "auth": [
-        "webhook_signature"
+        "webhook_signature",
+        "ip_limit"
       ]
     },
     {
@@ -1796,7 +1830,8 @@
       "group": "channel",
       "handler": "ChannelCallbackReceive",
       "auth": [
-        "channel_signature"
+        "channel_signature",
+        "ip_limit"
       ]
     },
     {
@@ -1824,7 +1859,7 @@
       "group": "chat",
       "handler": "CreateGuest",
       "auth": [
-        "optional_jwt",
+        "visitor_key",
         "ip_limit"
       ]
     },
@@ -1843,7 +1878,7 @@
       "group": "chat",
       "handler": "GuestRequestHuman",
       "auth": [
-        "jwt"
+        "ip_limit"
       ]
     },
     {
@@ -1852,7 +1887,7 @@
       "group": "chat",
       "handler": "ChatUnauthorized",
       "auth": [
-        "optional_jwt",
+        "visitor_key",
         "ip_limit"
       ]
     },
@@ -1880,7 +1915,7 @@
       "group": "chat",
       "handler": "ChatUnauthorized",
       "auth": [
-        "optional_jwt",
+        "visitor_key",
         "ip_limit"
       ]
     },
@@ -1890,7 +1925,6 @@
       "group": "chat",
       "handler": "Welcome",
       "auth": [
-        "optional_jwt",
         "ip_limit"
       ]
     },
@@ -1900,7 +1934,8 @@
       "group": "client-errors",
       "handler": "ClientErrorReport",
       "auth": [
-        "public"
+        "optional_jwt",
+        "ip_limit"
       ]
     },
     {
@@ -1992,7 +2027,8 @@
       "group": "privacy",
       "handler": "PrivacyDeletionRequest",
       "auth": [
-        "public"
+        "optional_jwt",
+        "ip_limit"
       ]
     },
     {
@@ -2001,7 +2037,8 @@
       "group": "strategy",
       "handler": "CreateTemplate",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -2020,7 +2057,7 @@
       "handler": "SuperMockWebhook",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2030,7 +2067,7 @@
       "handler": "SuperRefundOrder",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2040,7 +2077,7 @@
       "handler": "SuperRejectRefund",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2050,7 +2087,7 @@
       "handler": "SuperResolveFeedback",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2060,7 +2097,7 @@
       "handler": "SuperIssueInvoice",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2070,7 +2107,7 @@
       "handler": "SuperVoidInvoice",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2080,7 +2117,7 @@
       "handler": "SuperMaterialEvals",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2090,7 +2127,7 @@
       "handler": "SuperMaterialReview",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2100,7 +2137,7 @@
       "handler": "SuperConfirmOrder",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2110,7 +2147,7 @@
       "handler": "SuperPackageCreate",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2120,7 +2157,7 @@
       "handler": "SuperPackUpload",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2130,7 +2167,7 @@
       "handler": "SuperGrantTrial",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2139,7 +2176,7 @@
       "group": "tenant",
       "handler": "TenantSignup",
       "auth": [
-        "public"
+        "ip_limit"
       ]
     },
     {
@@ -2159,7 +2196,7 @@
       "handler": "UpdateChannel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2169,7 +2206,7 @@
       "handler": "SetChannelStatus",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2179,7 +2216,7 @@
       "handler": "BatchUpdateSystemConfig",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2189,7 +2226,7 @@
       "handler": "UpdateBrand",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2199,7 +2236,7 @@
       "handler": "UpdateCompare",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2209,7 +2246,7 @@
       "handler": "UpdateFragment",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2219,7 +2256,7 @@
       "handler": "UpdateModel",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2229,7 +2266,7 @@
       "handler": "UpdateSpec",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2239,7 +2276,7 @@
       "handler": "UpdateTagRule",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2249,7 +2286,7 @@
       "handler": "UpdateTagWeight",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2259,7 +2296,7 @@
       "handler": "UpdateTag",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2269,7 +2306,7 @@
       "handler": "AdminUpdateBranding",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2279,7 +2316,7 @@
       "handler": "UpdateWebhook",
       "auth": [
         "jwt",
-        "admin"
+        "admin_required"
       ]
     },
     {
@@ -2288,7 +2325,8 @@
       "group": "advisor",
       "handler": "EditCustomerInfo",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -2297,7 +2335,8 @@
       "group": "advisor",
       "handler": "UpdateCustomerStage",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -2306,7 +2345,8 @@
       "group": "advisor",
       "handler": "EditCustomerTags",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -2315,7 +2355,8 @@
       "group": "advisor",
       "handler": "UpdateTestDrive",
       "auth": [
-        "jwt"
+        "jwt",
+        "readonly_write"
       ]
     },
     {
@@ -2353,7 +2394,8 @@
       "group": "strategy",
       "handler": "UpdateTemplate",
       "auth": [
-        "jwt"
+        "jwt",
+        "admin_required"
       ]
     },
     {
@@ -2363,7 +2405,7 @@
       "handler": "SuperPackageUpdate",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2373,7 +2415,7 @@
       "handler": "SuperPackShare",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2383,7 +2425,7 @@
       "handler": "SuperPackStatus",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2393,7 +2435,7 @@
       "handler": "SuperUpdateBranding",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2403,7 +2445,7 @@
       "handler": "SuperUpdateTenantPlan",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     },
     {
@@ -2413,7 +2455,7 @@
       "handler": "SuperTenantStatus",
       "auth": [
         "jwt",
-        "super_admin"
+        "super_required"
       ]
     }
   ]

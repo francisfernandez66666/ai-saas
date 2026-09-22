@@ -15,6 +15,8 @@ func registerOpenAPI(r *gin.Engine) {
 	openapi := r.Group("/openapi/v1")
 	openapi.Use(middleware.OpenAPIAuth())
 	openapi.Use(middleware.IPRateLimit("apikey", 60, time.Minute))
+	// 注册期鉴权记录：开放平台独立 sk_ Key 鉴权链 + 按 Key 维度 IP 限流（整组共享）。
+	RecordAuth("*", "/openapi/v1", "api_key", "ip_limit")
 	{
 		openapi.GET("/customers", middleware.RequirePerm(middleware.PermCustomerRead), OpenAPICustomers)
 		openapi.GET("/customers/:id/conversations", middleware.RequirePerm(middleware.PermCustomerRead), OpenAPICustomerConversations)
@@ -29,4 +31,6 @@ func registerOpenAPI(r *gin.Engine) {
 // 内容仅 /openapi/v1 子集静态规格，无任何租户数据，公开无泄露面。
 func registerOpenAPIDoc(v1 *gin.RouterGroup) {
 	v1.GET("/openapi/spec", OpenAPIGetSpec)
+	// 注册期鉴权记录：开放面规格为静态子集，免登录公开（注册在 v1.Use(JWTAuth) 之前）。
+	RecordAuth("GET", "/api/v1/openapi/spec", "public")
 }

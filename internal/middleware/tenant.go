@@ -376,8 +376,10 @@ var skipTenantPaths = map[string]bool{
 
 // skipTenantPrefixes 免租户解析的路径前缀（P-FE：Vue SPA 托管目录）
 // SPA 自身仅含登录/注册等免登页与静态资源；业务数据由页面内的 API 调用
-// 走各自的 JWT/TenantResolver 逻辑，不受此放行影响
-var skipTenantPrefixes = []string{"/app/", "/api/v1/billing/webhook/", "/api/v1/channel/callback/"}
+// 走各自的 JWT/TenantResolver 逻辑，不受此放行影响。
+// P2-9(2026-09-22)：补 "/assets/"——Vite 构建的静态资源在 GIN_MODE=release（无 debug
+// 默认租户兜底）且 Host 未绑定 custom_domain 时会被 fail-closed 拦成 403，SPA 白屏。
+var skipTenantPrefixes = []string{"/app/", "/assets/", "/api/v1/billing/webhook/", "/api/v1/channel/callback/"}
 
 // TenantResolver 全局租户解析中间件（fail-closed）
 func TenantResolver() gin.HandlerFunc {

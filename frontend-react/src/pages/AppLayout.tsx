@@ -6,6 +6,7 @@
 import { ReactNode } from 'react'
 import { Link, Outlet, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { clearToken, getToken } from '../lib/api'
+import { isStaff } from '../lib/roles'
 
 // 需要登录态的 /app 子路由（原 Vue main.js 的 meta.auth 守卫）
 const PROTECTED = ['/app/advisor', '/app/billing', '/app/referral', '/app/settings']
@@ -54,7 +55,7 @@ export default function AppLayout() {
   //   邀请：所有登录成员（referral info/records/qrcode 为只读个人资产，P1-42 已放开非管理员）
   //   收银台：仅管理岗（下单/支付需 AdminRequired，sales 进去也是 403）
   const role = localStorage.getItem('role') || ''
-  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(role)
+  const isAdmin = isStaff(role)
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f6fa' }}>

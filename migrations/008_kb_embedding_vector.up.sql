@@ -3,7 +3,18 @@
 -- 约束：保留 embedding_json 作为回滚垫；pgvector 不可用或维度不一致时运行态自动回退旧路径。
 -- AutoMigrate 只补普通字段，不表达 pgvector 列与 HNSW 索引，破坏性 schema 改造落迁移。
 
-CREATE EXTENSION IF NOT EXISTS vector;
+-- P0-1b(2026-09-22)：pgvector 扩展创建加异常保护（方案 B）。
+-- 若目标 PG 不含 pgvector（例如用户自备非 pgvector 镜像），CREATE EXTENSION 失败
+-- 不应让迁移整体崩溃；运行态 rerank.go 已 fail-open：pgvector 不可用时 KB 向量检索
+-- 走内存余弦回退（rerank fail-open）。注意：ADD COLUMN embedding vector(1536) 在无扩展时仍会失败，
+-- 故生产编排务必使用 pgvector 镜像（方案 A，见 docker-compose.prod.yml）。
+DO $$
+BEGIN
+    CREATE EXTENSION IF NOT EXISTS vector;
+EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'pgvector 不可用，KB 向量检索将走内存余弦回退（rerank fail-open）';
+END
+$$;
 
 DO $$
 BEGIN

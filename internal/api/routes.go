@@ -68,6 +68,10 @@ func registerWSAndCollector(r *gin.Engine, v1 *gin.RouterGroup) {
 	// P1-3 修复(2026-09-20 审计批)：按 Key 维度 300/min 限流（缺头回落 IP）——
 	// 批量事件写入口此前无任何频控，密钥泄露即可无限写放大。
 	r.POST("/api/v1/collector", middleware.KeyRateLimit("collector", 300, time.Minute, "X-Collector-Key"), CollectorReceive)
+	// 注册期鉴权记录（真实中间件链，供契约生成与对账）：WS 仅靠 IP 限流、collector 靠 X-Collector-Key。
+	RecordAuth("GET", "/api/v1/ws/advisor", "ip_limit")
+	RecordAuth("GET", "/api/v1/ws/client", "ip_limit")
+	RecordAuth("POST", "/api/v1/collector", "collector_key")
 }
 
 // wsHandshakeLimit 读取 WS 握手限流阈值（env），非法/负值回退默认并告警。

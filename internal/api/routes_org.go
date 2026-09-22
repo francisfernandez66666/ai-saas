@@ -12,6 +12,8 @@ func registerOrg(v1 *gin.RouterGroup) {
 	orgGroup := v1.Group("/org")
 	orgGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
 		middleware.MustChangePasswordGuard(), middleware.ReadonlyWriteGuard(), OrgManageRequired())
+	// 注册期鉴权记录：组织架构管理需登录 + 组织管理闸（整组共享）。
+	RecordAuth("*", "/api/v1/org", "jwt", "org_manage")
 	{
 		orgGroup.GET("/departments/tree", GetDepartmentTree)
 		orgGroup.POST("/departments", CreateDepartment)
@@ -27,6 +29,8 @@ func registerOrg(v1 *gin.RouterGroup) {
 func registerCDP(v1 *gin.RouterGroup) {
 	cdpGroup := v1.Group("/cdp")
 	cdpGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(), middleware.MustChangePasswordGuard())
+	// 注册期鉴权记录：CDP 只读出口需登录（整组共享）。
+	RecordAuth("*", "/api/v1/cdp", "jwt")
 	{
 		cdpGroup.GET("/profiles/:one_id", GetCDPProfile)
 		cdpGroup.GET("/segments", GetCDPSegment)

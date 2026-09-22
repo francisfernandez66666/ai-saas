@@ -6,6 +6,7 @@
 import { useState, useEffect } from 'react'
 import { confirmDialog, toast } from '../lib/confirm'
 import { AUTH, getToken } from '../lib/api'
+import { isStaff } from '../lib/roles'
 import type { ApiResp, KbMaterial } from '../types'
 
 // 企业知识库列表分页响应 data 结构（admin/kb/my）
@@ -23,7 +24,7 @@ export default function AppSettings() {
   // P1-42(2026-09-09)：企业知识库管理/账号注销接口须管理员权限——
   // 成员角色(sales/user)进入 /app/settings 不应 403 白屏：改密/换绑邮箱全员可用，
   // KB 管理区块仅管理员展示
-  const isAdmin = ['super_admin', 'tenant_admin', 'admin'].includes(localStorage.getItem('role') || '')
+  const isAdmin = isStaff(localStorage.getItem('role') || '')
   // 是否为首次登录强制改密模式
   const [must, setMust] = useState(false)
   // 改密相关状态

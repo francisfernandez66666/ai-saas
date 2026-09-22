@@ -140,6 +140,12 @@ func main() {
 			"存在消息双处理与跨实例推送丢失风险。请设 REDIS_ENABLED=true 或修正 APP_REPLICAS。/status 已置红。", cfg.Server.Replicas)
 	}
 
+	// 3.5 P1-4 启动断言：prod 环境必须 GIN_MODE=release，否则直接拒启
+	// （避免生产暴露调试日志/SQL，GIN_MODE=debug 属合规红线；断言逻辑见 config.AssertProdGinMode）
+	if err := config.AssertProdGinMode(); err != nil {
+		log.Fatalf("启动断言失败: %v", err)
+	}
+
 	// 4. 初始化数据库
 	err = db.Init()
 	if err != nil {
@@ -831,6 +837,8 @@ func registerRoutes(r *gin.Engine) {
 	// P-FE（2026-08-26）：React SPA 托管 —— frontend-react/dist
 	// 历史路由单页应用：所有非 /api 路径回退到 index.html；
 	// 静态资源（/assets/*）若存在则直接返回。旧的零构建 HTML 页已全部迁移至 React。
+	// P2-9(2026-09-22)：仅压缩 SPA 静态资源（/assets/ 与根路径静态文件），绝不压缩 API/WS/SSE。
+	r.Use(middleware.GzipStatic())
 	distDir := filepath.Join("frontend-react", "dist")
 	if _, err := os.Stat(filepath.Join(distDir, "index.html")); err == nil {
 		r.NoRoute(func(c *gin.Context) {

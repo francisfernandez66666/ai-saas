@@ -1,6 +1,31 @@
 // 前端统一请求层：封装 localStorage 鉴权 token 读写、fetch 包装、角色分流与 401/403 统一处理
 // 401：登录态失效→清 token 跳登录页；403：后端强改密拦截→已登录用户跳 /login?mcp=1 改密
 import { MessagePlugin } from 'tdesign-react'
+// P2-8c：消费自动生成的契约类型（api.d.ts 的 ApiPath / ApiResponse / ApiRoutes），使 AUTH 可按路径泛型分发响应信封
+import type { ApiResp } from '../types'
+import type { ApiPath, ApiResponse, ApiRoutes } from '../types/api'
+// P2-8a：角色字面量统一引用单一事实源，避免与后端 model.RoleXxx 失配
+import { ROLES } from './roles'
+
+// P2-8c 按路径分发的响应信封：以 api.d.ts 的 ApiRoutes 映射为单一事实源。
+// ApiRoutes 的键为 "METHOD /path"（生成器口径），调用点只写纯路径，这里用模板字面量
+// 后缀匹配抽出该路径在所有方法下的 data 类型：
+//   - 命中已标注 data 类型的端点 → 精确类型（同路径多方法时取联合）；
+//   - 未标注（unknown）/ 路径未登记 → 退化为 any，避免 unknown 属性访问编译报错。
+// 调用点写法：AUTH<ApiEnvelope<'/api/v1/customers'>>(url)
+type RouteData<P extends string> = ApiRoutes[Extract<keyof ApiRoutes, `${string} ${P}`>]
+
+// ApiEnvelope 按纯路径取响应信封：命中等价于 ApiResp<RouteData<P>>，
+// 路径未登记（never）或 data 未标注（unknown）时统一退化为 ApiResp<any>，
+// 保证既有调用点的属性访问在 tsc 下不报错、已标注端点获得精确类型。
+export type ApiEnvelope<P extends string> = [RouteData<P>] extends [never]
+  ? ApiResp<any>
+  : RouteData<P> extends object
+    ? ApiResp<RouteData<P>>
+    : ApiResp<any>
+
+// 重新导出契约类型，使 api.d.ts 在业务代码中被真正消费（重构前零 import）
+export type { ApiPath, ApiResponse }
 
 // 本地存储里放登录 token 的键名
 // P2-87 修复：导出供 realtime.ts 复用，避免字面量重复（曾硬编码 'scrm_auth_token'）
@@ -83,7 +108,7 @@ export function setImpersonateTenant(id: string | number) {
 export function authHeaders(extra: Record<string, string> = {}): Record<string, string> {
   const h: Record<string, string> = { Authorization: 'Bearer ' + getToken(), ...extra }
   const imp = getImpersonateTenant()
-  if (imp && localStorage.getItem('role') === 'super_admin') h['X-Tenant-ID'] = imp
+  if (imp && localStorage.getItem('role') === ROLES.superAdmin) h['X-Tenant-ID'] = imp
   return h
 }
 
@@ -148,7 +173,7 @@ export async function apiFetch(url: string, opts: ApiRequestInit = {}): Promise<
   if (tk) headers['Authorization'] = 'Bearer ' + tk
   // E4：超管代管租户上下文——仅对**租户作用域**路径注入 X-Tenant-ID，平台路径(/super/*、/auth/me)不带
   const imp = getImpersonateTenant()
-  if (imp && localStorage.getItem('role') === 'super_admin' && !isPlatformPath(url)) headers['X-Tenant-ID'] = imp
+  if (imp && localStorage.getItem('role') === ROLES.superAdmin && !isPlatformPath(url)) headers['X-Tenant-ID'] = imp
   const { timeoutMs, ...fetchOpts } = opts
   let timer: ReturnType<typeof setTimeout> | undefined
   let signal = fetchOpts.signal

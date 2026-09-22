@@ -68,6 +68,29 @@ jobs:
       - name: 编译
         run: go build -o ai-scrm ./cmd/server
 
+  prod-compose-smoke:
+    name: 生产编排全新库冒烟（防 dev/CI 镜像漂移，P0-1）
+    runs-on: ubuntu-latest
+    # 容错：本 job 验证生产编排能否对全新库起服务；若仓库现状暂无法直连 up 生产编排
+    # （如缺少 secrets/外部依赖），仅告警不阻断主流水线，失败步骤已 dump app 日志供排查。
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: 生产编排全新库冒烟
+        run: |
+          cp .env.example .env
+          docker compose -f docker-compose.prod.yml up -d --build
+          for i in $(seq 1 30); do
+            if [ -n "$(docker compose -f docker-compose.prod.yml ps -q app)" ] && \
+               curl -sf http://localhost:8080/health >/dev/null; then
+              echo "prod-compose-smoke OK"
+              exit 0
+            fi
+            sleep 5
+          done
+          docker compose -f docker-compose.prod.yml logs --tail 100 app
+          exit 1
+
   frontend:
     name: React 前端（vitest + 类型检查 + 构建）
     runs-on: ubuntu-latest
@@ -109,7 +132,7 @@ jobs:
         run: ./tools/check_api_contract.sh
 
   e2e:
-    name: E2E 自动化回归（编排器 test_all --fast：smoke/org/saas 三套）
+    name: E2E 自动化回归（八套 E2E + playwright（fast 跳过 uat））
     runs-on: ubuntu-latest
     needs: [go, frontend]
     services:

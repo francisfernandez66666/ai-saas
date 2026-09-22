@@ -13,7 +13,9 @@
 # ============================================================
 services:
   postgres:
-    image: postgres:16-alpine
+    # P0-1a(2026-09-22)：对齐 dev/CI 镜像，使用含 pgvector 的官方镜像，
+    # 否则新库首启迁移 008 的 CREATE EXTENSION vector 会失败导致 crash-loop。
+    image: pgvector/pgvector:0.8.6-pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${DB_USER:-ai_scrm}
@@ -45,6 +47,9 @@ services:
     environment:
       SERVER_PORT: "8080"
       GIN_MODE: release
+      # P1-4(2026-09-22)：显式声明生产环境，触发 main.go 启动断言
+      # （APP_ENV=prod 且 GIN_MODE!=release 直接拒启）
+      APP_ENV: prod
       # C2：生产必须显式关闭模拟模式，否则不会调用真实 AI
       AI_MOCK_MODE: "false"
       # C1：生产必须配置强随机 JWT 密钥（未设置则启动直接失败）

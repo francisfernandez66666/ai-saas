@@ -12,6 +12,8 @@ func registerAdvisor(v1 *gin.RouterGroup) {
 	advisorGroup := v1.Group("/advisor")
 	advisorGroup.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
 		middleware.MustChangePasswordGuard(), middleware.ReadonlyWriteGuard())
+	// 注册期鉴权记录：顾问端需登录 + 租户一致性 + 组织上下文 + 首登强改密 + 只读写闸（整组共享）。
+	RecordAuth("*", "/api/v1/advisor", "jwt", "readonly_write")
 	{
 		advisorGroup.GET("/list", GetAdvisorList)
 		advisorGroup.GET("/tags", GetTagList)

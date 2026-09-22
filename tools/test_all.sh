@@ -76,17 +76,13 @@ verdict() { # verdict <名称> <退出码>
   if [ "$2" -eq 0 ]; then echo "  PASS  $1"; PASS=$((PASS+1)); else echo "  FAIL  $1"; FAIL=$((FAIL+1)); [ "$FAILFAST" = "1" ] && exit 1; fi
 }
 
-# ---------- 阶段零：静态断言（G-12） ----------
-step "静态断言：裸 db.DB 用法回归检查"
-# 排除：_test.go、tx = db.DB 兜底、db.TenantFilter、注释行、cdp/gdb() 包级封装
-BARE_DB=$(grep -rn --include="*.go" 'db\.DB\.' internal/ | grep -v '_test.go' | grep -v 'tx = db\.DB' | grep -v 'db\.TenantFilter' | grep -v 'db\.RQ\|db\.PQ' | grep -v '//' | grep -v 'cdp/' | grep -v 'gdb()' | grep -v 'db\.DB == nil' | grep -v 'db\.DB = ' | grep -v 'db\.DB;' | grep -v 'func gdb' | wc -l | tr -d ' ')
-if [ "$BARE_DB" -gt 0 ]; then
-  echo "  WARN  G-12: 发现 $BARE_DB 处裸 db.DB 用法（可能绕过租户隔离）："
-  grep -rn --include="*.go" 'db\.DB\.' internal/ | grep -v '_test.go' | grep -v 'tx = db\.DB' | grep -v 'db\.TenantFilter' | grep -v 'db\.RQ\|db\.PQ' | grep -v '//' | grep -v 'cdp/' | grep -v 'gdb()' | grep -v 'db\.DB == nil' | grep -v 'db\.DB = ' | grep -v 'db\.DB;' | grep -v 'func gdb' | head -10
-  verdict "G-12 裸 db.DB 检查（警告）" 0
-else
-  verdict "G-12 裸 db.DB 检查" 0
-fi
+# ---------- 阶段零：静态断言（G-12，P2-6 白名单棘轮化 2026-09-22） ----------
+step "静态断言：裸 db.DB 白名单棘轮门禁"
+# 旧内联段两分支均硬编码 verdict 0，结构上不可能失败（假绿门禁，实测报 480 处仍 PASS）。
+# 已改造为：tools/classify_bare_db.py 白名单分类（A–F + g12:platform 豁免）+
+# tools/check_bare_db.sh 基线棘轮（.bare_db_baseline=281，只降不升，新增违规即红）。
+bash "$ROOT/tools/check_bare_db.sh"
+verdict "G-12 裸 db.DB 白名单棘轮" $?
 
 # ---------- 阶段零：静态断言（G-6 防回潮） ----------
 step "静态断言：G-6 防回潮回归检查"
@@ -168,7 +164,9 @@ verdict "go vet ./..." $?
 #   背景：SetupTestDB 连不上库时 t.Skipf，整包 DB 用例可以一个不跑而 go test ./... 全绿，
 #   文本日志里 --- SKIP 被 tail -20 截掉后无人发现。-json 是单次运行，不额外增加一遍全量耗时。
 GO_TEST_RC=0
-go test -json -cover ./... >/tmp/test_all_go.json 2>&1 || GO_TEST_RC=$?
+# P1-5(2026-09-22)：加 -coverprofile 采集全量覆盖率产物，供单测判定后接覆盖率棘轮门禁复用
+#（不再额外跑一遍全量 go test）。
+go test -json -cover -coverprofile=/tmp/ai_scrm_coverage.out ./... >/tmp/test_all_go.json 2>&1 || GO_TEST_RC=$?
 SKIP_SUMMARY="$(python3 - /tmp/test_all_go.json /tmp/test_all_go.log <<'PY'
 import json, sys, collections
 
@@ -216,6 +214,16 @@ case "$SKIP_TOTAL" in
   ''|*[!0-9]*) SKIP_TOTAL=0 ;;  # python 异常退出时降级为 0，不影响既有 PASS/FAIL 总账
 esac
 verdict "go test ./...（覆盖率见下方）" $GO_TEST_RC
+
+# ---------- 覆盖率棘轮（P1-5，2026-09-22 新增） ----------
+# 复用上方 -coverprofile 产物，总覆盖率只升不降（基线 .coverage_baseline，2026-09-22 落 22.8）。
+step "单元测试层：覆盖率棘轮门禁（tools/check_coverage_ratchet.sh）"
+if [ "$GO_TEST_RC" -eq 0 ] && [ -f /tmp/ai_scrm_coverage.out ]; then
+  COV_PROFILE=/tmp/ai_scrm_coverage.out bash "$ROOT/tools/check_coverage_ratchet.sh"
+  verdict "覆盖率棘轮（只升不降）" $?
+else
+  verdict "覆盖率棘轮（跳过：go test 未全绿或无覆盖率产物）" 0
+fi
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
 # 跳过统计（§八-7）：非零必须显式报警，DB 不可用时"全绿"不再是可信信号
 if [ "$SKIP_TOTAL" -gt 0 ]; then
@@ -311,7 +319,7 @@ step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全 
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 40 项，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
-step "E2E 层：uat_advisor.sh（顾问工作台字节级 73 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口）"
+step "E2E 层：uat_advisor.sh（顾问工作台字节级 75 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-22 文档对齐：实测 PASS=75）"
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
 

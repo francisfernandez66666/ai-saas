@@ -608,3 +608,34 @@ export interface CellProps {
   col: { colKey: string; title?: string }
   colIndex: number
 }
+
+// ============================================================
+// 契约覆盖补充类型（P2-8c：让 api.d.ts 的 ApiRoutes 映射对高频端点生效）
+// ============================================================
+
+// 组织架构-部门树节点（org/departments/tree 返回，递归结构）
+export interface DeptNode {
+  id: number
+  name: string
+  user_count?: number
+  children?: DeptNode[]
+}
+
+// 系统配置项（admin/config 列表项；对齐 admin/shared.ts 的 Cfg 结构）
+export interface AdminConfigItem {
+  key: string
+  value: string
+  value_type?: string
+  category?: string
+  description?: string
+}
+
+// AI 接待策略模板（strategy/templates 列表项）
+export interface StrategyTemplate {
+  id: number
+  name: string
+  content?: string
+  status?: number
+  created_at?: string
+  updated_at?: string
+}

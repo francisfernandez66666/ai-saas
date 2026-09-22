@@ -12,6 +12,8 @@ func registerSuper(v1 *gin.RouterGroup) {
 	super := v1.Group("/super")
 	super.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
 		middleware.MustChangePasswordGuard(), SuperRequired())
+	// 注册期鉴权记录：平台超管需登录 + 租户一致性 + 组织上下文 + 首登强改密 + 超管闸（整组共享）。
+	RecordAuth("*", "/api/v1/super", "jwt", "super_required")
 	{
 		super.GET("/tenants", SuperTenantList)
 		super.PUT("/tenants/:id/status", SuperTenantStatus)

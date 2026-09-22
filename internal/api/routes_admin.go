@@ -13,6 +13,8 @@ func registerAdmin(v1 *gin.RouterGroup) {
 	admin := v1.Group("/admin")
 	admin.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(),
 		middleware.MustChangePasswordGuard(), middleware.AdminRequired())
+	// 注册期鉴权记录：后台管理需登录 + 管理员闸（整组共享）。
+	RecordAuth("*", "/api/v1/admin", "jwt", "admin_required")
 	{
 		// 审计日志 / 用量看板（M5/M3，本租户）
 		admin.GET("/audit-logs", AdminAuditLogs)
@@ -69,6 +71,9 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.POST("/config/reset", SuperRequired(), ResetSystemConfig)
 		admin.POST("/config/rollback", RollbackTenantConfig)
 		admin.POST("/config/init", SuperRequired(), ForceInitSystemConfig)
+		// 注册期鉴权记录：平台级 reset/init 叠加超管闸（在组级 admin_required 之上）。
+		RecordAuth("POST", "/api/v1/admin/config/reset", "super_required")
+		RecordAuth("POST", "/api/v1/admin/config/init", "super_required")
 		admin.GET("/models", GetAvailableModels)
 
 		// 标签管理

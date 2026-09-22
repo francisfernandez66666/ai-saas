@@ -4,6 +4,8 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { getToken, verifySession } from './lib/api'
+import { RequireRole } from './components/RequireRole'
+import { ADMIN_ROLES } from './lib/roles'
 /** 导航落地页懒加载入口。 */
 const Index = lazy(() => import('./pages/Index'))
 /** 登录页懒加载入口。 */
@@ -107,7 +109,7 @@ export default function App() {
       {/* 隐私政策静态页：展示《个人信息保护法》等合规条款 */}
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
       {/* 租户管理员后台：管理成员、部门、客户等租户级资源（需登录） */}
-      <Route path="/admin" element={<ProtectedRoute><Admin /></ProtectedRoute>} />
+      <Route path="/admin" element={<ProtectedRoute><RequireRole allow={ADMIN_ROLES}><Admin /></RequireRole></ProtectedRoute>} />
       {/* 平台超管后台：管理租户、套餐、全局配置等平台级资源（需登录） */}
       <Route path="/super" element={<ProtectedRoute><SuperAdmin /></ProtectedRoute>} />
       {/* 顾问工作台：管理客户会话、跟进记录、AI 接待策略（需登录） */}

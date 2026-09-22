@@ -46,7 +46,8 @@ func main() {
 	format := flag.String("format", "schema", "schema|paths|openapi")
 	flag.Parse()
 
-	content, err := buildContent(*format)
+	mismatches := new([]string)
+	content, err := buildContent(*format, mismatches)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -62,6 +63,14 @@ func main() {
 			fmt.Fprintf(os.Stderr, "契约文件已变化，请运行: go run ./cmd/apidump -out %s\n", *out)
 			os.Exit(1)
 		}
+		// 对账断言：注册期记录与路径启发式不一致（authOf 多报鉴权）即失败。
+		if len(*mismatches) > 0 {
+			fmt.Fprintln(os.Stderr, "契约对账失败（authOf 与注册期记录不一致）：")
+			for _, m := range *mismatches {
+				fmt.Fprintln(os.Stderr, "  "+m)
+			}
+			os.Exit(1)
+		}
 		return
 	}
 	if err := os.WriteFile(*out, []byte(content), 0644); err != nil {
@@ -70,9 +79,9 @@ func main() {
 	}
 }
 
-// buildContent 按指定格式生成 apidump 输出文本。
-func buildContent(format string) (string, error) {
-	routes, err := collectRoutes()
+// buildContent 按指定格式生成 apidump 输出文本。mismatches 收集 -check 对账不一致项。
+func buildContent(format string, mismatches *[]string) (string, error) {
+	routes, err := collectRoutes(mismatches)
 	if err != nil {
 		return "", err
 	}
@@ -127,7 +136,7 @@ func buildContent(format string) (string, error) {
 		GeneratedBy: "cmd/apidump",
 		Version:     1,
 		Meta: map[string]any{
-			"meta_endpoints": []string{"GET /health", "GET /status", "GET /metrics"},
+			"meta_endpoints": []string{"GET /health", "GET /status", "GET /status/detail", "GET /metrics"},
 			"spa_fallback":   true,
 		},
 		Routes: routes,
@@ -142,8 +151,9 @@ func buildContent(format string) (string, error) {
 	return buf.String(), nil
 }
 
-// collectRoutes 构建路由树并收集 API 清单。
-func collectRoutes() ([]Route, error) {
+// collectRoutes 构建路由树并收集 API 清单。mismatches 用于 -check 对账：
+// 凡注册期记录(ResolveRouteAuth)与路径启发式(authOf)不一致（authOf 含注册期未声明的鉴权）即记录。
+func collectRoutes(mismatches *[]string) ([]Route, error) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	api.RegisterRoutes(r)
@@ -152,12 +162,24 @@ func collectRoutes() ([]Route, error) {
 	out := make([]Route, 0, len(r.Routes()))
 	for _, rt := range r.Routes() {
 		handler := funcName(rt.Handler)
+		// 优先读注册期真实记录；未登记则回退到路径启发式。
+		auth := authOf(rt.Path)
+		if mws, ok := api.ResolveRouteAuth(rt.Method, rt.Path); ok {
+			auth = mws
+		}
+		// 对账：路径启发式不应声明注册期记录之外的鉴权（注册期可更细，启发式不可多报）。
+		if mws, ok := api.ResolveRouteAuth(rt.Method, rt.Path); ok {
+			if !authSubset(authOf(rt.Path), mws) {
+				*mismatches = append(*mismatches,
+					fmt.Sprintf("对账不一致 %s %s: authOf=%v 注册期=%v", rt.Method, rt.Path, authOf(rt.Path), mws))
+			}
+		}
 		route := Route{
 			Method:  rt.Method,
 			Path:    rt.Path,
 			Group:   groupOf(rt.Path),
 			Handler: handler,
-			Auth:    authOf(rt.Path),
+			Auth:    auth,
 		}
 		if ts, ok := respTypes[handler]; ok {
 			route.DataTS = ts
@@ -222,44 +244,118 @@ func groupOf(path string) string {
 	}
 }
 
-// authOf 根据路由位置推断鉴权要求。
+// authOf 路径启发式兜底：仅对未显式登记注册期记录的路由生效，并在 -check 下与注册期记录对账。
+// 其口径须是注册期记录的子集——启发式可以多报（声明注册期未写出的细粒度），但不可少报/错报真实存在的鉴权。
+// 真实鉴权事实以 internal/api.ResolveRouteAuth（注册期记录）为准。
 func authOf(path string) []string {
 	var out []string
 	add := func(name string) {
 		out = append(out, name)
 	}
-	switch {
-	case strings.HasPrefix(path, "/openapi/"):
+	// 开放平台：sk_ Key 鉴权 + 按 Key 维度 IP 限流
+	if strings.HasPrefix(path, "/openapi/") {
 		add("api_key")
 		add("ip_limit")
-	case path == "/api/v1/collector":
+		return out
+	}
+	// 数据飞轮接收端：X-Collector-Key 鉴权
+	if path == "/api/v1/collector" {
 		add("collector_key")
-	case path == "/api/v1/chat/unauthorized", path == "/api/v1/chat/test", path == "/api/v1/chat/guest", path == "/api/v1/chat/welcome", path == "/api/v1/chat/history", path == "/api/v1/chat/clear-delay":
+		return out
+	}
+	// WebSocket 握手：仅靠 IP 限流（不带 JWT）
+	if path == "/api/v1/ws/advisor" || path == "/api/v1/ws/client" {
+		add("ip_limit")
+		return out
+	}
+	// 渠道回调：签名验证 + IP 限流
+	if strings.HasPrefix(path, "/api/v1/channel/callback/") {
+		add("channel_signature")
+		add("ip_limit")
+		return out
+	}
+	// 支付网关异步回调：HMAC 验签 + IP 限流
+	if strings.HasPrefix(path, "/api/v1/billing/webhook/") {
+		add("webhook_signature")
+		add("ip_limit")
+		return out
+	}
+	// 免登录公开（无中间件）
+	switch path {
+	case "/api/v1/auth/register-config",
+		"/api/v1/plans",
+		"/api/v1/packages",
+		"/api/v1/public/branding",
+		"/api/v1/openapi/spec",
+		"/api/v1/turnstile/sitekey":
+		add("public")
+		return out
+	}
+	// 免登录 + 频控/人机验证（无 JWT）
+	switch {
+	case path == "/api/v1/auth/login",
+		path == "/api/v1/auth/register",
+		path == "/api/v1/auth/email-code",
+		path == "/api/v1/auth/reset-password",
+		path == "/api/v1/auth/verify-reset-code",
+		path == "/api/v1/tenant/signup",
+		path == "/api/v1/tenant/check-code",
+		path == "/api/v1/chat/welcome",
+		path == "/api/v1/chat/request-human":
+		add("ip_limit")
+		return out
+	case path == "/api/v1/chat/unauthorized",
+		path == "/api/v1/chat/test",
+		path == "/api/v1/chat/guest":
+		add("visitor_key")
+		add("ip_limit")
+		return out
+	case path == "/api/v1/privacy/deletion-request",
+		path == "/api/v1/client-errors",
+		path == "/api/v1/chat/history",
+		path == "/api/v1/chat/clear-delay":
 		add("optional_jwt")
 		add("ip_limit")
-	case strings.HasPrefix(path, "/api/v1/channel/callback/"):
-		add("channel_signature")
-	case strings.HasPrefix(path, "/api/v1/billing/webhook/"):
-		add("webhook_signature")
-	case strings.HasPrefix(path, "/api/v1/turnstile/sitekey"), strings.HasPrefix(path, "/api/v1/public/"), strings.HasPrefix(path, "/api/v1/plans"), strings.HasPrefix(path, "/api/v1/packages"),
-		strings.HasPrefix(path, "/api/v1/knowledge/"), strings.HasPrefix(path, "/api/v1/client-errors"), strings.HasPrefix(path, "/api/v1/privacy/deletion-request"),
-		strings.HasPrefix(path, "/api/v1/auth/login"), strings.HasPrefix(path, "/api/v1/auth/register"), strings.HasPrefix(path, "/api/v1/auth/register-config"),
-		strings.HasPrefix(path, "/api/v1/auth/email-code"), strings.HasPrefix(path, "/api/v1/auth/reset-password"), strings.HasPrefix(path, "/api/v1/auth/verify-reset-code"),
-		strings.HasPrefix(path, "/api/v1/tenant/signup"), strings.HasPrefix(path, "/api/v1/tenant/check-code"),
-		strings.HasPrefix(path, "/api/v1/openapi/spec"): // E10 开放面规格：静态子集零租户数据，公开（注册在 JWTAuth 之前，口径与代码一致）
-		add("public")
-	default:
-		add("jwt")
-		switch {
-		case strings.HasPrefix(path, "/api/v1/admin/"):
-			add("admin")
-		case strings.HasPrefix(path, "/api/v1/super/"):
-			add("super_admin")
-		case strings.HasPrefix(path, "/api/v1/org/"):
-			add("org_manage")
+		return out
+	case strings.HasPrefix(path, "/api/v1/knowledge/"):
+		add("ip_limit")
+		return out
+	}
+	// 登录态路由（挂在 v1.Use(JWTAuth...) 之后），默认 jwt；细粒度角色闸由注册期记录补充。
+	add("jwt")
+	switch {
+	case strings.HasPrefix(path, "/api/v1/admin/"):
+		add("admin_required")
+		if path == "/api/v1/admin/config/reset" || path == "/api/v1/admin/config/init" {
+			add("super_required")
 		}
+	case strings.HasPrefix(path, "/api/v1/super/"):
+		add("super_required")
+	case strings.HasPrefix(path, "/api/v1/org/"):
+		add("org_manage")
+	case strings.HasPrefix(path, "/api/v1/advisor/"):
+		add("readonly_write")
+	case strings.HasPrefix(path, "/api/v1/billing/orders") ||
+		path == "/api/v1/billing/manual-confirm" ||
+		path == "/api/v1/billing/subscribe":
+		add("admin_required")
 	}
 	return out
+}
+
+// authSubset 判断 a 是否为 b 的子集（元素均在 b 中）。用于 -check 对账：
+// 路径启发式 a 不应声明注册期记录 b 之外的鉴权。
+func authSubset(a, b []string) bool {
+	set := make(map[string]bool, len(b))
+	for _, x := range b {
+		set[x] = true
+	}
+	for _, x := range a {
+		if !set[x] {
+			return false
+		}
+	}
+	return true
 }
 
 // scanResponseAnnotations 扫描源码中的 apidump 响应类型注解。

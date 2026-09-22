@@ -110,4 +110,28 @@ func registerTenantAuthenticated(v1 *gin.RouterGroup) {
 		// 权限口径与 /overview 一致（登录态聚合看板，不含客户明细）。
 		stats.GET("/ai-contribution", GetAIContribution)
 	}
+	// 注册期鉴权记录（真实中间件链）：以上均挂在 v1.Use(JWTAuth...) 之后，登录态可达。
+	RecordAuth("GET", "/api/v1/auth/me", "jwt")
+	RecordAuth("POST", "/api/v1/auth/change-password", "jwt")
+	RecordAuth("POST", "/api/v1/feedback", "jwt")
+	RecordAuth("POST", "/api/v1/feedback/rating", "jwt")
+	RecordAuth("GET", "/api/v1/billing/my-package", "jwt")
+	// 收银台写端点（AdminRequired 子组）：订单/手动确认/订阅。
+	RecordAuth("*", "/api/v1/billing/orders", "jwt", "admin_required")
+	RecordAuth("POST", "/api/v1/billing/manual-confirm", "jwt", "admin_required")
+	RecordAuth("POST", "/api/v1/billing/subscribe", "jwt", "admin_required")
+	RecordAuth("*", "/api/v1/customers", "jwt")
+	// 登录态对话（POST "" 路径精确登记，避免与公开 /chat/* 混淆）。
+	RecordAuth("POST", "/api/v1/chat", "jwt")
+	RecordAuth("POST", "/api/v1/chat/human/reply", "jwt")
+	RecordAuth("POST", "/api/v1/chat/transfer/human", "jwt")
+	RecordAuth("POST", "/api/v1/chat/transfer/ai", "jwt")
+	RecordAuth("*", "/api/v1/conversations", "jwt")
+	// 策略中心：读面全员登录态；模板写三路叠加 AdminRequired（按方法精确登记）。
+	RecordAuth("*", "/api/v1/strategy", "jwt")
+	RecordAuth("POST", "/api/v1/strategy/templates", "jwt", "admin_required")
+	RecordAuth("PUT", "/api/v1/strategy/templates/:id", "jwt", "admin_required")
+	RecordAuth("DELETE", "/api/v1/strategy/templates/:id", "jwt", "admin_required")
+	RecordAuth("*", "/api/v1/flows", "jwt")
+	RecordAuth("*", "/api/v1/stats", "jwt")
 }

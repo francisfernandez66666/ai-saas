@@ -22,6 +22,13 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 		auth.POST("/email-code", middleware.TurnstileGuard(), middleware.IPRateLimit("reset_email_code", 5, 10*time.Minute), SendRegisterEmailCode)
 		auth.POST("/reset-password", middleware.IPRateLimit("reset_pwd", 5, 10*time.Minute), SendResetCode)
 		auth.POST("/verify-reset-code", middleware.IPRateLimit("verify_reset", 10, 10*time.Minute), VerifyResetCode)
+		// 注册期鉴权记录：登录/注册/验证码均为免登录，仅人机验证或 IP 限流。
+		RecordAuth("POST", "/api/v1/auth/login", "ip_limit")
+		RecordAuth("POST", "/api/v1/auth/register", "visitor_key", "ip_limit")
+		RecordAuth("GET", "/api/v1/auth/register-config", "public")
+		RecordAuth("POST", "/api/v1/auth/email-code", "visitor_key", "ip_limit")
+		RecordAuth("POST", "/api/v1/auth/reset-password", "ip_limit")
+		RecordAuth("POST", "/api/v1/auth/verify-reset-code", "ip_limit")
 	}
 
 	// 邮箱换绑（登录态）：向新邮箱发码 → 校验完成绑定
@@ -40,6 +47,15 @@ func registerAuthPublic(v1 *gin.RouterGroup) {
 
 	// 公开品牌配置（按 Host 解析租户白标，免登录）
 	v1.GET("/public/branding", GetPublicBranding)
+
+	// 注册期鉴权记录（真实中间件链）：登录态换绑需 JWT；入驻/定价/品牌为免登录公开或仅限流。
+	RecordAuth("POST", "/api/v1/auth/email/code", "jwt")
+	RecordAuth("POST", "/api/v1/auth/email/change", "jwt")
+	RecordAuth("POST", "/api/v1/tenant/signup", "ip_limit")
+	RecordAuth("GET", "/api/v1/tenant/check-code", "ip_limit")
+	RecordAuth("GET", "/api/v1/plans", "public")
+	RecordAuth("GET", "/api/v1/packages", "public")
+	RecordAuth("GET", "/api/v1/public/branding", "public")
 }
 
 // registerChatPublic C 端匿名对话入口：测试聊天、访客注册、欢迎、历史、延迟清零、支付回调。
@@ -82,6 +98,18 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	// P1-3 修复(2026-09-20 审计批)：补 60/min IP 限流——验签保完整性但不保可用性，
 	// 无限流时伪造签名重放可无限烧 nonce 去重表/DB 查询；正常 PSP 重试远低于该阈值。
 	v1.POST("/billing/webhook/:channel", middleware.IPRateLimit("psp_webhook", 60, time.Minute), BillingWebhook)
+	// 注册期鉴权记录（真实中间件链）：C 端匿名入口无 JWT，仅人机验证/可选 JWT/验签 + IP 限流。
+	RecordAuth("POST", "/api/v1/chat/unauthorized", "visitor_key", "ip_limit")
+	RecordAuth("POST", "/api/v1/chat/test", "visitor_key", "ip_limit")
+	RecordAuth("POST", "/api/v1/chat/guest", "visitor_key", "ip_limit")
+	RecordAuth("POST", "/api/v1/privacy/deletion-request", "optional_jwt", "ip_limit")
+	RecordAuth("POST", "/api/v1/client-errors", "optional_jwt", "ip_limit")
+	RecordAuth("GET", "/api/v1/turnstile/sitekey", "public")
+	RecordAuth("POST", "/api/v1/chat/welcome", "ip_limit")
+	RecordAuth("GET", "/api/v1/chat/history", "optional_jwt", "ip_limit")
+	RecordAuth("POST", "/api/v1/chat/clear-delay", "optional_jwt", "ip_limit")
+	RecordAuth("POST", "/api/v1/chat/request-human", "ip_limit")
+	RecordAuth("POST", "/api/v1/billing/webhook/:channel", "webhook_signature", "ip_limit")
 }
 
 // registerKnowledgePublic 客户端知识库公开查询接口（免鉴权）。
@@ -89,6 +117,8 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 // 关键词枚举可拖库式试探品牌/车型/片段数据。
 func registerKnowledgePublic(v1 *gin.RouterGroup) {
 	knowledge := v1.Group("/knowledge", middleware.IPRateLimit("knowledge_public", 60, time.Minute))
+	// 注册期鉴权记录：公开知识库检索面仅 IP 限流（整组共享）。
+	RecordAuth("*", "/api/v1/knowledge", "ip_limit")
 	{
 		knowledge.GET("/brands", GetPublicBrands)
 		knowledge.GET("/models", GetPublicModels)

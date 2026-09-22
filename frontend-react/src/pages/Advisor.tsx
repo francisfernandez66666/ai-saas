@@ -6,7 +6,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { AUTH, getToken, logoutAndRedirect } from '../lib/api'
+import { AUTH, getToken, logoutAndRedirect, type ApiEnvelope } from '../lib/api'
 import { useAdvisorWS } from '../lib/realtime'
 import { collectFreshMessages } from '../lib/chat'
 // §八-6 D 块：企微侧边栏 JS-SDK 按需装配（失败只告警，不阻断渲染）
@@ -75,13 +75,13 @@ export default function Advisor() {
   const detailIdRef = useRef<number | null>(null)
 
   // 加载工作台统计：今日线索/意向客户等汇总数字
-  const loadStats = async () => { const j = await AUTH(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
+  const loadStats = async () => { const j = await AUTH<ApiEnvelope<'/api/v1/advisor/stats'>>(API + '/stats'); if (j.code === 0) setStats(j.data || []) }
   // 加载客户列表：按当前状态筛选标签拉取，最多50条
-  const loadCustomers = async () => { const j = await AUTH(API + '/customers?status=' + status + '&page_size=50'); if (j.code === 0) setList((j.data?.list) || []) }
+  const loadCustomers = async () => { const j = await AUTH<ApiEnvelope<'/api/v1/advisor/customers'>>(API + '/customers?status=' + status + '&page_size=50'); if (j.code === 0) setList((j.data?.list) || []) }
   // 加载跟进提醒列表（今日待跟进/逾期）
   const loadFollowups = async () => { const j = await AUTH(API + '/followups'); if (j.code === 0) setFollowups(j.data || []) }
   // 加载当前租户套餐与三桶余额，用于顶栏额度展示
-  const loadQuota = async () => { const j = await AUTH('/api/v1/billing/my-package'); if (j.code === 0) setQuota(j.data) }
+  const loadQuota = async () => { const j = await AUTH<ApiEnvelope<'/api/v1/billing/my-package'>>('/api/v1/billing/my-package'); if (j.code === 0) setQuota(j.data) }
   // 通道侧边栏：URL 带 corpid/external_userid 时拉取微信客户上下文，并直接落到对应客户详情
   const loadChannelContext = async () => {
     const q = new URLSearchParams(location.search)
@@ -131,7 +131,7 @@ export default function Advisor() {
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
   // P2-84 修复：打开详情时重置 ID 集合并全量替换；WS/轮询增量时只追加新消息
   async function loadChat(id: number) {
-    const j = await AUTH('/api/v1/chat/history?customer_id=' + id + '&limit=50')
+    const j = await AUTH<ApiEnvelope<'/api/v1/chat/history'>>('/api/v1/chat/history?customer_id=' + id + '&limit=50')
     if (detailIdRef.current !== id) return // P1-13 修复(2026-09-15)：丢弃错位响应
     if (j.code === 0) {
       const arr = j.data || []
@@ -145,7 +145,7 @@ export default function Advisor() {
   async function toggleTimeline(cid: number) {
     if (tlConv === cid) { setTlConv(null); setTlMsgs([]); return }
     setTlConv(cid); setTlMsgs([])
-    const j = await AUTH('/api/v1/conversations/' + cid + '/messages')
+    const j = await AUTH<ApiEnvelope<'/api/v1/conversations/:id/messages'>>('/api/v1/conversations/' + cid + '/messages')
     if (j?.code === 0) setTlMsgs(j.data || [])
   }
   // P1-9：提交客户满意度评分（1-5 必选；后端限同人同客户 5 次/天，超限 429 由 AUTH toastError 提示）

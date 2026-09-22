@@ -1,30 +1,35 @@
 // 后台管理页：租户管理员登录后按分类 Tab 维护配置、客户、知识库、标签、通道、审计等运营后台。
 // F1 起各业务 Tab 拆至 src/pages/admin/*，本文件保留登录、菜单和配置编辑动作。
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Button, Layout, Menu, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { useIsMobile } from '../hooks/useMedia'
 import { getToken, setToken, logoutAndRedirect, AUTH, apiJSON, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
-import { AuditTab } from './admin/AuditTab'
-import { BrandingTab } from './admin/BrandingTab'
-import { ChannelsTab } from './admin/ChannelsTab'
-import CdpTab from './admin/CdpTab'
-import { ConfigPanels } from './admin/ConfigPanel'
-import { CustomersTab } from './admin/CustomersTab'
-import { DashboardTab } from './admin/DashboardTab'
-import { FlowEngineTab } from './admin/FlowEngineTab'
-import IndustryPackTab from './admin/IndustryPackTab'
-import KnowledgeTab from './admin/KnowledgeTab'
-import { OpenApiTab } from './admin/OpenApiTab'
-import { ReferralTab } from './admin/ReferralTab'
+import { isSuperAdmin, ROLES } from '../lib/roles'
 import { CONFIG_CATS, MENU_GROUPS, type Cfg, type MenuItemDef } from './admin/shared'
-import { StrategyTemplateTab, StrategyTestTab } from './admin/StrategyTab'
-import TenantKBTab from './admin/TenantKBTab'
-import { TagSystemTab } from './admin/TagSystemTab'
-import { UsageTab } from './admin/UsageTab'
-import { WebhookTab } from './admin/WebhookTab'
-import { PrivacyTab } from './admin/PrivacyTab'
+
+// P2-13(2026-09-22)：后台 18 个 Tab 全量 lazy 化——/admin 首屏 chunk 从 177KB 降到骨架级，
+// 每个 Tab 按需加载，Suspense 统一骨架态（见 PanelContent 调用点）。
+const AuditTab = lazy(() => import('./admin/AuditTab').then(m => ({ default: m.AuditTab })))
+const BrandingTab = lazy(() => import('./admin/BrandingTab').then(m => ({ default: m.BrandingTab })))
+const ChannelsTab = lazy(() => import('./admin/ChannelsTab').then(m => ({ default: m.ChannelsTab })))
+const CdpTab = lazy(() => import('./admin/CdpTab'))
+const ConfigPanels = lazy(() => import('./admin/ConfigPanel').then(m => ({ default: m.ConfigPanels })))
+const CustomersTab = lazy(() => import('./admin/CustomersTab').then(m => ({ default: m.CustomersTab })))
+const DashboardTab = lazy(() => import('./admin/DashboardTab').then(m => ({ default: m.DashboardTab })))
+const FlowEngineTab = lazy(() => import('./admin/FlowEngineTab').then(m => ({ default: m.FlowEngineTab })))
+const IndustryPackTab = lazy(() => import('./admin/IndustryPackTab'))
+const KnowledgeTab = lazy(() => import('./admin/KnowledgeTab'))
+const OpenApiTab = lazy(() => import('./admin/OpenApiTab').then(m => ({ default: m.OpenApiTab })))
+const ReferralTab = lazy(() => import('./admin/ReferralTab').then(m => ({ default: m.ReferralTab })))
+const StrategyTemplateTab = lazy(() => import('./admin/StrategyTab').then(m => ({ default: m.StrategyTemplateTab })))
+const StrategyTestTab = lazy(() => import('./admin/StrategyTab').then(m => ({ default: m.StrategyTestTab })))
+const TenantKBTab = lazy(() => import('./admin/TenantKBTab'))
+const TagSystemTab = lazy(() => import('./admin/TagSystemTab').then(m => ({ default: m.TagSystemTab })))
+const UsageTab = lazy(() => import('./admin/UsageTab').then(m => ({ default: m.UsageTab })))
+const WebhookTab = lazy(() => import('./admin/WebhookTab').then(m => ({ default: m.WebhookTab })))
+const PrivacyTab = lazy(() => import('./admin/PrivacyTab').then(m => ({ default: m.PrivacyTab })))
 
 const { Header, Aside, Content } = Layout
 const { MenuItem, MenuGroup } = Menu
@@ -52,7 +57,7 @@ export default function Admin() {
   // 否则 400），旧前端全仓不发该头 → 超管进 /admin 各 Tab 全崩。加"代管租户"选择器，选定后
   // 统一由 apiFetch/authHeaders 注入 X-Tenant-ID；未选前只放行平台级 Tab（配置/超管后台）。
   const role = localStorage.getItem('role') || ''
-  const isSuper = role === 'super_admin'
+  const isSuper = isSuperAdmin(role)
   const [impTenant, setImpTenant] = useState(getImpersonateTenant())
   const [tenants, setTenants] = useState<{ id: number; name: string; code?: string }[]>([])
   const [impReload, setImpReload] = useState(0) // 切换租户后强制各 Tab 重挂载刷新
@@ -181,7 +186,7 @@ export default function Admin() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {logo}
           <h1 style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>管理中心</h1>
-          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{role === 'super_admin' ? '平台超管' : '租户后台'}</span>
+          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{isSuperAdmin(role) ? '平台超管' : '租户后台'}</span>
         </div>
         {/* P1-10 补修(2026-09-21 终局回归实证)：390px 下右侧整块不换行+原生 select 固有宽度
             按最长 option 撑开（租户名一多顶栏 scrollWidth 冲到 790）——右侧允许换行、
@@ -214,7 +219,7 @@ export default function Admin() {
                   {g.items.map((it) => <option key={it.k} value={it.k}>{it.label}</option>)}
                 </optgroup>
               ))}
-              {role === 'super_admin' && (
+              {isSuperAdmin(role) && (
                 <optgroup label="平台级">
                   <option value="super_link">平台超管后台</option>
                 </optgroup>
@@ -231,7 +236,7 @@ export default function Admin() {
                 ))}
               </MenuGroup>
             ))}
-            {role === 'super_admin' && (
+            {isSuperAdmin(role) && (
               <MenuGroup title="平台级">
                 <MenuItem value="super_link" onClick={() => { location.href = '/super' }}>平台超管后台</MenuItem>
               </MenuGroup>
@@ -251,7 +256,11 @@ export default function Admin() {
                   </div>
                 )
               }
-              return <PanelContent key={isSuper ? 'imp' + impReload : 't'} tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+              return (
+                <Suspense fallback={<TabLoading />}>
+                  <PanelContent key={isSuper ? 'imp' + impReload : 't'} tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+                </Suspense>
+              )
             })()}
             {!noAction && (
               <div style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 16px' }}>
@@ -267,6 +276,15 @@ export default function Admin() {
         </Content>
       </Layout>
     </Layout>
+  )
+}
+
+/** 后台 Tab 按需加载的骨架态（P2-13 lazy 化配套，避免切 Tab 白屏）。 */
+function TabLoading() {
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
+      <p style={{ color: '#9ca3af' }}>模块加载中…</p>
+    </div>
   )
 }
 

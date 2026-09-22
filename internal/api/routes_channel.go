@@ -18,6 +18,8 @@ func registerChannelCallbacks(v1 *gin.RouterGroup) {
 	cb := v1.Group("/channel/callback", middleware.IPRateLimit("channel_callback", 600, time.Minute))
 	cb.GET("/:id", ChannelCallbackVerify)
 	cb.POST("/:id", ChannelCallbackReceive)
+	// 注册期鉴权记录：渠道回调公开，靠签名验证 + IP 限流（整组共享）。
+	RecordAuth("*", "/api/v1/channel/callback", "channel_signature", "ip_limit")
 }
 
 // registerChannelAuthed 通道鉴态路由（W7，须在 v1.Use(JWTAuth) 之后注册）：侧边栏 JS 配置 + 客户上下文。
@@ -25,4 +27,6 @@ func registerChannelAuthed(v1 *gin.RouterGroup) {
 	g := v1.Group("/channel/wecom")
 	g.GET("/jsconfig", ChannelWecomJSConfig)
 	g.GET("/context", ChannelWecomContext)
+	// 注册期鉴权记录：通道鉴态需登录。
+	RecordAuth("*", "/api/v1/channel/wecom", "jwt")
 }

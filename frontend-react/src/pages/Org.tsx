@@ -7,7 +7,8 @@ import { useState, useEffect, useMemo } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
-import { AUTH, getToken } from '../lib/api'
+import { AUTH, getToken, type ApiEnvelope } from '../lib/api'
+import { USER_OP_ROLES, DEPT_MOVE_ROLES } from '../lib/roles'
 
 // 部门树节点类型（含子节点，递归结构）
 type Dept = { id: number; name: string; depth: number; path: string; user_count: number; children?: Dept[] }
@@ -59,7 +60,7 @@ export default function Org() {
    * 平铺列表用于：父部门下拉选择、成员部门名映射
    */
   async function loadTree() {
-    const j = await AUTH('/api/v1/org/departments/tree')
+    const j = await AUTH<ApiEnvelope<'/api/v1/org/departments/tree'>>('/api/v1/org/departments/tree')
     const t = j?.data || []
     setTree(t)
     // 递归展平部门树
@@ -75,7 +76,7 @@ export default function Org() {
    * 若已选中部门则只显示该部门成员（前端筛选）
    */
   async function loadUsers() {
-    const j = await AUTH('/api/v1/org/users')
+    const j = await AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')
     let list: User[] = j?.data || []
     if (sel) list = list.filter((x) => x.department_id === sel)
     setUsers(list)
@@ -185,7 +186,7 @@ export default function Org() {
                   <td style={td}>{x.username}</td><td style={td}>{x.real_name || '-'}</td><td style={td}>{ROLE_CN[x.role] || x.role}</td><td style={td}>{x.dept_name || '-'}</td>
                   <td style={td}>{x.status === 1 ? '正常' : <span style={{ color: '#e53e3e' }}>禁用</span>}
                     {/* 仅管理员/超管/部门管理员可见启停按钮，普通成员与只读无此权限 */}
-                    {(ROLE === 'tenant_admin' || ROLE === 'super_admin' || ROLE === 'dept_admin') && <button style={miniBtn} onClick={() => toggleU(x.id, x.status)}>{x.status === 1 ? '停用' : '启用'}</button>}
+                    {(USER_OP_ROLES.includes(ROLE)) && <button style={miniBtn} onClick={() => toggleU(x.id, x.status)}>{x.status === 1 ? '停用' : '启用'}</button>}
                   </td>
                 </tr>
               ))}
@@ -232,7 +233,7 @@ export default function Org() {
             <button style={op} title="添加子部门" onClick={(e) => { e.stopPropagation(); openDept('add', n.id) }}>＋子</button>
             <button style={op} title="重命名" onClick={(e) => { e.stopPropagation(); openDept('rename', n.id, n.name) }}>✎</button>
             {/* 移动按钮仅超管和租户管理员可见 */}
-            {(ROLE === 'tenant_admin' || ROLE === 'super_admin') && <button style={op} title="移动" onClick={(e) => { e.stopPropagation(); openDept('move', n.id) }}>⇄</button>}
+            {(DEPT_MOVE_ROLES.includes(ROLE)) && <button style={op} title="移动" onClick={(e) => { e.stopPropagation(); openDept('move', n.id) }}>⇄</button>}
             <button style={op} title="删除" onClick={(e) => { e.stopPropagation(); delDept(n.id) }}>🗑</button>
           </span>
         </div>
