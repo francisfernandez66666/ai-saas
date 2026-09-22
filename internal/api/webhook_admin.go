@@ -52,7 +52,7 @@ func CreateWebhook(c *gin.Context) {
 		Events []string `json:"events"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误："+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 	// P2-SSRF 修复(2026-09-15)：创建即校验（release 下禁内网/环回靶点）
@@ -75,7 +75,7 @@ func CreateWebhook(c *gin.Context) {
 		Events: strings.Join(req.Events, ","), Active: true,
 	}
 	if err := db.DB.Create(&w).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败："+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 	// 一次性回显明文 secret（前端复制保存后不再可取）

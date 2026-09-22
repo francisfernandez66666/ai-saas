@@ -130,7 +130,7 @@ func AdminExecuteDeletionRequest(c *gin.Context) {
 		return
 	}
 	if err := privacy.ExecuteDeletion(uint(id)); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "执行失败："+err.Error())
+		RespErrInternal(c, err, "执行失败")
 		return
 	}
 	// 审计留痕

@@ -103,8 +103,14 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "human_takeover", Key: "assigned_lead_ai_timeout", Value: "300", ValueType: "number", Description: "已分配线索顾问超时时间(秒)，超时后AI自动回复", DefaultValue: "300", SortOrder: 2},
 
 	// ---- 分类6：billing（商业化类，2026-08-23 M1/M2/M5）----
-	// pay_mode 三态：mock=测试模拟到账（默认，跑通全链路）/ static_qr=静态码+人工确认 / sdk=商户号到位后切换
-	{Category: "billing", Key: "pay_mode", Value: "\"mock\"", ValueType: "string", Description: "收款模式(mock模拟到账/static_qr静态码人工确认)", DefaultValue: "\"mock\"", SortOrder: 1},
+	// pay_mode 三态：mock=测试模拟到账 / static_qr=静态码+人工确认（出厂默认）/ sdk=商户号到位后切换
+	// 2026-09-22 复核 P0-1：出厂值由 mock 改为 static_qr。
+	// 原默认值让"忘配支付"失败在【免费侧】——任何人调一次 mock-pay 就能把订单置为 paid、
+	// token 余额直接加满，全程零真实支付（实测：0 → 1,000,000）。
+	// 改后忘配则失败在【安全侧】：拿不到收款码就收不到钱，也不会凭空发权益。
+	// 注意：本表只在库内配置为空时播种一次（system_config_service.go:94），
+	// 故本改动只影响全新部署，不会覆盖存量库已有的 mock——存量需运维在后台显式切换。
+	{Category: "billing", Key: "pay_mode", Value: "\"static_qr\"", ValueType: "string", Description: "收款模式(mock模拟到账/static_qr静态码人工确认)", DefaultValue: "\"static_qr\"", SortOrder: 1},
 	{Category: "billing", Key: "static_qr_image", Value: "\"\"", ValueType: "string", Description: "静态收款码(URL或base64，static_qr模式下单返回给租户)", DefaultValue: "\"\"", SortOrder: 2},
 	// 灰度开关（借翻译助手决策"默认不强制只留痕"）：false=CheckAIQuota 恒放行只记用量（上线初期防误伤）
 	{Category: "billing", Key: "billing_enforced", Value: "false", ValueType: "bool", Description: "计费强制开关(false=超额不停服仅记日志告警)", DefaultValue: "false", SortOrder: 3},
@@ -118,7 +124,14 @@ var DefaultConfigs = []model.SystemConfig{
 	// KB继承链改造（2026-08-26）：跨部门回退租户策略——租户级可调（非平台键）
 	{Category: "notify", Key: "feedback_collector_url", Value: "", ValueType: "string", Description: "数据飞轮回流collector地址(HTTPS,空=关闭)；调参行为/包操作审计增量每小时上报", DefaultValue: "", SortOrder: 11},
 	{Category: "billing", Key: "register_email_daily_limit", Value: "3", ValueType: "int", Description: "防薅v2：同一邮箱每日注册提交上限(生产态主锚；IP限流仅内测兜底)", DefaultValue: "3", SortOrder: 12},
-	{Category: "billing", Key: "token_billing_enabled", Value: "false", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "false", SortOrder: 10},
+	// 2026-09-22 复核 P0-2：扣减引擎总闸出厂值 false → true。
+	// 商业模型是"剃刀-刀片"（token 是唯一硬通货），总闸关着等于卖出去也不扣费——
+	// 演示能跑、收款不成。改后按③免费桶→①订阅额度→②余额的顺序真实扣减。
+	// 与方案文档的偏差：文档建议同时把 billing_enforced 也置 true，此处**暂保持 false**。
+	// 理由：billing_enforced=true 是"超额即停服"的硬闸门，而新装环境尚未配收款渠道、
+	// 也还没有真实的 token 补给路径，硬停会把整站 AI 直接打断；扣减先开、硬停缓开，
+	// 是更稳的爬坡顺序（超额仍会落告警日志，运营可见）。
+	{Category: "billing", Key: "token_billing_enabled", Value: "true", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "true", SortOrder: 10},
 	{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// D3(2026-09-13)：KB 向量检索热开关。关闭时不请求 embedding、不走 pgvector；pgvector 不可用时仍回退旧路径。
 	{Category: "knowledge", Key: "kb_vector_search", Value: "true", ValueType: "bool", Description: "KB向量检索开关(pgvector近邻+embedding余弦混合；关闭回退关键词检索)", DefaultValue: "true", SortOrder: 2},

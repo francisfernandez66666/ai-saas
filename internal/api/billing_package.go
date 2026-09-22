@@ -79,7 +79,7 @@ func SubscribePackage(c *gin.Context) {
 			return billing.GrantPackage(tx, tid, &pkg)
 		})
 		if err != nil {
-			RespErr(c, http.StatusInternalServerError, 500, "发放失败："+err.Error())
+			RespErrInternal(c, err, "发放失败")
 			return
 		}
 		if conflict {

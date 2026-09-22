@@ -187,7 +187,7 @@ func ToggleAiReply(c *gin.Context) {
 		Enabled        *bool `json:"enabled"` // nil=切换, true=开, false=关
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -261,7 +261,7 @@ type createTestDriveRequest struct {
 func CreateTestDrive(c *gin.Context) {
 	var req createTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -391,7 +391,7 @@ func UpdateTestDrive(c *gin.Context) {
 
 	var req updateTestDriveRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -753,7 +753,7 @@ func EditCustomerTags(c *gin.Context) {
 
 	var req editTagsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -793,7 +793,7 @@ func EditCustomerInfo(c *gin.Context) {
 
 	var req editCustomerInfoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -869,7 +869,7 @@ func UpdateCustomerStage(c *gin.Context) {
 
 	var req updateStageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -965,7 +965,7 @@ func CreateFollowup(c *gin.Context) {
 
 	var req followupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -1274,7 +1274,7 @@ func AdvisorTriggerAIReply(c *gin.Context) {
 		Content        string `json:"content"` // 可选：指定AI根据什么内容回复，为空则取最近客户消息
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 

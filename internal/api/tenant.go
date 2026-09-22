@@ -277,7 +277,9 @@ func TenantSignup(c *gin.Context) {
 		case strings.Contains(msg, "idx_tenant_users_username"):
 			RespErr(c, http.StatusConflict, 409, "管理员用户名已存在")
 		default:
-			RespErr(c, http.StatusInternalServerError, 500, "开通失败: "+msg)
+			// 2026-09-22 P1-1：默认分支曾原样回传 DB 错误（含索引名/列宽/SQLSTATE），
+			// 等同于对外提供结构探测面；改为脱敏出口，真实错误只落日志。
+			RespErrInternal(c, err, "开通失败")
 		}
 		return
 	}

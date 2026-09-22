@@ -450,11 +450,14 @@ func LoadAlipayProviderFromConf() (*AlipayProvider, error) {
 // GetPayMode 读当前收款模式（系统配置热加载，默认 mock）
 func GetPayMode() string {
 	if runtimecfg.DefaultSystemConfigService == nil {
-		return "mock"
+		// 2026-09-22 复核 P0-1：服务未就绪时不得回退到最宽松的 mock（=可 0 元白嫖），
+		// 回退到安全侧 static_qr（拿不到收款码就收不到钱，也不会凭空发权益）。
+		return "static_qr"
 	}
-	mode := runtimecfg.DefaultSystemConfigService.GetString("pay_mode", "mock")
+	mode := runtimecfg.DefaultSystemConfigService.GetString("pay_mode", "static_qr")
 	if mode != "mock" && mode != "static_qr" && mode != "sdk" {
-		return "mock" // 脏配置兜底
+		// 脏配置兜底同样站在安全侧：越权的默认值等于把后门焊死在出厂位。
+		return "static_qr"
 	}
 	return mode
 }

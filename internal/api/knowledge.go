@@ -89,7 +89,7 @@ func CreateBrand(c *gin.Context) {
 		Visibility  string `json:"visibility"` // public/private（016 公开面可见性，默认 private）
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -109,7 +109,7 @@ func CreateBrand(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(brand).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -296,7 +296,7 @@ func CreateModel(c *gin.Context) {
 		Visibility string `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -325,7 +325,7 @@ func CreateModel(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(carModel).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -516,7 +516,7 @@ func UpdateSpec(c *gin.Context) {
 		Status     int    `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -601,7 +601,7 @@ func CreateSpec(c *gin.Context) {
 		Sort       int    `json:"sort"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -615,7 +615,7 @@ func CreateSpec(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(spec).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -706,7 +706,7 @@ func CreateCompare(c *gin.Context) {
 		Visibility      string              `json:"visibility"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -725,7 +725,7 @@ func CreateCompare(c *gin.Context) {
 	compare.SetCompareItems(req.Items)
 
 	if err := db.RQ(c).Create(compare).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -918,7 +918,7 @@ func CreateFragment(c *gin.Context) {
 		Visibility       string   `json:"visibility"` // P2-4(批三)：public 才可被匿名端点搜到；缺省 private
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -940,7 +940,7 @@ func CreateFragment(c *gin.Context) {
 	fragment.SetApplicableModels(req.ApplicableModels)
 
 	if err := db.RQ(c).Create(fragment).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 	service.EmbedAndSetFragment(fragment)
@@ -1003,7 +1003,7 @@ func UpdateFragment(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Save(&fragment).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
+		RespErrInternal(c, err, "更新失败")
 		return
 	}
 	service.EmbedAndSetFragment(&fragment)

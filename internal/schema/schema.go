@@ -76,46 +76,60 @@ type LoginResponse struct {
 // 客户相关
 // ============================================================
 
-// CreateCustomerRequest 创建客户请求
+/*
+CreateCustomerRequest 创建客户请求
+
+字段长度上限与 model.Customer 的 gorm size 声明逐一对齐（name 50 / phone 20 / wechat_id 50 /
+region·city·career·interest_model·current_car 50 / customer_type 20 / source 30）。
+2026-09-22 复核 P1-1：此前 schema 层零长度校验，超长入参直达 DB 触发
+"value too long for type character varying(50) (SQLSTATE 22001)"，表现为 500 且回显列宽。
+对齐式校验把这类失败前移到 400，既是正确语义也是不再暴露结构。
+*/
+// CreateCustomerRequest 创建客户请求（字段长度上限与 model.Customer 的 gorm size 对齐）。
 type CreateCustomerRequest struct {
-	Name            string   `json:"name"`             // 注释：名称
-	Phone           string   `json:"phone"`            // 注释：手机号
-	WechatID        string   `json:"wechat_id"`        // 注释：微信号
-	Gender          int      `json:"gender"`           // 注释：性别
-	Age             int      `json:"age"`              // 注释：年龄
-	Region          string   `json:"region"`           // 注释：地域
-	City            string   `json:"city"`             // 注释：城市
-	Career          string   `json:"career"`           // 注释：职业
-	CustomerType    string   `json:"customer_type"`    // 注释：客户类型
-	InterestProduct string   `json:"interest_model"`   // 注释：兴趣产品
-	CurrentProduct  string   `json:"current_car"`      // 注释：当前在用产品
-	ProductAge      float64  `json:"car_age"`          // 注释：现用产品年限
-	Source          string   `json:"source"`           // 注释：来源
-	Budget          float64  `json:"budget"`           // 注释：预算(万元)
-	DecisionCycle   int      `json:"decision_cycle"`   // 注释：决策周期(天)
-	AssignedUserID  uint     `json:"assigned_user_id"` // 注释：归属销售ID
-	Tags            []string `json:"tags"`             // 注释：标签(json)
-	Remark          string   `json:"remark"`           // 注释：备注
+	Name            string   `json:"name" binding:"omitempty,max=50"`           // 客户姓名
+	Phone           string   `json:"phone" binding:"omitempty,max=20"`          // 手机号
+	WechatID        string   `json:"wechat_id" binding:"omitempty,max=50"`      // 微信号
+	Gender          int      `json:"gender"`                                    // 性别
+	Age             int      `json:"age" binding:"omitempty,gte=0,lte=150"`     // 年龄
+	Region          string   `json:"region" binding:"omitempty,max=50"`         // 地域
+	City            string   `json:"city" binding:"omitempty,max=50"`           // 城市
+	Career          string   `json:"career" binding:"omitempty,max=50"`         // 职业
+	CustomerType    string   `json:"customer_type" binding:"omitempty,max=20"`  // 客户类型
+	InterestProduct string   `json:"interest_model" binding:"omitempty,max=50"` // 兴趣产品
+	CurrentProduct  string   `json:"current_car" binding:"omitempty,max=50"`    // 当前在用产品
+	ProductAge      float64  `json:"car_age"`                                   // 现用产品年限
+	Source          string   `json:"source" binding:"omitempty,max=30"`         // 流量来源
+	Budget          float64  `json:"budget"`                                    // 预算(万元)
+	DecisionCycle   int      `json:"decision_cycle"`                            // 决策周期(天)
+	AssignedUserID  uint     `json:"assigned_user_id"`                          // 归属销售ID
+	Tags            []string `json:"tags" binding:"omitempty,dive,max=50"`      // 标签名列表
+	Remark          string   `json:"remark" binding:"omitempty,max=4000"`       // 备注（text 列，仅防滥用不设硬上限）
 }
 
-// UpdateCustomerRequest 更新客户请求
+/*
+UpdateCustomerRequest 更新客户请求
+
+长度上限同 CreateCustomerRequest，与 model.Customer 的 gorm size 对齐；见 P1-1 说明。
+*/
+// UpdateCustomerRequest 更新客户请求（长度上限同 CreateCustomerRequest）。
 type UpdateCustomerRequest struct {
-	Name            string   `json:"name"`             // 注释：名称
-	Phone           string   `json:"phone"`            // 注释：手机号
-	Gender          int      `json:"gender"`           // 注释：性别
-	Age             int      `json:"age"`              // 注释：年龄
-	Region          string   `json:"region"`           // 注释：地域
-	Career          string   `json:"career"`           // 注释：职业
-	InterestProduct string   `json:"interest_model"`   // 注释：兴趣产品
-	Budget          float64  `json:"budget"`           // 注释：预算(万元)
-	DecisionCycle   int      `json:"decision_cycle"`   // 注释：决策周期(天)
-	IntentScore     float64  `json:"intent_score"`     // 注释：意向分
-	TrustLevel      float64  `json:"trust_level"`      // 注释：信任度
-	ResistanceType  string   `json:"resistance_type"`  // 注释：抗性类型
-	Tags            []string `json:"tags"`             // 注释：标签(json)
-	Remark          string   `json:"remark"`           // 注释：备注
-	AssignedUserID  uint     `json:"assigned_user_id"` // 注释：归属销售ID
-	Status          int      `json:"status"`           // 注释：状态
+	Name            string   `json:"name" binding:"omitempty,max=50"`            // 客户姓名
+	Phone           string   `json:"phone" binding:"omitempty,max=20"`           // 手机号
+	Gender          int      `json:"gender"`                                     // 性别
+	Age             int      `json:"age" binding:"omitempty,gte=0,lte=150"`      // 年龄
+	Region          string   `json:"region" binding:"omitempty,max=50"`          // 地域
+	Career          string   `json:"career" binding:"omitempty,max=50"`          // 职业
+	InterestProduct string   `json:"interest_model" binding:"omitempty,max=50"`  // 兴趣产品
+	Budget          float64  `json:"budget"`                                     // 预算(万元)
+	DecisionCycle   int      `json:"decision_cycle"`                             // 决策周期(天)
+	IntentScore     float64  `json:"intent_score"`                               // 意向分
+	TrustLevel      float64  `json:"trust_level"`                                // 信任度
+	ResistanceType  string   `json:"resistance_type" binding:"omitempty,max=20"` // 抗性类型
+	Tags            []string `json:"tags" binding:"omitempty,dive,max=50"`       // 标签名列表
+	Remark          string   `json:"remark" binding:"omitempty,max=4000"`        // 备注
+	AssignedUserID  uint     `json:"assigned_user_id"`                           // 归属销售ID
+	Status          int      `json:"status"`                                     // 状态
 }
 
 // CustomerListRequest 客户列表请求

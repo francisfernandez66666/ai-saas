@@ -100,7 +100,7 @@ func GetCustomer(c *gin.Context) {
 func CreateCustomer(c *gin.Context) {
 	var req schema.CreateCustomerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -178,7 +178,7 @@ func CreateCustomer(c *gin.Context) {
 				RespErr(c, http.StatusForbidden, 403, "客户数已达套餐上限，请升级套餐")
 				return
 			case txErr != nil:
-				RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+txErr.Error())
+				RespErrInternal(c, txErr, "创建失败")
 				return
 			}
 			RespOK(c, "创建成功", customer)
@@ -189,7 +189,7 @@ func CreateCustomer(c *gin.Context) {
 	// 无配额上限路径：直接创建（t_vector 已在配额检查前初始化）
 	result := db.RQ(c).Create(customer)
 	if result.Error != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+result.Error.Error())
+		RespErrInternal(c, result.Error, "创建失败")
 		return
 	}
 

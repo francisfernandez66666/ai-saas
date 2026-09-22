@@ -125,7 +125,7 @@ func SuperMaterialEvals(c *gin.Context) {
 	// 架构红线修复(2026-08-30)：经策略引擎桥接 llm，业务层不再直连 internal/llm
 	reply, err := strategy.GenerateEvals(m.TenantID, messages, 0.2)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "evals 模型调用失败: "+err.Error())
+		RespErrInternal(c, err, "evals 模型调用失败")
 		return
 	}
 	// 宽松解析 JSON（截取首个 { 到末个 }）

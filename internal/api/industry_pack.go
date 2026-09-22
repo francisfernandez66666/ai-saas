@@ -83,7 +83,7 @@ func SuperPackUpload(c *gin.Context) {
 	}
 	keys, err := packKeys()
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "服务端密钥未就绪: "+err.Error())
+		RespErrInternal(c, err, "服务端密钥未就绪")
 		return
 	}
 	src, err := fh.Open()
@@ -402,14 +402,14 @@ func TenantPackBind(c *gin.Context) {
 	}
 
 	if _, err := industrypack.ApplyToTenant(ipc, ti.ID, 0); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "行业包物化失败: "+err.Error())
+		RespErrInternal(c, err, "行业包物化失败")
 		return
 	}
 	entCode, entVer := "", ""
 	var entID *uint
 	if epc != nil {
 		if _, err := industrypack.ApplyToTenant(epc, ti.ID, 0); err != nil {
-			RespErr(c, http.StatusInternalServerError, 500, "企业包物化失败: "+err.Error())
+			RespErrInternal(c, err, "企业包物化失败")
 			return
 		}
 		id := epack.ID
@@ -536,12 +536,12 @@ func TenantPackBindDept(c *gin.Context) {
 	// （department_id=NULL）才能被本部门语境召回（strategy 查询按 NULL+本部门并集）。
 	// 否则仅绑部门包会导致祖先内容完全缺失（P2 修复： advertised 继承但未实现）。
 	if err := applyAncestorChain(ti.ID, pack.ParentCode); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "祖先包物化失败: "+err.Error())
+		RespErrInternal(c, err, "祖先包物化失败")
 		return
 	}
 	res, err := industrypack.ApplyToTenant(pc, ti.ID, req.DepartmentID)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "物化失败: "+err.Error())
+		RespErrInternal(c, err, "物化失败")
 		return
 	}
 	var b model.DeptPackBinding
@@ -549,7 +549,7 @@ func TenantPackBindDept(c *gin.Context) {
 		if err := db.DB.Model(&b).Updates(map[string]interface{}{
 			"pack_id": pack.ID, "pack_code": pack.Code, "applied_version": pack.Version,
 		}).Error; err != nil {
-			RespErr(c, http.StatusInternalServerError, 500, "绑定更新失败: "+err.Error())
+			RespErrInternal(c, err, "绑定更新失败")
 			return
 		}
 	} else {
@@ -558,7 +558,7 @@ func TenantPackBindDept(c *gin.Context) {
 			TenantID: ti.ID, DepartmentID: req.DepartmentID,
 			PackID: pack.ID, PackCode: pack.Code, AppliedVersion: pack.Version,
 		}).Error; err != nil {
-			RespErr(c, http.StatusInternalServerError, 500, "绑定写入失败: "+err.Error())
+			RespErrInternal(c, err, "绑定写入失败")
 			return
 		}
 	}
@@ -589,7 +589,7 @@ func TenantPackUnbindDept(c *gin.Context) {
 		return
 	}
 	if err := industrypack.UnbindFromTenant(b.PackCode, ti.ID, req.DepartmentID); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "清除失败: "+err.Error())
+		RespErrInternal(c, err, "清除失败")
 		return
 	}
 	db.DB.Delete(&b)

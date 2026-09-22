@@ -48,7 +48,7 @@ type newPasswordRequest struct {
 func Login(c *gin.Context) {
 	var req loginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespFail(c, http.StatusBadRequest, CodeParamErr, "参数错误: "+err.Error())
+		RespFail(c, http.StatusBadRequest, CodeParamErr, "参数错误: "+SanitizeBindErr(err))
 		return
 	}
 
@@ -132,7 +132,7 @@ func Login(c *gin.Context) {
 func Register(c *gin.Context) {
 	var req registerRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 

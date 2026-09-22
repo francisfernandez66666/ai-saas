@@ -172,7 +172,7 @@ func MockPayOrder(c *gin.Context) {
 
 	confirmed, err := confirmAndGrant(c, &order, "mock")
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		RespErrInternal(c, err, "操作失败")
 		return
 	}
 	db.RQ(c).First(&order, order.ID)
@@ -272,7 +272,7 @@ func SuperConfirmOrder(c *gin.Context) {
 
 	confirmed, err := confirmAndGrant(c, &order, "manual")
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		RespErrInternal(c, err, "操作失败")
 		return
 	}
 	db.DB.First(&order, order.ID)
@@ -298,7 +298,7 @@ func SuperRefundOrder(c *gin.Context) {
 			RespErr(c, http.StatusConflict, int(CodeBizErr), err.Error())
 			return
 		}
-		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		RespErrInternal(c, err, "操作失败")
 		return
 	}
 	if !flowed {
@@ -350,7 +350,7 @@ func SuperRejectRefund(c *gin.Context) {
 		return
 	}
 	if err := db.DB.Model(&model.BillingOrder{}).Where("id = ?", oid).Update("refund_requested", false).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		RespErrInternal(c, err, "操作失败")
 		return
 	}
 	tid := uint(0)
@@ -815,7 +815,7 @@ func RefundOrder(c *gin.Context) {
 			RespErr(c, http.StatusConflict, int(CodeBizErr), err.Error())
 			return
 		}
-		RespErr(c, http.StatusInternalServerError, 500, err.Error())
+		RespErrInternal(c, err, "操作失败")
 		return
 	}
 	writeOrderAudit(c, tid, "order_refund", o)

@@ -48,7 +48,7 @@ func GetSystemConfigs(c *gin.Context) {
 func BatchUpdateSystemConfig(c *gin.Context) {
 	var items []runtimecfg.ConfigUpdateItem
 	if err := c.ShouldBindJSON(&items); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -87,13 +87,13 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 	// P2 租户化：租户管理员改参数写入 (tenant_id,key) 覆盖层，不污染系统默认(0)
 	// super_admin 未显式指定租户时 tid=默认租户（中间件已裁决），显式指定则写对应租户
 	if err := runtimecfg.DefaultSystemConfigService.BatchUpdateForTenant(db.EffectiveTenantIDFromGin(c), tenant); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
+		RespErrInternal(c, err, "更新失败")
 		return
 	}
 	// 平台键走系统默认层（BatchUpdate 内部含 Reload 热加载）
 	if len(platform) > 0 {
 		if err := runtimecfg.DefaultSystemConfigService.BatchUpdate(platform); err != nil {
-			RespErr(c, http.StatusInternalServerError, 500, "平台参数更新失败: "+err.Error())
+			RespErrInternal(c, err, "平台参数更新失败")
 			return
 		}
 	}
@@ -129,7 +129,7 @@ func BatchUpdateSystemConfig(c *gin.Context) {
 // 会将所有配置项的Value恢复为DefaultValue
 func ResetSystemConfig(c *gin.Context) {
 	if err := runtimecfg.DefaultSystemConfigService.ResetAll(); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "重置失败: "+err.Error())
+		RespErrInternal(c, err, "重置失败")
 		return
 	}
 
@@ -150,7 +150,7 @@ func ResetSystemConfig(c *gin.Context) {
 func ForceInitSystemConfig(c *gin.Context) {
 	// 调用ForceResetDefaults：删除旧数据 + 重新写入默认配置 + 热加载
 	if err := runtimecfg.DefaultSystemConfigService.ForceResetDefaults(); err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "强制初始化失败: "+err.Error())
+		RespErrInternal(c, err, "强制初始化失败")
 		return
 	}
 
@@ -268,7 +268,7 @@ func RollbackTenantConfig(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 	n, err := configcenter.Rollback(db.EffectiveTenantIDFromGin(c), req.Keys)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "回滚失败: "+err.Error())
+		RespErrInternal(c, err, "回滚失败")
 		return
 	}
 	RespOK(c, fmt.Sprintf("已回滚 %d 项配置至系统默认", n), nil)

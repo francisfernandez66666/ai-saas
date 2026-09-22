@@ -86,6 +86,10 @@ func Init() error {
 	// 本处为 Phase S 阻塞项的临时处置
 	dropLegacyIndexes()
 
+	// 多租户复合唯一索引收敛（2026-09-22 复核 P1-2）：删掉历史遗留的单列全局唯一索引，
+	// 重建为 (tenant_id, ...) 复合唯一。详见 ensureTenantUniqueIndexes 注释。
+	ensureTenantUniqueIndexes()
+
 	// 存量业务数据回填默认租户（幂等，见函数注释）
 	ensureRewardClaimIndexes()
 	backfillTenantIDs()
@@ -103,6 +107,65 @@ func dropLegacyIndexes() {
 			log.Printf("[migrate] 清理旧索引 %s 失败: %v", idx, err)
 		} else {
 			log.Printf("[migrate] 已清理旧索引 %s", idx)
+		}
+	}
+}
+
+/*
+ensureTenantUniqueIndexes 把多租户复合唯一索引真正落到库上
+
+背景（2026-09-22 复核 P1-2，实测）：多张租户级表的"复合唯一索引"在存量库里
+实际是【单列全局唯一】——于是租户 A 建了标签"价格敏感"，租户 B 就再也建不了，
+报 duplicate key value violates unique constraint "idx_tag_tenant_name"。对 SaaS 是硬伤。
+
+根因不是模型写错：实测在全新库上用同样的 GORM 标签，AutoMigrate 能正确建出
+(tenant_id, name) 复合索引。真正原因是 AutoMigrate **只增不删**——早期版本建出的
+单列唯一索引在模型改为复合后仍然留在库里；又因为 AutoMigrate 按索引名判断"已存在"，
+同名的正确复合索引永远不会被补建。car_models 库里同时存在正确的 (tenant_id, code)
+与错误的单列 (code)，正是这条路径的活证据。
+
+处置：显式 DROP 错索引 → CREATE UNIQUE INDEX IF NOT EXISTS 正确复合索引。
+两步都幂等，且建索引失败只告警不阻断启动（存量脏数据要先由运营清理，
+启动阶段硬失败会把整个服务拖死）。
+*/
+func ensureTenantUniqueIndexes() {
+	type tenantUnique struct {
+		table string   // 表名
+		drop  []string // 需删除的历史错索引（单列全局唯一 / 同名旧版）
+		index string   // 正确的复合唯一索引名
+		cols  string   // 索引列，tenant_id 必须为首字母列
+	}
+	targets := []tenantUnique{
+		// tags：库里曾同时存在 idx_tags_name/code（旧命名）与 idx_tag_tenant_name/code（单列版）
+		{"tags", []string{"idx_tags_name", "idx_tags_code", "idx_tag_tenant_name", "idx_tag_tenant_code"},
+			"idx_tag_tenant_name", "(tenant_id, name)"},
+		{"tags", nil, "idx_tag_tenant_code", "(tenant_id, code)"},
+		{"brands", []string{"idx_brands_name", "idx_brands_code", "idx_brand_tenant_name", "idx_brand_tenant_code"},
+			"idx_brand_tenant_name", "(tenant_id, name)"},
+		{"brands", nil, "idx_brand_tenant_code", "(tenant_id, code)"},
+		// car_models：正确版 idx_carmodel_tenant_code 已存在，这里只清错的两条
+		{"car_models", []string{"idx_car_models_code", "idx_model_tenant_code"},
+			"idx_carmodel_tenant_code", "(tenant_id, code)"},
+		{"cdp_tag_definitions", []string{"idx_cdp_tag_tenant_code"},
+			"idx_cdp_tag_tenant_code", "(tenant_id, code)"},
+		{"cdp_profiles", []string{"idx_cdp_profile_tenant_cdpid"},
+			"idx_cdp_profile_tenant_cdpid", "(tenant_id, cdp_id)"},
+		{"flow_definitions", []string{"idx_flow_definitions_code", "idx_flow_tenant_code"},
+			"idx_flow_tenant_code", "(tenant_id, code)"},
+	}
+	for _, t := range targets {
+		for _, idx := range t.drop {
+			if err := DB.Exec(fmt.Sprintf("DROP INDEX IF EXISTS %s", idx)).Error; err != nil {
+				log.Printf("[migrate] 删除历史错索引 %s 失败: %v", idx, err)
+			} else {
+				log.Printf("[migrate] 已删除历史错索引 %s", idx)
+			}
+		}
+		sql := fmt.Sprintf("CREATE UNIQUE INDEX IF NOT EXISTS %s ON %s %s", t.index, t.table, t.cols)
+		if err := DB.Exec(sql).Error; err != nil {
+			// 存量脏数据（同租户内重名）会让这里失败：告警而非中断启动，
+			// 否则一台库脏就全站起不来。
+			log.Printf("[migrate] 建复合唯一索引 %s(%s) 失败（需先清理同租户内重复数据）: %v", t.index, t.cols, err)
 		}
 	}
 }

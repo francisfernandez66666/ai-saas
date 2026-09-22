@@ -92,7 +92,7 @@ func GetCDPSegment(c *gin.Context) {
 
 	oneIDs, err := cdp.NewSegmentEngine().SegmentByTag(tenantID, tagCode)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "分群查询失败: "+err.Error())
+		RespErrInternal(c, err, "分群查询失败")
 		return
 	}
 	// OneID 本身是内部标识（c:{id}），非敏感；列表规模保护上限

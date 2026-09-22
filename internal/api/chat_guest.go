@@ -71,7 +71,7 @@ func Welcome(c *gin.Context) {
 		CustomerID uint `json:"customer_id"` // 客户ID，默认1号
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -221,7 +221,7 @@ func CreateGuest(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(&customer).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建访客失败: "+err.Error())
+		RespErrInternal(c, err, "创建访客失败")
 		return
 	}
 

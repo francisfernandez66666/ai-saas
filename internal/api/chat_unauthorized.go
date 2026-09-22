@@ -151,7 +151,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedResolve() bool {
 		Content    string `json:"content" binding:"required,max=4000"`
 	}
 	if err := s.c.ShouldBindJSON(&req); err != nil {
-		RespErr(s.c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(s.c, err)
 		return true
 	}
 	s.req = req

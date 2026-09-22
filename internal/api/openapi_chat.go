@@ -67,7 +67,7 @@ func OpenAPIChatCompletions(c *gin.Context) {
 	var req openAPIChatReq
 	if err := c.ShouldBindJSON(&req); err != nil {
 		log.Printf("[OpenAPI][trace=%s] 参数绑定失败 tenant=%d: %v", trace, tenantID, err)
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 	if req.ExternalUserID == "" {

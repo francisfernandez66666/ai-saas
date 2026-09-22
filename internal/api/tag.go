@@ -89,7 +89,7 @@ func CreateTag(c *gin.Context) {
 		Status      int     `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -110,7 +110,7 @@ func CreateTag(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(tag).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -289,7 +289,7 @@ func CreateTagRule(c *gin.Context) {
 		Status       int      `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -317,7 +317,7 @@ func CreateTagRule(c *gin.Context) {
 	rule.SetMatchPatterns(req.MatchPattern)
 
 	if err := db.RQ(c).Create(rule).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -485,7 +485,7 @@ func CreateTagWeight(c *gin.Context) {
 		Direction    string  `json:"direction"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -512,7 +512,7 @@ func CreateTagWeight(c *gin.Context) {
 	}
 
 	if err := db.RQ(c).Create(mapping).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 
@@ -559,7 +559,7 @@ func UpdateTagWeight(c *gin.Context) {
 		Status       int     `json:"status"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -665,7 +665,7 @@ func AddTagsToCustomer(c *gin.Context) {
 		TagIDs []uint `json:"tag_ids" binding:"required"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 

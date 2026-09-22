@@ -13,13 +13,13 @@ import "time"
 // CdpProfile CDP客户画像表
 // 用于存储客户在CDP系统中的统一画像信息
 type CdpProfile struct {
-	ID          uint      `gorm:"primaryKey;autoIncrement"`                         // 主键ID
-	TenantID    uint      `gorm:"default:0;index"`                                  // 租户ID
-	CustomerID  uint      `gorm:"index"`                                            // 客户ID
-	CdpId       string    `gorm:"size:32;uniqueIndex:idx_cdp_profile_tenant_cdpid"` // CDP实体ID
-	ProfileName string    `gorm:"size:64"`                                          // 画像名称
-	Status      int       `gorm:"default:1"`                                        // 状态
-	ProfileData string    `gorm:"type:json"`                                        // JSON格式的画像数据
+	ID          uint      `gorm:"primaryKey;autoIncrement"`                                      // 主键ID
+	TenantID    uint      `gorm:"default:0;uniqueIndex:idx_cdp_profile_tenant_cdpid,priority:1"` // 租户ID（复合唯一首列）
+	CustomerID  uint      `gorm:"index"`                                                         // 客户ID
+	CdpId       string    `gorm:"size:32;uniqueIndex:idx_cdp_profile_tenant_cdpid,priority:2"`   // CDP实体ID（租户级唯一，非全局唯一）
+	ProfileName string    `gorm:"size:64"`                                                       // 画像名称
+	Status      int       `gorm:"default:1"`                                                     // 状态
+	ProfileData string    `gorm:"type:json"`                                                     // JSON格式的画像数据
 	CreatedAt   time.Time // 创建时间
 	UpdatedAt   time.Time // 更新时间
 }
@@ -27,13 +27,13 @@ type CdpProfile struct {
 // CdpTagDefinition CDP标签定义表
 // 定义系统可用的标签类型和元数据
 type CdpTagDefinition struct {
-	ID            uint      `gorm:"primaryKey;autoIncrement"`                    // 主键ID
-	TenantID      uint      `gorm:"default:0;index"`                             // 租户ID
-	Code          string    `gorm:"size:32;uniqueIndex:idx_cdp_tag_tenant_code"` // 编码
-	Name          string    `gorm:"size:64"`                                     // 名称
-	Category      string    `gorm:"size:32"`                                     // 如: intent, behavior, preference
-	WeightDefault float64   `gorm:"default:0"`                                   // 默认权重
-	IsActive      bool      `gorm:"default:true"`                                // 是否上架
+	ID            uint      `gorm:"primaryKey;autoIncrement"`                                 // 主键ID
+	TenantID      uint      `gorm:"default:0;uniqueIndex:idx_cdp_tag_tenant_code,priority:1"` // 租户ID（复合唯一首列）
+	Code          string    `gorm:"size:32;uniqueIndex:idx_cdp_tag_tenant_code,priority:2"`   // 编码（租户级唯一，非全局唯一）
+	Name          string    `gorm:"size:64"`                                                  // 名称
+	Category      string    `gorm:"size:32"`                                                  // 如: intent, behavior, preference
+	WeightDefault float64   `gorm:"default:0"`                                                // 默认权重
+	IsActive      bool      `gorm:"default:true"`                                             // 是否上架
 	CreatedAt     time.Time // 创建时间
 	UpdatedAt     time.Time // 更新时间
 }

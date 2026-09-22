@@ -119,7 +119,7 @@ func applyBrandingUpdate(tenantID uint, req brandingUpdateReq) (*model.Tenant, e
 func AdminUpdateBranding(c *gin.Context) {
 	var req brandingUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 	// 从中间件获取当前租户ID
@@ -190,7 +190,7 @@ func SuperUpdateBranding(c *gin.Context) {
 	}
 	var req brandingUpdateReq
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 	t, err := applyBrandingUpdate(uint(id), req)

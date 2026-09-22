@@ -88,7 +88,7 @@ func StartFlow(c *gin.Context) {
 
 	instance, err := flow.DefaultEngine.StartFlow(req.FlowCode, flowCtx)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "启动流程失败: "+err.Error())
+		RespErrInternal(c, err, "启动流程失败")
 		return
 	}
 
@@ -120,7 +120,7 @@ func AdvanceFlow(c *gin.Context) {
 
 	instance, err := flow.DefaultEngine.AdvanceFlow(req.InstanceID, req.Route, flowCtx)
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "推进流程失败: "+err.Error())
+		RespErrInternal(c, err, "推进流程失败")
 		return
 	}
 

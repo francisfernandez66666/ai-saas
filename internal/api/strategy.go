@@ -89,7 +89,7 @@ func GetTemplate(c *gin.Context) {
 func CreateTemplate(c *gin.Context) {
 	var req schema.CreateTemplateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 
@@ -250,7 +250,7 @@ func DeleteTemplate(c *gin.Context) {
 func StrategyTest(c *gin.Context) {
 	var req schema.StrategyTestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		RespErr(c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(c, err)
 		return
 	}
 

@@ -2,7 +2,6 @@
 package api
 
 import (
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
@@ -37,7 +36,7 @@ func AdminPackStats(c *gin.Context) {
 	tid := db.EffectiveTenantIDFromGin(c)
 	rows, err := attribution.Stats(parseStatFilter(c, &tid))
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, attribution.StatsMessage(err))
+		RespErrInternal(c, err, "包效果统计失败")
 		return
 	}
 	RespOK(c, "ok", gin.H{"list": rows, "sample_min": 50})
@@ -56,7 +55,7 @@ func SuperPackStats(c *gin.Context) {
 	}
 	rows, err := attribution.Stats(parseStatFilter(c, tid))
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, attribution.StatsMessage(err))
+		RespErrInternal(c, err, "包效果统计失败")
 		return
 	}
 	var total int64

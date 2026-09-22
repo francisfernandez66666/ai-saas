@@ -45,7 +45,7 @@ func TestReadinessReleaseLevels(t *testing.T) {
 	SetDeploymentContext(1, true)
 	defer SetDeploymentContext(1, false)
 	// 无配置服务时走各默认值：registration_review=false→crit、contentsafety shadow→warn、
-	// pay_mode=mock→warn；环境变量组合验证 crit 项
+	// pay_mode 兜底为 static_qr（非 sdk）→warn；环境变量组合验证 crit 项
 	t.Setenv("ALLOW_MOCK_PAY", "true")
 	t.Setenv("AI_MOCK_MODE", "true")
 	t.Setenv("TRUSTED_PROXIES", "")

@@ -117,9 +117,10 @@ func computeReadinessChecks() []HealthCheck {
 	}
 
 	// R3 收款模式：mock=模拟到账；release+ALLOW_MOCK_PAY=true 时 0 元白嫖洞，warn 提醒收口
-	payMode := "mock"
+	// 2026-09-22 复核 P0-1：配置缺失时的兜底改用 static_qr（安全侧），不再默认 mock。
+	payMode := "static_qr"
 	if cfg != nil {
-		payMode = cfg.GetStringForTenant(0, "pay_mode", "mock")
+		payMode = cfg.GetStringForTenant(0, "pay_mode", "static_qr")
 	}
 	checks = append(checks, readinessCheck("pay_mode", payMode == "sdk", payMode, StatusWarn,
 		"pay_mode 非 sdk：到账依赖模拟/人工确认，正式收款前请配 pay_provider+商户凭据并切 pay_mode=sdk"))

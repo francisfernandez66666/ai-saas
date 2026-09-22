@@ -145,7 +145,7 @@ func (s *chatSessionCtx) chatResolveCustomer() bool {
 	var req schema.ChatRequest
 	if err := s.c.ShouldBindJSON(&req); err != nil {
 		log.Printf("[对话][trace=%s] 参数绑定失败 tenant=%d: %v", s.trace, s.tenantID, err)
-		RespErr(s.c, http.StatusBadRequest, 400, "参数错误: "+err.Error())
+		RespErrBind(s.c, err)
 		return true
 	}
 	s.req = req

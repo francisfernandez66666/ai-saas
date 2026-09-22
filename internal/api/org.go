@@ -324,7 +324,7 @@ func CreateDepartment(c *gin.Context) {
 		return tx.Model(&dept).Update("path", newPath).Error
 	})
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 	RespOK(c, "创建成功", nil)
@@ -435,7 +435,7 @@ func UpdateDepartment(c *gin.Context) {
 		return nil
 	})
 	if err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
+		RespErrInternal(c, err, "更新失败")
 		return
 	}
 	RespOK(c, "更新成功", nil)
@@ -564,7 +564,7 @@ func CreateUser(c *gin.Context) {
 		DepartmentID: &did,
 	}
 	if err := db.DB.Create(&u).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "创建失败: "+err.Error())
+		RespErrInternal(c, err, "创建失败")
 		return
 	}
 	log.Printf("[Org] 用户创建: %s 角色=%s 部门=%d 操作者=%d", u.Username, u.Role, did, s.UserID)
@@ -684,7 +684,7 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	if err := db.RQ(c).Model(&model.User{}).Where("id = ?", target.ID).Updates(updates).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "更新失败: "+err.Error())
+		RespErrInternal(c, err, "更新失败")
 		return
 	}
 	service.InvalidateOrg(target.ID) // 即时生效
