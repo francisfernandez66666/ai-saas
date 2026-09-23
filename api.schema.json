@@ -286,6 +286,50 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/deals",
+      "group": "admin",
+      "handler": "DrillDeals",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealDrillResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/deals/:id",
+      "group": "admin",
+      "handler": "GetDealDetail",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/deals/:id/quotes",
+      "group": "admin",
+      "handler": "ListDealQuotes",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteListResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/deals/board",
+      "group": "admin",
+      "handler": "DealBoard",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealBoardResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/export/conversations.csv",
       "group": "admin",
       "handler": "AdminExportConversations",
@@ -458,6 +502,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/quotes/:id",
+      "group": "admin",
+      "handler": "GetQuoteDetail",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/tag-rules",
       "group": "admin",
       "handler": "GetTagRuleList",
@@ -558,6 +613,17 @@
         "jwt",
         "readonly_write"
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/customer/:id/deals",
+      "group": "advisor",
+      "handler": "AdvisorCustomerDeals",
+      "auth": [
+        "jwt",
+        "readonly_write"
+      ],
+      "data_ts": "AdvisorDealListResp"
     },
     {
       "method": "GET",
@@ -1443,6 +1509,39 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/admin/deals",
+      "group": "admin",
+      "handler": "CreateDeal",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/deals/:id/move",
+      "group": "admin",
+      "handler": "MoveDeal",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/deals/:id/quotes",
+      "group": "admin",
+      "handler": "CreateQuote",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/admin/kb/upload",
       "group": "admin",
       "handler": "TenantKBUpload",
@@ -1685,6 +1784,50 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/admin/quotes/:id/accept",
+      "group": "admin",
+      "handler": "AcceptQuote",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/quotes/:id/decline",
+      "group": "admin",
+      "handler": "DeclineQuote",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/quotes/:id/send",
+      "group": "admin",
+      "handler": "SendQuoteDraft",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/quotes/:id/void",
+      "group": "admin",
+      "handler": "VoidQuote",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/admin/tag-rules",
       "group": "admin",
       "handler": "CreateTagRule",
@@ -1849,6 +1992,17 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/advisor/customer/:id/deals",
+      "group": "advisor",
+      "handler": "AdvisorCreateDeal",
+      "auth": [
+        "jwt",
+        "readonly_write"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/advisor/customer/:id/followup",
       "group": "advisor",
       "handler": "CreateFollowup",
@@ -1857,6 +2011,28 @@
         "readonly_write"
       ],
       "data_ts": "FollowUpRow"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/deals/:id/move",
+      "group": "advisor",
+      "handler": "AdvisorMoveDeal",
+      "auth": [
+        "jwt",
+        "readonly_write"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/advisor/deals/:id/quotes",
+      "group": "advisor",
+      "handler": "AdvisorCreateQuote",
+      "auth": [
+        "jwt",
+        "readonly_write"
+      ],
+      "data_ts": "DealQuoteResp"
     },
     {
       "method": "POST",
@@ -2441,6 +2617,17 @@
     },
     {
       "method": "PUT",
+      "path": "/api/v1/admin/deals/:id",
+      "group": "admin",
+      "handler": "EditDeal",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealDetailResp"
+    },
+    {
+      "method": "PUT",
       "path": "/api/v1/admin/knowledge/brands/:id",
       "group": "admin",
       "handler": "UpdateBrand",
@@ -2488,6 +2675,17 @@
         "jwt",
         "admin_required"
       ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/quotes/:id",
+      "group": "admin",
+      "handler": "EditQuoteDraft",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "DealQuoteResp"
     },
     {
       "method": "PUT",

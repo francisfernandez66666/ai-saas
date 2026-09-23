@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -31,6 +31,10 @@ export interface ApiRoutes {
   "GET /api/v1/admin/channel-dlq": OutboundListResp
   "GET /api/v1/admin/channels": ChannelListResp
   "GET /api/v1/admin/config": unknown
+  "GET /api/v1/admin/deals": DealDrillResp
+  "GET /api/v1/admin/deals/:id": DealDetailResp
+  "GET /api/v1/admin/deals/:id/quotes": DealQuoteListResp
+  "GET /api/v1/admin/deals/board": DealBoardResp
   "GET /api/v1/admin/export/conversations.csv": unknown
   "GET /api/v1/admin/export/customers.csv": unknown
   "GET /api/v1/admin/kb/my": unknown
@@ -48,6 +52,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/packs/current": unknown
   "GET /api/v1/admin/packs/stats": PackStatsResp
   "GET /api/v1/admin/privacy/deletion-requests": unknown
+  "GET /api/v1/admin/quotes/:id": DealQuoteResp
   "GET /api/v1/admin/tag-rules": unknown
   "GET /api/v1/admin/tag-weights": unknown
   "GET /api/v1/admin/tags": Paginated<Tag>
@@ -58,6 +63,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/webhooks": unknown
   "GET /api/v1/admin/webhooks/:id/deliveries": unknown
   "GET /api/v1/advisor/customer/:id": unknown
+  "GET /api/v1/advisor/customer/:id/deals": AdvisorDealListResp
   "GET /api/v1/advisor/customers": Paginated<AdvisorCustomerRow>
   "GET /api/v1/advisor/followups": FollowUpRow[]
   "GET /api/v1/advisor/list": AdvisorRef[]
@@ -147,6 +153,9 @@ export interface ApiRoutes {
   "POST /api/v1/admin/config/init": unknown
   "POST /api/v1/admin/config/reset": unknown
   "POST /api/v1/admin/config/rollback": unknown
+  "POST /api/v1/admin/deals": DealDetailResp
+  "POST /api/v1/admin/deals/:id/move": DealDetailResp
+  "POST /api/v1/admin/deals/:id/quotes": DealQuoteResp
   "POST /api/v1/admin/kb/upload": unknown
   "POST /api/v1/admin/knowledge/brands": unknown
   "POST /api/v1/admin/knowledge/brands/:id/disable": unknown
@@ -171,6 +180,10 @@ export interface ApiRoutes {
   "POST /api/v1/admin/packs/unbind": unknown
   "POST /api/v1/admin/packs/unbind-dept": unknown
   "POST /api/v1/admin/privacy/deletion-requests/:id/execute": unknown
+  "POST /api/v1/admin/quotes/:id/accept": DealQuoteResp
+  "POST /api/v1/admin/quotes/:id/decline": DealQuoteResp
+  "POST /api/v1/admin/quotes/:id/send": DealQuoteResp
+  "POST /api/v1/admin/quotes/:id/void": DealQuoteResp
   "POST /api/v1/admin/tag-rules": unknown
   "POST /api/v1/admin/tag-rules/:id/disable": unknown
   "POST /api/v1/admin/tag-rules/:id/enable": unknown
@@ -187,7 +200,10 @@ export interface ApiRoutes {
   "POST /api/v1/advisor/chat/send": unknown
   "POST /api/v1/advisor/chat/takeover": unknown
   "POST /api/v1/advisor/chat/toggle-ai-reply": AiReplyToggle
+  "POST /api/v1/advisor/customer/:id/deals": DealDetailResp
   "POST /api/v1/advisor/customer/:id/followup": FollowUpRow
+  "POST /api/v1/advisor/deals/:id/move": DealDetailResp
+  "POST /api/v1/advisor/deals/:id/quotes": DealQuoteResp
   "POST /api/v1/advisor/test-drive": TestDriveRow
   "POST /api/v1/auth/change-password": unknown
   "POST /api/v1/auth/email-code": unknown
@@ -247,11 +263,13 @@ export interface ApiRoutes {
   "PUT /api/v1/admin/channels/:id": unknown
   "PUT /api/v1/admin/channels/:id/status": unknown
   "PUT /api/v1/admin/config": unknown
+  "PUT /api/v1/admin/deals/:id": DealDetailResp
   "PUT /api/v1/admin/knowledge/brands/:id": unknown
   "PUT /api/v1/admin/knowledge/compares/:id": unknown
   "PUT /api/v1/admin/knowledge/fragments/:id": unknown
   "PUT /api/v1/admin/knowledge/models/:id": unknown
   "PUT /api/v1/admin/knowledge/specs/:id": unknown
+  "PUT /api/v1/admin/quotes/:id": DealQuoteResp
   "PUT /api/v1/admin/tag-rules/:id": unknown
   "PUT /api/v1/admin/tag-weights/:id": unknown
   "PUT /api/v1/admin/tags/:id": Tag

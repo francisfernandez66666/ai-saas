@@ -260,6 +260,11 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "strategy", Key: "talkmining_window_days", Value: "30", ValueType: "number", Description: "话术挖掘回溯窗口(天):只挖窗口内的顾问人工回复", DefaultValue: "30", SortOrder: 54},
 	{Category: "strategy", Key: "talkmining_max_drafts_per_run", Value: "20", ValueType: "number", Description: "单租户单轮最多出稿数(防人审队列被一次性灌满)", DefaultValue: "20", SortOrder: 57},
 	{Category: "strategy", Key: "talkmining_min_samples", Value: "5", ValueType: "number", Description: "出候选簇的最小去重客户样本数(不足即只统计不出稿)", DefaultValue: "5", SortOrder: 56},
+	// ---- 商机自动开单（商机批 · 批次2 补，2026-09-24）----
+	// 出厂关，口径同 outreach_enabled：开关一开，每个询价客户都会多出一张单，顾问台会被
+	// "没人核对过的自动单"灌满——先在个别租户开、看清自动单的质量再放量。
+	// 走 GetBoolForTenant（租户覆盖 > 系统默认），故**不进 PlatformLevelKeys**。
+	{Category: "strategy", Key: "deal_auto_open_enabled", Value: "false", ValueType: "bool", Description: "AI识别到询价信号自动为该客户开一张在途商机(false=只回价不建单,默认关)", DefaultValue: "false", SortOrder: 58},
 	// ---- 主动触达最小闭环（2026-09-23 触达批）----
 	// 出厂默认关=放量纪律（同 sales_path/talkmining）：主动开口打扰客户的能力，未经门店点头不得自动生效。
 	// 四个键都走 GetXxxForTenant（租户覆盖 > 系统默认），故**不进 PlatformLevelKeys**——

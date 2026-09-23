@@ -1692,5 +1692,289 @@ $PSQL "DELETE FROM acquisition_scans WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-
 ACQ_LEFT=$($PSQL "SELECT (SELECT count(*) FROM acquisition_codes WHERE code IN ('${ACQ_CODE}','${ACQ_CODE2}')) + (SELECT count(*) FROM acquisition_scans WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${ACQ_CA}','${ACQ_CB}'))" 2>/dev/null | tr -d '[:space:]')
 check "本段活码/扫码事件/租户已清零" 0 "${ACQ_LEFT:-1}"
 
+# ---------- 第三十六节：商机与报价（商机批 · 管道看板 + 报价版本链，2026-09-24）----------
+# 这段测的是两句管理会上的话："这条管道健康吗" 和 "这张单子谈到哪一版了"。四处最容易出事：
+#   1) **格子与名单两套 SQL**——看板写 12 张、点进去 9 行，当场失信（D4 与活码批同一条教训）。
+#      本段不是抽查一格，而是把 4 个分组 + 6 个阶段格子全跑一遍逐字比，
+#      并先自检"参与比对的格子数=10、非零格子≥5"，否则整段等式会在 0==0 上假绿。
+#   2) **在途唯一**：一个客户两张活单，"在途商机数"与"有单客户数"就再也对不上。
+#      判重不能只靠代码（多实例并发必撞），必须 DB 部分唯一索引兜底——所以断索引定义，
+#      并断"终局之后能重开一张新的"（部分索引只盖非终局行，这条语义错了就是产品缺陷）。
+#   3) **报价是钱**：合计一律服务端按明细算，客户手上那一版永不覆盖（v1→v2→v3 全留），
+#      已发出的内容锁死，改版只能出新版。
+#   4) **动作要留得下痕迹**：接受报价 ≠ 商机成交（两步分开，谁标的、何时标的查得到）；
+#      终局单不再改；拒绝一律回稳定原因码，前端与冒烟都按码分支。
+# 顺序按真实业务走：建单 → 推进 → 报价 v1/v2 → 接受 → 成交 → 终局锁 → 重开 → 看板核对。
+echo "---- 三十六、商机与报价：建单→推进→报价版本链→成交→终局锁→看板同源 ----"
+DEAL_CA="smoke_deal_a_$$"
+DEAL_CB="smoke_deal_b_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('商机甲租户','${DEAL_CA}','personal','active',NOW(),NOW()),
+              ('商机乙租户','${DEAL_CB}','personal','active',NOW(),NOW());" >/dev/null 2>&1
+DEAL_TA=$($PSQL "SELECT id FROM tenants WHERE code='${DEAL_CA}'" 2>/dev/null | tr -d '[:space:]')
+DEAL_TB=$($PSQL "SELECT id FROM tenants WHERE code='${DEAL_CB}'" 2>/dev/null | tr -d '[:space:]')
+# 前置自检：两个合成租户必须真的在库里（缺这步时下面所有跨租户断言会在"两边都是 0"上假绿）
+DEAL_TENANTS=$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${DEAL_CA}','${DEAL_CB}')" 2>/dev/null | tr -d '[:space:]')
+check "合成两租户落库自检(甲/乙各一)" 2 "${DEAL_TENANTS:-0}"
+AH="Authorization: Bearer $TOKEN"
+# deal_at <租户ID> <方法> <路径> [body]：以某租户作用域打管理端/顾问端
+deal_at() {
+  if [ "$2" = "GET" ]; then
+    curl -s -m 15 -H "$AH" -H "X-Tenant-ID: $1" "$B$3"
+  else
+    curl -s -m 15 -X "$2" -H "$AH" -H "X-Tenant-ID: $1" -H "Content-Type: application/json" -d "${4:-}" "$B$3"
+  fi
+}
+deal_a() { deal_at "$DEAL_TA" "$@"; }
+deal_b() { deal_at "$DEAL_TB" "$@"; }
+
+# (1)~(6) 数据层实存：迁移登记、两表、两条部分唯一索引的定义、看板与停滞榜的取数索引
+DEAL_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='023_deal_opportunities'" 2>/dev/null | tr -d '[:space:]')
+check "迁移023已登记版本账本" 1 "${DEAL_MIG:-0}"
+DEAL_TBL=$($PSQL "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('opportunities','quotes')" 2>/dev/null | tr -d '[:space:]')
+check "商机/报价两表实存" 2 "${DEAL_TBL:-0}"
+# 索引必须**只盖非终局行**：全表唯一会让"流失后重开一张新单"永久失败
+# （PG 把 `stage NOT IN ('won','lost')` 渲染成 `<> ALL(ARRAY[...])`，断的是实际执行计划里的那句话）
+DEAL_UX=$($PSQL "SELECT (indexdef LIKE '%UNIQUE%') AND (indexdef LIKE '%(tenant_id, customer_id)%') AND (indexdef LIKE '%<> ALL%') AND (indexdef LIKE '%won%') AND (indexdef LIKE '%lost%') FROM pg_indexes WHERE indexname='ux_deal_one_open_per_customer'" 2>/dev/null | tr -d '[:space:]')
+check "一客户一在途单=复合唯一+部分索引(终局行不占位)" t "${DEAL_UX:-f}"
+DEAL_QUX=$($PSQL "SELECT (indexdef LIKE '%UNIQUE%') AND (indexdef LIKE '%(opportunity_id)%') AND (indexdef LIKE '%= ANY%') AND (indexdef LIKE '%draft%') AND (indexdef LIKE '%sent%') FROM pg_indexes WHERE indexname='ux_quote_one_open_per_deal'" 2>/dev/null | tr -d '[:space:]')
+check "一单一在途报价=部分唯一(只算draft/sent,历史照留)" t "${DEAL_QUX:-f}"
+DEAL_IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname IN ('idx_deal_tenant_stage','idx_quote_due')" 2>/dev/null | tr -d '[:space:]')
+check "管道视图与过期巡检各有自己的取数索引(后台默认页不扫全表)" 2 "${DEAL_IDX:-0}"
+# AI 自动开单出厂关：开关一开，每个询价客户都会多一张没人核对过的单，灌满顾问台
+DEAL_AISEED=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=0 AND \"key\"='deal_auto_open_enabled' AND value='false'" 2>/dev/null | tr -d '[:space:]')
+check "AI自动开单键已播种且出厂false" 1 "${DEAL_AISEED:-0}"
+
+# (7)~(9) 闸：未登录、角色不足、以及"名单含手机号"这条读侧闸
+DEAL_401=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/deals/board")
+check "未登录取看板判401" 401 "$DEAL_401"
+DEAL_403=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/deals/board" -H "Authorization: Bearer $STOKEN")
+check "sales角色取管道看板判403(整条管道是管理视图)" 403 "$DEAL_403"
+DEAL_DRILL401=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/deals?filter=open")
+check "未登录取下钻名单判401(名单行带客户手机号)" 401 "$DEAL_DRILL401"
+
+# (10)~(15) 建单入参：拒绝必须回稳定原因码（文案可改、码不可改）
+DEAL_C1=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${DEAL_TA}" -H "Content-Type: application/json" -d '{"channel":"web","device":"desktop"}' | jsonget "['data']['customer_id']")
+DEAL_C2=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${DEAL_TA}" -H "Content-Type: application/json" -d '{"channel":"web","device":"desktop"}' | jsonget "['data']['customer_id']")
+DEAL_C3=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${DEAL_TA}" -H "Content-Type: application/json" -d '{"channel":"web","device":"desktop"}' | jsonget "['data']['customer_id']")
+DEAL_C4=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${DEAL_TA}" -H "Content-Type: application/json" -d '{"channel":"web","device":"desktop"}' | jsonget "['data']['customer_id']")
+# 名字后补：建客走的是真实匿名链路，名单行要能断"自带客户名"
+$PSQL "UPDATE customers SET name='商机客户甲' WHERE id=${DEAL_C1:-0};
+       UPDATE customers SET name='商机客户乙' WHERE id=${DEAL_C2:-0};
+       UPDATE customers SET name='商机客户丙' WHERE id=${DEAL_C3:-0};
+       UPDATE customers SET name='商机客户丁' WHERE id=${DEAL_C4:-0};" >/dev/null 2>&1
+# 前置自检：四个匿名客户必须真落在甲租户下（缺它时"客户不存在"那条会在错租户上假绿）
+DEAL_CS=$($PSQL "SELECT count(*) FROM customers WHERE id IN (${DEAL_C1:-0},${DEAL_C2:-0},${DEAL_C3:-0},${DEAL_C4:-0}) AND tenant_id=${DEAL_TA}" 2>/dev/null | tr -d '[:space:]')
+check "合成四客户落库自检(都在甲家)" 4 "${DEAL_CS:-0}"
+DEAL_NOTITLE=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"  \"}" | jsonget "['reason']")
+check "缺标题判title_required" title_required "${DEAL_NOTITLE:-NONE}"
+DEAL_BADSTAGE=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"测试单\",\"stage\":\"chatting\"}" | jsonget "['reason']")
+check "未知阶段判stage_unknown(阶段码由后端下发不各写一套)" stage_unknown "${DEAL_BADSTAGE:-NONE}"
+DEAL_TERMINAL=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"测试单\",\"stage\":\"won\"}" | jsonget "['reason']")
+check "建单即终局同样拒(没有过程的单子进不了管道)" stage_unknown "${DEAL_TERMINAL:-NONE}"
+DEAL_NEG=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"测试单\",\"amount_cents\":-1}" | jsonget "['reason']")
+check "负金额判amount_negative(钱在边界上不容许自由发挥)" amount_negative "${DEAL_NEG:-NONE}"
+DEAL_BIG=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"测试单\",\"amount_cents\":100000000001}" | jsonget "['reason']")
+check "金额超上限判amount_too_large" amount_too_large "${DEAL_BIG:-NONE}"
+DEAL_NOCUST=$(deal_a POST /api/v1/admin/deals '{"customer_id":99999999,"title":"测试单"}' | jsonget "['reason']")
+check "客户不存在/不在本租户判customer_not_found" customer_not_found "${DEAL_NOCUST:-NONE}"
+
+# (16)~(19) 建单成功 + 在途唯一（人工建单明确拒绝，不静默复用别人的旧单）
+DEAL_CREATE=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"XT5 两台大客户单\",\"amount_cents\":0}")
+DEAL_D1=$(echo "$DEAL_CREATE" | jsonget "['data']['deal']['id']")
+check "建单成功(返回商机ID非空)" y "$([ -n "${DEAL_D1:-}" ] && echo y || echo n)"
+check "缺省阶段=需求确认(一上来就填已报价是自欺)" 需求确认 "$(echo "$DEAL_CREATE" | jsonget "['data']['deal']['stage_name']")"
+DEAL_DUP=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C1:-0},\"title\":\"第二张\"}" | jsonget "['reason']")
+check "同客户第二张在途单判deal_already_open" deal_already_open "${DEAL_DUP:-NONE}"
+DEAL_OPDB=$($PSQL "SELECT count(*) FROM opportunities WHERE tenant_id=${DEAL_TA:-0} AND customer_id=${DEAL_C1:-0}" 2>/dev/null | tr -d '[:space:]')
+check "被拒的第二次确实没落库(归属列真写对不是回显)" 1 "${DEAL_OPDB:-0}"
+
+# (20)~(24) 阶段推进裁决：只准前进、原地不动也拒、成交要金额
+DEAL_SAME=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"qualified"}' | jsonget "['reason']")
+check "原地推进判same_stage(否则会白刷停滞天数)" same_stage "${DEAL_SAME:-NONE}"
+DEAL_BACK=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"lead"}' | jsonget "['reason']")
+check "逆向推进判stage_backward" stage_backward "${DEAL_BACK:-NONE}"
+DEAL_NOAMT=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"won","change_amount":false}' | jsonget "['reason']")
+check "成交缺金额判won_amount_required" won_amount_required "${DEAL_NOAMT:-NONE}"
+DEAL_MISSREASON=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"lost"}' | jsonget "['reason']")
+check "流失缺原因判lost_reason_required(报表要按它分组)" lost_reason_required "${DEAL_MISSREASON:-NONE}"
+DEAL_QUOTED=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"quoted"}' | jsonget "['data']['deal']['stage']")
+check "推进到已报价成功" quoted "${DEAL_QUOTED:-NONE}"
+
+# (25)~(34) 报价版本链：明细算钱、发出即锁定、改版不覆盖、接受不等于成交
+DEAL_QLINES=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/quotes" '{"lines":[]}' | jsonget "['reason']")
+check "空明细判quote_lines_required" quote_lines_required "${DEAL_QLINES:-NONE}"
+# 前端即使送来 total_cents 也不在这个体里——合计唯一来源是明细（2×1,000,000 + 1×1,500,000）
+DEAL_Q1=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/quotes" '{"lines":[{"name":"XT5 豪华版","qty":2,"unit_cents":1000000},{"name":"延保套餐","qty":1,"unit_cents":1500000}],"note":"smoke","valid_until":"2026-12-31","set_valid":true}')
+DEAL_QID1=$(echo "$DEAL_Q1" | jsonget "['data']['quote']['id']")
+check "首版报价 v1 且合计由服务端按明细算出(分)" 3500000 "$(echo "$DEAL_Q1" | jsonget "['data']['quote']['total_cents']")"
+check "首版版本号从1起" 1 "$(echo "$DEAL_Q1" | jsonget "['data']['quote']['version']")"
+DEAL_QLINE1=$(echo "$DEAL_Q1" | python3 -c "
+import sys,json
+q=((json.load(sys.stdin).get('data') or {}).get('quote') or {})
+ls=(q.get('lines') or [])
+print('OK' if len(ls)==2 and ls[0].get('total_cents')==2000000 and ls[1].get('total_cents')==1500000 else 'BAD:%s'%ls)
+" 2>/dev/null)
+[ "$DEAL_QLINE1" = "OK" ] && check "明细小计由后端回填(qty×单价)" y y || check "明细小计由后端回填(qty×单价)" y "${DEAL_QLINE1:-PARSE_FAIL}"
+DEAL_QEDIT=$(deal_a PUT "/api/v1/admin/quotes/${DEAL_QID1:-0}" '{"lines":[{"name":"XT5 豪华版","qty":1,"unit_cents":1000000}],"note":"改成一台"}')
+check "草稿可改且合计跟着明细重算" 1000000 "$(echo "$DEAL_QEDIT" | jsonget "['data']['quote']['total_cents']")"
+DEAL_QSEND=$(deal_a POST "/api/v1/admin/quotes/${DEAL_QID1:-0}/send")
+check "发出后状态=sent" sent "$(echo "$DEAL_QSEND" | jsonget "['data']['quote']['status']")"
+DEAL_SENTAT=$(echo "$DEAL_QSEND" | jsonget "['data']['quote']['sent_at']")
+check "发出时刻落库(发过没发过是可主张的事实)" y "$([ -n "${DEAL_SENTAT:-}" ] && [ "${DEAL_SENTAT}" != "None" ] && echo y || echo n)"
+DEAL_LOCKED=$(deal_a PUT "/api/v1/admin/quotes/${DEAL_QID1:-0}" '{"lines":[{"name":"改了算不算","qty":1,"unit_cents":1}]}' | jsonget "['reason']")
+check "已发出的报价改内容判quote_locked(要改只能出新版)" quote_locked "${DEAL_LOCKED:-NONE}"
+DEAL_RESEND=$(deal_a POST "/api/v1/admin/quotes/${DEAL_QID1:-0}/send" | jsonget "['reason']")
+check "已发出的不能再发出判quote_not_draft" quote_not_draft "${DEAL_RESEND:-NONE}"
+# 出 v2：v1 自动标"被取代"，历史行不删
+DEAL_Q2=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/quotes" "{\"lines\":[{\"name\":\"XT5 豪华版\",\"qty\":2,\"unit_cents\":1000000},{\"name\":\"延保套餐\",\"qty\":1,\"unit_cents\":1500000}],\"send\":true}")
+DEAL_QID2=$(echo "$DEAL_Q2" | jsonget "['data']['quote']['id']")
+check "第二版直接发出仍是同一条状态机产物(sent)" sent "$(echo "$DEAL_Q2" | jsonget "['data']['quote']['status']")"
+DEAL_Q1ST=$($PSQL "SELECT status FROM quotes WHERE id=${DEAL_QID1:-0}" 2>/dev/null | tr -d '[:space:]')
+check "旧版被标取代而不是被删(客户手上那版日后要能复现)" superseded "${DEAL_Q1ST:-MISSING}"
+DEAL_ACCEPT=$(deal_a POST "/api/v1/admin/quotes/${DEAL_QID2:-0}/accept")
+check "接受回写 accepted" accepted "$(echo "$DEAL_ACCEPT" | jsonget "['data']['quote']['status']")"
+DEAL_STAGEAFTER=$(deal_a GET "/api/v1/admin/deals/${DEAL_D1:-0}" | jsonget "['data']['deal']['stage']")
+check "接受报价不会顺手把商机推成成交(两步分开)" quoted "${DEAL_STAGEAFTER:-NONE}"
+DEAL_FINAL=$(deal_a POST "/api/v1/admin/quotes/${DEAL_QID1:-0}/accept" | jsonget "['reason']")
+check "被取代的旧版不可再动作判quote_final" quote_final "${DEAL_FINAL:-NONE}"
+DEAL_QCHAIN=$(deal_a GET "/api/v1/admin/deals/${DEAL_D1:-0}/quotes" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+ls=(d.get('list') or [])
+print('%s|%s' % (len(ls), ','.join(str(r.get('version')) for r in ls)))
+" 2>/dev/null)
+check "版本链两版齐全且倒序(最新在前)" "2|2,1" "${DEAL_QCHAIN:-PARSE_FAIL}"
+
+# (35)~(38) 终局：成交带金额、成交后不再改、也不再出报价
+DEAL_WON=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/move" '{"to":"won","amount_cents":3500000,"change_amount":true}')
+check "成交成功且金额落到单子" 3500000 "$(echo "$DEAL_WON" | jsonget "['data']['deal']['amount_cents']")"
+DEAL_WONAT=$(echo "$DEAL_WON" | jsonget "['data']['deal']['won_at']")
+check "成交时刻落库(报表按它算)" y "$([ -n "${DEAL_WONAT:-}" ] && [ "${DEAL_WONAT}" != "None" ] && echo y || echo n)"
+DEAL_CLOSED=$(deal_a PUT "/api/v1/admin/deals/${DEAL_D1:-0}" '{"title":"事后改标题"}' | jsonget "['reason']")
+check "终局单编辑判deal_closed(已发生的成交金额是历史事实)" deal_closed "${DEAL_CLOSED:-NONE}"
+DEAL_QCLOSED=$(deal_a POST "/api/v1/admin/deals/${DEAL_D1:-0}/quotes" '{"lines":[{"name":"再报一版","qty":1,"unit_cents":1}]}' | jsonget "['reason']")
+check "终局单不再出报价判deal_closed" deal_closed "${DEAL_QCLOSED:-NONE}"
+DEAL_OPENQ=$(deal_a GET "/api/v1/admin/deals/${DEAL_D1:-0}" | jsonget "['data']['deal']['open_quote']")
+check "全终局的报价链不算活报价(open_quote 为空)" None "${DEAL_OPENQ:-X}"
+
+# (39)~(44) 其余格子铺数据：停滞榜、流失原因、以及"流失之后能重开一张新的"
+deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C2:-0},\"title\":\"两驱版试驾单\",\"stage\":\"lead\"}" >/dev/null
+DEAL_D2=$($PSQL "SELECT id FROM opportunities WHERE tenant_id=${DEAL_TA:-0} AND customer_id=${DEAL_C2:-0} ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+# 停滞判据是 stage_entered_at（不是 updated_at：备注编辑会把它冲掉，等于停滞永远为零）。
+# 这里不注入时间也没法造"停滞"，所以直接改这一列——它正是判据本身，改它就是在改判据的输入。
+$PSQL "UPDATE opportunities SET stage_entered_at = NOW() - INTERVAL '30 days' WHERE id=${DEAL_D2:-0} AND tenant_id=${DEAL_TA:-0}" >/dev/null 2>&1
+DEAL_STUCKTOT=$(deal_a GET "/api/v1/admin/deals?filter=stuck&days=90" | jsonget "['data']['total']")
+DEAL_STUCKDAYS=$(deal_a GET "/api/v1/admin/deals?filter=stuck&days=90" | jsonget "['data']['list'][0]['stalled_days']")
+check "停滞格子只命中那张停在原地的单" 1 "${DEAL_STUCKTOT:-X}"
+check "停滞榜把停得最久的顶到第一(它就是这一格的存在意义)" y \
+  "$(awk -v d="${DEAL_STUCKDAYS:-0}" 'BEGIN{print (d>=29 && d<=31) ? "y" : "NO=" d}')"
+DEAL_D3=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C3:-0},\"title\":\"竞品拉锯单\",\"stage\":\"qualified\"}" | jsonget "['data']['deal']['id']")
+DEAL_LOST=$(deal_a POST "/api/v1/admin/deals/${DEAL_D3:-0}/move" '{"to":"lost","lost_reason":"competitor"}' | jsonget "['data']['deal']['lost_reason_name']")
+check "流失要带原因且中文名随响应下发(报表按码分组)" 输给竞品 "${DEAL_LOST:-NONE}"
+DEAL_AGAIN=$(deal_a POST /api/v1/admin/deals "{\"customer_id\":${DEAL_C3:-0},\"title\":\"流失后重新跟进\",\"amount_cents\":2000000}")
+DEAL_D4=$(echo "$DEAL_AGAIN" | jsonget "['data']['deal']['id']")
+check "同一客户流失后可重开新单(部分索引只盖非终局行)" y "$([ -n "${DEAL_D4:-}" ] && echo y || echo n)"
+DEAL_HIST=$($PSQL "SELECT count(*) FROM opportunities WHERE tenant_id=${DEAL_TA:-0} AND customer_id=${DEAL_C3:-0}" 2>/dev/null | tr -d '[:space:]')
+check "重开不覆盖历史那张(两张单子都在库里)" 2 "${DEAL_HIST:-0}"
+DEAL_KEEP=$(deal_a PUT "/api/v1/admin/deals/${DEAL_D4:-0}" '{"title":"流失后重新跟进(改过)"}' | jsonget "['data']['deal']['amount_cents']")
+check "改标题不带 change_amount 时金额不动(没传≠清零)" 2000000 "${DEAL_KEEP:-X}"
+
+# (45)~(48) 顾问端：同一个后端、不同的问题（看自己手上这个客户），且来源是判定不是填写
+DEAL_ADV401=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/advisor/customer/${DEAL_C3:-0}/deals")
+check "未登录取顾问台客户商机判401" 401 "$DEAL_ADV401"
+DEAL_ADVC=$(deal_a POST "/api/v1/advisor/customer/${DEAL_C4:-0}/deals" '{"title":"顾问开的单","stage":"lead","source":"ai"}' | jsonget "['data']['deal']['source']")
+check "顾问建单来源由后端判定(前端传 source 不作数)" manual "${DEAL_ADVC:-NONE}"
+DEAL_ADVLIST=$(deal_a GET "/api/v1/advisor/customer/${DEAL_C3:-0}/deals" | jsonget "['data']['total']")
+check "顾问台面按客户列全部单子(含终局,免得重复开)" 2 "${DEAL_ADVLIST:-0}"
+DEAL_ADVCROSS=$(deal_b GET "/api/v1/advisor/customer/${DEAL_C3:-0}/deals" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('%s|%s' % (d.get('total'), len(d.get('list') or [])))
+" 2>/dev/null)
+check "别家客户在顾问台面回空列表(不外洩存在也不炸页面)" "0|0" "${DEAL_ADVCROSS:-PARSE_FAIL}"
+
+# (49)~(58) 看板与名单同源：十个格子逐格比，先自检比对本身不是空转
+DEAL_BOARD=$(deal_a GET "/api/v1/admin/deals/board?days=90")
+DEAL_PAIRS=$(printf '%s' "$DEAL_BOARD" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+rows=[('open',d.get('open_count')),('stuck',d.get('stuck_count')),('won',d.get('won_count')),('lost',d.get('lost_count'))]
+for c in (d.get('stages') or []):
+    rows.append((c.get('drill_filter'), c.get('count')))
+print('\n'.join('%s\t%s' % (f, n) for f, n in rows))
+" 2>/dev/null)
+DEAL_PAIRN=0
+DEAL_EQN=0
+DEAL_NZN=0
+DEAL_BAD=""
+while IFS=$'\t' read -r DEAL_F DEAL_C; do
+  [ -z "${DEAL_F:-}" ] && continue
+  DEAL_PAIRN=$((DEAL_PAIRN+1))
+  [ "${DEAL_C:-0}" != "0" ] && DEAL_NZN=$((DEAL_NZN+1))
+  DEAL_T=$(deal_a GET "/api/v1/admin/deals?filter=${DEAL_F}&days=90" | jsonget "['data']['total']")
+  if [ "${DEAL_T:-X}" = "${DEAL_C}" ]; then
+    DEAL_EQN=$((DEAL_EQN+1))
+  else
+    DEAL_BAD="$DEAL_BAD $DEAL_F:格子$DEAL_C/名单$DEAL_T"
+  fi
+done <<DEALPAIRS
+$DEAL_PAIRS
+DEALPAIRS
+check "看板格子铺满十格(4分组+6阶段,零命中也出现)" 10 "$DEAL_PAIRN"
+check "参与比对的格子里非零≥5(等式不是在0==0上过的)" y "$([ "${DEAL_NZN:-0}" -ge 5 ] && echo y || echo "NO=$DEAL_NZN")"
+check "十个格子逐格核对:卡片数字==点进去的total" "10|" "${DEAL_EQN}|${DEAL_BAD}"
+DEAL_STAGENAME=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['stages'][2]['stage_name']" 2>/dev/null)
+check "阶段中文名随看板下发(前端不写第二套枚举)" 已报价 "${DEAL_STAGENAME:-NONE}"
+DEAL_OPENC=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['open_count']")
+DEAL_OPENA=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['open_amount_cents']")
+check "在途三张(乙的线索/丙的重开/丁的顾问单)" 3 "${DEAL_OPENC:-X}"
+check "在途金额只算在途单(成交那张不重复计)" 2000000 "${DEAL_OPENA:-X}"
+DEAL_WINRATE=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['win_rate_pct']")
+check "赢单率按终局单算(1赢1输=50%)" y \
+  "$(awk -v r="${DEAL_WINRATE:-0}" 'BEGIN{print (r+0>=49.99 && r+0<=50.01) ? "y" : "NO=" r}')"
+DEAL_NOTE=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['note']")
+check "口径说明随行下发(金额单位是分、窗打在建单时刻)" y "$([ -n "${DEAL_NOTE:-}" ] && echo y || echo n)"
+DEAL_TRUNC=$(printf '%s' "$DEAL_BOARD" | jsonget "['data']['truncated']")
+check "扫描未截断(数据量远在下限内)" False "${DEAL_TRUNC:-X}"
+DEAL_BEMPTY=$(deal_b GET "/api/v1/admin/deals/board?days=90" | jsonget "['data']['total_count']")
+check "乙租户看板看不到甲家任何一张(隔离不是靠前端过滤)" 0 "${DEAL_BEMPTY:-X}"
+
+# (59)~(63) 读侧参数纪律：缺/非法 filter 不默认回某一份名单、页码硬顶、越界如实、跨租户404
+DEAL_NOFILTER=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/deals" -H "$AH" -H "X-Tenant-ID: ${DEAL_TA}")
+check "缺filter判400(默认视图与'我点了哪一格'不能混)" 400 "$DEAL_NOFILTER"
+DEAL_BADFILTER=$(deal_a GET "/api/v1/admin/deals?filter=all" | jsonget "['code']")
+check "非法filter判400(不认识的不默认回一份名单)" 400 "${DEAL_BADFILTER:-X}"
+DEAL_PSCAP=$(deal_a GET "/api/v1/admin/deals?filter=open&page_size=1000" | jsonget "['data']['page_size']")
+check "名单page_size硬顶100且回显钳后值" 100 "${DEAL_PSCAP:-0}"
+DEAL_OOB=$(deal_a GET "/api/v1/admin/deals?filter=open&page=99" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('%s|%s' % (d.get('total'), len(d.get('list') or [])))
+" 2>/dev/null)
+check "越界页只回空列表但total如实" "3|0" "${DEAL_OOB:-PARSE_FAIL}"
+DEAL_ISO404=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/deals/${DEAL_D1:-0}" -H "$AH" -H "X-Tenant-ID: ${DEAL_TB}")
+check "跨租户读别人单子判404(与不存在同形态)" 404 "$DEAL_ISO404"
+DEAL_QISO404=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/quotes/${DEAL_QID2:-0}" -H "$AH" -H "X-Tenant-ID: ${DEAL_TB}")
+check "跨租户读别人报价单同样404" 404 "$DEAL_QISO404"
+
+# (64)~(66) 并发守卫：条件更新 0 行受影响是冲突不是成功
+DEAL_RACE=$(deal_a POST "/api/v1/admin/quotes/${DEAL_QID2:-0}/send" | jsonget "['reason']")
+check "已接受的报价不能再发出判quote_final(动作只从当前态推)" quote_final "${DEAL_RACE:-NONE}"
+DEAL_RACE409=$(deal_b POST "/api/v1/admin/quotes/${DEAL_QID2:-0}/void" | jsonget "['code']")
+check "别租户作废别人报价进不来(404,不改状态)" 404 "${DEAL_RACE409:-X}"
+DEAL_QSTILL=$($PSQL "SELECT status FROM quotes WHERE id=${DEAL_QID2:-0}" 2>/dev/null | tr -d '[:space:]')
+check "被拒的作废确实没改状态(拒绝要留下痕迹而不是改了半截)" accepted "${DEAL_QSTILL:-MISSING}"
+
+# 现场回收：报价→商机→消息/会话→客户→租户，逐层清，不留半截
+$PSQL "DELETE FROM quotes WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
+       DELETE FROM opportunities WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
+       DELETE FROM messages WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
+       DELETE FROM conversations WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
+       DELETE FROM customers WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
+       DELETE FROM tenants WHERE code IN ('${DEAL_CA}','${DEAL_CB}');" >/dev/null 2>&1
+DEAL_LEFT=$($PSQL "SELECT (SELECT count(*) FROM opportunities WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0})) + (SELECT count(*) FROM quotes WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${DEAL_CA}','${DEAL_CB}'))" 2>/dev/null | tr -d '[:space:]')
+check "本段商机/报价/租户已清零" 0 "${DEAL_LEFT:-1}"
+
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

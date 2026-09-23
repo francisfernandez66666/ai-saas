@@ -23,6 +23,13 @@ func registerAdvisor(v1 *gin.RouterGroup) {
 		advisorGroup.PUT("/customer/:id/tags", EditCustomerTags)
 		advisorGroup.PUT("/customer/:id/info", EditCustomerInfo)
 		advisorGroup.PUT("/customer/:id/stage", UpdateCustomerStage)
+		// 商机与报价（商机批 批次2）：客户台面上看这个人的单、开单、推进、出报价。
+		// 读侧一律经 deal.Scope.CustomerScope（DataScope 落在 customers 上）裁剪——
+		// opportunities 没有归属列，单子跟着客户走（理由见 internal/model/deal.go 文件头）。
+		advisorGroup.GET("/customer/:id/deals", AdvisorCustomerDeals)
+		advisorGroup.POST("/customer/:id/deals", AdvisorCreateDeal)
+		advisorGroup.POST("/deals/:id/move", AdvisorMoveDeal)
+		advisorGroup.POST("/deals/:id/quotes", AdvisorCreateQuote)
 		advisorGroup.POST("/customer/:id/followup", CreateFollowup)
 		advisorGroup.GET("/followups", GetFollowups)
 		advisorGroup.POST("/chat/takeover", AdvisorTakeover)

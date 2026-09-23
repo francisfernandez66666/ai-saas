@@ -53,6 +53,24 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.GET("/acquisition/codes/:id/qr.png", GetAcquisitionCodeQR)
 		admin.GET("/acquisition/codes/:id/customers", DrillAcquisitionCustomers)
 
+		// 商机与报价（商机批 批次2：看板 → 格子下钻名单 → 单子详情 → 报价版本链）
+		// 看板与名单共用一次扫描（deal.scanFacts），所以"格子 12 张、点进去 9 行"在这批结构上不给机会。
+		// 报价只有"作废"没有"删除"：客户手里那一版必须随时可复现（理由见 internal/model/deal.go）。
+		admin.GET("/deals/board", DealBoard)
+		admin.GET("/deals", DrillDeals)
+		admin.POST("/deals", CreateDeal)
+		admin.GET("/deals/:id", GetDealDetail)
+		admin.PUT("/deals/:id", EditDeal)
+		admin.POST("/deals/:id/move", MoveDeal)
+		admin.GET("/deals/:id/quotes", ListDealQuotes)
+		admin.POST("/deals/:id/quotes", CreateQuote)
+		admin.GET("/quotes/:id", GetQuoteDetail)
+		admin.PUT("/quotes/:id", EditQuoteDraft)
+		admin.POST("/quotes/:id/send", SendQuoteDraft)
+		admin.POST("/quotes/:id/accept", AcceptQuote)
+		admin.POST("/quotes/:id/decline", DeclineQuote)
+		admin.POST("/quotes/:id/void", VoidQuote)
+
 		// 行业包租户侧：分层列表 / 两级绑定 / 部门绑定
 		admin.GET("/packs", TenantPackList)
 		admin.POST("/packs/bind", TenantPackBind)

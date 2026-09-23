@@ -864,6 +864,9 @@ func (s *chatSessionCtx) chatRunStrategyAndRoute() {
 		s.conversation.Mode = "ai"
 		log.Printf("[对话] 会话%d 询价路由触发，引导到店试驾后出报价", s.conversation.ID)
 		aiReply = flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(s.c), &s.customer, s.conversation.ID, s.mergedContent, &s.strategyOutput, service.DeptChainForUser(s.conversation.AssignedUserID))
+		// 问价是最强的一段成交意图，也是顾问最容易漏的一条：开关开着就在客户名下留一张在途单
+		// （出厂关，见 deal_auto_open.go）。放在出词之后——回信优先，这张副产物慢一步也无妨。
+		autoOpenDealFromAI(db.RQ(s.c), s.tenantID, s.customer.ID, s.customer.Name)
 
 	case strategy.RouteHuman:
 		// 直接转人工（硬切，用户有感知）

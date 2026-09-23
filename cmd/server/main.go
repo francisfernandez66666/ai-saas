@@ -20,6 +20,7 @@ import (
 	configcenter "ai-scrm/internal/config_center"
 	"ai-scrm/internal/contentsafety"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/deal"
 	"ai-scrm/internal/engine/flow"
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/gateway"
@@ -636,25 +637,40 @@ func main() {
 				log.Printf("[PackQuality] %s", msg)
 			}
 		}
-		if redisclient.IsEnabled() {
-			if h := redisclient.TryLock("lock:pack:quality:sweep", 10*time.Minute); h != nil {
-				safeRun("pack:quality:sweep@startup", runPackQuality)
-				h.Unlock()
+		// 报价单过期判定挂在本小时槽（商机批 批次2，2026-09-23）：**不新起 ticker**——
+		// main.go 已有十余处异构裸 ticker，每多一个就多一处"重启时序/锁前缀/超时"要对齐的东西。
+		// 锁**各用一把**：共用一把时，包质量评分跑慢了会把过期判定挤到下一轮，两件不相干的事不该互相同步。
+		runQuoteExpiry := func() {
+			n, err := deal.SweepExpiredQuotes(db.DB, time.Now())
+			if err != nil {
+				log.Printf("[QuoteExpiry] 过期报价巡检失败: %v", err)
+				return
 			}
-		} else {
-			safeRun("pack:quality:sweep@startup", runPackQuality)
+			if n > 0 {
+				log.Printf("[QuoteExpiry] 判定 %d 张已发出报价过期（读侧不实时改写，状态变化要有时刻）", n)
+			}
 		}
+		// 选主跑一段任务：Redis 在就用锁裁决（多实例只有一个抢到），不在就直接跑（单实例语义不变）。
+		runLocked := func(label, lockName string, ttl time.Duration, fn func()) {
+			run := func() { safeRun(label, fn) }
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:"+lockName, ttl); h != nil {
+					run()
+					h.Unlock()
+				}
+				return
+			}
+			run()
+		}
+		sweepBoth := func(labelSuffix string, ttl time.Duration) {
+			runLocked("pack:quality:sweep"+labelSuffix, "pack:quality:sweep", ttl, runPackQuality)
+			runLocked("quote:expiry:sweep"+labelSuffix, "quote:expiry:sweep", ttl, runQuoteExpiry)
+		}
+		sweepBoth("@startup", 10*time.Minute)
 		tk := time.NewTicker(1 * time.Hour)
 		defer tk.Stop()
 		for range tk.C {
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:pack:quality:sweep", 50*time.Minute); h != nil {
-					safeRun("pack:quality:sweep", runPackQuality)
-					h.Unlock()
-				}
-			} else {
-				safeRun("pack:quality:sweep", runPackQuality)
-			}
+			sweepBoth("", 50*time.Minute)
 		}
 	}()
 

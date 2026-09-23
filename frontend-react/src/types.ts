@@ -1121,3 +1121,145 @@ export interface AcqResolveResp {
 export interface AcqScanResp {
   counted: boolean
 }
+
+// ============================================================
+// 商机与报价（商机批，2026-09-23 · 批次2）
+// 字段与 internal/api/deal_admin.go / deal_advisor.go 的出参一一对应。
+// 阶段码 / 过滤码 / 流失原因 / 报价状态都是后端稳定字面量（internal/deal/policy.go +
+// internal/model/deal.go），**中文口径名一律随 config 下发**：前端写第二套枚举，
+// 加一个阶段就会出现"看板格子叫得出名字、下钻标题对不上"。
+// 金额一律**分**（int64）：报价是钱，前端展示才除 100，任何中间步骤都不做浮点往返。
+// ============================================================
+
+/** 看板一个阶段格子（drill_filter 直接拿去下钻，前端不自己拼字符串） */
+export interface DealStageCell {
+  stage: string
+  stage_name: string
+  count: number
+  amount_cents: number
+  drill_filter: string
+}
+
+/** 看板与报价展示的口径集合（枚举 + 中文名 + 入参上限） */
+export interface DealConfig {
+  stages: string[]
+  stage_names: Record<string, string>
+  filters: string[]
+  filter_labels: Record<string, string>
+  lost_reasons: Record<string, string>
+  quote_statuses: Record<string, string>
+  sources: string[]
+  max_amount_cents: number
+  max_quote_lines: number
+  default_stuck_days: number
+}
+
+/** GET /admin/deals/board 出参：六格 + 在途/停滞/赢单三位 + 赢单率（分母只算终局单） */
+export interface DealBoardResp {
+  days: number
+  stuck_days: number
+  stages: DealStageCell[]
+  open_count: number
+  open_amount_cents: number
+  stuck_count: number
+  stuck_amount_cents: number
+  won_count: number
+  won_amount_cents: number
+  lost_count: number
+  total_count: number
+  win_rate_pct: number
+  /** true=单量超出后端一次扫描上限，数字比真实值小（如实标注，不静默少算） */
+  truncated: boolean
+  note: string
+  config: DealConfig
+}
+
+/** 报价单摘要（列表内嵌；明细行只在详情给） */
+export interface DealQuoteSummary {
+  id: number
+  version: number
+  status: string
+  status_name: string
+  total_cents: number
+  valid_until: string
+  sent_at: string
+  decided_at: string
+  created_at: string
+}
+
+/** 商机一行（列表与详情同形，归属/客户名由后端 join 到位） */
+export interface DealRow {
+  id: number
+  customer_id: number
+  customer_name: string
+  customer_phone: string
+  customer_journey_stage: string
+  owner_user_id: number
+  owner_name: string
+  title: string
+  stage: string
+  stage_name: string
+  stage_entered_at: string
+  stalled_days: number
+  amount_cents: number
+  source: string
+  source_code: string
+  expected_close_at: string
+  won_at: string
+  lost_at: string
+  lost_reason: string
+  lost_reason_name: string
+  quote_count: number
+  /** 当前那张活着的报价（草稿或已发出）；无则 null */
+  open_quote: DealQuoteSummary | null
+  created_at: string
+}
+
+/** GET /admin/deals?filter= 出参（total 恒等于看板格子数字，两侧同源） */
+export interface DealDrillResp {
+  filter: string
+  label: string
+  days: number
+  stuck_days: number
+  total: number
+  list: DealRow[]
+  truncated: boolean
+  note: string
+  page: number
+  page_size: number
+}
+
+/** 报价单详情（明细行合计由服务端算，前端传来的合计不作数） */
+export interface DealQuoteDetail extends DealQuoteSummary {
+  opportunity_id: number
+  lines: { name: string; qty: number; unit_cents: number; total_cents: number }[]
+  note: string
+  created_by: number
+  updated_at: string
+}
+
+/** GET /admin/deals/:id 与全部写操作的回读形态（写完立刻回读真实落库结果） */
+export interface DealDetailResp {
+  deal: DealRow
+  quotes: DealQuoteSummary[]
+  config: DealConfig
+}
+
+/** 报价动作（发出/接受/拒绝/作废/建版）统一回一张单的最新形态 */
+export interface DealQuoteResp {
+  quote: DealQuoteDetail
+}
+
+/** GET /admin/deals/:id/quotes 出参（version 倒序，含历史与作废） */
+export interface DealQuoteListResp {
+  list: DealQuoteSummary[]
+  total: number
+}
+
+/** GET /advisor/customer/:id/deals 出参（含终局单：顾问问的是"跟过几单"） */
+export interface AdvisorDealListResp {
+  customer_id: number
+  list: DealRow[]
+  total: number
+  config: DealConfig
+}
