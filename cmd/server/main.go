@@ -26,6 +26,7 @@ import (
 	"ai-scrm/internal/logx"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/mq"
+	"ai-scrm/internal/outreach"
 	"ai-scrm/internal/privacy"
 	"ai-scrm/internal/realtime"
 	"ai-scrm/internal/redisclient"
@@ -700,6 +701,50 @@ func main() {
 				}
 			} else {
 				safeRun("talkmining:draft", run)
+			}
+		}
+	}()
+
+	// 8.11 主动触达派发（触达最小闭环，2026-09-23）：30s 一轮，把到点的 pending 任务做
+	// 合规裁决（开关/客户/通道/48h 窗口）后投入通道出站队列，再回读出站终态对账 sent/failed。
+	// 三层护栏，与 talkmining 同形：
+	// ① 入口闸 outreach_enabled 默认 false，关态在查库前短路（系统层或任一租户覆盖任一为真才转）；
+	// ② Redis 可用时选主，避免多实例把同一批任务重复入站（重复触达=客户收到两条）；
+	// ③ 启动时不跑——重启即发一轮会让积压任务在进程起来那刻集中砸向客户。
+	// 出站投递钩子直接绑 channel.Enqueue：触达不自建第二条发送链路，退避/死信/重发全部复用通道层。
+	outreach.SendHook = channel.Enqueue
+	go func() {
+		tk := time.NewTicker(30 * time.Second)
+		defer tk.Stop()
+		for range tk.C {
+			if !runtimecfg.SafeCfgBool("outreach_enabled", false) &&
+				!runtimecfg.SafeAnyTenantFlagOn("outreach_enabled") {
+				continue
+			}
+			run := func() {
+				res, err := outreach.DispatchDue(db.DB, time.Now(), 100)
+				if err != nil {
+					log.Printf("[主动触达] 派发本轮失败: %v", err)
+				}
+				if res.Scanned > 0 {
+					log.Printf("[主动触达] 派发 扫描=%d 入队=%d 拦下=%d 失败=%d 待重试=%d",
+						res.Scanned, res.Queued, res.Skipped, res.Failed, res.Retried)
+				}
+				sent, failed, serr := outreach.SyncResults(db.DB, time.Now(), 200)
+				if serr != nil {
+					log.Printf("[主动触达] 结果对账本轮失败: %v", serr)
+				}
+				if sent > 0 || failed > 0 {
+					log.Printf("[主动触达] 对账 送达=%d 失败=%d", sent, failed)
+				}
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:outreach:dispatch", 25*time.Second); h != nil {
+					safeRun("outreach:dispatch", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("outreach:dispatch", run)
 			}
 		}
 	}()

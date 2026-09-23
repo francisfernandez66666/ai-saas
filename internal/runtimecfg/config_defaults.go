@@ -247,6 +247,14 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "strategy", Key: "talkmining_window_days", Value: "30", ValueType: "number", Description: "话术挖掘回溯窗口(天):只挖窗口内的顾问人工回复", DefaultValue: "30", SortOrder: 54},
 	{Category: "strategy", Key: "talkmining_max_drafts_per_run", Value: "20", ValueType: "number", Description: "单租户单轮最多出稿数(防人审队列被一次性灌满)", DefaultValue: "20", SortOrder: 57},
 	{Category: "strategy", Key: "talkmining_min_samples", Value: "5", ValueType: "number", Description: "出候选簇的最小去重客户样本数(不足即只统计不出稿)", DefaultValue: "5", SortOrder: 56},
+	// ---- 主动触达最小闭环（2026-09-23 触达批）----
+	// 出厂默认关=放量纪律（同 sales_path/talkmining）：主动开口打扰客户的能力，未经门店点头不得自动生效。
+	// 四个键都走 GetXxxForTenant（租户覆盖 > 系统默认），故**不进 PlatformLevelKeys**——
+	// 各家门店的销售节奏本来就不同（有的希望 08:00 起发、有的希望一周只发一条），租户级可调是产品意图。
+	{Category: "notify", Key: "outreach_enabled", Value: "false", ValueType: "bool", Description: "主动触达总开关(true=允许排期并派发主动触达任务outreach_tasks,默认关)", DefaultValue: "false", SortOrder: 20},
+	{Category: "notify", Key: "outreach_weekly_limit", Value: "2", ValueType: "number", Description: "单客户滚动7天内最多主动触达条数(0=不限;只计sent,未确认送达的queued不占额度)", DefaultValue: "2", SortOrder: 21},
+	{Category: "notify", Key: "outreach_quiet_hours", Value: "21:00-09:00", ValueType: "string", Description: "静默时段HH:MM-HH:MM(支持跨午夜):计划时间落在段内自动顺延到段末;留空或非法=不顺延", DefaultValue: "21:00-09:00", SortOrder: 22},
+	{Category: "notify", Key: "outreach_window_hours", Value: "48", ValueType: "number", Description: "微信侧主动发送窗口(小时):wecom_kf/wechat_mp需客户在窗口内有来句,超窗直接skipped省一次死信;wecom_app不受限", DefaultValue: "48", SortOrder: 23},
 }
 
 // PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）

@@ -25,6 +25,9 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / 2026-09-23 批六：数据层治理与运维观测面 7 断言（三十一：迁移 017/018/019 台账与列/索引实存、
 #         访客密钥补签零残留、orphan_messages=0、归档关闭不伪装零积压、Redis 声明一致性观测位、
 #         公开 /status 反泄露）
+#       / 2026-09-23 主动触达最小闭环 23 断言（三十二：迁移020与两条部分索引实存、四键出厂默认关、
+#         开关关时零落库、租户层开关生效且不污染系统层、排期→pending→撤回状态机、落库租户归属、
+#         超长文案/缺客户入参拒绝、全天静默自动顺延、跨租户列表与撤回均不可见、非管理员被拒、自清理）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -876,7 +879,8 @@ print('OK' if a['status']=='leading' and b['status']=='suggest_review' else json
 # 接口必须无视之、仍按 lead 口径出卡——白名单收敛从"代码里有"升级为"打接口能验"。
 curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
   -H "Content-Type: application/json" -d '[{"key":"experiment_reward_metric","value":"\"intent\""}]'
-B5WL=$(echo "$(b5stat)" | python3 -c "
+B5STATRESP=$(b5stat)
+B5WL=$(echo "$B5STATRESP" | python3 -c "
 import sys,json
 d=(json.load(sys.stdin).get('data') or {}).get('suggestions') or []
 mine=[s for s in d if s['template_id'] in ('$B5TA','$B5TB')]
@@ -963,6 +967,117 @@ B6VER2=$(echo "$B6DETAIL" | jsonget "['data']['version']" 2>/dev/null)
 B6VERSHAPE=$(printf '%s' "$B6VER1" | grep -cE '^v[0-9]+\.[0-9]+\.[0-9]+$' 2>/dev/null)
 check "/status版本回显为vX.Y.Z形态" 1 "${B6VERSHAPE:-0}"
 check "/status与/status/detail版本一致(appVersion单点真源)" "$B6VER1" "$B6VER2"
+
+# ---------- 第三十二节：主动触达最小闭环（排期/裁决/撤回/跨租户隔离，2026-09-23 批次4）----------
+# 这一段守的是"接口面 + 真库落库形态"：派发数学（48h 窗口、静默顺延、周内频次、重试上限）
+# 已在 internal/outreach 单测里逐条钉死，但单测用的是注入替身——真库里表是否存在、迁移是否登记、
+# 租户覆盖是否真生效、写进去的行 tenant_id 是否盖章正确（C7 红线）、跨租户能不能看到别人的队列，
+# 只有在跑起来的服务上才验得了。段尾自清理，不给共享库留残留行。
+echo "---- 三十二、主动触达最小闭环 ----"
+B7MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='020_outreach_tasks'" 2>/dev/null | tr -d '[:space:]')
+check "迁移020触达任务表已登记台账" 1 "$B7MIG"
+# 两条部分索引：pending 按到点扫描、sent 按客户周频控计数。缺任一条即每次派发/排期全表扫 outreach_tasks。
+B7IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='outreach_tasks'
+  AND indexname IN ('idx_outreach_pending_due','idx_outreach_sent_customer')" 2>/dev/null | tr -d '[:space:]')
+check "触达调度/频控两条部分索引已建" 2 "$B7IDX"
+# 出厂默认必须是"关"：主动触达会真给客户发消息，默认开着等于替租户做了放量决定
+B7SEED=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=0
+  AND ((key='outreach_enabled' AND value='false')
+    OR (key='outreach_weekly_limit' AND value='2')
+    OR (key='outreach_window_hours' AND value='48')
+    OR (key='outreach_quiet_hours' AND value='21:00-09:00'))" 2>/dev/null | tr -d '[:space:]')
+check "触达四键出厂默认已播种系统层(关/2条/48h/21-9点)" 4 "$B7SEED"
+
+B7CUST="smoke_outreach_$$_vk"
+# 注意 customers.status 是 bigint（客户阶段序号），不是文本态——插错列名/类型会让本段全部
+# 断言连锁假失败（首跑实测：'active' 喂给 bigint 直接 22P02，客户 ID 取空 → 后续 POST 全 400）。
+$PSQL "INSERT INTO customers (tenant_id, name, visitor_key, created_at, updated_at)
+       VALUES (1, '冒烟触达客户', '${B7CUST}', NOW(), NOW());" >/dev/null 2>&1
+B7CID=$($PSQL "SELECT id FROM customers WHERE visitor_key='${B7CUST}'" 2>/dev/null | tr -d '[:space:]')
+b7post() { curl -s -X POST "$B/api/v1/admin/outreach/tasks" -H "Authorization: Bearer $TOKEN" \
+  -H "X-Tenant-ID: ${1:-1}" -H "Content-Type: application/json" -d "$2"; }
+# 未开开关：必须先拒（这一步在查库之前，不能出现"排上了但永不派发"的暗账）
+B7OFF=$(b7post 1 "{\"customer_id\":${B7CID:-0},\"content\":\"冒烟触达-未启用\"}")
+check "开关关闭时排期被拒(HTTP400)" 400 "$(echo "$B7OFF" | jsonget "['code']" 2>/dev/null)"
+check "开关关闭拒绝原因码稳定(disabled)" disabled "$(echo "$B7OFF" | jsonget "['reason']" 2>/dev/null)"
+check "开关关闭时零落库(不留无法解释的pending行)" 0 "$($PSQL "SELECT count(*) FROM outreach_tasks WHERE content='冒烟触达-未启用'" 2>/dev/null | tr -d '[:space:]')"
+
+# 开租户开关（走后台配置接口，验的是"租户覆盖真生效"这条读写层链路，不是直改库）
+B7ON=$(curl -s -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"outreach_enabled","value":"true"}]')
+check "outreach_enabled 租户层可开(code=0)" 0 "$(echo "$B7ON" | jsonget "['code']" 2>/dev/null)"
+B7SYS=$($PSQL "SELECT replace(value,'\"','') FROM system_configs WHERE tenant_id=0 AND key='outreach_enabled'" 2>/dev/null | tr -d '[:space:]')
+[ "$B7SYS" = "false" ] && check "开租户开关未污染系统默认层" y y || check "开租户开关未污染系统默认层" false "$B7SYS"
+
+B7NEW=$(b7post 1 "{\"customer_id\":${B7CID:-0},\"content\":\"冒烟触达-已排期\"}")
+B7TID=$(echo "$B7NEW" | jsonget "['data']['id']" 2>/dev/null)
+check "开关开后排期成功(code=0)" 0 "$(echo "$B7NEW" | jsonget "['code']" 2>/dev/null)"
+check "新任务初始态为pending" pending "$(echo "$B7NEW" | jsonget "['data']['status']" 2>/dev/null)"
+# C7 红线：接口写入必须盖对本租户，绝不能落成 tenant_id=0（0 会被平台视图当成"无主行"）
+B7ROW=$($PSQL "SELECT count(*) FROM outreach_tasks WHERE id=${B7TID:-0} AND tenant_id=1 AND customer_id=${B7CID:-0}" 2>/dev/null | tr -d '[:space:]')
+check "★触达任务落库租户归属正确(tenant_id/customer_id)" 1 "$B7ROW"
+# 超长文案（>500 rune）必须被内容闸挡在落库前，且回稳定原因码
+# ⚠ 断言一律"先赋值给变量、再管道取值"：bash 里 `$(echo "$(cmd "…\"…")")` 这种嵌套命令替换
+#    会把内层的转义引号按两层解析——结果是**同一请求发两次、且请求体被拆坏**（服务端如实回
+#    param_error），断言取值变成空串。这是断言自伤，不是产品缺陷（2026-09-23 实测：
+#    同样的 body 直发返回 content_flagged，套进嵌套写法就恒失败）。
+B7LONG=$(python3 -c "print('冒烟触达超长文案'*200)")
+B7LONGRESP=$(b7post 1 "{\"customer_id\":${B7CID:-0},\"content\":\"$B7LONG\"}")
+check "超长文案被拒且原因码稳定(content_flagged)" content_flagged \
+  "$(echo "$B7LONGRESP" | jsonget "['reason']" 2>/dev/null)"
+# 静默顺延：整段全天静默时，计划时间必须被推到"此刻之后"（不许夜里打扰客户）
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" -d '[{"key":"outreach_quiet_hours","value":"00:00-23:59"}]'
+B7QRESP=$(b7post 1 "{\"customer_id\":${B7CID:-0},\"content\":\"冒烟触达-静默顺延\"}")
+B7Q=$(echo "$B7QRESP" | jsonget "['data']['scheduled_at']" 2>/dev/null)
+B7QFUTURE=$(python3 -c "
+from datetime import datetime,timezone
+try:
+    s='$B7Q'
+    d=datetime.fromisoformat(s.replace('Z','+00:00'))
+    print('OK' if d.timestamp()>datetime.now(timezone.utc).timestamp()-120 else 'NOT_FUTURE:'+s)
+except Exception as e:
+    print('PARSE_FAIL:%s'%e)
+" 2>/dev/null)
+[ "$B7QFUTURE" = "OK" ] && check "全天静默时计划时间自动顺延到未来" y y || check "全天静默时计划时间自动顺延到未来" y "${B7QFUTURE:-EMPTY}"
+# 列表回显本租户队列 + 生效参数（前端据此显示"开关未开"提示，参数必须来自租户覆盖层）
+B7LIST=$(curl -s "$B/api/v1/admin/outreach/tasks?status=pending&limit=10&offset=0" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+B7CFGON=$(echo "$B7LIST" | jsonget "['data']['config']['enabled']" 2>/dev/null)
+check "列表回显租户生效开关(True)" True "$B7CFGON"
+B7HIT=$(echo "$B7LIST" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('OK' if any(r.get('content')=='冒烟触达-已排期' for r in d.get('list') or []) else 'MISSING total=%s'%d.get('total'))
+" 2>/dev/null)
+[ "$B7HIT" = "OK" ] && check "列表按状态筛选可见新任务" y y || check "列表按状态筛选可见新任务" y "${B7HIT:-PARSE_FAIL}"
+# 撤回状态机：pending 可撤一次，二次撤回必须 404（已非 pending 不可撤）
+B7CX=$(curl -s -X POST "$B/api/v1/admin/outreach/tasks/${B7TID}/cancel" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "待派发任务可撤回(code=0)" 0 "$(echo "$B7CX" | jsonget "['code']" 2>/dev/null)"
+B7CX2=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/admin/outreach/tasks/${B7TID}/cancel" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "重复撤回判404(状态机不可逆)" 404 "$B7CX2"
+B7CANC=$($PSQL "SELECT status FROM outreach_tasks WHERE id=${B7TID:-0}" 2>/dev/null | tr -d '[:space:]')
+check "撤回后状态落库为cancelled" cancelled "$B7CANC"
+# 跨租户隔离：acme 视角看不到租户 1 的队列，也撤不动它的任务（404 而非 403，不泄露"存在性"）
+B7ACME=$(curl -s "$B/api/v1/admin/outreach/tasks?limit=50" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}")
+B7ACMETOTAL=$(echo "$B7ACME" | jsonget "['data']['total']" 2>/dev/null)
+check "跨租户列表total=0(看不到他人队列)" 0 "${B7ACMETOTAL:-1}"
+B7ACMEX=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/admin/outreach/tasks/${B7TID}/cancel" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}")
+check "跨租户撤回他人任务判404(不回显存在性)" 404 "$B7ACMEX"
+# 非法入参：缺 customer_id 必须 400（不得凭文案猜客户）
+B7NOCID=$(b7post 1 '{"content":"冒烟触达-缺客户"}')
+check "缺customer_id排期判400" 400 "$(echo "$B7NOCID" | jsonget "['code']" 2>/dev/null)"
+# 非管理员不得操作触达队列（sales1 是普通角色）
+B7SALES=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/outreach/tasks" -H "Authorization: Bearer $STOKEN")
+check "销售角色访问触达队列被拒(403)" 403 "$B7SALES"
+
+# 现场回收：合成客户/任务 + 本段写过的租户覆盖行清零
+$PSQL "DELETE FROM outreach_tasks WHERE tenant_id=1 AND content LIKE '冒烟触达%';
+       DELETE FROM customers WHERE visitor_key='${B7CUST}';
+       DELETE FROM system_configs WHERE tenant_id=1 AND key IN ('outreach_enabled','outreach_quiet_hours');" >/dev/null 2>&1
+B7LEFT=$($PSQL "SELECT (SELECT count(*) FROM outreach_tasks WHERE content LIKE '冒烟触达%')
+              + (SELECT count(*) FROM customers WHERE visitor_key='${B7CUST}')
+              + (SELECT count(*) FROM system_configs WHERE tenant_id=1 AND key IN ('outreach_enabled','outreach_quiet_hours'))" 2>/dev/null | tr -d '[:space:]')
+check "本段合成数据与租户覆盖行已清零" 0 "${B7LEFT:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

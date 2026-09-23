@@ -82,6 +82,35 @@ var replyDeliveryDegradeTotal uint64
 // IncReplyDeliveryDegrade Redis 故障投递认领降级单机裁决 +1（service.ClaimReplyDelivery 调用）
 func IncReplyDeliveryDegrade() { atomic.AddUint64(&replyDeliveryDegradeTotal, 1) }
 
+// ---- 主动触达计数（触达最小闭环，2026-09-23 批次2）----
+// 四个口径都是"任务裁决结果"计数，由 internal/outreach 调度器埋点：
+//
+//	queued  = 判定可发且已写入出站队列（真正发出去了）
+//	skipped = 被策略拦下（无通道/窗口已过/通道停用），属预期行为不计失败
+//	sent    = 出站回执确认送达
+//	failed  = 真失败（发送报错、重试耗尽、回执缺失）
+//
+// 为什么要四个而不是一个总数：queued 与 sent 的差值就是"卡在出站队列"的量，
+// 只有分开数才能看出是策略太严（skipped 高）还是投递链路坏了（sent 追不上 queued）。
+var (
+	outreachQueuedTotal  uint64
+	outreachSkippedTotal uint64
+	outreachSentTotal    uint64
+	outreachFailedTotal  uint64
+)
+
+// IncOutreachQueued 触达任务入出站队列 +1
+func IncOutreachQueued() { atomic.AddUint64(&outreachQueuedTotal, 1) }
+
+// IncOutreachSkipped 触达任务被策略拦下 +1
+func IncOutreachSkipped() { atomic.AddUint64(&outreachSkippedTotal, 1) }
+
+// IncOutreachSent 触达任务确认送达 +1
+func IncOutreachSent() { atomic.AddUint64(&outreachSentTotal, 1) }
+
+// IncOutreachFailed 触达任务发送失败 +1
+func IncOutreachFailed() { atomic.AddUint64(&outreachFailedTotal, 1) }
+
 // ---- G-15 Kafka 消息队列指标（2026-09-11）----
 // 说明：Kafka 是生产环境的消息总线，负责异步事件发布/消费
 // 这三个指标用于监控 Kafka 的健康状态和吞吐量
@@ -422,6 +451,22 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_reply_delivery_degrade_total reply delivery claim degraded to local arbitration due to Redis error\n"...)
 	b = append(b, "# TYPE ai_scrm_reply_delivery_degrade_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_reply_delivery_degrade_total %d\n", atomic.LoadUint64(&replyDeliveryDegradeTotal))...)
+
+	// ---- 主动触达四计数（触达最小闭环 2026-09-23）----
+	// queued 与 sent 的差值 = 卡在出站队列里的触达任务数，运维看这两个数的剪刀差即可判断
+	// "投递链路坏了"还是"策略拦得多"（skipped 大但 failed=0 属正常态）。
+	b = append(b, "# HELP ai_scrm_outreach_queued_total outreach tasks handed to outbound queue\n"...)
+	b = append(b, "# TYPE ai_scrm_outreach_queued_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_outreach_queued_total %d\n", atomic.LoadUint64(&outreachQueuedTotal))...)
+	b = append(b, "# HELP ai_scrm_outreach_skipped_total outreach tasks skipped by policy (no channel/out-of-window/inactive)\n"...)
+	b = append(b, "# TYPE ai_scrm_outreach_skipped_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_outreach_skipped_total %d\n", atomic.LoadUint64(&outreachSkippedTotal))...)
+	b = append(b, "# HELP ai_scrm_outreach_sent_total outreach tasks confirmed delivered by outbound receipt\n"...)
+	b = append(b, "# TYPE ai_scrm_outreach_sent_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_outreach_sent_total %d\n", atomic.LoadUint64(&outreachSentTotal))...)
+	b = append(b, "# HELP ai_scrm_outreach_failed_total outreach tasks failed (send error/exhausted retries/missing receipt)\n"...)
+	b = append(b, "# TYPE ai_scrm_outreach_failed_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_outreach_failed_total %d\n", atomic.LoadUint64(&outreachFailedTotal))...)
 
 	// ---- P1-2 指标4：支付成功率 ----
 	pp := atomic.LoadUint64(&paymentPaidTotal)

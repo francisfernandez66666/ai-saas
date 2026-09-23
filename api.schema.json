@@ -353,6 +353,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/outreach/tasks",
+      "group": "admin",
+      "handler": "ListOutreachTasks",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "OutreachListResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/packs",
       "group": "admin",
       "handler": "TenantPackList",
@@ -1482,6 +1493,28 @@
         "jwt",
         "admin_required"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/outreach/tasks",
+      "group": "admin",
+      "handler": "CreateOutreachTask",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "OutreachTaskRow"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/outreach/tasks/:id/cancel",
+      "group": "admin",
+      "handler": "CancelOutreachTask",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "OutreachCancelResp"
     },
     {
       "method": "POST",

@@ -9,7 +9,8 @@ import { getToken, setToken, logoutAndRedirect, AUTH, apiJSON, getImpersonateTen
 import { isSuperAdmin, ROLES } from '../lib/roles'
 import { CONFIG_CATS, MENU_GROUPS, type Cfg, type MenuItemDef } from './admin/shared'
 
-// P2-13(2026-09-22)：后台 18 个 Tab 全量 lazy 化——/admin 首屏 chunk 从 177KB 降到骨架级，
+// P2-13(2026-09-22)：后台各业务 Tab 全量 lazy 化（数目随菜单增长，此处刻意不写死计数——
+// 原注释写"18 个"，加一个 Tab 就静默失真）——/admin 首屏 chunk 从 177KB 降到骨架级，
 // 每个 Tab 按需加载，Suspense 统一骨架态（见 PanelContent 调用点）。
 const AuditTab = lazy(() => import('./admin/AuditTab').then(m => ({ default: m.AuditTab })))
 const BrandingTab = lazy(() => import('./admin/BrandingTab').then(m => ({ default: m.BrandingTab })))
@@ -29,6 +30,7 @@ const TenantKBTab = lazy(() => import('./admin/TenantKBTab'))
 const TagSystemTab = lazy(() => import('./admin/TagSystemTab').then(m => ({ default: m.TagSystemTab })))
 const UsageTab = lazy(() => import('./admin/UsageTab').then(m => ({ default: m.UsageTab })))
 const WebhookTab = lazy(() => import('./admin/WebhookTab').then(m => ({ default: m.WebhookTab })))
+const OutreachTab = lazy(() => import('./admin/OutreachTab').then(m => ({ default: m.OutreachTab })))
 const PrivacyTab = lazy(() => import('./admin/PrivacyTab').then(m => ({ default: m.PrivacyTab })))
 
 const { Header, Aside, Content } = Layout
@@ -164,7 +166,7 @@ export default function Admin() {
 
   // 按分类取配置项子集
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
-  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'usage', 'referral', 'branding', 'billing'].includes(tab)
+  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
   const userName = localStorage.getItem('username') || ''
   // 菜单点击：外链直接跳转，内链切当前 Tab
@@ -307,6 +309,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; 
   if (tab === 'audit') return <AuditTab />
   if (tab === 'openapi') return <OpenApiTab />
   if (tab === 'webhooks') return <WebhookTab />
+  if (tab === 'outreach') return <OutreachTab />
   if (tab === 'usage') return <UsageTab />
   if (tab === 'referral') return <ReferralTab />
   if (tab === 'privacy') return <PrivacyTab />

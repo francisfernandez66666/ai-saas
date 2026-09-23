@@ -36,6 +36,11 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.POST("/webhooks/:id/test", TestWebhook)
 		admin.GET("/webhooks/:id/deliveries", ListWebhookDeliveries)
 
+		// 主动触达队列（触达最小闭环 批次3：排期/列表/撤回；派发在 main.go 后台 ticker）
+		admin.GET("/outreach/tasks", ListOutreachTasks)
+		admin.POST("/outreach/tasks", CreateOutreachTask)
+		admin.POST("/outreach/tasks/:id/cancel", CancelOutreachTask)
+
 		// 行业包租户侧：分层列表 / 两级绑定 / 部门绑定
 		admin.GET("/packs", TenantPackList)
 		admin.POST("/packs/bind", TenantPackBind)

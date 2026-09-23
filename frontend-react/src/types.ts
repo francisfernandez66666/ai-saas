@@ -849,3 +849,44 @@ export interface AdvisorCustomerRow extends Customer {
   assigned_user_name?: string
   last_message_at?: string
 }
+
+// OutreachTaskRow 主动触达任务行（GET/POST /admin/outreach/tasks 出参，字段与
+// internal/api/outreach_admin.go 的 outreachTaskView 一一对应）。
+// status/reason 的取值是后端稳定字面量（internal/model/outreach.go），前端只按它出文案。
+export interface OutreachTaskRow {
+  id: number
+  customer_id: number
+  customer_name: string // 后端已按本页客户批量补齐，前端不再逐行二次查询
+  content: string
+  scheduled_at: string
+  status: string // pending/queued/sent/skipped/failed/cancelled
+  reason: string // 稳定原因码（被拦下/失败时非空）
+  error: string
+  channel_id: number
+  outbound_id: number
+  attempts: number
+  created_by: number
+  sent_at: string | null
+  created_at: string
+}
+
+// OutreachConfig 本租户生效的触达参数（租户覆盖 > 系统默认，随列表一起回吐，
+// 前端据此显示"开关未开/静默时段"提示，不再自己猜默认值）。
+export interface OutreachConfig {
+  enabled: boolean
+  weekly_limit: number
+  quiet_hours: string
+  window_hours: number
+}
+
+// OutreachListResp 触达队列分页响应（list/total/config 三段）。
+export interface OutreachListResp {
+  list: OutreachTaskRow[]
+  total: number
+  config: OutreachConfig
+}
+
+// OutreachCancelResp 撤回成功的回显（仅 pending 可撤，撤不动一律 404 不回显原因）。
+export interface OutreachCancelResp {
+  id: number
+}

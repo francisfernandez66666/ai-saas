@@ -23,9 +23,11 @@ import (
 const maxRetries = 5
 
 // Enqueue 将一条回复投递到指定会话对应通道的出站队列（异步发送）。
-func Enqueue(tenantID, channelID, customerID, conversationID uint, content, msgType string) error {
+// 返回新建的 channel_outbound.id（0=未入库）：主动触达需要这个 ID 回读投递结果
+// （queued→sent/failed 的对账锚点），旧调用方只关心错误，忽略首返回值即可。
+func Enqueue(tenantID, channelID, customerID, conversationID uint, content, msgType string) (uint, error) {
 	if content == "" {
-		return nil
+		return 0, nil
 	}
 	if msgType == "" {
 		msgType = "text"
@@ -41,7 +43,10 @@ func Enqueue(tenantID, channelID, customerID, conversationID uint, content, msgT
 		Status:         model.OutboundPending,
 		NextRetryAt:    &now,
 	}
-	return db.DB.Create(&ob).Error
+	if err := db.DB.Create(&ob).Error; err != nil {
+		return 0, err
+	}
+	return ob.ID, nil
 }
 
 // nextBackoff 指数退避：3s * 2^retries（上限 ~5min）。

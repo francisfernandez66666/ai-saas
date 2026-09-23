@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, PackStatsResp, Paginated, SellingFeature, StatsOverview, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
+import type { AIContribution, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -38,6 +38,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/knowledge/models/:id": unknown
   "GET /api/v1/admin/knowledge/specs": unknown
   "GET /api/v1/admin/models": unknown
+  "GET /api/v1/admin/outreach/tasks": OutreachListResp
   "GET /api/v1/admin/packs": unknown
   "GET /api/v1/admin/packs/current": unknown
   "GET /api/v1/admin/packs/stats": PackStatsResp
@@ -152,6 +153,8 @@ export interface ApiRoutes {
   "POST /api/v1/admin/knowledge/specs": unknown
   "POST /api/v1/admin/knowledge/specs/:id/disable": unknown
   "POST /api/v1/admin/knowledge/specs/:id/enable": unknown
+  "POST /api/v1/admin/outreach/tasks": OutreachTaskRow
+  "POST /api/v1/admin/outreach/tasks/:id/cancel": OutreachCancelResp
   "POST /api/v1/admin/packs/bind": unknown
   "POST /api/v1/admin/packs/bind-dept": unknown
   "POST /api/v1/admin/packs/unbind": unknown

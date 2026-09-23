@@ -24,6 +24,10 @@ PATTERNS=(
   "uat%" "perm%" "rfd%" "chan_smoke%" "unit_test_tenant%" "rls_a%" "rls_b%" "e2e%"
   "dpa%" "uindg%" "uinde%" "dlimit%" "verifytest%" "invitedemo%" "rlttest%" "b2btest%"
   "trd%" "ref%" "dbg-%" "revtest"
+  # 2026-09-23 批六收尾：历史调试脚本留下的两族一次性租户（旧 "dbg-%" 用了连字符，追不上
+  # 下划线形态的 dbg3_66924「调试租户」；p11_66861「P11复现租户」是短进程号形态，
+  # 泛化式 ^p[0-9]{6}... 也追不上）。两者均 0 用户/0 客户，纯复现现场。
+  "dbg%" "~^p[0-9]+_[0-9]+$"
   "单元测试租户-%"
   "~^p[0-9]{6}(x[0-9a-f]+)?_[a-z0-9_]+$"
   "~^(ind|edu|dup|rec|man|inv[0-9]*|px|pp|pw|id[ab]|nt|t)[0-9]+$"

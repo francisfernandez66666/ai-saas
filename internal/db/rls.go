@@ -103,6 +103,7 @@ var rlsTenantTables = []string{
 	"messages_archive",     // messages 冷数据归档表（迁移011，含原文）
 	"reply_attributions",   // D9 回复归因表（意向/会话回溯）
 	"pack_stats",           // D9 包效果统计表
+	"outreach_tasks",       // 主动触达任务表（触达最小闭环 2026-09-23，含触达正文）
 }
 
 // RLSStatusInfo RLS 实际生效形态（P2-2 批三 2026-09-20：readiness 观测位数据源）。

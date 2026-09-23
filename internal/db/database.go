@@ -322,6 +322,8 @@ func autoMigrate() error {
 		// ---- 行业包质量归因（D9，2026-09-13；建表真源见 migrations/009/010）
 		&model.ReplyAttribution{},
 		&model.PackStatSnapshot{},
+		// ---- 主动触达任务（触达最小闭环，2026-09-23；调度索引见 migrations/020）
+		&model.OutreachTask{},
 	)
 }
 

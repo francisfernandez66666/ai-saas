@@ -148,7 +148,10 @@ test('openapi docs page renders endpoints from spec', async ({ page }) => {
 });
 
 // 12-14. P1-10(2026-09-20 审计批二)：桌面管理台三台 390px 窄屏可达性
-// 断言口径：①固定 200px 左栏（.t-layout__aside）在窄屏消失，折叠为顶栏下拉菜单；
+// 断言口径：①固定 200px 左栏在窄屏消失（选择器必须是 .t-layout__sider —— TDesign React 的
+// <Aside> 输出 aside.t-layout__sider，不存在 .t-layout__aside 这个类；写错时 locator 恒为空，
+// toHaveCount(0) 会在桌面宽度下也永远通过，是一条假绿断言，2026-09-23 第 18 项首跑实锤），
+// 折叠为顶栏下拉菜单；
 // ②整页横向滚动宽度不超视口（防内容炸版，表格横滚应局限在 .t-table__content 内）；
 // ③下拉切 Tab 真实联动（/admin 选"回复速度"出配置动作条）。
 async function seedDesktopLogin(page: import('@playwright/test').Page, request: APIRequestContext) {
@@ -169,7 +172,7 @@ test.describe('P1-10 390px 桌面三台可达', () => {
     await page.goto('/admin');
     const menu = page.locator('select[aria-label="管理菜单"]');
     await expect(menu).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.t-layout__aside')).toHaveCount(0);
+    await expect(page.locator('.t-layout__sider')).toHaveCount(0);
     await menu.selectOption('reply_speed');
     // 配置类 Tab 无租户作用域限制，选中后渲染底部动作条。
     // 用 button 角色精确定位：页内另有 ConfigPanel 提示文案「使用顶部"⚡ 延迟归零"按钮切换」，
@@ -183,7 +186,7 @@ test.describe('P1-10 390px 桌面三台可达', () => {
     await seedDesktopLogin(page, request);
     await page.goto('/super');
     await expect(page.locator('select[aria-label="平台管理菜单"]')).toBeVisible({ timeout: 10000 });
-    await expect(page.locator('.t-layout__aside')).toHaveCount(0);
+    await expect(page.locator('.t-layout__sider')).toHaveCount(0);
     const sw = await page.evaluate(() => document.documentElement.scrollWidth);
     expect(sw).toBeLessThanOrEqual(392);
   });
@@ -203,11 +206,35 @@ test.describe('P1-10 390px 桌面三台可达', () => {
 // 前置坑（首跑即踩到，记下防复发）：超管未选「代管租户」时，Admin.tsx 会把租户作用域 Tab
 // （dashboard 属于此类）整块替换为"需先选择代管租户"的橙条，DashboardTab 根本不挂载 ——
 // 故必须先在该下拉框里选定租户，否则等多久都等不到卡片（断言会以"标题不存在"失败）。
+// 选哪个租户见 pickOperableTenant 注释（按下标取会踩到过期/停用租户）。
 // 断言口径：
 //  ① 选定代管租户后卡片标题可见（端点 4xx/500 会让卡片进失败态，此处即红灯）
 //  ② 切"近 7 天"必须发出 days=7 的真实请求（监听网络，防"只改样式不改数据"）
 //  ③ 页面无 NaN/Infinity 文本（0 除 0 未兜底的典型症状，新租户零数据必踩）
+
+// 代管租户选取口径（D2 卡片与主动触达 Tab 共用）：**探一个真进得去的租户**，不再按下拉框下标取。
+// 旧写法 `option.nth(1)` 依赖后端返回顺序，而 cleanup_test_tenants 会删测试租户、trial 租户会到期，
+// 2026-09-23 清库后实跑即踩到 nth(1) 落在已过期 trial 上（接口 402「试用期已结束」）——
+// 那时断言测的是"这个租户不可用"，不是产品行为。故逐个租户用真实作用域端点探 200，探不到即前置失败。
+async function pickOperableTenant(request: APIRequestContext): Promise<string> {
+  const token = await adminToken(request);
+  const auth = { Authorization: `Bearer ${token}` };
+  const resp = await request.get(`${BASE}/api/v1/super/tenants`, { headers: auth });
+  expect(resp.ok()).toBeTruthy();
+  const payload = (await resp.json())?.data;
+  const rows = (Array.isArray(payload) ? payload : payload?.list ?? []) as { id?: number }[];
+  for (const t of rows) {
+    const id = String(t?.id ?? '');
+    if (!id || id === '0') continue;
+    // 探针用中性的租户作用域读端点：不能用被测端点自己当探针（那会把"前置"和"结论"混在一起）
+    const probe = await request.get(`${BASE}/api/v1/customers?limit=1`, { headers: { ...auth, 'X-Tenant-ID': id } });
+    if (probe.ok()) return id;
+  }
+  throw new Error('无租户作用域可进入的租户（全为停用/过期），浏览器用例前置不成立');
+}
+
 test('D2 admin AI 贡献度卡片渲染且窗口切换发真实请求', async ({ page, request }) => {
+  const tid = await pickOperableTenant(request);
   await seedDesktopLogin(page, request);
   const hits: string[] = [];
   page.on('request', (r) => {
@@ -218,9 +245,7 @@ test('D2 admin AI 贡献度卡片渲染且窗口切换发真实请求', async ({
   // 超管必须先选定代管租户，租户作用域 Tab 才会真正挂载
   const impSel = page.locator('select[aria-label="代管租户"]');
   await expect(impSel).toBeVisible({ timeout: 10000 });
-  const firstTenant = await impSel.locator('option').nth(1).getAttribute('value');
-  expect(firstTenant).toBeTruthy();
-  await impSel.selectOption(firstTenant!);
+  await impSel.selectOption(tid);
 
   await expect(page.getByRole('heading', { name: 'AI 贡献度' })).toBeVisible({ timeout: 15000 });
   await expect.poll(() => hits.some((u) => u.includes('days=30')), { timeout: 10000 }).toBeTruthy();
@@ -251,4 +276,48 @@ test('S2 找回密码页不再出现服务端日志字样', async ({ page, reque
   // 正向锁：光"没有那句话"不够（整页空白也能过），必须看到通道驱动的那句提示真的渲染出来了。
   // smtp → 指引看邮箱；log → 指引找管理员；两者之一即证明 /auth/reset-channel 已接线。
   expect(body).toMatch(/验证码将发送至账号绑定的邮箱|请联系管理员协助重置|验证码 10 分钟内有效/);
+});
+
+// 18. 主动触达队列 Tab（触达最小闭环 · 批次3/4，2026-09-23）
+// 真浏览器只断"用户看得见的那一屏"三件事，与 smoke §三十二（23 项接口契约+落库）互补不重叠：
+//  ① 菜单可达且真的发出 /admin/outreach/tasks 请求——Tab 挂载了但请求没发＝路径或筛选写错；
+//  ② 「开关未开」横幅严格跟随后端 config.enabled：写死成常量、或后端改名，这里必红
+//     （出厂 outreach_enabled=false，故默认走"必须可见"这一支）；
+//  ③ 队列文本里不出现 NaN/undefined/[object Object]——零数据新租户是未兜底字段的典型现场。
+//
+// 代管租户选取口径同 D2 卡片：用 pickOperableTenant 探到的可用租户，勿按下标取
+// （2026-09-23 清库后 nth(1) 落在已过期 trial 上，断言打的是 402 而非产品行为）。
+test('主动触达 Tab 真浏览器渲染且提示跟随真实开关', async ({ page, request }) => {
+  const tid = await pickOperableTenant(request);
+  await seedDesktopLogin(page, request);
+  const hits: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/admin/outreach/tasks')) hits.push(r.url());
+  });
+  await page.goto('/admin');
+
+  // 超管必须先选定代管租户，租户作用域 Tab 才会真正挂载（同 D2 卡片的前置坑）
+  const impSel = page.locator('select[aria-label="代管租户"]');
+  await expect(impSel).toBeVisible({ timeout: 10000 });
+  await impSel.selectOption(tid);
+
+  // 正向锁：先证明桌面宽度下左栏确实用 .t-layout__sider 挂载——第 13/14 项的 toHaveCount(0)
+  // 是「选择器命中 0 个」的空断言，若哪天类名变了它会永远绿。这一句让类名漂移在本项即红。
+  await expect(page.locator('.t-layout__sider')).toBeVisible({ timeout: 10000 });
+  await page.locator('.t-menu').getByText('主动触达', { exact: true }).click();
+  await expect(page.getByRole('button', { name: /新建触达/ })).toBeVisible({ timeout: 15000 });
+  await expect.poll(() => hits.length, { timeout: 10000 }).toBeGreaterThan(0);
+
+  const token = await adminToken(request);
+  const api = await request.get(`${BASE}/api/v1/admin/outreach/tasks?limit=1`, {
+    headers: { Authorization: `Bearer ${token}`, 'X-Tenant-ID': tid },
+  });
+  expect(api.ok()).toBeTruthy();
+  const enabled = !!(await api.json())?.data?.config?.enabled;
+  const banner = page.getByText('主动触达未开启');
+  if (enabled) await expect(banner).toHaveCount(0);
+  else await expect(banner).toBeVisible({ timeout: 10000 });
+
+  const body = await page.locator('body').innerText();
+  expect(body).not.toMatch(/NaN|undefined|\[object Object\]/);
 });

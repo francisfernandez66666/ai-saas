@@ -313,7 +313,7 @@ func deliverText(ch *model.Channel, conv *model.Conversation, customerID uint, t
 	if text == "" {
 		return
 	}
-	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+	if _, err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
 		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err) // 出站队列自带死信/重发
 	}
 }
@@ -331,7 +331,7 @@ func saveAndDeliver(ch *model.Channel, conv *model.Conversation, customerID uint
 	if err := db.DB.Create(&aiMsg).Error; err != nil {
 		log.Printf("[通道] 回复落库失败 conv=%d: %v", conv.ID, err)
 	}
-	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+	if _, err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
 		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err) // 出站队列自带死信/重发
 	}
 }
@@ -365,7 +365,7 @@ func deliverAI(ch *model.Channel, conv *model.Conversation, customerID uint, tex
 		IntentBefore:   intentBefore,
 		IntentAfter:    intentAfter,
 	})
-	if err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
+	if _, err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
 		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err)
 	}
 }
