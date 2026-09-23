@@ -39,6 +39,12 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         可下钻白名单恰六个客户级指标（消息量/会话数/待接管单位不同不得入内）、名单人名与接待归属正确
 #         且按客户 ID 倒序、page_size=1 翻页不重不漏且 total 恒定、越界页空名单不改 total、硬顶 100、
 #         非白名单指标 400、缺 metric 400、未登录 401、随行下发 label/note、跨租户名单不可见、自清理）
+#       / 2026-09-23 获客批：获客活码渠道归因 44 断言（三十五：迁移022两表与全局唯一码/部分索引/归因列实存、
+#         建码四路稳定原因码拒绝、短码形态排除易混字符、链接由后端三级基址拼出、空态为 []、展示口径（7渠道+5客户级指标+
+#         中文名）后端下发、二维码出 PNG 且超大 size 被钳、跨租户出图/下钻均 404、启停缺参与不存在分别 400/404、
+#         公开解析四类失败同形 404 不透露存在性、扫码窗口去重只记一次、归因租户取自码行、
+#         别家的码打到本家只记不上（列仍空且客户照常建成）、停用码不再归因、
+#         「新增客户」卡片数字与名单 total 逐字相等、扫码次数/缺 metric 判 400、page_size 硬顶 100、未登录 401、自清理）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -1474,6 +1480,217 @@ $PSQL "DELETE FROM messages WHERE tenant_id=(SELECT id FROM tenants WHERE code='
        DELETE FROM tenants WHERE code='${D4CODE}';" >/dev/null 2>&1
 D4LEFT=$($PSQL "SELECT (SELECT count(*) FROM customers WHERE name LIKE 'D4%') + (SELECT count(*) FROM messages WHERE content LIKE 'D4%') + (SELECT count(*) FROM tenants WHERE code='${D4CODE}')" 2>/dev/null | tr -d '[:space:]')
 check "本段合成客户/消息/租户已清零" 0 "${D4LEFT:-1}"
+
+# ---------- 第三十五节：获客活码（获客批 · 渠道归因最小闭环，2026-09-23）----------
+# 这段测的是"哪个渠道值得继续投钱"这句话能不能成立。三处最容易出事：
+#   1) **归因写进别人家**——公开链路只拿得到码本身（扫码时的 Host 由物料决定），
+#      所以租户身份必须从码行上取、且"码所属租户 ≠ 请求租户"时拒写；错一家的账比缺账难查。
+#   2) **漏斗数字与名单两套 SQL**——D4 立过的规矩在这里再钉一次：卡片 3 个、点进去 4 行当场失信。
+#   3) **公开面把"存在但停用"与"不存在"分出差别**——那是全网唯一能猜码的入口，回显即泄露。
+# 因此本段按真实顺序走一遍：建码 → 公开解析 → 扫码 → 匿名建档归因 → 漏斗 → 名单，
+# 并刻意造两个租户对打（甲的码打到乙家必须不上归因）。
+echo "---- 三十五、获客活码：码→扫码→归因→漏斗→名单 ----"
+ACQ_CA="smoke_acq_a_$$"
+ACQ_CB="smoke_acq_b_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('活码甲租户','${ACQ_CA}','personal','active',NOW(),NOW()),
+              ('活码乙租户','${ACQ_CB}','personal','active',NOW(),NOW());" >/dev/null 2>&1
+ACQ_TA=$($PSQL "SELECT id FROM tenants WHERE code='${ACQ_CA}'" 2>/dev/null | tr -d '[:space:]')
+ACQ_TB=$($PSQL "SELECT id FROM tenants WHERE code='${ACQ_CB}'" 2>/dev/null | tr -d '[:space:]')
+# 前置自检：两个合成租户必须真的在库里（缺这一步时下面所有跨租户断言会在"两边都是 0"上假绿）
+ACQ_TENANTS=$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${ACQ_CA}','${ACQ_CB}')" 2>/dev/null | tr -d '[:space:]')
+check "合成两租户落库自检(甲/乙各一)" 2 "${ACQ_TENANTS:-0}"
+AH="Authorization: Bearer $TOKEN"
+# acq_at <租户ID> <方法> <路径> [body]：以某租户作用域打管理端（admin 组带 AdminRequired）
+acq_at() {
+  if [ "$2" = "GET" ]; then
+    curl -s -m 15 -H "$AH" -H "X-Tenant-ID: $1" "$B$3"
+  else
+    curl -s -m 15 -X "$2" -H "$AH" -H "X-Tenant-ID: $1" -H "Content-Type: application/json" -d "${4:-}" "$B$3"
+  fi
+}
+acq_a() { acq_at "$ACQ_TA" "$@"; }
+acq_b() { acq_at "$ACQ_TB" "$@"; }
+# acq_pub <方法> <路径> [body]：公开侧（免登录、不带任何租户头，模拟真实扫码）
+acq_pub() {
+  if [ "$1" = "GET" ]; then curl -s -m 15 "$B$2"
+  else curl -s -m 15 -X "$1" -H "Content-Type: application/json" -d "${3:-}" "$B$2"; fi
+}
+
+# (1)~(5) 数据层实存：迁移登记、两表、全局唯一码、去重部分索引、归因列
+ACQ_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='022_acquisition_codes'" 2>/dev/null | tr -d '[:space:]')
+check "迁移022已登记版本账本" 1 "${ACQ_MIG:-0}"
+ACQ_TBL=$($PSQL "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('acquisition_codes','acquisition_scans')" 2>/dev/null | tr -d '[:space:]')
+check "活码两表(码/扫码事件)实存" 2 "${ACQ_TBL:-0}"
+# 码必须**全库**唯一：公开解析只单键查码，租户内唯一会让两个家的同码同时命中
+ACQ_UX=$($PSQL "SELECT indexdef LIKE '%UNIQUE%' AND indexdef LIKE '%(code)%' FROM pg_indexes WHERE indexname='ux_acq_code_global'" 2>/dev/null | tr -d '[:space:]')
+check "码字符串全局唯一索引(公开单键定位的前提)" t "${ACQ_UX:-f}"
+# 去重索引只覆盖带访客键的行：纯打开的匿名行没有去重依据，塞进索引只会让索引变大
+ACQ_PARTIAL=$($PSQL "SELECT indexdef LIKE '%WHERE ((visitor_key)%' FROM pg_indexes WHERE indexname='idx_acq_scan_dedupe'" 2>/dev/null | tr -d '[:space:]')
+check "扫码去重走部分索引(空访客键不进索引)" t "${ACQ_PARTIAL:-f}"
+ACQ_COL=$($PSQL "SELECT column_default FROM information_schema.columns WHERE table_name='customers' AND column_name='acquisition_code'" 2>/dev/null | tr -d '[:space:]')
+check "客户表首触归因列存在且默认空串" "''::charactervarying" "${ACQ_COL:-MISSING}"
+
+# (6)~(7) 闸：未登录与角色不足都进不来（名单含客户手机号）
+ACQ_401=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes")
+check "未登录取活码列表判401" 401 "$ACQ_401"
+ACQ_403=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes" -H "Authorization: Bearer $STOKEN")
+check "sales角色取活码列表判403(建码是投放决策不是日常操作)" 403 "$ACQ_403"
+
+# (8)~(11) 建码入参：拒绝要回稳定原因码（文案可改、码不可改）
+ACQ_NONAME=$(acq_a POST /api/v1/admin/acquisition/codes '{"name":"  ","channel":"抖音"}' | jsonget "['reason']")
+check "缺用途名判name_required" name_required "${ACQ_NONAME:-NONE}"
+ACQ_NOCHAN=$(acq_a POST /api/v1/admin/acquisition/codes '{"name":"春季车展","channel":""}' | jsonget "['reason']")
+check "缺渠道判channel_required(不知道投哪就没法算账)" channel_required "${ACQ_NOCHAN:-NONE}"
+ACQ_BADCHAN=$(acq_a POST /api/v1/admin/acquisition/codes '{"name":"春季车展","channel":"电梯广告"}' | jsonget "['reason']")
+check "未知渠道判channel_unknown(枚举由后端下发不各写一套)" channel_unknown "${ACQ_BADCHAN:-NONE}"
+ACQ_CREATE=$(acq_a POST /api/v1/admin/acquisition/codes '{"name":"门店前台立牌","channel":"门店自然","remark":"smoke"}')
+ACQ_CODE=$(echo "$ACQ_CREATE" | jsonget "['data']['code']")
+ACQ_CID=$(echo "$ACQ_CREATE" | jsonget "['data']['id']")
+check "建码成功返回8位短码" 8 "${#ACQ_CODE}"
+# 短码字符集刻意排除易混字符（I/L/O/0/1）：海报上要能被人口述抄下来
+ACQ_ALPHA=$(ACQ_C="${ACQ_CODE:-X}" python3 -c "
+import os,re
+c=os.environ['ACQ_C']
+print('OK' if re.fullmatch(r'[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}', c) else 'BAD:'+c)
+" 2>/dev/null)
+[ "$ACQ_ALPHA" = "OK" ] && check "短码形态可口述(排除I/L/O/0/1易混字符)" y y || check "短码形态可口述(排除I/L/O/0/1易混字符)" y "${ACQ_ALPHA:-BAD}"
+
+# (12) 链接由后端拼：前端不知道三级基址优先级，让它拼等于把印错海报的风险挪进看不见的地方
+ACQ_LINK=$(echo "$ACQ_CREATE" | jsonget "['data']['link']")
+case "$ACQ_LINK" in
+  *"/client?code=${ACQ_CODE}") check "落地链接指向对话页并带上码" y y ;;
+  *) check "落地链接指向对话页并带上码" y "${ACQ_LINK:-EMPTY}" ;;
+esac
+
+# (13) 空态必须是 [] 不是 null（前端直接 map）——用从没建过码的乙租户看
+ACQ_EMPTY=$(acq_b GET /api/v1/admin/acquisition/codes | jsonget "['data']['list'] == []")
+check "无码租户列表空态是[]不是null" True "${ACQ_EMPTY:-False}"
+ACQ_CFG=$(acq_a GET /api/v1/admin/acquisition/codes | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {}).get('config') or {}
+ok=(len(d.get('channels') or [])==7 and sorted(d.get('metrics') or [])==sorted(['new','spoke','lead','arrived','ordered'])
+    and all((d.get('labels') or {}).get(m) for m in (d.get('metrics') or [])))
+print('OK' if ok else 'BAD:%s'%(d,))
+" 2>/dev/null)
+[ "$ACQ_CFG" = "OK" ] && check "展示口径由后端下发(7渠道枚举+5客户级指标+中文名)" y y || check "展示口径由后端下发(7渠道枚举+5客户级指标+中文名)" y "${ACQ_CFG:-PARSE_FAIL}"
+
+# (14)~(15) 二维码出图：图在服务端生成（要拖进设计稿），且越界尺寸不得撑爆内存
+ACQ_PNG_CT=$(curl -s -m 15 -o /dev/null -w "%{content_type}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/qr.png?size=400" -H "$AH" -H "X-Tenant-ID: ${ACQ_TA}")
+check "二维码以image/png返回(非JSON信封)" "image/png" "$ACQ_PNG_CT"
+ACQ_PNG_MAGIC=$(curl -s -m 15 "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/qr.png?size=99999" -H "$AH" -H "X-Tenant-ID: ${ACQ_TA}" | od -An -tx1 -N4 | tr -d ' \n')
+check "超大size被钳住仍出合法PNG" "89504e47" "${ACQ_PNG_MAGIC:-EMPTY}"
+ACQ_QR404=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/qr.png" -H "$AH" -H "X-Tenant-ID: ${ACQ_TB}")
+check "跨租户取别人的码出图判404(不回显存在性)" 404 "$ACQ_QR404"
+
+# (16)~(17) 启停：缺 active 不猜默认值（这是会改变对外可见性的动作）
+ACQ_NOACT=$(acq_a POST "/api/v1/admin/acquisition/codes/${ACQ_CID}/status" '{}' | jsonget "['code']")
+check "启停缺active参数判400(不默认顺手启用)" 400 "${ACQ_NOACT:-0}"
+ACQ_GONE=$(acq_a POST /api/v1/admin/acquisition/codes/99999999/status '{"active":true}' | jsonget "['code']")
+check "不存在的码改状态判404" 404 "${ACQ_GONE:-0}"
+
+# (18)~(21) 公开解析：启用中 200，停用/不存在/形态非法一律同一个 404
+ACQ_RES=$(acq_pub GET "/api/v1/acquisition/${ACQ_CODE}" | python3 -c "
+import sys,json
+j=json.load(sys.stdin); d=j.get('data') or {}
+print('OK' if j.get('code')==0 and d.get('channel')=='门店自然' and d.get('landing_path')=='/client' and 'tenant_id' not in d else 'BAD:%s'%(d,))
+" 2>/dev/null)
+[ "$ACQ_RES" = "OK" ] && check "落地页自检拿到渠道名且不外泄租户ID/扫码数" y y || check "落地页自检拿到渠道名且不外泄租户ID/扫码数" y "${ACQ_RES:-PARSE_FAIL}"
+ACQ_404A=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/acquisition/ZZZZZZZZ")
+ACQ_404B=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/acquisition/ab")
+ACQ_MSG=$(curl -s -m 15 "$B/api/v1/acquisition/ZZZZZZZZ" | jsonget "['message']")
+check "不存在的码判404" 404 "$ACQ_404A"
+check "形态非法的码判404(连表都不碰)" 404 "$ACQ_404B"
+check "猜码失败只说活动已结束(不透露是否存在)" "活动已结束" "${ACQ_MSG:-EMPTY}"
+# 停用后对外即不存在：先停甲的码，公开解析必须转 404，然后再启用回来继续本段
+acq_a POST "/api/v1/admin/acquisition/codes/${ACQ_CID}/status" '{"active":false}' >/dev/null
+ACQ_DIS=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/acquisition/${ACQ_CODE}")
+check "停用中的码公开解析同样404(与不存在同形态)" 404 "$ACQ_DIS"
+acq_a POST "/api/v1/admin/acquisition/codes/${ACQ_CID}/status" '{"active":true}' >/dev/null
+
+# (22)~(23) 扫码计数与去重：同一访客窗口内重复打开只算一次（渠道预算按这个数分）
+ACQ_SCAN1=$(acq_pub POST "/api/v1/acquisition/${ACQ_CODE}/scan" "{\"visitor_key\":\"vk_acq_$$\"}" | jsonget "['data']['counted']")
+ACQ_SCAN2=$(acq_pub POST "/api/v1/acquisition/${ACQ_CODE}/scan" "{\"visitor_key\":\"vk_acq_$$\"}" | jsonget "['data']['counted']")
+check "首次扫码计数" True "${ACQ_SCAN1:-False}"
+check "同访客窗口内重复扫码不再计(防一人刷高渠道量)" False "${ACQ_SCAN2:-True}"
+ACQ_SCANDB=$($PSQL "SELECT count(*) FROM acquisition_scans WHERE code_id=${ACQ_CID}" 2>/dev/null | tr -d '[:space:]')
+check "扫码事件落库且租户归属取自码行(不是来路Host)" 1 "${ACQ_SCANDB:-0}"
+
+# (24)~(26) 匿名建档归因：本家码上归因，别人家的码只记不上，停用码不写
+ACQ_G1=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${ACQ_TA}" -H "Content-Type: application/json" -d "{\"code\":\"${ACQ_CODE}\"}")
+ACQ_C1=$(echo "$ACQ_G1" | jsonget "['data']['customer_id']")
+ACQ_APP1=$(echo "$ACQ_G1" | jsonget "['data']['acquisition']['applied']")
+ACQ_DB1=$($PSQL "SELECT acquisition_code FROM customers WHERE id=${ACQ_C1:-0}" 2>/dev/null | tr -d '[:space:]')
+check "扫本家码建档：归因成功且列真落库" "${ACQ_CODE}" "${ACQ_DB1:-EMPTY}"
+check "归因结果回给前端(建客是扫码后唯一确定性动作)" True "${ACQ_APP1:-False}"
+ACQ_G2=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${ACQ_TB}" -H "Content-Type: application/json" -d "{\"code\":\"${ACQ_CODE}\"}")
+ACQ_C2=$(echo "$ACQ_G2" | jsonget "['data']['customer_id']")
+ACQ_R2=$(echo "$ACQ_G2" | jsonget "['data']['acquisition']['reason']")
+# 先证明"乙家这位客户确实建成了"——否则下面"列为空"会在查不到行的空结果上假绿
+ACQ_C2EXISTS=$($PSQL "SELECT count(*) FROM customers WHERE id=${ACQ_C2:-0} AND tenant_id=${ACQ_TB}" 2>/dev/null | tr -d '[:space:]')
+check "被拒归因的乙家客户本身照样建成(不打断客户咨询)" 1 "${ACQ_C2EXISTS:-0}"
+case "$ACQ_R2" in
+  *code_tenant_mismatch*) check "别家的码打到乙租户：拒绝归因并说明原因" y y ;;
+  *) check "别家的码打到乙租户：拒绝归因并说明原因" y "${ACQ_R2:-NONE}" ;;
+esac
+ACQ_DB2=$($PSQL "SELECT acquisition_code FROM customers WHERE id=${ACQ_C2:-0}" 2>/dev/null | tr -d '[:space:]')
+check "被拒归因的客户列仍为空(没被记进别人家)" "" "${ACQ_DB2}"
+
+# (27) 停用码建客：照样能聊（不打断客户），但归因不上
+acq_a POST "/api/v1/admin/acquisition/codes/${ACQ_CID}/status" '{"active":false}' >/dev/null
+ACQ_R3=$(curl -s -m 15 -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: ${ACQ_TA}" -H "Content-Type: application/json" -d "{\"code\":\"${ACQ_CODE}\"}" | jsonget "['data']['acquisition']['reason']")
+acq_a POST "/api/v1/admin/acquisition/codes/${ACQ_CID}/status" '{"active":true}' >/dev/null
+check "停用码不再归因(但客户照常建成)" code_disabled "${ACQ_R3:-NONE}"
+
+# (28)~(31) 漏斗与名单同源：卡片数字 == 点进去的 total
+ACQ_LIST=$(acq_a GET "/api/v1/admin/acquisition/codes?days=30")
+ACQ_CARD=$(echo "$ACQ_LIST" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+for r in (d.get('list') or []):
+    if r.get('code')=='${ACQ_CODE}':
+        print(json.dumps({'new':r['funnel'].get('new'),'scans':r.get('scans')}))
+        break
+" 2>/dev/null)
+ACQ_NEWCARD=$(echo "${ACQ_CARD:-{\}}" | python3 -c "import sys,json;print((json.load(sys.stdin) or {}).get('new'))" 2>/dev/null)
+ACQ_NEWDILL=$(acq_a GET "/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=new&days=30" | jsonget "['data']['total']")
+check "「新增客户」卡片数字与名单total逐字相等(同源)" "${ACQ_NEWCARD:-X}" "${ACQ_NEWDILL:-Y}"
+ACQ_NAMEIN=$(acq_a GET "/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=new&days=30" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+ids=[r.get('id') for r in (d.get('list') or [])]
+print('OK' if ${ACQ_C1:-0} in ids and d.get('note') else 'BAD:%s'%(d.get('list'),))
+" 2>/dev/null)
+[ "$ACQ_NAMEIN" = "OK" ] && check "扫码建档的人出现在名单里且随行下发口径说明" y y || check "扫码建档的人出现在名单里且随行下发口径说明" y "${ACQ_NAMEIN:-PARSE_FAIL}"
+ACQ_SCAN400=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=scans&days=30" -H "$AH" -H "X-Tenant-ID: ${ACQ_TA}")
+check "扫码次数不可下钻判400(单位是次不是人)" 400 "$ACQ_SCAN400"
+ACQ_NOMETRIC=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/customers" -H "$AH" -H "X-Tenant-ID: ${ACQ_TA}")
+check "缺metric判400(不默认回某一份名单)" 400 "$ACQ_NOMETRIC"
+ACQ_PSCAP=$(acq_a GET "/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=new&page_size=1000" | jsonget "['data']['page_size']")
+check "名单page_size硬顶100且回显钳后值" 100 "${ACQ_PSCAP:-0}"
+ACQ_ISO404=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=new" -H "$AH" -H "X-Tenant-ID: ${ACQ_TB}")
+check "跨租户下钻别人码的名单判404" 404 "$ACQ_ISO404"
+ACQ_ANON=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/admin/acquisition/codes/${ACQ_CID}/customers?metric=new")
+check "未登录取下钻名单判401(名单含手机号)" 401 "$ACQ_ANON"
+
+# (32) 同一访客先后扫两个码：两条事件都留（"这个码被打开过"是各自的事实），
+#      但客户身上的归因只有第一次作数——首触粘性在 internal/acquisition 单测里
+#      按谓词与落库两层各自钉死（policy_test/service_test），HTTP 侧每次建的都是新客，
+#      结构上造不出"同客户二次归因"，所以这里只断事件不覆盖，别把断言写成它测不到的东西。
+ACQ_CREATE2=$(acq_a POST /api/v1/admin/acquisition/codes '{"name":"销售个人码","channel":"微信"}')
+ACQ_CODE2=$(echo "$ACQ_CREATE2" | jsonget "['data']['code']")
+ACQ_CID2=$(echo "$ACQ_CREATE2" | jsonget "['data']['id']")
+acq_pub POST "/api/v1/acquisition/${ACQ_CODE2}/scan" "{\"visitor_key\":\"vk_acq_$$\"}" >/dev/null
+ACQ_MULTI=$($PSQL "SELECT count(*) FROM acquisition_scans WHERE visitor_key='vk_acq_$$' AND code_id IN (${ACQ_CID},${ACQ_CID2})" 2>/dev/null | tr -d '[:space:]')
+check "同一访客扫两个码各记一条事件(去重按码+访客不按访客)" 2 "${ACQ_MULTI:-0}"
+
+# (33) 现场回收：码/事件/客户/租户全清，短码与数字都不留残
+$PSQL "DELETE FROM acquisition_scans WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-0});
+       DELETE FROM acquisition_codes WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-0});
+       DELETE FROM customers WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-0});
+       DELETE FROM tenants WHERE code IN ('${ACQ_CA}','${ACQ_CB}');" >/dev/null 2>&1
+ACQ_LEFT=$($PSQL "SELECT (SELECT count(*) FROM acquisition_codes WHERE code IN ('${ACQ_CODE}','${ACQ_CODE2}')) + (SELECT count(*) FROM acquisition_scans WHERE tenant_id IN (${ACQ_TA:-0},${ACQ_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${ACQ_CA}','${ACQ_CB}'))" 2>/dev/null | tr -d '[:space:]')
+check "本段活码/扫码事件/租户已清零" 0 "${ACQ_LEFT:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

@@ -95,8 +95,10 @@ fi
 # 没有注解就落成 unknown —— 前端拿 payload 只能自己 as 一遍，契约漂移在编译期无人守，
 # 这正是"payload 类型契约"名存实亡的形态（本轮实测 244 条 unknown / 250 条路由）。
 # 治理方式与 as-any/裸 fetch 同族：按页分批补注解 + 在 types.ts 落真接口，此处封住新增。
+# **二进制端点不计入**：`.csv` 导出与 `.png` 二维码返回的不是 JSON 信封，补 `apidump:ts`
+# 只会编造一个"看着像类型"的空接口，反而误导前端去 JSON.parse 一张图（见 §4.5.1）。
 # 注意 BSD grep 计零也退出 1，故不能用 `|| echo 0` 兜底（会拼出 "00"）；先取原样输出再判空。
-UNKNOWN_TYPES=$($GREP -cE '^[[:space:]]*"[A-Z]+ [^"]+": unknown$' frontend-react/src/types/api.d.ts || true)
+UNKNOWN_TYPES=$($GREP -E '^[[:space:]]*"[A-Z]+ [^"]+": unknown$' frontend-react/src/types/api.d.ts | $GREP -vE '\.(csv|png)\": unknown$' | $GREP -c . || true)
 UNKNOWN_TYPES=$(printf '%s' "$UNKNOWN_TYPES" | tr -d '[:space:]')
 [ -z "$UNKNOWN_TYPES" ] && UNKNOWN_TYPES=0
 UNK_BASELINE_FILE="frontend-react/src/types/.api_dts_unknown_baseline"

@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -21,6 +21,10 @@ export interface ApiRoutes {
   "DELETE /api/v1/org/departments/:id": unknown
   "DELETE /api/v1/strategy/templates/:id": unknown
   "DELETE /api/v1/super/packages/:id": unknown
+  "GET /api/v1/acquisition/:code": AcqResolveResp
+  "GET /api/v1/admin/acquisition/codes": AcqCodeListResp
+  "GET /api/v1/admin/acquisition/codes/:id/customers": AcqDrillResp
+  "GET /api/v1/admin/acquisition/codes/:id/qr.png": unknown
   "GET /api/v1/admin/apikeys": unknown
   "GET /api/v1/admin/audit-logs": unknown
   "GET /api/v1/admin/billing/dunning": AdminDunningResp
@@ -130,7 +134,10 @@ export interface ApiRoutes {
   "GET /openapi/v1/customers": unknown
   "GET /openapi/v1/customers/:id/conversations": unknown
   "GET /openapi/v1/usage": unknown
+  "POST /api/v1/acquisition/:code/scan": AcqScanResp
   "POST /api/v1/admin/account/cancel": unknown
+  "POST /api/v1/admin/acquisition/codes": AcqCodeRow
+  "POST /api/v1/admin/acquisition/codes/:id/status": AcqStatusResp
   "POST /api/v1/admin/apikeys": unknown
   "POST /api/v1/admin/apikeys/:id/disable": unknown
   "POST /api/v1/admin/apikeys/:id/enable": unknown

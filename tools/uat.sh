@@ -70,10 +70,15 @@ R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json
   -d "{\"company_name\":\"UAT甲\",\"code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}")
 check "甲注册(code=0)" 0 "$(echo "$R"|code)"
 UA_ID=$($PSQL "SELECT id FROM tenants WHERE code='$UA_CODE'")
-UA_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+UA_LOGIN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
+  -d "{\"tenant_code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}")
+UA_TOKEN=$(echo "$UA_LOGIN" | jget "d['data']['token']")
 [ -n "$UA_TOKEN" ] && R=y || R=n
 check "甲登录" y "$R"
+# 取不到 token 时把服务端原话打出来：历史上这一项在 test_all 顺序跑（十套脚本共用同一实例、
+# 共享"改全局开关再恢复"）时空白失败，20 条下游断言跟着红却看不出是哪一步拒的登录。
+# 单跑必绿、连跑偶发红的东西最难查，留下这一行比留下猜测有用。
+[ -n "$UA_TOKEN" ] || echo "    （诊断）甲登录响应原文：$(echo "$UA_LOGIN" | head -c 300)"
 check "③免费桶=30万" 300000 "$($PSQL "SELECT COALESCE(free_token_balance,0) FROM tenants WHERE id=$UA_ID")"
 check "免费桶有效期已设" t "$($PSQL "SELECT free_token_expires_at IS NOT NULL FROM tenants WHERE id=$UA_ID")"
 INV_A=$(curl -s "$B/api/v1/advisor/referral/info" -H "Authorization: Bearer $UA_TOKEN" | jget "d['data']['referral']['invite_code']")

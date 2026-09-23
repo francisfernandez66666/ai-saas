@@ -1034,3 +1034,90 @@ export interface SuperDunningQueueResp {
 export interface SuperDunningActionResult {
   tenant_id: number
 }
+
+// ============================================================
+// 获客活码（2026-09-23 获客批）
+// 字段与 internal/api/acquisition_admin.go / acquisition_public.go 的出参一一对应；
+// channel/status/metric 都是后端稳定字面量（internal/acquisition/policy.go），
+// 前端只按它出文案与开关，不自造第二套枚举——渠道加一个值就要"下拉能选、提交报错"了。
+// ============================================================
+
+/** 漏斗五格数字（键为后端指标码；后端保证键齐，缺格即契约破坏） */
+export interface AcqFunnel {
+  new: number
+  spoke: number
+  lead: number
+  arrived: number
+  ordered: number
+}
+
+/** 活码列表一行：配置 + 落地链接 + 窗口内数字（link 由后端三级基址算出，前端不拼） */
+export interface AcqCodeRow {
+  id: number
+  code: string
+  name: string
+  channel: string
+  status: string // active/disabled
+  remark: string
+  owner_user_id: number
+  created_at: string
+  link: string
+  scans: number // 扫码次数（事件级，刻意不可下钻）
+  funnel: AcqFunnel
+}
+
+/** 展示口径（随列表下发：渠道枚举、可下钻指标、指标中文名、基址是否配好） */
+export interface AcqConfig {
+  channels: string[]
+  metrics: string[]
+  labels: Record<string, string>
+  link_base_configured: boolean
+}
+
+/** GET /admin/acquisition/codes 出参 */
+export interface AcqCodeListResp {
+  list: AcqCodeRow[]
+  total: number
+  days: number
+  config: AcqConfig
+}
+
+/** POST /admin/acquisition/codes/:id/status 回显 */
+export interface AcqStatusResp {
+  id: number
+  status: string
+}
+
+/** 下钻名单一行（字段与 /customers 对齐，phone 已由后端按读权限处理） */
+export interface AcqCustomerRow {
+  id: number
+  name: string
+  phone: string
+  journey_stage: string
+  intent_score: number
+  spoke: boolean
+  created_at: string
+}
+
+/** GET /admin/acquisition/codes/:id/customers 出参（total 恒等于卡片数字） */
+export interface AcqDrillResp {
+  metric: string
+  label: string
+  total: number
+  list: AcqCustomerRow[]
+  note: string
+  page: number
+  page_size: number
+}
+
+/** GET /api/v1/acquisition/:code 出参（落地页自检，只回渲染所需最小集合） */
+export interface AcqResolveResp {
+  code: string
+  channel: string
+  landing_path: string
+}
+
+/** POST /api/v1/acquisition/:code/scan 出参（counted=false 是去重命中，不是错误） */
+export interface AcqScanResp {
+  counted: boolean
+}

@@ -327,6 +327,9 @@ func autoMigrate() error {
 		// ---- 用量预警留痕 + 到期催缴状态机（D3，2026-09-23；去重唯一键与 running 部分索引见 migrations/021）
 		&model.UsageAlert{},
 		&model.BillingDunning{},
+		// ---- 获客活码：码配置 + 扫码事件（获客批，2026-09-23；三条部分索引与 customers 归因列见 migrations/022）
+		&model.AcquisitionCode{},
+		&model.AcquisitionScan{},
 	)
 }
 

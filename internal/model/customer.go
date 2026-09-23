@@ -27,10 +27,16 @@ type Customer struct {
 	Career       string `gorm:"size:50" json:"career"`                          // 职业
 	CustomerType string `gorm:"size:20;default:potential" json:"customer_type"` // 客户身份: potential(潜客)/owner(车主)
 	// 泛行业化（P3）：字段名去汽车专属词（InterestModel→InterestProduct 等），gorm column 锁定原列名避免 DB 迁移，JSON tag 保留兼容前端
-	InterestProduct  string    `gorm:"column:interest_model;size:50" json:"interest_model"` // 兴趣产品
-	CurrentProduct   string    `gorm:"column:current_car;size:50" json:"current_car"`       // 当前在用的产品
-	ProductAge       float64   `gorm:"column:car_age" json:"car_age"`                       // 现用产品年限
-	Source           string    `gorm:"size:30" json:"source"`                               // 流量来源
+	InterestProduct string  `gorm:"column:interest_model;size:50" json:"interest_model"` // 兴趣产品
+	CurrentProduct  string  `gorm:"column:current_car;size:50" json:"current_car"`       // 当前在用的产品
+	ProductAge      float64 `gorm:"column:car_age" json:"car_age"`                       // 现用产品年限
+	Source          string  `gorm:"size:30" json:"source"`                               // 流量来源
+	// AcquisitionCode 首次扫码进来的活码短码（获客批，2026-09-23；建索引见 migrations/022）。
+	// 为什么存字符串不存 ID：这张表是导出/名单/贡献度都要读的宽表，带码少一次 join，
+	// 且码停用后历史归因照样可读（停用不改字符串）。为什么"首触"而非"最近触达"：
+	// 先扫门店立牌、三天后又扫销售个人码，按最近触达归因会把门店的钱记到个人头上。
+	// **写入只在本列为空时发生一次**（见 acquisition.ApplyToGuest），后续扫码不改写。
+	AcquisitionCode  string    `gorm:"size:16;not null;default:''" json:"acquisition_code"`
 	Budget           float64   `json:"budget"`                                              // 预算（万元）
 	DecisionCycle    int       `json:"decision_cycle"`                                      // 决策周期（天）
 	OfflineTouch     int       `gorm:"column:store_visited;default:0" json:"store_visited"` // 线下接触状态: 0-未接触 1-已接触 2-多次接触

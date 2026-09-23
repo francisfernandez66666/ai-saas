@@ -22,7 +22,45 @@ const LS_KEY = 'scrm_visitor_key'
 // 模块级访客创建去重：StrictMode 双挂载/连续进入页面时，防止并发重复建客
 // Q1 修复(2026-09-12)：G-13 信封统一后 /chat/guest 响应为 {code,data} 形态，
 // 旧扁平类型标注导致 j.data 访问 TS2339（CI tsc --noEmit 必红），类型对齐实际契约
-let guestPromise: Promise<{ code: number; data?: { customer_id?: number; name?: string; visitor_key?: string } }> | null = null
+let guestPromise: Promise<{ code: number; data?: { customer_id?: number; name?: string; visitor_key?: string; acquisition?: { applied: boolean; reason?: string; code?: string } } }> | null = null
+// 扫码事件去重：StrictMode 双挂载会在没有 visitor_key 时写出两条无键事件（数字虚增一格），
+// 故与建客同用模块级单例。后端本身按 visitor_key 在窗口内去重，这里只兜"无键"那一路。
+let acqScanPromise: Promise<void> | null = null
+
+/**
+ * 活码落地处理（获客批 · 批次4）：读 ?code= → 问后端这张码还活着吗 → 活着才把码随建档一起送出。
+ *
+ * 为什么先 resolve 再建客：短码是 8 位随机串，物料印错一位、活动下线后旧海报被人翻出来扫，
+ * 都会带着一个"不存在的码"进来。让建客请求直接带码上去，失败原因埋在响应体里没人看；
+ * 先问一次，页面就能把"活动已结束"这件事说在客户眼前（且不拦他对话）。
+ * 归因成功与否**刻意不向客户展示**——那是渠道记账，客户不需要知道自己是"从抖音那张码来的"。
+ */
+async function checkAcquisitionCode(rawCode: string): Promise<string> {
+  if (!rawCode) return ''
+  try {
+    const r = await apiFetch(`${API}/acquisition/${encodeURIComponent(rawCode)}`)
+    const j = await r.json().catch(() => null)
+    if (j?.code === 0 && j.data?.code) return String(j.data.code)
+  } catch { /* 探测失败按无码继续：对话进不来比归因没记上严重得多 */ }
+  return ''
+}
+
+/** 记一次"打开落地页"事件（有 visitor_key 就带上，后端按它窗口内去重）。 */
+function reportAcquisitionScan(code: string): Promise<void> {
+  if (!code || acqScanPromise) return Promise.resolve()
+  const p = (async () => {
+    try {
+      await apiFetch(`${API}/acquisition/${encodeURIComponent(code)}/scan`, {
+        method: 'POST',
+        body: JSON.stringify({ visitor_key: localStorage.getItem(LS_KEY) || '' }),
+      })
+    } catch { /* 计数失败静默，前端不重试也不提示 */ }
+  })()
+  acqScanPromise = p
+  // 落定即清空：这个单例只挡 StrictMode 同轮双挂载，留到以后会把下一次真扫码也吞掉
+  void p.finally(() => { if (acqScanPromise === p) acqScanPromise = null })
+  return p
+}
 
 /**
  * C 端客户聊天页组件
@@ -266,14 +304,21 @@ export default function Client() {
       const override = import.meta.env.DEV ? params.get('customer_id') : null
       const stored = localStorage.getItem(LS_ID)
       let cid = override ? parseInt(override) : (stored ? parseInt(stored) : 0)
+      // 获客活码：?code= 先问后端"这张码还活着吗"，活着才带进建客请求
+      const rawCode = (params.get('code') || '').trim()
+      const acqCode = await checkAcquisitionCode(rawCode)
+      if (rawCode && !acqCode) {
+        setMsgs((m) => [...m, { sender_type: 'system', content: '这个活动已经结束了，不过你仍然可以直接问我' }])
+      }
       if (cid > 0) {
         custId.current = cid
         setWsCid(cid); setWsVk(localStorage.getItem(LS_KEY) || null)
+        // 老访客带着新码进来：只记扫码事件，不改归因（首触归因是铁律，后来的码不改写来源）
       } else {
         try {
           // 访客创建去重：复用模块级进行中的请求，StrictMode 双挂载不重复建客
           if (!guestPromise) {
-            guestPromise = apiFetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders() }).then((r) => r.json()).finally(() => { guestPromise = null })
+            guestPromise = apiFetch(`${API}/chat/guest`, { method: 'POST', headers: tsHeaders(), body: JSON.stringify({ code: acqCode }) }).then((r) => r.json()).finally(() => { guestPromise = null })
           }
           const j = await guestPromise
           // G-13 信封统一(2026-09-11)：/chat/guest 响应已收口到 RespOK 的 {code,data} 形态，
@@ -288,6 +333,9 @@ export default function Client() {
           }
         } catch { /* 欢迎语失败静默 */ }
       }
+      // 扫码事件放在身份就绪之后发：带着 visitor_key 才谈得上"同一访客窗口内只记一次"。
+      // 新建档那一路后端在归因时已经记过一格，这一发会被同一个键去重掉，不会重复计数。
+      if (acqCode) void reportAcquisitionScan(acqCode)
       await loadHistory()
       // 仅当该客户还没有任何会话/历史时才发欢迎语，避免刷新或切页重复出现"顾问正在接通中"
       if (convIdRef.current === 0 && custId.current) await callWelcome()

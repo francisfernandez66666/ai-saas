@@ -417,3 +417,102 @@ test('D4 看板数字可下钻且名单数量与卡片一致', async ({ page, re
   const body = await page.locator('body').innerText();
   expect(body).not.toMatch(/NaN|undefined|\[object Object\]/);
 });
+
+// 20. 获客活码后台页（获客批 · 批次4，2026-09-23）
+// 接口层的四十余条契约由 smoke §三十五钉死（建码/归因/下钻/跨租户/清场），本项只管
+// 用户看得见的那一屏，四件事各不相同、缺一即失真：
+//  ① 菜单可达且真的发出 /admin/acquisition/codes——Tab 挂了但请求没发＝路径或筛选写错；
+//  ② 五个客户级格子可点、而「扫码」格子**不可点**：后端 400 只证明服务端守住单位纪律，
+//     前端要是把扫码做成可点的，用户点下去看到的是错误提示，等于产品自己造矛盾；
+//  ③ 点开名单后横幅「共 N 位客户」逐字等于格子上那个数，且下钻请求带上页面**当前**窗口
+//     （切到 90 天仍发 days=30，就是筛选条件没跟过去）；
+//  ④ 二维码与落地链接用的是后端下发的 link——前端复拼一次，三级基址口径就有了第二个真相源。
+// 前置数据用 API 现造一个码并让一位访客扫它（零数据时 ③ 会在 0==0 上假绿）；
+// 码名固定前缀 e2e活码，收尾只负责停用（产品侧无删除），行由 tools/cleanup_test_tenants.sh 回收。
+test('获客活码后台页可建码、漏斗可下钻且扫码格子不给点', async ({ page, request }) => {
+  const tid = await pickOperableTenant(request);
+  const token = await adminToken(request);
+  const auth = { Authorization: `Bearer ${token}`, 'X-Tenant-ID': tid };
+  const stamp = Date.now();
+  const codeName = `e2e活码渠道位-${stamp}`;
+
+  const created = await request.post(`${BASE}/api/v1/admin/acquisition/codes`, {
+    headers: auth, data: { name: codeName, channel: '抖音', remark: 'playwright' },
+  });
+  expect(created.ok()).toBeTruthy();
+  const cd = (await created.json())?.data ?? {};
+  const code = String(cd.code ?? '');
+  const link = String(cd.link ?? '');
+  expect(link).toContain(`/client?code=${code}`);
+  const codeId = Number(cd.id ?? 0);
+  expect(code).toMatch(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/);
+
+  // 造一位真扫了这个码的客户：公开侧不带任何租户头，与真实扫码同路径
+  await request.post(`${BASE}/api/v1/acquisition/${code}/scan`, { data: { visitor_key: `vk_e2e_${stamp}` } });
+  const guest = await request.post(`${BASE}/api/v1/chat/guest`, {
+    headers: { 'X-Tenant-ID': tid, 'Content-Type': 'application/json' }, data: { code },
+  });
+  expect(guest.ok()).toBeTruthy();
+  expect((await guest.json())?.data?.acquisition?.applied).toBe(true);
+
+  await seedDesktopLogin(page, request, tid);
+  const listHits: string[] = [];
+  const drillHits: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/admin/acquisition/codes') && !r.url().includes('/customers')) listHits.push(r.url());
+    if (r.url().includes('/admin/acquisition/codes/') && r.url().includes('/customers')) drillHits.push(r.url());
+  });
+  await page.goto('/admin');
+  await page.locator('.t-menu').getByText('获客活码', { exact: true }).click();
+  await expect(page.getByRole('button', { name: /新建活码/ })).toBeVisible({ timeout: 15000 });
+  await expect.poll(() => listHits.length, { timeout: 15000 }).toBeGreaterThan(0);
+
+  // 本用例自己造的那一行（同租户可能还有别人建的码，故按名字定位，勿按下标取）
+  const row = page.locator('tr', { hasText: codeName }).first();
+  await expect(row).toBeVisible({ timeout: 15000 });
+  await expect(row.getByText(code, { exact: true })).toBeVisible();
+
+  // ② 单位纪律在前端的落地：扫码是纯文本，五个客户级格子是 button
+  await expect(row.getByText('扫码', { exact: true })).toHaveCount(0); // 表头列名不在行内
+  const scansCell = row.locator('td', { hasText: /^\s*1\s*$/ }).first();
+  await expect(scansCell.locator('[role="button"]')).toHaveCount(0);
+  const newTile = row.locator('[role="button"]', { hasText: '新增客户' }).first();
+  await expect(newTile).toBeVisible();
+  await expect(newTile.locator('strong')).toHaveText('1');
+
+  // ③ 换窗口 → 下钻请求必须跟着换；横幅数字与格子数字逐字相等
+  await page.locator('.t-select input.t-input__inner').first().click();
+  await page.locator('.t-select-option', { hasText: '近 90 天' }).first().click();
+  await newTile.click();
+  await expect.poll(() => drillHits.length, { timeout: 15000 }).toBeGreaterThan(0);
+  const last = drillHits[drillHits.length - 1];
+  expect(last).toContain('metric=new');
+  expect(last).toContain('days=90');
+  await expect(page.getByTestId('acq-drill-total')).toHaveText('1', { timeout: 15000 });
+
+  // 返回后横幅消失、列表回得来（回不去的下钻等于把后台藏了一半）
+  await page.getByRole('button', { name: /返回活码列表/ }).click();
+  await expect(page.getByTestId('acq-drill-total')).toHaveCount(0);
+  await expect(row).toBeVisible({ timeout: 10000 });
+
+  // ④ 二维码弹窗：链接逐字用后端值，图片请求真的打向本码
+  const qrReq: string[] = [];
+  page.on('request', (r) => { if (r.url().includes('/qr.png')) qrReq.push(r.url()); });
+  await row.getByRole('button', { name: /二维码/ }).click();
+  await expect.poll(() => qrReq.length, { timeout: 15000 }).toBeGreaterThan(0);
+  expect(qrReq[0]).toContain(`/codes/${codeId}/qr.png`);
+  // 链接逐字用后端值：弹窗里显示的就是接口返回的 link（前端不自己拼域名，否则物料上的域
+  // 与扫码后进的域会不一致）。必须作用域到 .t-dialog__body —— 列表每行也有同一个链接文本，
+  // 全局 getByText 会 strict-mode 命中多元素（首跑实锤：行链接 + 弹窗 div 共 3 个）。
+  await expect(page.locator('.t-dialog__body').getByText(link, { exact: true })).toBeVisible({ timeout: 10000 });
+  await page.getByRole('button', { name: '关闭' }).click();
+
+  const body = await page.locator('body').innerText();
+  expect(body).not.toMatch(/NaN|undefined|\[object Object\]/);
+
+  // 收尾：停用即对外不可见（没有删除接口是刻意的，行由清理脚本按 e2e活码 前缀回收）
+  const off = await request.post(`${BASE}/api/v1/admin/acquisition/codes/${codeId}/status`, {
+    headers: auth, data: { active: false },
+  });
+  expect(off.ok()).toBeTruthy();
+});

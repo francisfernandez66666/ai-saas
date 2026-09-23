@@ -32,6 +32,7 @@ const TagSystemTab = lazy(() => import('./admin/TagSystemTab').then(m => ({ defa
 const UsageTab = lazy(() => import('./admin/UsageTab').then(m => ({ default: m.UsageTab })))
 const WebhookTab = lazy(() => import('./admin/WebhookTab').then(m => ({ default: m.WebhookTab })))
 const OutreachTab = lazy(() => import('./admin/OutreachTab').then(m => ({ default: m.OutreachTab })))
+const AcquisitionTab = lazy(() => import('./admin/AcquisitionTab').then(m => ({ default: m.AcquisitionTab })))
 const PrivacyTab = lazy(() => import('./admin/PrivacyTab').then(m => ({ default: m.PrivacyTab })))
 
 const { Header, Aside, Content } = Layout
@@ -172,7 +173,7 @@ export default function Admin() {
 
   // 按分类取配置项子集
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
-  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'usage', 'referral', 'branding', 'billing'].includes(tab)
+  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'acquisition', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
   const userName = localStorage.getItem('username') || ''
   // 切 Tab 的唯一入口：任何菜单点击都清掉下钻预设——从侧栏进「客户线索」必须是完整列表，
@@ -326,6 +327,7 @@ function PanelContent({ tab, configsFor, edits, setEdits, all, drill, onDrill, o
   if (tab === 'openapi') return <OpenApiTab />
   if (tab === 'webhooks') return <WebhookTab />
   if (tab === 'outreach') return <OutreachTab />
+  if (tab === 'acquisition') return <AcquisitionTab />
   if (tab === 'usage') return <UsageTab />
   if (tab === 'referral') return <ReferralTab />
   if (tab === 'privacy') return <PrivacyTab />

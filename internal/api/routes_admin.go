@@ -45,6 +45,14 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.POST("/outreach/tasks", CreateOutreachTask)
 		admin.POST("/outreach/tasks/:id/cancel", CancelOutreachTask)
 
+		// 获客活码（获客批 批次3：码 CRUD + 二维码出图 + 漏斗下钻；公开侧在 routes_public.go）
+		// 只有启停、没有删除：短码一旦印上物料就不可回收（理由见 internal/model/acquisition.go）
+		admin.GET("/acquisition/codes", ListAcquisitionCodes)
+		admin.POST("/acquisition/codes", CreateAcquisitionCode)
+		admin.POST("/acquisition/codes/:id/status", SetAcquisitionCodeStatus)
+		admin.GET("/acquisition/codes/:id/qr.png", GetAcquisitionCodeQR)
+		admin.GET("/acquisition/codes/:id/customers", DrillAcquisitionCustomers)
+
 		// 行业包租户侧：分层列表 / 两级绑定 / 部门绑定
 		admin.GET("/packs", TenantPackList)
 		admin.POST("/packs/bind", TenantPackBind)

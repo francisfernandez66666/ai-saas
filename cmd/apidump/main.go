@@ -323,6 +323,10 @@ func authOf(path string) []string {
 	case strings.HasPrefix(path, "/api/v1/knowledge/"):
 		add("ip_limit")
 		return out
+	// 获客活码公开链路（resolve/scan）：免登录、无租户上下文，租户由码行本身带出。
+	case strings.HasPrefix(path, "/api/v1/acquisition/"):
+		add("ip_limit")
+		return out
 	}
 	// 登录态路由（挂在 v1.Use(JWTAuth...) 之后），默认 jwt；细粒度角色闸由注册期记录补充。
 	add("jwt")

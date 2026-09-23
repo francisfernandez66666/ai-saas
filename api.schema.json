@@ -181,6 +181,48 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/acquisition/:code",
+      "group": "acquisition",
+      "handler": "ResolveAcquisitionCode",
+      "auth": [
+        "ip_limit"
+      ],
+      "data_ts": "AcqResolveResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/acquisition/codes",
+      "group": "admin",
+      "handler": "ListAcquisitionCodes",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AcqCodeListResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/acquisition/codes/:id/customers",
+      "group": "admin",
+      "handler": "DrillAcquisitionCustomers",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AcqDrillResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/acquisition/codes/:id/qr.png",
+      "group": "admin",
+      "handler": "GetAcquisitionCodeQR",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ]
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/apikeys",
       "group": "admin",
       "handler": "AdminListAPIKeys",
@@ -1266,6 +1308,16 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/acquisition/:code/scan",
+      "group": "acquisition",
+      "handler": "RecordAcquisitionScan",
+      "auth": [
+        "ip_limit"
+      ],
+      "data_ts": "AcqScanResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/admin/account/cancel",
       "group": "admin",
       "handler": "CancelAccount",
@@ -1273,6 +1325,28 @@
         "jwt",
         "admin_required"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/acquisition/codes",
+      "group": "admin",
+      "handler": "CreateAcquisitionCode",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AcqCodeRow"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/acquisition/codes/:id/status",
+      "group": "admin",
+      "handler": "SetAcquisitionCodeStatus",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AcqStatusResp"
     },
     {
       "method": "POST",

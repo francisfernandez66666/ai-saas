@@ -49,6 +49,7 @@ export const MENU_GROUPS: MenuGroupDef[] = [
       { k: 'openapi', label: '开放平台' },
       { k: 'webhooks', label: 'Webhook' },
       { k: 'outreach', label: '主动触达' },
+      { k: 'acquisition', label: '获客活码' },
       { k: 'usage', label: '用量' },
       { k: 'referral', label: '邀请推广' },
       { k: 'branding', label: '品牌定制' },

@@ -184,6 +184,22 @@ if [ "$APPLY" = "1" ]; then
   echo "已回收残留行业包 $STALE_IPACKS 个（rls_ind/education 未引用重复行）。"
 fi
 
+# ---------- C2. 获客活码残留回收（获客批，2026-09-23 新增）----------
+# 为什么必须走这里而不是测试脚本自己删：**产品侧刻意没有"删码"接口**
+# （短码一旦印上物料就不可回收，删除会让历史归因变悬空外键，见 internal/model/acquisition.go）。
+# 于是浏览器用例造的那个 e2e 码只能由运维脚本按命名约定回收——名字前缀是硬约定：
+# `e2e活码`，用例改名必须同步改这里，否则回收静默失效（留一个启用中的假码比留一行垃圾更糟）。
+ACQ_E2E=$(psql "$DBURL" -tAc "SELECT count(*) FROM acquisition_codes WHERE name LIKE 'e2e活码%'" 2>/dev/null | tr -d '[:space:]')
+echo "待回收 e2e 活码：${ACQ_E2E:-0} 个"
+if [ "$APPLY" = "1" ] && [ "${ACQ_E2E:-0}" != "0" ]; then
+  # 先事件后本体：acquisition_scans 靠 code_id 指回来，反序删会留下指向空气的扫码行
+  psql "$DBURL" -tAc "
+    DELETE FROM acquisition_scans
+     WHERE code_id IN (SELECT id FROM acquisition_codes WHERE name LIKE 'e2e活码%');" >/dev/null 2>&1
+  psql "$DBURL" -tAc "DELETE FROM acquisition_codes WHERE name LIKE 'e2e活码%'" >/dev/null 2>&1
+  echo "已回收 e2e 活码及其扫码事件 ${ACQ_E2E} 个。"
+fi
+
 # ---------- D. 测试租户本体清理 ----------
 IDS=$(psql "$DBURL" -tAc "SELECT id FROM tenants WHERE $WHERE ORDER BY id;" | tr -d '\r' | paste -sd, -)
 if [ -z "${IDS// /}" ]; then

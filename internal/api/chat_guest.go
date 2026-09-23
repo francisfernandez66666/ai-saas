@@ -190,9 +190,13 @@ func Welcome(c *gin.Context) {
 // CreateGuest POST /api/v1/chat/guest 访客自动注册（免登录；TurnstileGuard 视开关前置拦截）
 func CreateGuest(c *gin.Context) {
 	// P0-2：解析请求体中的 channel/device 信息（供 CDP 打环境维标签）
+	// 获客批（2026-09-23）：新增 code——落地页把 URL 上的活码原样带回来，
+	// 建客成功后立刻打码（顺序是有意的：没有 customer_id 就无处落归因，
+	// 而建档失败时也不该先留下一条"归因给了谁"的脏写）。
 	var req struct {
 		Channel string `json:"channel"` // 渠道标识：web/app/openapi
 		Device  string `json:"device"`  // 设备类型：mobile/desktop
+		Code    string `json:"code"`    // 获客活码短码（可选；非法/跨租户只记不上，不打断建客）
 	}
 	_ = c.ShouldBindJSON(&req)
 
@@ -227,6 +231,15 @@ func CreateGuest(c *gin.Context) {
 
 	log.Printf("[访客注册] 新访客创建成功: ID=%d, Name=%s, 分配顾问=%d", customer.ID, pii.MaskName(customer.Name), customer.AssignedUserID)
 
+	// 获客活码归因（批次2）：带码才写，写不上也照常放行聊天。
+	acq := acquisitionForGuest(c, db.EffectiveTenantIDFromGin(c), customer.ID, req.Code, customer.VisitorKey)
+	if acq != nil && acq.Applied {
+		// 内存同步成库里的值：不改的话下面的 guest_created 事件仍带建档时的旧来源
+		// "外部体验"，CDP 的渠道标签与 CRM 里的来源从此永久两套。
+		customer.Source = acq.Channel
+		customer.AcquisitionCode = acq.Code
+	}
+
 	// 缺口4修复（2026-08-22）：guest_created 事件上行（激活 CDP idm_guest 标签）
 	// 此前 IngestConsumer 支持该事件但全仓无发布点，访客身份标签是死代码
 	// P0-2：携带 channel/device 信息供 CDP 打环境维标签
@@ -237,6 +250,9 @@ func CreateGuest(c *gin.Context) {
 	if req.Device != "" {
 		guestAttrs["device"] = req.Device
 	}
+	if acq != nil && acq.Applied {
+		guestAttrs["acquisition_code"] = acq.Code
+	}
 	if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
 		fmt.Sprintf("c:%d", customer.ID), "guest_created",
 		mq.UserEvent{EventType: "identity", EventName: "guest_created", AnchorType: "device",
@@ -245,11 +261,15 @@ func CreateGuest(c *gin.Context) {
 		log.Printf("[MQ] guest_created 事件发布失败: %v", err)
 	}
 
-	RespOK(c, "访客创建成功", gin.H{
+	data := gin.H{
 		"customer_id": customer.ID,
 		"name":        customer.Name,
 		"visitor_key": customer.VisitorKey,
-	})
+	}
+	if acq != nil {
+		data["acquisition"] = gin.H{"applied": acq.Applied, "reason": acq.Reason, "code": acq.Code}
+	}
+	RespOK(c, "访客创建成功", data)
 }
 
 // ============================================================

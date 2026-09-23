@@ -34,6 +34,7 @@ func RegisterRoutes(r *gin.Engine) {
 	registerOpenAPI(r)
 	registerOpenAPIDoc(v1) // E10 开放面规格（公开，须在 v1.Use(JWTAuth) 之前）
 	registerChatPublic(v1)
+	registerAcquisitionPublic(v1) // 获客活码公开链路（免登录、免 Host 租户解析，码自身携带归属）
 	registerAdvisor(v1)
 	registerSuper(v1)
 	registerOrg(v1)

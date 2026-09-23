@@ -116,6 +116,23 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	RecordAuth("POST", "/api/v1/billing/webhook/:channel", "webhook_signature", "ip_limit")
 }
 
+// registerAcquisitionPublic 获客活码公开链路（批次2，2026-09-23）：落地页读码 + 扫码计数。
+//
+// 这一组刻意挂在 TenantResolver 的 skip 前缀下（middleware.skipTenantPrefixes）：
+// 活码是印在物料上的固定链接，租户身份从**码自己**解析，而不是从来路 Host 猜。
+// 因此这两个端点没有租户语境，一律用平台句柄查全局唯一键，且只回不泄露身份的最小字段。
+func registerAcquisitionPublic(v1 *gin.RouterGroup) {
+	// 读码：猜一个 8 位码的正确率是 31^8 分之一，但真去猜的成本必须比收益高——60/min 足够
+	// 正常用户重开页面，不够脚本扫库。
+	v1.GET("/acquisition/:code", middleware.IPRateLimit("acq_resolve", 60, time.Minute), ResolveAcquisitionCode)
+	// 扫码计数：写一行事件表，限流比读更紧（30/min），它没有 AI 调用也没有客户可见后果，
+	// 但重复刷量能虚增"渠道效果"数字，进而影响预算分配——数字被污染比被刷更贵。
+	v1.POST("/acquisition/:code/scan", middleware.IPRateLimit("acq_scan", 30, time.Minute), RecordAcquisitionScan)
+	// 注册期鉴权记录：免登录公开 + IP 限流（无 JWT、无租户上下文）
+	RecordAuth("GET", "/api/v1/acquisition/:code", "ip_limit")
+	RecordAuth("POST", "/api/v1/acquisition/:code/scan", "ip_limit")
+}
+
 // registerKnowledgePublic 客户端知识库公开查询接口（免鉴权）。
 // P1-3 修复(2026-09-20 审计批)：整组挂 60/min IP 限流——匿名检索面此前无频控，
 // 关键词枚举可拖库式试探品牌/车型/片段数据。

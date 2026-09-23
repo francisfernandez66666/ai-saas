@@ -268,6 +268,11 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "notify", Key: "outreach_weekly_limit", Value: "2", ValueType: "number", Description: "单客户滚动7天内最多主动触达条数(0=不限;只计sent,未确认送达的queued不占额度)", DefaultValue: "2", SortOrder: 21},
 	{Category: "notify", Key: "outreach_quiet_hours", Value: "21:00-09:00", ValueType: "string", Description: "静默时段HH:MM-HH:MM(支持跨午夜):计划时间落在段内自动顺延到段末;留空或非法=不顺延", DefaultValue: "21:00-09:00", SortOrder: 22},
 	{Category: "notify", Key: "outreach_window_hours", Value: "48", ValueType: "number", Description: "微信侧主动发送窗口(小时):wecom_kf/wechat_mp需客户在窗口内有来句,超窗直接skipped省一次死信;wecom_app不受限", DefaultValue: "48", SortOrder: 23},
+	// ---- 获客活码（2026-09-23 获客批）----
+	// 活码是**印出去的**链接：域名一旦印上海报/展台立牌就改不动了，所以生成二维码时
+	// 不能拿"谁在哪台机器上点的生成"当基址。留空则回落请求 Host（本地开发与已有独立域名的租户够用）。
+	// 与触达四键同理**不进 PlatformLevelKeys**：各家门店的落地域名本来就不同。
+	{Category: "notify", Key: "acquisition_link_base", Value: "\"\"", ValueType: "string", Description: "获客活码链接基址(如 https://acme.example.com；留空=用当前访问域名拼)；只影响新起的物料，已印出去的码不可追溯", DefaultValue: "\"\"", SortOrder: 24},
 }
 
 // PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）

@@ -379,7 +379,11 @@ var skipTenantPaths = map[string]bool{
 // 走各自的 JWT/TenantResolver 逻辑，不受此放行影响。
 // P2-9(2026-09-22)：补 "/assets/"——Vite 构建的静态资源在 GIN_MODE=release（无 debug
 // 默认租户兜底）且 Host 未绑定 custom_domain 时会被 fail-closed 拦成 403，SPA 白屏。
-var skipTenantPrefixes = []string{"/app/", "/assets/", "/api/v1/billing/webhook/", "/api/v1/channel/callback/"}
+// 获客批(2026-09-23)：补 "/api/v1/acquisition/"——活码是印在物料上的固定链接，扫码时的
+// Host 可能是主域（无独立域名的租户在此解析不出租户）。归属改由**码自己**给出
+// （internal/acquisition.Resolve 全局单键查询），比按 Host 猜少一类错：解析不到顶多不记归因，
+// 绝不会把客户记进别人家。管理端不在该前缀下（/admin/acquisition/*，走完整 JWT + 租户链）。
+var skipTenantPrefixes = []string{"/app/", "/assets/", "/api/v1/billing/webhook/", "/api/v1/channel/callback/", "/api/v1/acquisition/"}
 
 // TenantResolver 全局租户解析中间件（fail-closed）
 func TenantResolver() gin.HandlerFunc {
@@ -513,6 +517,17 @@ func applyTenantContext(c *gin.Context, tenant *model.Tenant) {
 	c.Set("tenant_code", tenant.Code)
 	c.Set("tenant_tier", tenant.Tier)
 	c.Set("tenant_plan", tenant.PlanID)
+	// 获客批(2026-09-23)：白标域名顺手带上，供落地链接基址二级兜底（TenantCustomDomain）。
+	// 在此注入而不是让业务层再查一次 tenants：这一段拿的是缓存对象，加一次查询即抵消缓存价值。
+	c.Set("tenant_custom_domain", tenant.CustomDomain)
+}
+
+// TenantCustomDomain 读当前租户的白标自定义域名（未绑定或无租户语境返回空串）。
+// 调用方须把空串当"没有这一级"处理——它是三级基址里的中间一级，不是错误条件。
+func TenantCustomDomain(c *gin.Context) string {
+	v, _ := c.Get("tenant_custom_domain")
+	s, _ := v.(string)
+	return s
 }
 
 // ============================================================
