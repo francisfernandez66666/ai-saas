@@ -16,9 +16,8 @@ package billing
 
 import (
 	"bytes"
+	"context"
 	"crypto"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -128,7 +127,23 @@ func (w *WechatPayProvider) buildAuthHeader(method, urlPath, body string) (strin
 // doV3 发起 V3 请求（POST，JSON body），返回响应体字节。非 2xx 返回错误（含微信错误码）。
 func (w *WechatPayProvider) doV3(urlPath string, reqBody interface{}) ([]byte, error) {
 	body, _ := json.Marshal(reqBody)
-	auth, err := w.buildAuthHeader(http.MethodPost, urlPath, string(body))
+	return w.doV3Raw(http.MethodPost, urlPath, string(body))
+}
+
+// doV3Get 发起 V3 GET 请求（签名串的请求体段为**空串**，不是 "{}"——
+// 微信对 GET 的规范是 METHOD\nURL\n时间戳\n随机串\n\n，写错这一段会恒 401 SIGN_ERROR）。
+func (w *WechatPayProvider) doV3Get(ctx context.Context, urlPath string) ([]byte, error) {
+	return w.doV3RawCtx(ctx, http.MethodGet, urlPath, "")
+}
+
+// doV3Raw 无 ctx 的 POST 入口（下单/退款沿用调用方默认超时）。
+func (w *WechatPayProvider) doV3Raw(method, urlPath, body string) ([]byte, error) {
+	return w.doV3RawCtx(context.Background(), method, urlPath, body)
+}
+
+// doV3RawCtx V3 请求统一出口：签名头 + 非 2xx 报错（错误里带响应体，排障靠它）。
+func (w *WechatPayProvider) doV3RawCtx(ctx context.Context, method, urlPath, body string) ([]byte, error) {
+	auth, err := w.buildAuthHeader(method, urlPath, body)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +151,11 @@ func (w *WechatPayProvider) doV3(urlPath string, reqBody interface{}) ([]byte, e
 	if base == "" {
 		base = wechatPayBase
 	}
-	req, err := http.NewRequest(http.MethodPost, base+urlPath, bytes.NewReader(body))
+	var reader io.Reader
+	if body != "" {
+		reader = bytes.NewReader([]byte(body))
+	}
+	req, err := http.NewRequestWithContext(ctx, method, base+urlPath, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -201,34 +220,10 @@ type WechatNotify struct {
 }
 
 // DecryptWechatResource 解密微信 V3 回调 resource（AES-256-GCM，APIv3Key）。
-// 解密成功即证明回调方持有 APIv3Key（平台密钥持有证明）；
-// 官方"平台证书验 Wechatpay-Signature"需商户侧定期拉取平台证书，未配置时以解密为准（安全注释位，
-// 真实商户号接入后建议补平台证书验签防伪造报文）。
+// 解密成功只证明"回调方持有 APIv3Key"，不证明"报文由微信支付签发"——后者见
+// VerifyWechatCallback（平台证书验签，E1-2 批 2026-09-24）。
 func DecryptWechatResource(apiv3Key string, ciphertext, nonce, associatedData string) (WechatNotify, error) {
-	if apiv3Key == "" {
-		return WechatNotify{}, errors.New("微信支付 APIv3Key 未配置，无法解密回调")
-	}
-	block, err := aes.NewCipher([]byte(apiv3Key))
-	if err != nil {
-		return WechatNotify{}, fmt.Errorf("APIv3Key 长度非法（须 32 字节）: %w", err)
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return WechatNotify{}, err
-	}
-	ct, err := base64.StdEncoding.DecodeString(ciphertext)
-	if err != nil {
-		return WechatNotify{}, fmt.Errorf("回调密文 base64 解码失败: %w", err)
-	}
-	// 防御（2026-09-15）：GCM 对非 12 字节 nonce 会直接 panic（crypto/cipher 内部断言），
-	// 恶意/畸形回调会把 403 变 500——必须先校验长度 fail-closed
-	if len(nonce) != 12 {
-		return WechatNotify{}, fmt.Errorf("回调 resource.nonce 长度非法（须 12 字节，实得 %d）", len(nonce))
-	}
-	if len(ct) < 16 {
-		return WechatNotify{}, errors.New("回调密文过短（不足 GCM tag 长度）")
-	}
-	plain, err := gcm.Open(nil, []byte(nonce), ct, []byte(associatedData))
+	plain, err := decryptAPIv3GCM(apiv3Key, ciphertext, nonce, associatedData)
 	if err != nil {
 		return WechatNotify{}, fmt.Errorf("回调 resource 解密失败（APIv3Key 不匹配或报文被篡改）: %w", err)
 	}

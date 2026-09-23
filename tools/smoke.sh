@@ -984,6 +984,11 @@ B6VER2=$(echo "$B6DETAIL" | jsonget "['data']['version']" 2>/dev/null)
 B6VERSHAPE=$(printf '%s' "$B6VER1" | grep -cE '^v[0-9]+\.[0-9]+\.[0-9]+$' 2>/dev/null)
 check "/status版本回显为vX.Y.Z形态" 1 "${B6VERSHAPE:-0}"
 check "/status与/status/detail版本一致(appVersion单点真源)" "$B6VER1" "$B6VER2"
+# E1-2(2026-09-24) 微信回调验签强度观测位：真实商户号接入前它是"该开没开"的清单项，
+# 必须出现在带令牌的详情端点（否则上线时无人知道有这道闸），且不得进公开 /status。
+B6WCV=$(echo "$B6DETAIL" | grep -c '"wechat_cert_verify"' 2>/dev/null)
+check "readiness含wechat_cert_verify验签观测位" 1 "${B6WCV:-0}"
+check "公开/status不泄露验签策略观测位" 0 "$(curl -s "$B/status" | grep -c 'wechat_cert_verify' 2>/dev/null)"
 
 # ---------- 第三十二节：主动触达最小闭环（排期/裁决/撤回/跨租户隔离，2026-09-23 批次4）----------
 # 这一段守的是"接口面 + 真库落库形态"：派发数学（48h 窗口、静默顺延、周内频次、重试上限）

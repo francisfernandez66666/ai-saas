@@ -180,6 +180,10 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "pay_wechat_private_key", Value: "\"\"", ValueType: "string", Description: "微信商户API私钥PEM全文(敏感勿外泄,PKCS8/PKCS1)", DefaultValue: "\"\"", SortOrder: 21},
 	{Category: "billing", Key: "pay_wechat_apiv3_key", Value: "\"\"", ValueType: "string", Description: "微信APIv3密钥(32字节,回调解密用,敏感勿外泄)", DefaultValue: "\"\"", SortOrder: 22},
 	{Category: "billing", Key: "pay_wechat_notify_url", Value: "\"\"", ValueType: "string", Description: "微信支付回调地址(须外网可达,如https://域名/api/v1/billing/webhook/wechat)", DefaultValue: "\"\"", SortOrder: 23},
+	// E1-2(2026-09-24) 平台证书验签：默认关=没带签名头的报文仍按"持有 APIv3Key 的解密证明"放行
+	// （存量/mock 链路零感知）。**带了 Wechatpay-Signature 的报文无论本开关如何都必须验过**——
+	// 否则攻击者不发签名头就能把开关绕过去。真实商户号接入后打开此键走严格态。
+	{Category: "billing", Key: "pay_wechat_cert_verify", Value: "false", ValueType: "bool", Description: "微信回调严格验签:无Wechatpay-Signature头即403(带签名的报文无论开关都必验),真实商户号接入后开", DefaultValue: "false", SortOrder: 30},
 	{Category: "billing", Key: "pay_alipay_app_id", Value: "\"\"", ValueType: "string", Description: "支付宝开放平台应用AppID", DefaultValue: "\"\"", SortOrder: 24},
 	{Category: "billing", Key: "pay_alipay_private_key", Value: "\"\"", ValueType: "string", Description: "支付宝应用私钥PEM全文(敏感勿外泄,RSA2)", DefaultValue: "\"\"", SortOrder: 25},
 	{Category: "billing", Key: "pay_alipay_public_key", Value: "\"\"", ValueType: "string", Description: "支付宝平台公钥PEM(异步通知验签用,开放平台加签方式页下载)", DefaultValue: "\"\"", SortOrder: 26},
@@ -324,18 +328,20 @@ var PlatformLevelKeys = map[string]bool{
 	"pay_wechat_private_key":           true,
 	"pay_wechat_apiv3_key":             true,
 	"pay_wechat_notify_url":            true,
-	"pay_alipay_app_id":                true, // P0-1(2026-09-15)：支付宝凭证(平台级,含应用私钥/平台公钥敏感项)
-	"pay_alipay_private_key":           true,
-	"pay_alipay_public_key":            true,
-	"pay_alipay_notify_url":            true,
-	"pay_alipay_seller_id":             true, // P0-1复核批(2026-09-15)：回调核对商户归属(平台级)——租户可改它等于伪造全站到账核对
-	"outcome_window_days":              true, // 批五A(2026-09-23)：终局标签观察窗在 BackfillOutcomes 里算成**一条全局 cutoff** 进 SQL（跨租户一趟扫），做不到按租户分窗；键留全局读，故必须归平台级，否则租户管理员改了不生效（静默失效同 email_verify_enabled）
-	"contentsafety_enabled":            true, // C1(2026-09-12)：内容安全闸门总开关(平台级，租户不可各自关闭合规)
-	"contentsafety_mode":               true, // C1：shadow|enforce 模式(平台级统一灰度节奏)
-	"evals_pack_alert_enabled":         true, // D9(2026-09-13)：包质量低分告警开关(平台级统一触达)
-	"evals_pack_alert_score":           true, // D9：低分阈值(平台级默认，避免租户关闭质量监控)
-	"evals_pack_alert_consecutive":     true, // D9：连续低分次数阈值(平台级)
-	"evals_pack_alert_min_samples":     true, // D9：告警最小样本数(平台级)
+	// E1-2(2026-09-24)：严格验签开关必须是平台级——租户能自己关掉=把"伪造到账"的闸门交给付费方。
+	"pay_wechat_cert_verify":       true,
+	"pay_alipay_app_id":            true, // P0-1(2026-09-15)：支付宝凭证(平台级,含应用私钥/平台公钥敏感项)
+	"pay_alipay_private_key":       true,
+	"pay_alipay_public_key":        true,
+	"pay_alipay_notify_url":        true,
+	"pay_alipay_seller_id":         true, // P0-1复核批(2026-09-15)：回调核对商户归属(平台级)——租户可改它等于伪造全站到账核对
+	"outcome_window_days":          true, // 批五A(2026-09-23)：终局标签观察窗在 BackfillOutcomes 里算成**一条全局 cutoff** 进 SQL（跨租户一趟扫），做不到按租户分窗；键留全局读，故必须归平台级，否则租户管理员改了不生效（静默失效同 email_verify_enabled）
+	"contentsafety_enabled":        true, // C1(2026-09-12)：内容安全闸门总开关(平台级，租户不可各自关闭合规)
+	"contentsafety_mode":           true, // C1：shadow|enforce 模式(平台级统一灰度节奏)
+	"evals_pack_alert_enabled":     true, // D9(2026-09-13)：包质量低分告警开关(平台级统一触达)
+	"evals_pack_alert_score":       true, // D9：低分阈值(平台级默认，避免租户关闭质量监控)
+	"evals_pack_alert_consecutive": true, // D9：连续低分次数阈值(平台级)
+	"evals_pack_alert_min_samples": true, // D9：告警最小样本数(平台级)
 	// D3(2026-09-23)：用量预警与到期催缴六键全平台级。
 	// 判据不是"看起来像运营参数就平台级"，而是**租户能改它会不会削弱我方收款漏斗**——
 	// 会（欠费户把自己的催缴频率调零、把预警阈值调到 100% 以上=永不通知），故一律压到系统层。

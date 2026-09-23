@@ -68,6 +68,12 @@ func TestReadinessReleaseLevels(t *testing.T) {
 	if findCheck(checks, "trusted_proxies").Status != StatusWarn {
 		t.Fatalf("TRUSTED_PROXIES 未配应为 warn")
 	}
+	// E1-2(2026-09-24)：微信回调验签强度必须是一项**看得见**的观测位——无配置服务时按默认
+	// 宽松态如实报 decrypt-only（而不是缺项或假装 ok），否则上线时没人知道该开这个开关。
+	wcv := findCheck(checks, "wechat_cert_verify")
+	if wcv == nil || wcv.Value != "decrypt-only" || wcv.Status != StatusWarn {
+		t.Fatalf("微信验签观测位缺失或判级错误: %+v", wcv)
+	}
 	ready, crit, warn := ReadinessSummary(checks)
 	if ready || crit < 3 || warn < 2 {
 		t.Fatalf("汇总口径错误: ready=%v crit=%d warn=%d", ready, crit, warn)

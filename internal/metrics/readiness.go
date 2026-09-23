@@ -126,6 +126,17 @@ func computeReadinessChecks() []HealthCheck {
 	}
 	checks = append(checks, readinessCheck("pay_mode", payMode == "sdk", payMode, StatusWarn,
 		"pay_mode 非 sdk：到账依赖模拟/人工确认，正式收款前请配 pay_provider+商户凭据并切 pay_mode=sdk"))
+
+	// R3b 微信回调验签强度（E1-2，2026-09-24）：pay_wechat_cert_verify=false 时，
+	// "没带 Wechatpay-Signature" 的回调仍只靠 APIv3Key 解密证明放行——密钥一泄露就能凭空造到账报文。
+	// （带了签名头的报文无论本开关如何都必验，所以这不是"没有防线"，而是"防线可被不发签名绕过"。）
+	certVerify := false
+	if cfg != nil {
+		certVerify = cfg.GetBoolForTenant(0, "pay_wechat_cert_verify", false)
+	}
+	checks = append(checks, readinessCheck("wechat_cert_verify", certVerify,
+		map[bool]string{true: "strict", false: "decrypt-only"}[certVerify], StatusWarn,
+		"微信回调未开严格验签：缺 Wechatpay-Signature 的报文只按 APIv3Key 解密放行，APIv3Key 泄露即可伪造到账。配好商户私钥/商户号后开 pay_wechat_cert_verify=true（平台证书由 /v3/certificates 自动拉取）"))
 	allowMockPay := strings.EqualFold(os.Getenv("ALLOW_MOCK_PAY"), "true")
 	checks = append(checks, readinessCheck("allow_mock_pay", !allowMockPay,
 		map[bool]string{true: "true", false: "false"}[allowMockPay], StatusCrit,

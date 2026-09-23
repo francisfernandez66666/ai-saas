@@ -155,6 +155,8 @@ echo "  [cleanup] 测试订单已回收"
 #   - 微信：配置测试 APIv3Key → DB 直插 channel=wechat 订单 → node 构造 AES-256-GCM
 #     加密 resource（ciphertext=密文+tag，与 Go Seal/Open 对齐）→ POST 回调 → 幂等到账+台账行
 #     负向：篡改密文 403 / nonce 重放 409
+#     E1-2(2026-09-24) 平台证书验签：带伪造签名必拒（严格开关关也绕不过）+ 严格态缺签名必拒、
+#     回退后同 nonce 重推不死锁（验签在 nonce 消费之前）
 #   - 支付宝：node 生成测试 RSA 密钥对 → 平台公钥入系统配置 → form 通知 RSA2 签名
 #     → POST 回调 → 到账；负向：篡改金额 403
 #   - 测试用一次性租户（避免污染 acme 余额），cleanup 级联回收
@@ -169,15 +171,18 @@ WT_ORIG_V3=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='
 WT_ORIG_PUB=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_alipay_public_key'" | tr -d '[:space:]')
 # P0-1 复核批(2026-09-15)：alipay 回调新增 app_id 归属必核（未配置=403 fail-closed），测试资产同步配置
 WT_ORIG_AAPP=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_alipay_app_id'" | tr -d '[:space:]')
+# E1-2(2026-09-24)：严格验签开关同列恢复清单——中途失败退出时不得把平台口径留在 true 上
+WT_ORIG_VERIFY=$($PSQL "SELECT value FROM system_configs WHERE tenant_id=0 AND key='pay_wechat_cert_verify'" | tr -d '[:space:]')
 trap '
   [ -n "$ORIG_PAYMODE" ] && $PSQL "UPDATE system_configs SET value='"'"'$ORIG_PAYMODE'"'"' WHERE tenant_id=0 AND key='"'"'pay_mode'"'"'" >/dev/null 2>&1
   if [ -n "$ORIG_GKEY" ]; then $PSQL "UPDATE system_configs SET value='"'"'$ORIG_GKEY'"'"' WHERE tenant_id=0 AND key='"'"'pay_gateway_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_gateway_key'"'"'" >/dev/null 2>&1; fi
   if [ -n "$WT_ORIG_V3" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_V3'"'"' WHERE tenant_id=0 AND key='"'"'pay_wechat_apiv3_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_wechat_apiv3_key'"'"'" >/dev/null 2>&1; fi
   if [ -n "$WT_ORIG_PUB" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_PUB'"'"' WHERE tenant_id=0 AND key='"'"'pay_alipay_public_key'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_alipay_public_key'"'"'" >/dev/null 2>&1; fi
   if [ -n "$WT_ORIG_AAPP" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_AAPP'"'"' WHERE tenant_id=0 AND key='"'"'pay_alipay_app_id'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_alipay_app_id'"'"'" >/dev/null 2>&1; fi
+  if [ -n "$WT_ORIG_VERIFY" ]; then $PSQL "UPDATE system_configs SET value='"'"'$WT_ORIG_VERIFY'"'"' WHERE tenant_id=0 AND key='"'"'pay_wechat_cert_verify'"'"'" >/dev/null 2>&1; else $PSQL "DELETE FROM system_configs WHERE tenant_id=0 AND key='"'"'pay_wechat_cert_verify'"'"'" >/dev/null 2>&1; fi
   [ -n "$WT_ID" ] && $PSQL "DELETE FROM reward_claims WHERE tenant_id=$WT_ID OR ref_id IN (SELECT id FROM billing_orders WHERE tenant_id=$WT_ID); DELETE FROM billing_orders WHERE tenant_id=$WT_ID; DELETE FROM tenants WHERE id=$WT_ID" >/dev/null 2>&1
   rm -rf "$WORK" >/dev/null 2>&1
-  echo "  [trap] 已恢复 pay_mode/pay_gateway_key/微信支付宝密钥 + 回收一次性租户"
+  echo "  [trap] 已恢复 pay_mode/pay_gateway_key/微信支付宝密钥/严格验签开关 + 回收一次性租户"
 ' EXIT
 
 echo ""
@@ -260,6 +265,57 @@ H11G=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook
   -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WNONCE2" \
   -d "$WX_EMPTY")
 check "400后nonce已释放同nonce重推不再409(400)" 400 "$H11G"
+
+# ---- 11.8 E1-2(2026-09-24) 平台证书验签：带了签名头就必验，开关关也绕不过 ----
+# 本机微信支付商户凭证为空串（pay_wechat_mch_id/private_key 未配置）→ 无法取得平台证书。
+# 政策要求此时 fail-closed：绝不回退成"那就只验解密"。所以这一发的报文本身是完全可解密的
+# （攻击者持有 APIv3Key 就能造出来），只因为多带了一个签不出来的签名头而被拒——
+# 断的就是" APIv3Key 泄露不再等于可以随意发货"这条新增的防线。
+WE_NO="BO${WTAG}W3"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${WE_NO}',${WT_ID},${PKG},100,'once','wechat','pending',NOW(),NOW())" >/dev/null
+WX_SIGNED=$(WX_KEY="$WX_KEY" WX_NO="$WE_NO" node "$WORK/wxres.js")
+R11H=$(curl -s -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: wn6_${WTAG}_$$" \
+  -H "Wechatpay-Signature: Zm9yZ2VkX3BsYXRmb3JtX3NpZ25hdHVyZQ==" \
+  -H "Wechatpay-Serial: DEADBEEFDEADBEEF" \
+  -d "$WX_SIGNED")
+H11H=$(echo "$R11H" | python3 -c "import sys,json;print(json.load(sys.stdin).get('message',''))" 2>/dev/null)
+check "带伪造平台签名的回调被拒(验签未通过)" "回调验签未通过" "$H11H"
+check "签名被拒后订单保持pending" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$WE_NO'" | tr -d '[:space:]')"
+check "签名被拒零发放台账" 0 "$($PSQL "SELECT COUNT(*) FROM reward_claims WHERE grant_type='order_entitlement' AND ref_id=(SELECT id FROM billing_orders WHERE order_no='$WE_NO')" | tr -d '[:space:]')"
+# 无鉴权端点的错误文案不得回显支付配置状态（"商户凭证未配置/私钥/证书接口"这类只进日志）
+if echo "$R11H" | grep -qiE "私钥|凭证|证书|api\.mch|serial_no|private"; then
+  echo "  FAIL  403响应泄露内部配置文案 实际=$R11H"; FAIL=$((FAIL+1))
+else
+  echo "  PASS  403响应零内部配置泄露"; PASS=$((PASS+1))
+fi
+
+# ---- 11.9 E1-2 严格态开关：pay_wechat_cert_verify=true 时"不带签名"也拒；关回即恢复既有口径 ----
+WF_NO="BO${WTAG}W4"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,created_at,updated_at) VALUES ('${WF_NO}',${WT_ID},${PKG},100,'once','wechat','pending',NOW(),NOW())" >/dev/null
+VCFG="[{\"category\":\"billing\",\"key\":\"pay_wechat_cert_verify\",\"value\":\"true\"}]"
+echo "  [wx] 严格验签开关写入: $(curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "$VCFG")"
+sleep 1
+WX_STRICT=$(WX_KEY="$WX_KEY" WX_NO="$WF_NO" node "$WORK/wxres.js")
+WSTRICT_NONCE="wn7_${WTAG}_$$"
+H11I=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WSTRICT_NONCE" \
+  -d "$WX_STRICT")
+check "严格态下缺签名头被拒(403)" 403 "$H11I"
+check "严格态拒绝后订单保持pending" pending "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$WF_NO'" | tr -d '[:space:]')"
+# 验签在 nonce 消费**之前**：因"还没配好证书"而吃的一次 403 不得把合法重推永久打死（不 409 死锁）
+if [ -n "$WT_ORIG_VERIFY" ]; then
+  VRST="[{\"category\":\"billing\",\"key\":\"pay_wechat_cert_verify\",\"value\":\"$WT_ORIG_VERIFY\"}]"
+else
+  VRST="[{\"category\":\"billing\",\"key\":\"pay_wechat_cert_verify\",\"value\":\"false\"}]"
+fi
+curl -s -o /dev/null -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "$VRST"
+sleep 1
+R11J=$(curl -s -X POST "$B/api/v1/billing/webhook/wechat" \
+  -H "Content-Type: application/json" -H "Wechatpay-Timestamp: $(date +%s)" -H "Wechatpay-Nonce: $WSTRICT_NONCE" \
+  -d "$WX_STRICT")
+check "开关回退后同nonce重推不再409(code=0)" 0 "$(echo "$R11J" | jget "d.get('code')")"
+check "开关回退后订单正常到账" paid "$($PSQL "SELECT status FROM billing_orders WHERE order_no='$WF_NO'" | tr -d '[:space:]')"
 
 echo ""
 echo "---- 12. 支付宝当面付 回调（P0-1c）----"

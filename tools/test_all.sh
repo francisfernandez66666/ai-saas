@@ -349,7 +349,7 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（386 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六）"
+step "E2E 层：smoke.sh（388 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"
@@ -364,7 +364,7 @@ step "E2E 层：smoke_org.sh（11 项）"
 step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
 ./tools/smoke_saas.sh "$PORT" >/tmp/test_all_saas.log 2>&1; verdict "smoke_saas.sh" $?; tail -2 /tmp/test_all_saas.log
 
-step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移 41 项）"
+step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移+E1-2 平台证书验签政策 49 项）"
 ./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
 
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 55 项，含侧边栏双签名 §十，自建 9091+mockwx）"

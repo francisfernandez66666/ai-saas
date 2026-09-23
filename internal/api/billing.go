@@ -7,8 +7,10 @@ import "ai-scrm/internal/notify"
 
 import (
 	"ai-scrm/internal/runtimecfg"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -493,10 +495,18 @@ func BillingWebhook(c *gin.Context) {
 // P1-3/P1-7 修复(2026-09-18)：①nonce 消费移到解密成功之后——畸形/伪造包不再污染去重表；
 // ②解密明文的 amount.total 与订单面额分毫核对、mchid/appid 配置了即比对（对齐 alipay 归属口径）；
 // ③ConfirmOrderByChannel 失败释放 nonce，PSP 同 nonce 重推不再被 409 死锁。
+// E1-2(2026-09-24)：加平台证书验签——见下方 wechatCertVerify 的策略说明。
 func billingWebhookWechat(c *gin.Context) {
 	// 时间窗：Wechatpay-Timestamp 为 unix 秒，±5min（复用 C6 窗口校验）
 	if !billing.WebhookTimestampFresh(c.GetHeader("Wechatpay-Timestamp")) {
 		RespErr(c, http.StatusForbidden, 403, "回调时间戳超出有效窗口（±5分钟）")
+		return
+	}
+	// 签名对象是**未改动的请求体字节**，所以这里读原文而不是直接 ShouldBindJSON——
+	// 绑定后重新序列化会改空格/键序，验签必挂（接入微信支付第一大坑）。1MB 上限防大报文砸内存。
+	rawBody, err := io.ReadAll(io.LimitReader(c.Request.Body, wechatCallbackBodyLimit+1))
+	if err != nil || len(rawBody) > wechatCallbackBodyLimit {
+		RespErr(c, http.StatusBadRequest, 400, "回调报文读取失败或超出长度上限")
 		return
 	}
 	var body struct {
@@ -506,8 +516,20 @@ func billingWebhookWechat(c *gin.Context) {
 			AssociatedData string `json:"associated_data"`
 		} `json:"resource"`
 	}
-	if err := c.ShouldBindJSON(&body); err != nil || body.Resource.Ciphertext == "" {
+	if err := json.Unmarshal(rawBody, &body); err != nil || body.Resource.Ciphertext == "" {
 		RespErr(c, http.StatusBadRequest, 400, "回调参数错误（缺少 resource.ciphertext）")
+		return
+	}
+	// 平台证书验签（E1-2）：政策两条，都不留给调用方选择——
+	//   带了 Wechatpay-Signature 就必须验过（否则攻击者"不发签名头"即可绕过）；
+	//   没带签名头时由 pay_wechat_cert_verify 决定放行与否（默认关=维持"解密证明"既有口径，
+	//   存量部署零感知；真实商户号接入后应打开）。
+	// 验签在解密**之前**：一次 HMAC/AES 都不必花在一个连签发方都对不上的报文上。
+	if err := wechatCertVerify(c, rawBody); err != nil {
+		// 细节只进日志：这个端点无鉴权，把"商户凭证未配置/序列号未知"原样回给调用方
+		// 等于送给外部一份探测支付配置的状态表。
+		log.Printf("[Billing][ERROR] 微信回调验签被拒: %v", err)
+		RespErr(c, http.StatusForbidden, 403, "回调验签未通过")
 		return
 	}
 	apiv3Key := getPayConf("pay_wechat_apiv3_key", "PAY_WECHAT_APIV3_KEY")
