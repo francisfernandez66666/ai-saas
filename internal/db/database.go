@@ -333,6 +333,8 @@ func autoMigrate() error {
 		// ---- 商机 + 报价单（商机批，2026-09-23；在途唯一的部分索引见 migrations/023）
 		&model.Opportunity{},
 		&model.Quote{},
+		// ---- 会话存档（E8，2026-09-24；channels 存档五列与两条索引见 migrations/024）
+		&model.ChatArchiveRecord{},
 	)
 }
 

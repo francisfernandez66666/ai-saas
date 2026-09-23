@@ -35,6 +35,22 @@ type Channel struct {
 	// KfCursor D14 修复(2026-09-14)：微信客服同步游标独立成列——旧实现读改写整个
 	// config_json（与管理员编辑凭据/参数并发时互相覆盖丢键），列写天然原子、无丢失更新。
 	KfCursor string `gorm:"column:kf_cursor;size:256" json:"-"`
+	// ---- 会话存档（E8，2026-09-24）----
+	// 存档是**合规能力**而非收发链路：凭据独立成列、独立接口，不进 Credential，
+	// 免得应用 secret 解不开时把"重录凭据"引导扩大到本来就正常工作的收发货上。
+	// ArchiveEnabled 默认关：开着才拉、才落库（与触达/催缴同一口径——
+	// "忘了开就群发"和"忘了关就把客户聊天记录抄进我们库"是同一类事故）。
+	ArchiveEnabled bool `gorm:"column:archive_enabled;default:false" json:"archive_enabled"`
+	// ArchiveSecretCipher：企微「会话内容存档」专用 secret（不是应用 secret）。密文列，出接口不回显。
+	ArchiveSecretCipher string `gorm:"column:archive_secret_cipher;size:512" json:"-"`
+	// ArchivePrivateKeyCipher：企业自建的 RSA 私钥 PEM（密文）。公钥上传企微，
+	// 私钥只用于解 encrypt_random_key——泄露即等于能读全部存档明文，故绝不出接口。
+	ArchivePrivateKeyCipher string `gorm:"column:archive_private_key_cipher;type:text" json:"-"`
+	// ArchivePublicKeyVer：这把私钥对应的公钥版本（企微按 ver 标记每条密文用哪把公钥加的密）。
+	// 只留一把是刻意的简化：轮换后旧消息解不开会如实记 decrypt_error，而不是静默丢。
+	ArchivePublicKeyVer int `gorm:"column:archive_public_key_ver;default:0" json:"archive_public_key_ver"`
+	// ArchiveSeq 拉取游标（同 KfCursor 的列写理由）：只单调前移，回退等于把历史重抄一遍。
+	ArchiveSeq int64 `gorm:"column:archive_seq;default:0" json:"-"`
 
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
