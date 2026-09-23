@@ -268,6 +268,14 @@ else
   fi
 fi
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
+# 单测红时**必须点名失败用例**：上面那行 tail -20 会把 `--- FAIL: TestXxx` 挤出屏幕，
+# 2026-09-23 实跑即踩到——billing 包 FAIL，总账里只剩一行裸 `FAIL`，等于让人回 /tmp 自己猜。
+# 失败用例本就有限，红时全量列出（含包级行），零失败时不打扰既有输出。
+if [ "$GO_TEST_RC" -ne 0 ]; then
+  echo "  ── 失败用例清单（-json 还原文本，全量不截断）──"
+  grep -E "^(--- FAIL|FAIL[[:space:]]|FAIL$)" /tmp/test_all_go.log \
+    || echo "  （未匹配到 --- FAIL 行：可能是测试二进制中止/panic，见 /tmp/test_all_go.log 末尾）"
+fi
 # 跳过统计（§八-7）：非零必须显式报警，DB 不可用时"全绿"不再是可信信号
 if [ "$SKIP_TOTAL" -gt 0 ]; then
   echo "⚠ 本地跳过 ${SKIP_TOTAL} 个用例（含 -short/DB 不可用），明细："
