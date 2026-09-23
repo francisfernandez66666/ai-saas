@@ -367,7 +367,7 @@ step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
 step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移 41 项）"
 ./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
 
-step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 40 项，自建 9091+mockwx）"
+step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 55 项，含侧边栏双签名 §十，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
 step "E2E 层：uat_advisor.sh（顾问工作台字节级 75 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-22 文档对齐：实测 PASS=75）"

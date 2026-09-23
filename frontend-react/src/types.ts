@@ -1263,3 +1263,18 @@ export interface AdvisorDealListResp {
   total: number
   config: DealConfig
 }
+
+// ============================================================
+// E1 企微侧边栏应用级签名（2026-09-24）
+// 字段与 internal/channel.AgentCfgResult 的 json tag 一一对应。
+// 全部是字符串：agentid 走字符串下发，JS 侧数字会丢精度，而签名必须与它逐字配套。
+// ============================================================
+
+/** GET /channel/wecom/agentconfig 出参，直接摊进 wx.agentConfig({...}) */
+export interface WecomAgentConfigResp {
+  corpid: string
+  agentid: string
+  timestamp: string
+  noncestr: string
+  signature: string
+}

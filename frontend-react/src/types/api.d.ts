@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -85,6 +85,7 @@ export interface ApiRoutes {
   "GET /api/v1/cdp/segments": unknown
   "GET /api/v1/cdp/tag-defs": unknown
   "GET /api/v1/channel/callback/:id": unknown
+  "GET /api/v1/channel/wecom/agentconfig": WecomAgentConfigResp
   "GET /api/v1/channel/wecom/context": unknown
   "GET /api/v1/channel/wecom/jsconfig": unknown
   "GET /api/v1/chat/history": unknown

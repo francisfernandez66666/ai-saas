@@ -5,6 +5,8 @@
 //	GET  /cgi-bin/gettoken?...            → 伪造 access_token
 //	POST /cgi-bin/message/send?token=     → 记录出站消息到 -out JSONL，回 {errcode:0}
 //	GET  /cgi-bin/__token?...             → 供公众号 token 路径
+//	GET  /cgi-bin/get_jsapi_ticket        → corp 级 JS-SDK 贴纸（wx.config）
+//	GET  /cgi-bin/ticket/get?type=...     → 应用级贴纸（wx.agentConfig，E1 批）
 //	GET  /__gen_callback?...              → 生成"已签名+加密"的回调体，供脚本 POST 到真实服务的 channel 回调端点
 //	GET  /__health                        → 存活
 package main
@@ -84,6 +86,17 @@ func main() {
 	mux.HandleFunc("/cgi-bin/get_jsapi_ticket", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"errcode": 0, "ticket": "MOCK_JS_TICKET", "expires_in": 7200})
+	})
+	// /cgi-bin/ticket/get（企微应用级 agent_config 票据，E1 批 2026-09-24）
+	// 故意返回与 corp 票据**不同**的字面量：冒烟据此断两条签名链各用自己的贴纸。
+	// 若两边混用同一缓存，这里就会签出与 jsconfig 相同的 signature —— 那正是最难查的错位。
+	mux.HandleFunc("/cgi-bin/ticket/get", func(w http.ResponseWriter, r *http.Request) {
+		ticket := "MOCK_JS_TICKET"
+		if r.URL.Query().Get("type") == "agent_config" {
+			ticket = "MOCK_AGENT_CFG_TICKET"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"errcode": 0, "ticket": ticket, "expires_in": 7200})
 	})
 
 	// 生成"已签名+加密"回调体：token/aeskey/corpid/content/fromuser

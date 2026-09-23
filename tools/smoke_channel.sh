@@ -2,7 +2,8 @@
 # ============================================================
 # AI-SCRM 通道接入端到端冒烟（W8/T4，2026-09-12）
 # 自包含：起 mock 模式服务(9091) + 微信 mock 服务(9099)，端到端验证
-#   通道CRUD/凭据掩码/连通测试/URL验证/入站→AI→出站投递/人工锁定不出声/死信重发。
+#   通道CRUD/凭据掩码/连通测试/URL验证/入站→AI→出站投递/人工锁定不出声/死信重发
+#   /侧边栏两套 JS-SDK 签名（corp wx.config + 应用 wx.agentConfig，E1 批 2026-09-24）。
 # 用法: ./tools/smoke_channel.sh            （默认自建 9091+9099）
 # 前置: 本地 PG 可用（沿用 dev 库）
 # ============================================================
@@ -34,7 +35,7 @@ cleanup() {
                     DELETE FROM conversations WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke'));
                     DELETE FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke');
                     DELETE FROM customers WHERE source LIKE 'channel:%' AND source IN (SELECT 'channel:'||id FROM channels WHERE corpid='ww_chan_smoke');
-                    DELETE FROM channels WHERE corpid='ww_chan_smoke';" >/dev/null 2>&1
+                    DELETE FROM channels WHERE corpid IN ('ww_chan_smoke','ww_chan_noagent');" >/dev/null 2>&1
   rm -f "$OUTBOX" # 日志保留（固定路径），排查用
   # D5(2026-09-16)：恢复测试租户合并窗口（本脚本为其临时降窗）
   psql "$DBURL" -c "DELETE FROM system_configs WHERE tenant_id=1 AND key='merge_window_seconds';" >/dev/null 2>&1
@@ -282,6 +283,11 @@ check "他租户取侧边栏上下文→403(P0-4)" 403 "$XCTX"
 XJS=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/jsconfig?url=https%3A%2F%2Fexample.com&corpid=ww_chan_smoke" \
   -H "Authorization: Bearer $XTK" -H "X-Tenant-ID: $XTEN")
 check "他租户取侧边栏jsconfig→403(P0-4)" 403 "$XJS"
+# E1 批(2026-09-24)：agentconfig 与 jsconfig 同闸——它按同一个 corpid 全局找通道，
+# 少一道归属核对就是"知道 corpid 就能替他租户签出可用的 wx.agentConfig"。
+XAG=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fexample.com&corpid=ww_chan_smoke" \
+  -H "Authorization: Bearer $XTK" -H "X-Tenant-ID: $XTEN")
+check "他租户取侧边栏agentConfig→403(同一套闸)" 403 "$XAG"
 $PSQL "DELETE FROM tenant_users WHERE username='$XUSR'; DELETE FROM tenants WHERE id=$XTEN" >/dev/null 2>&1
 
 # P1-7：回调路径 skip 了租户解析——修复前 suspended 租户通道照常"入站→AI→出站"烧被封禁户用量。
@@ -302,6 +308,83 @@ check "停用租户回调仍回success止损重推" "success" "$REPL3"
 INBOUND_AFTER=$($PSQL "SELECT count(*) FROM channel_inbound_msgs WHERE channel_id=$CID" | tr -d '[:space:]')
 check "停用租户入站不落库不烧AI(P1-7)" y "$([ "$INBOUND_BEFORE" = "$INBOUND_AFTER" ] && echo y || echo n)"
 $PSQL "UPDATE tenants SET status='active' WHERE id=$CHTEN" >/dev/null 2>&1
+
+# ---- 十、E1 批（2026-09-24）侧边栏应用级签名 wx.agentConfig ----
+# 这一段守的是"两张贴纸"的错位：wx.config 用 corp 票（/cgi-bin/get_jsapi_ticket），
+# wx.agentConfig 用应用票（/cgi-bin/ticket/get?type=agent_config）。混进同一份缓存的后果
+# 是签名照样算得出来、企微侧一律 40102，而且只在侧边栏被点过一次之后复现。
+# 判据不用"两次响应签名相同/不同"这种弱式（ts 与 nonce 每次都变，等式恒不成立），
+# 而是拿响应的 noncestr/timestamp 在服务端外重算 sha1，分别比对两张票的字面量。
+echo "---- 十、应用级签名 agentConfig ----"
+sha1sig() { python3 -c "import hashlib,sys
+print(hashlib.sha1(('jsapi_ticket=%s&noncestr=%s&timestamp=%s&url=%s' % (sys.argv[1],sys.argv[2],sys.argv[3],sys.argv[4])).encode()).hexdigest())" "$1" "$2" "$3" "$4"; }
+# 取一条响应的 (noncestr,timestamp,signature) 三元组
+agfields() { echo "$1" | python3 -c "import sys,json
+d=json.load(sys.stdin)['data']
+print(d['noncestr'], d['timestamp'], d['signature'], sep='\t')" 2>/dev/null; }
+
+AG_URL_HASH="https://sidebar.example.com/advisor?cid=12#chat"   # 侧边栏实测会传带 hash 的 location.href
+AG_URL="https://sidebar.example.com/advisor?cid=12"             # 签名对象必须是去片段后的地址
+
+# 先签 corp（把 corp 票写进缓存），再签 agent——顺序刻意：若两端共用缓存，agent 这一步就会
+# 拿到刚缓存的 corp 票，下面的"应用票重算相符"断言立即红。
+JS2=$(curl -s -G "$B/api/v1/channel/wecom/jsconfig" --data-urlencode "url=$AG_URL_HASH" \
+  --data-urlencode "corpid=ww_chan_smoke" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+# 先钉住 corp 这一次调用真的成功了：它若因入参错回 400，下面的字段全是空串，
+# 断言会在"空签名 vs 重算签名"上假红——排查时最容易误判成缓存串味。所以把码单独断出来。
+check "对照用 jsconfig 返回 200" "0" "$(echo "$JS2" | jsonget "['code']")"
+AG=$(curl -s -G "$B/api/v1/channel/wecom/agentconfig" --data-urlencode "url=$AG_URL_HASH" \
+  --data-urlencode "corpid=ww_chan_smoke" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+AG_CODE=$(echo "$AG" | jsonget "['code']")
+check "agentConfig 返回 200" "0" "$AG_CODE"
+IFS=$'\t' read -r AG_NS AG_TS AG_SIG <<<"$(agfields "$AG")"
+check "agentConfig 出参齐全(agentid 字符串)非0" y "$(echo "$AG" | python3 -c "import sys,json
+d=json.load(sys.stdin)['data']
+print('y' if d.get('corpid')=='ww_chan_smoke' and d.get('agentid')=='1000002' and len(d.get('signature',''))==40 and d.get('noncestr') and d.get('timestamp') else 'n')" 2>/dev/null)"
+AG_EXPECT=$(sha1sig "MOCK_AGENT_CFG_TICKET" "$AG_NS" "$AG_TS" "$AG_URL")
+AG_CORPKEY=$(sha1sig "MOCK_JS_TICKET" "$AG_NS" "$AG_TS" "$AG_URL")
+check "agentConfig 用应用票签名(非 corp 票)" y "$([ "$AG_SIG" = "$AG_EXPECT" ] && [ "$AG_SIG" != "$AG_CORPKEY" ] && echo y || echo n)"
+AG_WITHHASH=$(sha1sig "MOCK_AGENT_CFG_TICKET" "$AG_NS" "$AG_TS" "$AG_URL_HASH")
+check "agentConfig 签名对象去掉 # 片段" y "$([ "$AG_SIG" != "$AG_WITHHASH" ] && echo y || echo n)"
+
+# 反向串味：agent 签过之后 corp 侧仍必须用自己的票（缓存各写各的，不互相顶掉）。
+IFS=$'\t' read -r JS_NS JS_TS JS_SIG <<<"$(agfields "$JS2")"
+JS_EXPECT=$(sha1sig "MOCK_JS_TICKET" "$JS_NS" "$JS_TS" "$AG_URL")
+JS_AGENTKEY=$(sha1sig "MOCK_AGENT_CFG_TICKET" "$JS_NS" "$JS_TS" "$AG_URL")
+check "jsconfig 仍用 corp 票(未被应用票顶掉)" y "$([ "$JS_SIG" = "$JS_EXPECT" ] && [ "$JS_SIG" != "$JS_AGENTKEY" ] && echo y || echo n)"
+AG_AFTER=$(curl -s -G "$B/api/v1/channel/wecom/agentconfig" --data-urlencode "url=$AG_URL" \
+  --data-urlencode "corpid=ww_chan_smoke" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+IFS=$'\t' read -r AG2_NS AG2_TS AG2_SIG <<<"$(agfields "$AG_AFTER")"
+check "二次 agentConfig 仍签应用票(缓存独立且命中)" y "$([ "$AG2_SIG" = "$(sha1sig MOCK_AGENT_CFG_TICKET "$AG2_NS" "$AG2_TS" "$AG_URL")" ] && echo y || echo n)"
+
+# 入参与配置缺口的稳定语义
+AG_NOURL=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/agentconfig?corpid=ww_chan_smoke" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "agentConfig 缺 url→400" 400 "$AG_NOURL"
+AG_404=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_not_exist" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "agentConfig 通道不存在→404" 404 "$AG_404"
+AG_AUTH=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_chan_smoke")
+check "agentConfig 未登录→401" 401 "$AG_AUTH"
+
+# 未录入 agentid：必须回可分支的 reason，而不是签出一个 agentid=0 让企微去拒
+NA_CREATE=$(curl -s -X POST "$B/api/v1/admin/channels" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" \
+  -H "Content-Type: application/json" \
+  -d '{"type":"wecom_app","name":"冒烟无agentid","corpid":"ww_chan_noagent","appid":"wx_str_not_agentid","secret":"sEcrEt_NA","token":"tk_smoke_001","encoding_aes_key":"'"$AESKEY"'","config_json":"{\"mock_base_url\":\"http://127.0.0.1:'"$MPORT"'\"}"}')
+NA_ID=$(echo "$NA_CREATE" | jsonget "['data']['channel']['id']")
+check "创建无 agentid 通道(反证前置)非0" y "$([ -n "$NA_ID" ] && [ "$NA_ID" != "None" ] && echo y || echo n)"
+curl -s -o /dev/null -X POST "$B/api/v1/admin/channels/$NA_ID/verify" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1"
+NA=$(curl -s "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_chan_noagent" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+NA_STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_chan_noagent" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "缺 agentid→400" 400 "$NA_STATUS"
+check "缺 agentid 回稳定 reason" "agentid_missing" "$(echo "$NA" | jsonget "['reason']")"
+# 反证：同一通道补上 agentid 后必须立刻能签出去（说明上面的 400 是配置缺口而非链路坏了）
+$PSQL "UPDATE channels SET config_json='{\"mock_base_url\":\"http://127.0.0.1:${MPORT}\",\"agentid\":\"1000009\"}' WHERE id=$NA_ID" >/dev/null 2>&1
+NA_FIX=$(curl -s "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_chan_noagent" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "补录 agentid 后同通道可签" "1000009" "$(echo "$NA_FIX" | jsonget "['data']['agentid']")"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

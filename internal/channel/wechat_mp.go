@@ -213,7 +213,9 @@ type JSCfgResult struct {
 
 // BuildJSConfig 一步生成 wx.config 参数（channel 需 active + 凭据可解密）。
 func BuildJSConfig(ctx context.Context, cred *Credential, targetURL string) (*JSCfgResult, error) {
-	if targetURL == "" {
+	// 与 agentConfig 同一条规矩：签名对象是"不含 hash 的地址"
+	target := StripURLFragment(targetURL)
+	if target == "" {
 		return nil, errors.New("url 必填")
 	}
 	ticket, err := FetchCorpJSAPITicket(ctx, cred)
@@ -226,6 +228,6 @@ func BuildJSConfig(ctx context.Context, cred *Credential, targetURL string) (*JS
 		CorpID:    cred.CorpID,
 		Timestamp: ts,
 		NonceStr:  nonce,
-		Signature: SignJSConfig(ticket, nonce, ts, targetURL),
+		Signature: SignJSConfig(ticket, nonce, ts, target),
 	}, nil
 }

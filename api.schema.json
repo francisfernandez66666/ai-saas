@@ -837,6 +837,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/channel/wecom/agentconfig",
+      "group": "channel",
+      "handler": "ChannelWecomAgentConfig",
+      "auth": [
+        "jwt"
+      ],
+      "data_ts": "WecomAgentConfigResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/channel/wecom/context",
       "group": "channel",
       "handler": "ChannelWecomContext",

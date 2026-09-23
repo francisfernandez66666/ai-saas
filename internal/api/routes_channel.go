@@ -26,6 +26,7 @@ func registerChannelCallbacks(v1 *gin.RouterGroup) {
 func registerChannelAuthed(v1 *gin.RouterGroup) {
 	g := v1.Group("/channel/wecom")
 	g.GET("/jsconfig", ChannelWecomJSConfig)
+	g.GET("/agentconfig", ChannelWecomAgentConfig)
 	g.GET("/context", ChannelWecomContext)
 	// 注册期鉴权记录：通道鉴态需登录。
 	RecordAuth("*", "/api/v1/channel/wecom", "jwt")

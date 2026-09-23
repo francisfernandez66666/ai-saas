@@ -1,8 +1,11 @@
 // 企微侧边栏 JS-SDK 配置 + 客户上下文（W7，2026-09-12）——顾问登录态可访问。
 // jsconfig：给企微工作台/侧边栏 H5 注入 wx.config（corp 级签名）；context：拉渠道客户画像/最近会话。
+// agentconfig（E1 批，2026-09-24）：同一侧边栏的应用级签名 wx.agentConfig，用另一张票据。
 package api
 
 import (
+	"errors"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -50,6 +53,50 @@ func ChannelWecomJSConfig(c *gin.Context) {
 	res, err := channel.BuildJSConfig(c.Request.Context(), cred, target)
 	if err != nil {
 		RespErr(c, http.StatusBadGateway, 502, "生成 JS 配置失败："+err.Error())
+		return
+	}
+	RespOK(c, "ok", res)
+}
+
+// ChannelWecomAgentConfig GET /channel/wecom/agentconfig?url=&corpid=
+// apidump:ts WecomAgentConfigResp
+// 侧边栏应用级签名（wx.agentConfig）：与 jsconfig 同一套闸（登录态 + 通道归属核对），
+// 但用的是另一张票据（type=agent_config），所以两个端点各自出参、互不复用缓存。
+// agentid 未录入回 400 + reason=agentid_missing（前端据此提示「去通道配置补 AgentID」，
+// 而不是把「侧边栏打不开」归结为网络问题）；企微侧失败一律 502 且不回显上游原文。
+func ChannelWecomAgentConfig(c *gin.Context) {
+	target := channel.StripURLFragment(c.Query("url"))
+	corpid := c.Query("corpid")
+	if target == "" || corpid == "" {
+		RespErr(c, http.StatusBadRequest, 400, "url/corpid 必填")
+		return
+	}
+	ch, err := channel.FindActiveByCallback(model.ChannelTypeWecomApp, corpid)
+	if err != nil {
+		RespErr(c, http.StatusNotFound, 404, "通道不存在或未启用")
+		return
+	}
+	if !checkChannelTenantOwnership(c, ch) {
+		return
+	}
+	cred, err := channel.DecryptCredential(ch)
+	if err != nil {
+		RespErr(c, http.StatusBadRequest, 400, "凭据需重录")
+		return
+	}
+	res, err := channel.BuildAgentConfig(c.Request.Context(), cred, target)
+	if err != nil {
+		if errors.Is(err, channel.ErrAgentIDMissing) {
+			// 400 + 稳定原因码：配置缺失不是服务端故障，前端按 reason 分支出引导文案。
+			c.JSON(http.StatusBadRequest, gin.H{
+				"code": 400, "message": err.Error(),
+				"error_code": "channel_config_incomplete", "reason": "agentid_missing",
+			})
+			return
+		}
+		// 上游（企微）失败原文进日志，不回给浏览器：里面可能带 access_token 与企微侧 errmsg。
+		log.Printf("[channel] agentConfig 签名失败 channel=%d url=%s: %v", ch.ID, target, err)
+		RespErr(c, http.StatusBadGateway, 502, "生成 agentConfig 配置失败")
 		return
 	}
 	RespOK(c, "ok", res)

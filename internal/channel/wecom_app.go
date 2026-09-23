@@ -1,7 +1,8 @@
 // 企业微信自建应用适配器（W3，2026-09-12）
 // 入站：POST 回调（验签+解密 text/image/混合事件）+ GET echostr 验证；
 // 出站：message/send（text/markdown），access_token 走 TokenManager 缓存。
-// agentid 复用 Channel.AppID 字段（企微应用 ID 为数字串）。
+// agentid 取 config_json.agentid（Admin 通道表单写的正式字段）；appid 是纯数字时按其回落——
+// 解析只有一处实现，见 Credential.ResolvedAgentID。
 package channel
 
 import (
@@ -118,7 +119,7 @@ func (wecomAppAdapter) SendText(ctx context.Context, cred *Credential, externalI
 	if base == "" {
 		base = "https://qyapi.weixin.qq.com"
 	}
-	agentID := atoiOr(cred.AgentID, 0)
+	agentID := atoiOr(cred.ResolvedAgentID(), 0) // 与 agentConfig 签名同一判据（见 wecom_agent_config.go）
 	url := fmt.Sprintf("%s/cgi-bin/message/send?access_token=%s", base, tok)
 	payload := map[string]interface{}{
 		"touser":  externalID,
