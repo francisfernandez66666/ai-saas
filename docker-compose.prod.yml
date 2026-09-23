@@ -8,6 +8,9 @@
 #
 # 注意：
 #   - 生产必须显式设置 JWT_SECRET（未设置启动直接失败）与 AI_MOCK_MODE=false。
+#   - **app 服务已挂 `env_file: .env`**（2026-09-23 D3/D4 批）：SMTP / TRUSTED_PROXIES / METRICS_TOKEN
+#     这类"运行期直读进程环境"的键此前完全不进容器，且缺失时不报错。经 Nginx/网关部署时
+#     `TRUSTED_PROXIES=<代理网段>` 必配，否则限流与登录防爆破按代理 IP 聚合。
 #   - 图片/语音/微信 inbound 消息当前不支持（对话管线仅处理文本 MessageType:"text"），
 #     未集成 OCR（tessdata 已移除）。
 # ============================================================
@@ -50,6 +53,17 @@ services:
       context: .
       dockerfile: Dockerfile
     restart: unless-stopped
+    # ---- 生产环境变量透传（2026-09-23 D3/D4 批修的真缺口）----
+    # 本服务此前只显式列 environment 那十几项，于是**所有"运行期直读进程环境"的键都进不了容器**：
+    # SMTP_HOST/SMTP_USER/SMTP_PASS（internal/notify 到期邮件与催缴发不出去）、
+    # TRUSTED_PROXIES（main.go:766 与 readiness 都直读，缺了经 Nginx 部署时限流/防爆破按代理 IP 聚合）、
+    # METRICS_TOKEN（/metrics 鉴权）同样静默失效。三件事的共同点是**不报错**——服务照样起、照样 200。
+    # 口径：`env_file` 提供全量键，上面/下面的显式 `environment` **优先级更高**（compose 合并规则），
+    # 所以 SERVER_PORT/GIN_MODE/APP_ENV/AI_MOCK_MODE/JWT_SECRET/DB_*/REDIS_* 仍以编排声明为准，
+    # 不会被宿主机 .env 反向改回 debug/mock 态。CI 的 prod-compose-smoke job 已 `cp .env.example .env`，
+    # 故本项缺失即报错（fail-fast）而非静默少一批配置。
+    env_file:
+      - .env
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,6 +81,12 @@ services:
       APP_REPLICAS: ${APP_REPLICAS:-1}
       # C2：生产必须显式关闭模拟模式，否则不会调用真实 AI
       AI_MOCK_MODE: "false"
+      # P0-1 资金闸门（2026-09-23 D3/D4 批）：**故意写字面量而不是 ${ALLOW_MOCK_PAY:-false}**——
+      # 上面刚引入 env_file，若这里仍做插值，宿主 .env 里残留的 ALLOW_MOCK_PAY=true（开发机复制过来的）
+      # 就会把"模拟支付"带进生产容器；`${}` 插值本身也读项目目录 .env，等于把闸门交给了一个看不见的来源。
+      # 现在生产编排出厂即关，真要做支付演练用 `docker compose -f docker-compose.prod.yml run --rm -e ALLOW_MOCK_PAY=true app`
+      # 或显式改本行——**必须是看得见的动作，不能是 .env 的副作用**。
+      ALLOW_MOCK_PAY: "false"
       # C1：生产必须配置强随机 JWT 密钥（未设置则启动直接失败）
       JWT_SECRET: ${JWT_SECRET}
       DB_HOST: postgres
