@@ -87,12 +87,8 @@ func collectContributionRaw(c *gin.Context, since time.Time) analytics.Contribut
 		return db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Conversation{}).Select("id")
 	}
 
-	// activeWindowMsgs：窗口内有消息往来的会话 id（时间窗的唯一落点）
-	activeWindowMsgs := func() *gorm.DB {
-		return db.RQ(c).Model(&model.Message{}).
-			Select("conversation_id").
-			Where("created_at >= ?", since)
-	}
+	// activeWindowMsgs：窗口内有消息往来的会话 id（时间窗的唯一落点，与下钻共用）
+	activeWindowMsgs := func() *gorm.DB { return contributionWindowMsgConvs(c, since) }
 
 	// 1) 窗口内新建会话数：衡量获客流入速度，与"有消息往来"回答的是不同问题。
 	//    刻意保留 created_at 口径——"新建"就是"新建"，被活动量取代会失去增速含义。
@@ -105,65 +101,14 @@ func collectContributionRaw(c *gin.Context, since time.Time) analytics.Contribut
 	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Conversation{}).
 		Where("id IN (?)", activeWindowMsgs()).Count(&raw.ActiveConversations)
 
-	// 3) 客户级接待归属：该客户的活跃会话是否出现过人工回复。
-	//    用 last_human_reply_at（会话级既有列）而非扫 messages：一次聚合胜过按客户逐条查消息，
-	//    且 last_human_reply_at 由人工回复路径统一维护，是既有的单一事实源。
-	//    已知近似：该列不随窗口重置，人工仅在窗口外介入过的客户会被计为"人工参与"（口径已写入 notes）。
-	type custRow struct {
-		CustomerID uint
-		HasHuman   int
-	}
-	var rows []custRow
-	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Conversation{}).
-		Select("customer_id, MAX(CASE WHEN last_human_reply_at IS NULL THEN 0 ELSE 1 END) AS has_human").
-		Where("id IN (?)", activeWindowMsgs()).
-		Group("customer_id").
-		Scan(&rows)
-
-	customerIDs := make([]uint, 0, len(rows))
-	humanSet := make(map[uint]bool, len(rows))
-	for _, r := range rows {
-		customerIDs = append(customerIDs, r.CustomerID)
-		if r.HasHuman == 1 {
-			raw.HumanServedCustomers++
-			humanSet[r.CustomerID] = true
-		} else {
-			raw.AIServedCustomers++
-		}
-	}
-
-	// 4) 结果归因：按客户当前旅程阶段 × 接待归属交叉判定
-	if len(customerIDs) > 0 {
-		type stageRow struct {
-			ID           uint
-			JourneyStage string
-		}
-		var stageRows []stageRow
-		db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Customer{}).
-			Select("id, journey_stage").Where("id IN ?", customerIDs).Scan(&stageRows)
-
-		stageOf := make(map[uint]string, len(stageRows))
-		for _, s := range stageRows {
-			stageOf[s.ID] = s.JourneyStage
-		}
-		for _, id := range customerIDs {
-			stage := stageOf[id]
-			byAI := !humanSet[id]
-			if analytics.InStageSet(stage, analytics.LeadStages) {
-				if byAI {
-					raw.AILeads++
-				} else {
-					raw.AssistedLeads++
-				}
-			}
-			if byAI && analytics.InStageSet(stage, analytics.ArrivedStages) {
-				raw.AIArrived++
-			}
-			if byAI && analytics.InStageSet(stage, analytics.OrderedStages) {
-				raw.AIOrdered++
-			}
-		}
-	}
+	// 3+4) 客户级归属与结果归因：与下钻名单同源（见 contributionCustomers）
+	counts := analytics.ClassifyContributionCounts(contributionCustomers(c, since))
+	raw.AIServedCustomers = counts.AIServed
+	raw.HumanServedCustomers = counts.HumanServed
+	raw.AILeads = counts.AILeads
+	raw.AssistedLeads = counts.AssistedLeads
+	raw.AIArrived = counts.AIArrived
+	raw.AIOrdered = counts.AIOrdered
 
 	// 5) 消息量结构：与上述同范围同窗口（经 conversation_id 收敛到 DataScope）
 	type msgRow struct {
@@ -193,4 +138,65 @@ func collectContributionRaw(c *gin.Context, since time.Time) analytics.Contribut
 		Where("pending_handoff = ?", true).Count(&raw.PendingHandoffNow)
 
 	return raw
+}
+
+// contributionWindowMsgConvs 「窗口内有消息往来」的会话 id 子查询——时间窗的唯一落点。
+//
+// 抽成包级函数的原因：看板计数与下钻名单两条路径必须用同一个子查询，
+// 各写一遍就会不同窗（D2 抓到过的同类错位：会话数与消息数不同窗）。
+func contributionWindowMsgConvs(c *gin.Context, since time.Time) *gorm.DB {
+	return db.RQ(c).Model(&model.Message{}).
+		Select("conversation_id").
+		Where("created_at >= ?", since)
+}
+
+// contributionCustomers 取本次「窗口 + 登录者数据范围」内每个客户的接待归属与当前阶段。
+//
+// 这是卡片六个客户级数字与下钻名单的**唯一真相源**：计数走它、取名单也走它，
+// 结构上就不可能出现"卡片说 8 个、点进去 20 行"。
+//
+// 归属判据用 last_human_reply_at（会话级既有列）而非逐客户扫 messages：
+// 一次聚合胜过 N 次查询，且该列由人工回复路径统一维护，是既有的单一事实源。
+// 已知近似：该列不随窗口重置，人工仅在窗口外介入过的客户会被计为"人工参与"（口径已写入 notes）。
+func contributionCustomers(c *gin.Context, since time.Time) []analytics.ContributionCustomer {
+	type custRow struct {
+		CustomerID uint
+		HasHuman   int
+	}
+	var rows []custRow
+	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Conversation{}).
+		Select("customer_id, MAX(CASE WHEN last_human_reply_at IS NULL THEN 0 ELSE 1 END) AS has_human").
+		Where("id IN (?)", contributionWindowMsgConvs(c, since)).
+		Group("customer_id").
+		Scan(&rows)
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// 旅程阶段一次取回（阶段集合判定在 analytics 侧，避免 SQL/Go 两侧各写一遍）
+	ids := make([]uint, 0, len(rows))
+	for _, r := range rows {
+		ids = append(ids, r.CustomerID)
+	}
+	type stageRow struct {
+		ID           uint
+		JourneyStage string
+	}
+	var stageRows []stageRow
+	db.RQ(c).Scopes(db.DataScope(c)).Model(&model.Customer{}).
+		Select("id, journey_stage").Where("id IN ?", ids).Scan(&stageRows)
+	stageOf := make(map[uint]string, len(stageRows))
+	for _, s := range stageRows {
+		stageOf[s.ID] = s.JourneyStage
+	}
+
+	out := make([]analytics.ContributionCustomer, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, analytics.ContributionCustomer{
+			CustomerID: r.CustomerID,
+			HasHuman:   r.HasHuman == 1,
+			Stage:      stageOf[r.CustomerID],
+		})
+	}
+	return out
 }

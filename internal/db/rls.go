@@ -104,6 +104,11 @@ var rlsTenantTables = []string{
 	"reply_attributions",   // D9 回复归因表（意向/会话回溯）
 	"pack_stats",           // D9 包效果统计表
 	"outreach_tasks",       // 主动触达任务表（触达最小闭环 2026-09-23，含触达正文）
+	// D3(2026-09-23)：预警留痕与催缴状态机。二者都含 tenant_id 且承载"我们对这家说过什么、
+	// 它欠费到什么程度"——属租户商业隐私，必须进清单（漏进则启动日志刷"清单外表"WARN，
+	// 且 RLS_ENABLED 部署形态下这两表将无策略覆盖）。
+	"usage_alerts",    // 用量预警投递留痕表（配额水位快照）
+	"billing_dunning", // 到期催缴状态机表（欠费进度、封禁时刻）
 }
 
 // RLSStatusInfo RLS 实际生效形态（P2-2 批三 2026-09-20：readiness 观测位数据源）。

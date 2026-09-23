@@ -324,6 +324,9 @@ func autoMigrate() error {
 		&model.PackStatSnapshot{},
 		// ---- 主动触达任务（触达最小闭环，2026-09-23；调度索引见 migrations/020）
 		&model.OutreachTask{},
+		// ---- 用量预警留痕 + 到期催缴状态机（D3，2026-09-23；去重唯一键与 running 部分索引见 migrations/021）
+		&model.UsageAlert{},
+		&model.BillingDunning{},
 	)
 }
 

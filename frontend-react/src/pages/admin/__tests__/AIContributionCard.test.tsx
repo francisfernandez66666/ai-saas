@@ -117,4 +117,79 @@ describe('AIContributionCard', () => {
     await waitFor(() => expect(authMock).toHaveBeenCalled())
     expect(container.textContent).not.toMatch(/NaN|Infinity|undefined/)
   })
+
+  // ── D4(2026-09-23) 下钻：可点的必须恰好是六个客户数 ──────────────────────
+
+  /** 取某个客户数格子（role=button 的容器）；比率/会话/消息格不是 button，天然不命中。 */
+  function tile(name: string) {
+    const el = screen.getAllByRole('button').find((x) => (x.textContent || '').includes(name))
+    if (!el) throw new Error(`未找到可下钻格子：${name}`)
+    return el as HTMLElement
+  }
+
+  it('六个客户数格子可点且各自回带正确 metric', async () => {
+    const onDrill = vi.fn()
+    authMock.mockResolvedValue({ code: 0, data: OK_PAYLOAD })
+    render(<AIContributionCard onDrill={onDrill} />)
+    await waitFor(() => expect(authMock).toHaveBeenCalled())
+
+    // 等值锁：可点格子数必须恰好 6——多一个是"把比率当客户数"，少一个是名单缺一角
+    expect(screen.getAllByRole('button')).toHaveLength(6)
+
+    const cases: Array<[string, string]> = [
+      ['AI 独立接待客户', 'ai_served'],
+      ['人工参与客户', 'human_served'],
+      ['AI 留资', 'ai_lead'],
+      ['人工留资（对照）', 'assisted_lead'],
+      ['AI 到店', 'ai_arrived'],
+      ['AI 成交', 'ai_ordered'],
+    ]
+    for (const [label, metric] of cases) {
+      onDrill.mockClear()
+      fireEvent.click(tile(label))
+      expect(onDrill).toHaveBeenCalledTimes(1)
+      expect(onDrill).toHaveBeenCalledWith({ metric, days: 30 })
+    }
+  })
+
+  it('比率与会话/消息量不可下钻（单位不是客户，点了就对不上数）', async () => {
+    authMock.mockResolvedValue({ code: 0, data: OK_PAYLOAD })
+    render(<AIContributionCard onDrill={vi.fn()} />)
+    await waitFor(() => expect(authMock).toHaveBeenCalled())
+    for (const label of ['AI 独立接待占比', '人机切换率', 'AI 留资转化率', '人工留资转化率', 'AI 消息占比']) {
+      expect(screen.getByText(label).closest('[role="button"]')).toBeNull()
+    }
+  })
+
+  it('下钻带的是当前窗口：切到近 7 天后点数字，days 必须跟着变', async () => {
+    const onDrill = vi.fn()
+    authMock.mockResolvedValue({ code: 0, data: { ...OK_PAYLOAD, period_days: 7 } })
+    render(<AIContributionCard onDrill={onDrill} />)
+    await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/stats/ai-contribution?days=30'))
+    fireEvent.click(screen.getByText('近 7 天'))
+    await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/stats/ai-contribution?days=7'))
+
+    fireEvent.click(tile('AI 留资'))
+    expect(onDrill).toHaveBeenCalledWith({ metric: 'ai_lead', days: 7 })
+  })
+
+  it('没挂 onDrill 时整卡只读（不做点了没反应的假可点）', async () => {
+    authMock.mockResolvedValue({ code: 0, data: OK_PAYLOAD })
+    render(<AIContributionCard />)
+    await waitFor(() => expect(authMock).toHaveBeenCalled())
+    expect(screen.queryAllByRole('button')).toHaveLength(0)
+    expect(screen.queryByText(/可核对背后的客户名单/)).toBeNull()
+  })
+
+  it("后端缺字段（格子显示 '-'）时不可点，也不提示可下钻", async () => {
+    const onDrill = vi.fn()
+    const partial = { ...OK_PAYLOAD } as Record<string, unknown>
+    delete partial.ai_ordered
+    authMock.mockResolvedValue({ code: 0, data: partial })
+    render(<AIContributionCard onDrill={onDrill} />)
+    await waitFor(() => expect(authMock).toHaveBeenCalled())
+    expect(screen.getAllByRole('button')).toHaveLength(5)
+    expect(screen.getByText('-').closest('[role="button"]')).toBeNull()
+    expect(onDrill).not.toHaveBeenCalled()
+  })
 })

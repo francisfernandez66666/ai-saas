@@ -56,5 +56,10 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.PUT("/packs/:id/share", SuperPackShare)
 		// 监控告警（P1-4）
 		super.GET("/monitor/health", SuperMonitorHealth)
+		// D3 催缴工作队列（2026-09-23）：欠费户逐档催、宽限期满自动停用，这里是运营的唯一落点。
+		// nudge/reset 都不动钱也不解封（解封只认可到账），审计行在 billing 领域层写。
+		super.GET("/dunning", SuperDunningQueue)
+		super.POST("/dunning/:id/nudge", SuperDunningNudge)
+		super.POST("/dunning/:id/reset", SuperDunningReset)
 	}
 }

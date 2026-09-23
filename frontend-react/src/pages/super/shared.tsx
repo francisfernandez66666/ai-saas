@@ -22,6 +22,7 @@ export const SUPER_MENUS: { k: string; label: string }[] = [
   { k: 'pending', label: '待确认收款' },
   { k: 'invoices', label: '发票受理' }, // requested→issued/voided 人工闭环
   { k: 'refunds', label: '退款受理' }, // B7 退款平台审批位（执行/驳回）
+  { k: 'dunning', label: '欠费催缴' }, // D3 dunning：到期催缴序列队列（再催/关闭）
   { k: 'audit', label: '审计日志' },
   { k: 'agreements', label: '协议签署' },
   { k: 'branding', label: '品牌定制（白标）' },

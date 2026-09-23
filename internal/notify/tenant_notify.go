@@ -8,24 +8,15 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"ai-scrm/internal/db"
-	"ai-scrm/internal/model"
 )
 
 // TenantExpiringEmail 租户到期提醒邮件：发给该租户全部启用状态的 tenant_admin 绑定邮箱。
 // SMTP 未配置（Host/User 为空）时静默降级为日志（与重置码通道同一装配口径）；异步投递不阻塞巡检。
 // daysLeft<=0 走"已到期"文案（过期摘除时刻的补缴引导）。
 func TenantExpiringEmail(tenantID uint, tenantName, code string, expiredAt time.Time, daysLeft int) {
-	var emails []string
-	// 只发租户管理员（super_admin 是平台身份，勿按租户重复轰炸）；status=1 启用用户
-	if err := db.DB.Model(&model.User{}).
-		Where("tenant_id = ? AND role = ? AND status = 1 AND email <> ''",
-			tenantID, model.RoleTenantAdmin).
-		Pluck("email", &emails).Error; err != nil {
-		log.Printf("[到期触达] 查租户%d管理员邮箱失败: %v", tenantID, err)
-		return
-	}
+	// 收件人解析走公共函数 TenantAdminEmails（D3 批抽出）：三条商业化外呼链路共用一套口径，
+	// 不再各写一份"启用状态 + tenant_admin + 邮箱非空"的 SQL。
+	emails := TenantAdminEmails(tenantID)
 	if len(emails) == 0 {
 		log.Printf("[到期触达] 租户%s(%s) 无绑定邮箱的管理员，跳过邮件（仅群提醒）", tenantName, code)
 		return

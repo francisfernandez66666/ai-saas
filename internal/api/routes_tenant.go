@@ -109,6 +109,9 @@ func registerTenantAuthenticated(v1 *gin.RouterGroup) {
 		// D2(PLAN_FIX_2026-09-21)：AI 贡献度看板——AI 独立接待/留资/到店/成交归因 + 人机切换率。
 		// 权限口径与 /overview 一致（登录态聚合看板，不含客户明细）。
 		stats.GET("/ai-contribution", GetAIContribution)
+		// D4(2026-09-23)：看板上六个客户级数字的下钻名单——这份就含客户明细，
+		// 故权限口径改与 /customers 一致（登录态 + DataScope 裁剪），不再是聚合看板口径。
+		stats.GET("/ai-contribution/customers", GetAIContributionCustomers)
 	}
 	// 注册期鉴权记录（真实中间件链）：以上均挂在 v1.Use(JWTAuth...) 之后，登录态可达。
 	RecordAuth("GET", "/api/v1/auth/me", "jwt")

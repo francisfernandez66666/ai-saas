@@ -28,6 +28,17 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #       / 2026-09-23 主动触达最小闭环 23 断言（三十二：迁移020与两条部分索引实存、四键出厂默认关、
 #         开关关时零落库、租户层开关生效且不污染系统层、排期→pending→撤回状态机、落库租户归属、
 #         超长文案/缺客户入参拒绝、全天静默自动顺延、跨租户列表与撤回均不可见、非管理员被拒、自清理）
+#       / 2026-09-23 D3 用量预警与到期催缴 34 断言（三十三：迁移021两表四索引与 running 部分索引、
+#         六键出厂默认含两开关 false、平台级键忽略租户覆盖（直插租户层 dunning_steps 仍读系统层）、
+#         预警留痕/进度条契约（period_key 形态、空态为 [] 不是 null、三 metric 恒在）、无序列租户 exists=false、
+#         超管催缴队列与租户侧同源、ACME 隔离、去重键撞库被拒、人工 nudge 入参拒绝且不落审计、
+#         人工重置只动催缴行不动租户 status 且留 dunning_manual_reset 审计、二次重置 400、only_open 双向、
+#         非法 tid 400、四条计数器、合成数据清零）
+#       / 2026-09-23 D4 贡献度下钻与看板同源 19 断言（三十四：合成四类客户先自检落库再断言，
+#         六个指标下钻 total 与卡片六个字段逐字相等、换 90 天窗口两侧同动、days 真进下钻查询、
+#         可下钻白名单恰六个客户级指标（消息量/会话数/待接管单位不同不得入内）、名单人名与接待归属正确
+#         且按客户 ID 倒序、page_size=1 翻页不重不漏且 total 恒定、越界页空名单不改 total、硬顶 100、
+#         非白名单指标 400、缺 metric 400、未登录 401、随行下发 label/note、跨租户名单不可见、自清理）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -1078,6 +1089,391 @@ B7LEFT=$($PSQL "SELECT (SELECT count(*) FROM outreach_tasks WHERE content LIKE '
               + (SELECT count(*) FROM customers WHERE visitor_key='${B7CUST}')
               + (SELECT count(*) FROM system_configs WHERE tenant_id=1 AND key IN ('outreach_enabled','outreach_quiet_hours'))" 2>/dev/null | tr -d '[:space:]')
 check "本段合成数据与租户覆盖行已清零" 0 "${B7LEFT:-1}"
+
+# ---------- 第三十三节：D3 用量预警触达 + 到期催缴（2026-09-23，PLAN_FIX D3 护栏）----------
+# 立此段的原因：D3 的越档裁决与催缴状态机有 Go 单测，但**端到端面**此前零断言——迁移有没有真进库、
+# 四个端点的契约键与角色闸、人工 nudge/reset 的领域错误回显与审计留痕，全都没人守。
+# 刻意**不**在这里把 usage_alert_enabled / dunning_enabled 打开去等小时巡检：
+#   ① 冒烟不能等一小时；② 这两个开关一开就是"真给租户管理员发信"与"宽限期满自动封号"，
+#      测试脚本无权制造这类外部副作用。所以本段钉**数据层实存 + 读侧契约 + 人工动作**，
+#      推档/封禁/到账解除本身由 internal/billing/dunning_test.go 与 usage_alert_test.go 负责。
+# 合成租户刻意建 status=active：TenantResolver 对非 active/trial 的目标租户直接 403
+#   （middleware/tenant.go:586），建成 expired 会让 admin 侧两条 leg 变成"403 而不是结论"；
+#   "已欠费 5 天"用 expired_at 落在过去表达就够——两个视图都只读 expired_at 与 billing_dunning，
+#   不看 status 门禁；且 active 态不会被小时巡检推档（巡检只扫 expired），合成数据天然不被污染。
+echo "---- 三十三、D3 用量预警 + 催缴 ----"
+D3MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='021_usage_alerts_dunning'" 2>/dev/null | tr -d '[:space:]')
+check "迁移021已入版本账本(启动流程没跳过它)" 1 "${D3MIG:-0}"
+D3TBL=$($PSQL "SELECT count(*) FROM information_schema.tables WHERE table_name IN ('usage_alerts','billing_dunning')" 2>/dev/null | tr -d '[:space:]')
+check "D3两表实存(预警留痕表+催缴状态机表)" 2 "$D3TBL"
+# 四条索引按**名字**点验：库里另有 GORM AutoMigrate 建的双胞胎唯一索引（idx_billing_dunning_tenant_id），
+# 数总数会随版本漂移而假绿，按名才不会。
+D3IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND indexname IN ('ux_usage_alert_once','idx_usage_alert_tenant_period','ux_billing_dunning_tenant','idx_billing_dunning_due')" 2>/dev/null | tr -d '[:space:]')
+check "D3四条索引按名齐(部分索引AutoMigrate建不出来)" 4 "$D3IDX"
+D3PART=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname='idx_billing_dunning_due' AND indexdef ILIKE '%next_notify_at%' AND indexdef ILIKE '%running%'" 2>/dev/null | tr -d '[:space:]')
+check "催缴调度索引是running部分索引(已结历史行不撑大索引)" 1 "$D3PART"
+# 六键出厂默认：两个总开关出厂关着是"可投产"前提（开=真发信/真封号），档位与序列是全平台唯一口径
+D3DEF=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=0 AND ((key='usage_alert_enabled' AND value='false') OR (key='usage_alert_thresholds' AND value='[80,95,100]') OR (key='usage_alert_token_balance_below' AND value='200000') OR (key='dunning_enabled' AND value='false') OR (key='dunning_steps' AND value='[0,3,7,14]') OR (key='dunning_suspend_after_days' AND value='14'))" 2>/dev/null | tr -d '[:space:]')
+check "D3六键出厂默认已播种系统层(80/95/100档+第0/3/7/14天)" 6 "$D3DEF"
+D3SW=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=0 AND key IN ('usage_alert_enabled','dunning_enabled') AND value='false'" 2>/dev/null | tr -d '[:space:]')
+check "预警与催缴两总开关出厂false(忘了关就群发/封号的封堵)" 2 "$D3SW"
+# 平台级键只认系统层：给租户 1 直插一条 dunning_steps 覆盖行，接口口径**不得**跟着变。
+# 为什么用最无害的键做这条证明而不是翻开关：SafeCfg* 读的是系统层缓存，租户覆盖行结构上就到不了
+# 口径视图——断言的是"租户改不动全平台运营政策"，无需真的打开开关去发信。
+$PSQL "INSERT INTO system_configs (tenant_id, category, key, value, value_type, description, default_value, sort_order, created_at, updated_at)
+       VALUES (1,'billing','dunning_steps','[1,2,3,4,5]','json','冒烟-平台级键不得被租户覆盖','[0,3,7,14]',999,NOW(),NOW());" >/dev/null 2>&1
+D3OV=$(curl -s -m 15 "$B/api/v1/admin/billing/dunning" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | python3 -c "
+import sys,json
+try: c=(json.load(sys.stdin).get('data') or {}).get('config') or {}
+except Exception: print('PARSE_FAIL'); raise SystemExit
+print('OK' if c.get('steps')==[0,3,7,14] and c.get('enabled') is False else 'BAD:%s'%c)
+" 2>/dev/null)
+[ "$D3OV" = "OK" ] && check "平台级键忽略租户覆盖(催缴节奏全平台统一)" y y || check "平台级键忽略租户覆盖(催缴节奏全平台统一)" y "${D3OV:-PARSE_FAIL}"
+$PSQL "DELETE FROM system_configs WHERE tenant_id=1 AND key='dunning_steps';" >/dev/null 2>&1
+D3OVLEFT=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=1 AND key='dunning_steps'" 2>/dev/null | tr -d '[:space:]')
+check "本段租户覆盖行已回收" 0 "${D3OVLEFT:-1}"
+
+# ---- 端点契约与角色闸 ----
+D3ALCODE=$(curl -s -o /dev/null -w "%{http_code}" -m 15 "$B/api/v1/admin/usage/alerts" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "本租户额度预警端点可用" 200 "$D3ALCODE"
+D3ALCHK=$(curl -s -m 15 "$B/api/v1/admin/usage/alerts" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1" | python3 -c "
+import sys,json,re
+try: d=(json.load(sys.stdin).get('data') or {})
+except Exception: print('PARSE_FAIL'); raise SystemExit
+cfg=d.get('config') or {}
+prog=d.get('progress') or []
+ok=(re.fullmatch(r'[0-9]{4}-[0-9]{2}', str(d.get('period_key') or '')) is not None
+    and cfg.get('enabled') is False and cfg.get('thresholds')==[80,95,100]
+    and [p.get('metric') for p in prog]==['monthly_calls','monthly_tokens','token_balance']
+    and len(prog)==3 and isinstance(d.get('list'), list))
+print('OK' if ok else 'BAD:period=%s cfg=%s metrics=%s'%(d.get('period_key'),cfg,[p.get('metric') for p in prog]))
+" 2>/dev/null)
+[ "$D3ALCHK" = "OK" ] && check "预警视图契约齐(账期锚+生效口径+三指标进度)" y y || check "预警视图契约齐(账期锚+生效口径+三指标进度)" y "${D3ALCHK:-PARSE_FAIL}"
+D3DCHK=$(curl -s -m 15 "$B/api/v1/admin/billing/dunning" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" | python3 -c "
+import sys,json
+try: d=(json.load(sys.stdin).get('data') or {})
+except Exception: print('PARSE_FAIL'); raise SystemExit
+du=d.get('dunning') or {}
+print('OK' if du.get('exists') is False and (d.get('config') or {}).get('steps')==[0,3,7,14] else 'BAD:%s'%d)
+" 2>/dev/null)
+[ "$D3DCHK" = "OK" ] && check "无序列租户回exists=false(不是错误)且带平台口径" y y || check "无序列租户回exists=false(不是错误)且带平台口径" y "${D3DCHK:-PARSE_FAIL}"
+D3SQCHK=$(curl -s -m 15 "$B/api/v1/super/dunning" -H "Authorization: Bearer $TOKEN" | python3 -c "
+import sys,json
+try: d=(json.load(sys.stdin).get('data') or {})
+except Exception: print('PARSE_FAIL'); raise SystemExit
+print('OK' if isinstance(d.get('list'),list) and 'config' in d and 'usage_alert_config' in d else 'BAD:%s'%list(d))
+" 2>/dev/null)
+[ "$D3SQCHK" = "OK" ] && check "催缴队列带两份平台口径(关着时说「未启用」而非「没有欠费户」)" y y || check "催缴队列带两份平台口径(关着时说「未启用」而非「没有欠费户」)" y "${D3SQCHK:-PARSE_FAIL}"
+D3P1=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/admin/usage/alerts" -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
+check "销售角色看额度预警被管理闸拒(403)" 403 "$D3P1"
+D3P2=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/dunning" -H "Authorization: Bearer $STOKEN")
+check "销售角色看平台催缴队列被拒(403)" 403 "$D3P2"
+D3P3=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/dunning")
+check "匿名看平台催缴队列被拒(401)" 401 "$D3P3"
+
+# ---- 合成催缴序列往返（插一行状态机，两个视图 + 人工动作全遍历）----
+D3CODE="smoke_d3_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at, expired_at)
+       VALUES ('D3催缴验证', '${D3CODE}', 'personal', 'active', NOW(), NOW(), NOW() - INTERVAL '5 days');" >/dev/null 2>&1
+# ★写数据一律单条 CTE：psql 的 INSERT ... RETURNING 会把命令标签（INSERT 0 1）混进 stdout，
+#   tr -d '[:space:]' 会把它粘成 "2229INSERT01" 让后续 SQL 直接语法错（§二十九 同课）。
+$PSQL "WITH t AS (SELECT id FROM tenants WHERE code='${D3CODE}'),
+             d AS (INSERT INTO billing_dunning (tenant_id, status, due_at, stage, next_notify_at, created_at, updated_at)
+                   SELECT id, 'running', NOW() - INTERVAL '5 days', 2, NOW() + INTERVAL '2 days', NOW(), NOW() FROM t RETURNING id)
+       INSERT INTO usage_alerts (tenant_id, metric, threshold, period_key, usage_pct, remaining, channels, created_at, updated_at)
+       SELECT id, 'monthly_tokens', 80, to_char(NOW(),'YYYY-MM'), 80, 1234, 'email', NOW(), NOW() FROM t;" >/dev/null 2>&1
+D3TID=$($PSQL "SELECT id FROM tenants WHERE code='${D3CODE}'" 2>/dev/null | tr -d '[:space:]')
+# 队列leg：一次判定多个字段，失败回显整行（逐字段 check 会让"哪个字段歪了"要跑第二遍才知道）
+D3QCHK=$(curl -s -m 15 "$B/api/v1/super/dunning?only_open=true&limit=200" -H "Authorization: Bearer $TOKEN" | python3 -c "
+import sys,json
+tid=int('${D3TID:-0}')
+d=(json.load(sys.stdin).get('data') or {})
+rows=[r for r in (d.get('list') or []) if r.get('tenant_id')==tid]
+if len(rows)!=1: print('ROWS=%d(tid=%s)'%(len(rows),tid)); raise SystemExit
+r=rows[0]
+ok=(r.get('status')=='running' and r.get('stage')==2 and r.get('day_past')==5
+    and r.get('suspended') is False and r.get('due_at') and r.get('next_notify_at') and r.get('grace_end'))
+print('OK' if ok else 'BAD:%s'%r)
+" 2>/dev/null)
+[ "$D3QCHK" = "OK" ] && check "超管队列命中合成序列(档位/逾期天数/宽限终点同源)" y y || check "超管队列命中合成序列(档位/逾期天数/宽限终点同源)" y "${D3QCHK:-ROWS_FAIL}"
+D3ADVCHK=$(curl -s -m 15 "$B/api/v1/admin/billing/dunning" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${D3TID}" | python3 -c "
+import sys,json
+try: d=((json.load(sys.stdin).get('data') or {}).get('dunning') or {})
+except Exception: print('PARSE_FAIL'); raise SystemExit
+ok=(d.get('exists') is True and d.get('status')=='running' and d.get('stage')==2
+    and d.get('total_stages')==4 and d.get('day_past')==5 and d.get('suspended') is False and d.get('grace_end'))
+print('OK' if ok else 'BAD:%s'%d)
+" 2>/dev/null)
+[ "$D3ADVCHK" = "OK" ] && check "租户侧看到的序列与超管队列同值(跨视图同源)" y y || check "租户侧看到的序列与超管队列同值(跨视图同源)" y "${D3ADVCHK:-PARSE_FAIL}"
+D3LSTCHK=$(curl -s -m 15 "$B/api/v1/admin/usage/alerts?limit=10" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${D3TID}" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+rows=d.get('list') or []
+if len(rows)!=1: print('ROWS=%d'%len(rows)); raise SystemExit
+r=rows[0]
+ok=(r.get('metric')=='monthly_tokens' and r.get('threshold')==80 and r.get('remaining')==1234 and r.get('channels')=='email')
+print('OK' if ok else 'BAD:%s'%r)
+" 2>/dev/null)
+[ "$D3LSTCHK" = "OK" ] && check "预警留痕可按租户回显(档/剩余量/通道)" y y || check "预警留痕可按租户回显(档/剩余量/通道)" y "${D3LSTCHK:-ROWS_FAIL}"
+D3ISOCHK=$(curl -s -m 15 "$B/api/v1/admin/usage/alerts" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('OK' if len(d.get('list') or [])==0 else 'BAD:%s'%(d.get('list')))
+" 2>/dev/null)
+[ "$D3ISOCHK" = "OK" ] && check "他租户看不到本序列租户的预警留痕(隔离)" y y || check "他租户看不到本序列租户的预警留痕(隔离)" y "${D3ISOCHK:-PARSE_FAIL}"
+# 去重锚唯一键实测：同 (租户,指标,档,账期) 再插一条必须被数据库拒——
+# 这是"每小时巡检不重复轰炸"的全部机制，光有 Go 侧先查后插挡不住多实例同秒竞态。
+D3DUP=$($PSQL "INSERT INTO usage_alerts (tenant_id, metric, threshold, period_key, created_at)
+               SELECT tenant_id, metric, threshold, period_key, NOW() FROM usage_alerts
+               WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}')" 2>&1 | grep -c "duplicate key")
+check "同档同账期重复落锚被唯一键拒(去重锚真存在)" 1 "${D3DUP:-0}"
+# 人工"立刻再催一次"：这家没有绑定邮箱的管理员 → 动作不成立，必须 400 且只回中文判定。
+# 断言文案不含 SQL 片段是 P1-3 错误脱敏红线（DB 错误一律走 500 且不外露细节）。
+D3NU=$(curl -s -m 20 -X POST "$B/api/v1/super/dunning/${D3TID}/nudge" -H "Authorization: Bearer $TOKEN")
+check "无收件人时人工催缴判400(不假装发出去了)" 400 "$(echo "$D3NU" | jsonget "['code']" 2>/dev/null)"
+D3NUMSG=$(echo "$D3NU" | jsonget "['message']" 2>/dev/null)
+D3NUMSGCHK=$(python3 -c "
+import sys,re
+m=sys.argv[1]
+if not m: print('EMPTY'); raise SystemExit
+if not re.search('收件人|邮件通道', m): print('NOT_USER_FACING:'+m); raise SystemExit
+print('OK' if not re.search('(?i)select|error:|gorm|sqlstate', m) else 'SQL_LEAK:'+m)
+" "$D3NUMSG" 2>/dev/null)
+[ "$D3NUMSGCHK" = "OK" ] && check "错误文案中文可懂且不含SQL片段" y y || check "错误文案中文可懂且不含SQL片段" y "${D3NUMSGCHK:-PARSE_FAIL}"
+D3NUAUD=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}') AND action='dunning_manual_nudge'" 2>/dev/null | tr -d '[:space:]')
+check "催缴未发出即不落人工审计(留痕只记真做过的事)" 0 "${D3NUAUD:-1}"
+# 人工清序列：停止后续催缴，但**不解封**——解封只认可到账那条路（资金红线同构）
+D3ST0=$($PSQL "SELECT status FROM tenants WHERE code='${D3CODE}'" 2>/dev/null | tr -d '[:space:]')
+D3RS=$(curl -s -m 20 -X POST "$B/api/v1/super/dunning/${D3TID}/reset" -H "Authorization: Bearer $TOKEN")
+check "人工清催缴序列成功(code=0)" 0 "$(echo "$D3RS" | jsonget "['code']" 2>/dev/null)"
+D3RSD=$($PSQL "SELECT count(*) FROM billing_dunning WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}') AND status='resolved' AND next_notify_at IS NULL" 2>/dev/null | tr -d '[:space:]')
+check "清序列后status=resolved且预定时间已清空" 1 "${D3RSD:-0}"
+D3RSAUD=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}') AND action='dunning_manual_reset' AND user_id>0 AND COALESCE(ip,'')<>''" 2>/dev/null | tr -d '[:space:]')
+check "人工清序列落审计带操作人与IP(纠纷可回答谁按的按钮)" 1 "${D3RSAUD:-0}"
+D3ST1=$($PSQL "SELECT status FROM tenants WHERE code='${D3CODE}'" 2>/dev/null | tr -d '[:space:]')
+[ "$D3ST0" = "$D3ST1" ] && check "清序列不改租户状态(解封只认到账)" y y || check "清序列不改租户状态(解封只认到账)" "$D3ST0" "$D3ST1"
+D3RS2=$(curl -s -m 20 -X POST "$B/api/v1/super/dunning/${D3TID}/reset" -H "Authorization: Bearer $TOKEN")
+check "重复清序列判400(已无待处理序列)" 400 "$(echo "$D3RS2" | jsonget "['code']" 2>/dev/null)"
+D3OPENCHK=$(curl -s -m 15 "$B/api/v1/super/dunning?only_open=true&limit=200" -H "Authorization: Bearer $TOKEN" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('OK' if not [r for r in (d.get('list') or []) if r.get('tenant_id')==int('${D3TID:-0}')] else 'STILL_OPEN')
+" 2>/dev/null)
+[ "$D3OPENCHK" = "OK" ] && check "工作队列默认只摆在册序列(已结的不再占运营视野)" y y || check "工作队列默认只摆在册序列(已结的不再占运营视野)" y "${D3OPENCHK:-PARSE_FAIL}"
+D3ALLCHK=$(curl -s -m 15 "$B/api/v1/super/dunning?only_open=false&limit=200" -H "Authorization: Bearer $TOKEN" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+hit=[r for r in (d.get('list') or []) if r.get('tenant_id')==int('${D3TID:-0}') and r.get('status')=='resolved']
+print('OK' if len(hit)==1 else 'MISSING')
+" 2>/dev/null)
+[ "$D3ALLCHK" = "OK" ] && check "only_open=false 可回看已结序列(审计留痕不丢)" y y || check "only_open=false 可回看已结序列(审计留痕不丢)" y "${D3ALLCHK:-PARSE_FAIL}"
+D3NOSEQ=$(curl -s -m 20 -X POST "$B/api/v1/super/dunning/${ACME_ID}/nudge" -H "Authorization: Bearer $TOKEN")
+D3NOSEQCHK=$(echo "$D3NOSEQ" | python3 -c "
+import sys
+import sys,json
+try: j=json.loads(sys.stdin.read())
+except Exception: print('PARSE_FAIL'); raise SystemExit
+print('OK' if j.get('code')==400 and '没有催缴序列' in (j.get('message') or '') else 'BAD:code=%s msg=%s'%(j.get('code'),j.get('message')))
+" 2>/dev/null)
+[ "$D3NOSEQCHK" = "OK" ] && check "从未欠费租户人工催缴判400并说明原因" y y || check "从未欠费租户人工催缴判400并说明原因" y "${D3NOSEQCHK:-PARSE_FAIL}"
+D3BADID=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/dunning/abc/nudge" -H "Authorization: Bearer $TOKEN")
+check "非数字租户ID判400(PathUintID口径)" 400 "$D3BADID"
+# 观测位：四条计数器必须出现在 /metrics 文本里（计数值随环境变化，只钉"在不在"）
+D3MET=$(curl -s -m 15 "$B/metrics" | python3 -c "
+import sys
+body=sys.stdin.read()
+need=['ai_scrm_usage_alert_sent_total','ai_scrm_usage_alert_skipped_total','ai_scrm_dunning_sent_total','ai_scrm_dunning_suspended_total']
+miss=[k for k in need if k not in body]
+print('OK' if not miss else 'MISSING:'+','.join(miss))
+" 2>/dev/null)
+[ "$D3MET" = "OK" ] && check "D3四条计数器已在/metrics暴露(上线后能判有没有在发)" y y || check "D3四条计数器已在/metrics暴露(上线后能判有没有在发)" y "${D3MET:-PARSE_FAIL}"
+# 现场回收：留痕/序列/审计/租户按 code 子查询删除（不用 $D3TID：建租户失败时它会空，
+# 让 "tenant_id=" 直接语法错，把"没造成污染"的收尾变成假红——§二十九 同课）
+$PSQL "DELETE FROM usage_alerts WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}');
+       DELETE FROM billing_dunning WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}');
+       DELETE FROM tenant_audit_logs WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}');
+       DELETE FROM tenants WHERE code='${D3CODE}';" >/dev/null 2>&1
+D3LEFT=$($PSQL "SELECT (SELECT count(*) FROM usage_alerts) + (SELECT count(*) FROM billing_dunning) + (SELECT count(*) FROM tenants WHERE code='${D3CODE}')" 2>/dev/null | tr -d '[:space:]')
+check "本段合成留痕与序列已清零(不污染运营队列)" 0 "${D3LEFT:-1}"
+
+# ---------- 第三十四节：AI 贡献度指标下钻名单与看板数字同源（2026-09-23 D4）----------
+# 立此段的原因：D4 把"点看板数字看客户名单"接进产品，它的全部价值押在一句话上——
+# **名单条数必须等于卡片上那个数字**。这条只要破一次（两套 SQL 各写一遍），
+# 客户对数字的质疑就会从"无处核对"变成"当场被坐实"，比没有下钻更糟（D2 同类错位抓到过）。
+# 所以这里不复算判据，而是钉性质：六个指标各自 total 与卡片字段逐字相等、窗口参数进得去、
+# 分页不重不漏、单位不可下钻的指标进不了白名单。
+# 合成租户刻意造四类客户，让六个数字互不相同且窗口内外各有一例：
+#   甲 AI/lead_captured（窗内）、乙 人工/arrived（窗内）、丙 AI/ordered（窗内）、丁 AI/lead_captured（**窗外 60 天**）
+#   → days=30：ai_served=2 human_served=1 ai_leads=2 assisted_leads=1 ai_arrived=1 ai_ordered=1
+#   → days=90：只有 ai_served/ai_leads 各 +1（丁回来），其余不变——这就是"days 真的进了下钻查询"的可判证据。
+echo "---- 三十四、AI 贡献度下钻与看板同源 ----"
+D4CODE="smoke_d4_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('D4下钻同源验证', '${D4CODE}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+# d4seed <姓名> <旅程阶段> <是否人工回复y/n> <消息距今天数>
+# 一条 CTE 串完 客户→会话→消息（AI 一问一答两条），绝不分三步拿 RETURNING id（§二十九 同课）。
+d4seed() {
+  $PSQL "WITH t AS (SELECT id FROM tenants WHERE code='${D4CODE}'),
+               c AS (INSERT INTO customers (tenant_id, name, journey_stage, intent_score, phone, created_at, updated_at)
+                     SELECT id, '$1', '$2', 0.7, '13800000000', NOW(), NOW() FROM t RETURNING id, tenant_id),
+               cv AS (INSERT INTO conversations (tenant_id, customer_id, status, mode, last_human_reply_at, created_at, updated_at)
+                      SELECT tenant_id, id, 'active', 'ai', CASE WHEN '$3'='y' THEN NOW() ELSE NULL END, NOW(), NOW()
+                      FROM c RETURNING id, tenant_id, customer_id)
+       INSERT INTO messages (tenant_id, conversation_id, customer_id, sender_type, content, created_at, updated_at)
+       SELECT tenant_id, id, customer_id, 'ai', 'D4AI回复$1', NOW() - INTERVAL '$4 days', NOW() FROM cv
+       UNION ALL
+       SELECT tenant_id, id, customer_id, 'customer', 'D4客户消息$1', NOW() - INTERVAL '$4 days', NOW() FROM cv;" >/dev/null 2>&1
+}
+d4seed "D4甲AI留资" lead_captured n 2
+d4seed "D4乙人工到店" arrived y 2
+d4seed "D4丙AI成交" ordered n 2
+d4seed "D4丁窗外旧客" lead_captured n 60
+D4TID=$($PSQL "SELECT id FROM tenants WHERE code='${D4CODE}'" 2>/dev/null | tr -d '[:space:]')
+# 前置自检：合成数据必须真的进了库。缺这一步时下面所有"两侧相等"的断言会在 0==0 上假绿
+# （首跑即踩过：CTE 列数不匹配被 >/dev/null 吞掉，全段只剩 total 恒等式撑着，等于没测）。
+D4SEED=$($PSQL "SELECT (SELECT count(*) FROM customers WHERE tenant_id=${D4TID:-0})::text||'/'||(SELECT count(*) FROM messages WHERE tenant_id=${D4TID:-0} AND content LIKE 'D4%')" 2>/dev/null | tr -d '[:space:]')
+check "合成数据落库自检(4客户/8消息)" "4/8" "${D4SEED:-0/0}"
+D4H="Authorization: Bearer $TOKEN"
+d4card() { curl -s -m 15 "$B/api/v1/stats/ai-contribution?days=$1" -H "$D4H" -H "X-Tenant-ID: ${D4TID}"; }
+d4drill() { curl -s -m 15 "$B/api/v1/stats/ai-contribution/customers?metric=$1&days=$2&page=${3:-1}&page_size=${4:-20}" -H "$D4H" -H "X-Tenant-ID: ${D4TID}"; }
+
+# (1) 合成数据本身的期望值先钉住：卡片六个客户级数字
+D4CARDCHK=$(d4card 30 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+exp={'ai_served_customers':2,'human_served_customers':1,'ai_leads':2,'assisted_leads':1,'ai_arrived':1,'ai_ordered':1}
+bad={k:(d.get(k),v) for k,v in exp.items() if d.get(k)!=v}
+print('OK' if not bad else 'BAD:%s'%bad)
+" 2>/dev/null)
+[ "$D4CARDCHK" = "OK" ] && check "合成租户六个客户级数字符合预期(接待/留资/到店/成交)" y y || check "合成租户六个客户级数字符合预期(接待/留资/到店/成交)" y "${D4CARDCHK:-PARSE_FAIL}"
+
+# (2) ★本段主断言：六个指标的名单 total 与卡片六个字段**逐字相等**（同源，不是两边都写对）
+D4SAME=$(python3 -c "
+import subprocess,json
+card=json.loads(subprocess.run(['curl','-s','-m','15','$B/api/v1/stats/ai-contribution?days=30','-H','$D4H','-H','X-Tenant-ID: ${D4TID}'],capture_output=True,text=True).stdout)['data']
+pairs=[('ai_served','ai_served_customers'),('human_served','human_served_customers'),('ai_lead','ai_leads'),
+       ('assisted_lead','assisted_leads'),('ai_arrived','ai_arrived'),('ai_ordered','ai_ordered')]
+bad=[]
+for m,f in pairs:
+    dr=json.loads(subprocess.run(['curl','-s','-m','15','$B/api/v1/stats/ai-contribution/customers?metric=%s&days=30'%m,'-H','$D4H','-H','X-Tenant-ID: ${D4TID}'],capture_output=True,text=True).stdout)['data']
+    if dr.get('total')!=card.get(f): bad.append('%s:名单%s/卡片%s'%(m,dr.get('total'),card.get(f)))
+print('OK' if not bad else 'BAD:'+'; '.join(bad))
+" 2>/dev/null)
+[ "$D4SAME" = "OK" ] && check "六个指标下钻total与看板数字逐字相等(同源判据)" y y || check "六个指标下钻total与看板数字逐字相等(同源判据)" y "${D4SAME:-PARSE_FAIL}"
+
+# (3)(4)(5) 窗口锁：换 days 两侧必须一起动，且动的正是窗外那位客户
+D4C90=$(d4card 90 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+exp={'ai_served_customers':3,'human_served_customers':1,'ai_leads':3,'assisted_leads':1,'ai_arrived':1,'ai_ordered':1}
+bad={k:(d.get(k),v) for k,v in exp.items() if d.get(k)!=v}
+print('OK' if not bad else 'BAD:%s'%bad)
+" 2>/dev/null)
+[ "$D4C90" = "OK" ] && check "窗口放宽到90天后卡片纳入窗外客户(仅留资类+1)" y y || check "窗口放宽到90天后卡片纳入窗外客户(仅留资类+1)" y "${D4C90:-PARSE_FAIL}"
+D4D90=$(python3 -c "
+import subprocess,json
+card=json.loads(subprocess.run(['curl','-s','-m','15','$B/api/v1/stats/ai-contribution?days=90','-H','$D4H','-H','X-Tenant-ID: ${D4TID}'],capture_output=True,text=True).stdout)['data']
+bad=[]
+for m,f in [('ai_served','ai_served_customers'),('ai_lead','ai_leads'),('ai_ordered','ai_ordered')]:
+    dr=json.loads(subprocess.run(['curl','-s','-m','15','$B/api/v1/stats/ai-contribution/customers?metric=%s&days=90'%m,'-H','$D4H','-H','X-Tenant-ID: ${D4TID}'],capture_output=True,text=True).stdout)['data']
+    if dr.get('total')!=card.get(f): bad.append('%s:名单%s/卡片%s'%(m,dr.get('total'),card.get(f)))
+print('OK' if not bad else 'BAD:'+'; '.join(bad))
+" 2>/dev/null)
+[ "$D4D90" = "OK" ] && check "换窗口后下钻total仍与卡片相等(两侧同动)" y y || check "换窗口后下钻total仍与卡片相等(两侧同动)" y "${D4D90:-PARSE_FAIL}"
+D4WIN=$(python3 -c "
+import json,subprocess
+def t(m,d):
+    return json.loads(subprocess.run(['curl','-s','-m','15','$B/api/v1/stats/ai-contribution/customers?metric=%s&days=%s'%(m,d),'-H','$D4H','-H','X-Tenant-ID: ${D4TID}'],capture_output=True,text=True).stdout)['data']['total']
+a,b=t('ai_served',30),t('ai_served',90)
+print('OK' if (a,b)==(2,3) else 'BAD:30d=%s 90d=%s'%(a,b))
+" 2>/dev/null)
+[ "$D4WIN" = "OK" ] && check "days参数真进了下钻查询(2→3,不是只改样式)" y y || check "days参数真进了下钻查询(2→3,不是只改样式)" y "${D4WIN:-PARSE_FAIL}"
+
+# (6) 单位纪律：白名单恰六个客户级指标，会话级/消息级/瞬时值一律不在其中
+D4REG=$(d4drill ai_served 30 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+ms=[m.get('metric') for m in (d.get('metrics') or [])]
+need=['ai_served','human_served','ai_lead','assisted_lead','ai_arrived','ai_ordered']
+banned=[x for x in ('ai_messages','active_conversations','new_conversations','pending_handoff_now') if x in ms]
+ok=(sorted(ms)==sorted(need) and not banned and all((m.get('label') or '') for m in (d.get('metrics') or [])))
+print('OK' if ok else 'BAD:%s banned=%s'%(ms,banned))
+" 2>/dev/null)
+[ "$D4REG" = "OK" ] && check "可下钻指标恰六个客户级(消息量/会话数/待接管单位不同)" y y || check "可下钻指标恰六个客户级(消息量/会话数/待接管单位不同)" y "${D4REG:-PARSE_FAIL}"
+
+# (7) 名单内容：窗内三位 AI 接待客户按 id 倒序返回，且行字段够前端渲染
+D4ROWS=$(d4drill ai_served 90 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+names=sorted(r.get('name') for r in (d.get('list') or []))
+exp=sorted(['D4甲AI留资','D4丙AI成交','D4丁窗外旧客'])
+r0=(d.get('list') or [{}])[0]
+ok=(names==exp and all(k in r0 for k in ('id','name','phone','journey_stage','intent_score','served_by'))
+    and all(r.get('served_by')=='ai' for r in d['list'])
+    and [r.get('id') for r in d['list']]==sorted([r.get('id') for r in d['list']],reverse=True))
+print('OK' if ok else 'BAD:names=%s row0=%s'%(names,r0))
+" 2>/dev/null)
+[ "$D4ROWS" = "OK" ] && check "名单命中人正确且按客户ID稳定排序" y y || check "名单命中人正确且按客户ID稳定排序" y "${D4ROWS:-PARSE_FAIL}"
+D4HUM=$(d4drill human_served 30 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+rows=d.get('list') or []
+print('OK' if len(rows)==1 and rows[0].get('name')=='D4乙人工到店' and rows[0].get('served_by')=='human' else 'BAD:%s'%rows)
+" 2>/dev/null)
+[ "$D4HUM" = "OK" ] && check "人工参与名单只含有人工回复过的那位(归属判据)" y y || check "人工参与名单只含有人工回复过的那位(归属判据)" y "${D4HUM:-PARSE_FAIL}"
+
+# (8)(9)(10) 分页：total 不随分页变、翻页不重不漏、越界页只回空列表不改 total
+D4P1=$(d4drill ai_served 90 1 1)
+D4P2=$(d4drill ai_served 90 2 1)
+D4PGCHK=$(D4A="$D4P1" D4B="$D4P2" python3 -c "
+import json,os
+a=json.loads(os.environ['D4A'])['data']; b=json.loads(os.environ['D4B'])['data']
+ok=(len(a['list'])==1 and len(b['list'])==1 and a['total']==3 and b['total']==3
+    and a['page_size']==1 and a['list'][0]['id']!=b['list'][0]['id'])
+print('OK' if ok else 'BAD:a=%s b=%s'%(a.get('list'),b.get('list')))
+" 2>/dev/null)
+[ "$D4PGCHK" = "OK" ] && check "page_size=1翻页不重不漏且total恒等卡片" y y || check "page_size=1翻页不重不漏且total恒等卡片" y "${D4PGCHK:-PARSE_FAIL}"
+D4OOB=$(d4drill ai_served 90 99 20 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('OK' if (d.get('list')==[] or d.get('list') is None) and d.get('total')==3 else 'BAD:list=%s total=%s'%(d.get('list'),d.get('total')))
+" 2>/dev/null)
+[ "$D4OOB" = "OK" ] && check "越界页回空名单但total如实(前端据此收回页码)" y y || check "越界页回空名单但total如实(前端据此收回页码)" y "${D4OOB:-PARSE_FAIL}"
+D4CAP=$(d4drill ai_served 90 1 1000 | python3 -c "
+import sys,json
+print((json.load(sys.stdin).get('data') or {}).get('page_size'))
+" 2>/dev/null)
+check "page_size硬顶100(下钻是核对用不是导数用)" 100 "${D4CAP:-0}"
+
+# (11)(12)(13) 入参与鉴权
+D4BAD=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/stats/ai-contribution/customers?metric=ai_messages&days=30" -H "$D4H" -H "X-Tenant-ID: ${D4TID}")
+check "非白名单指标(ai_messages)判400" 400 "$D4BAD"
+D4NOM=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/stats/ai-contribution/customers" -H "$D4H" -H "X-Tenant-ID: ${D4TID}")
+check "缺metric判400(不默认回某一份名单)" 400 "$D4NOM"
+D4ANO=$(curl -s -m 15 -o /dev/null -w "%{http_code}" "$B/api/v1/stats/ai-contribution/customers?metric=ai_served")
+check "未登录取下钻名单判401(名单含客户明细)" 401 "$D4ANO"
+# 随行口径：label 与 note 由后端下发，前端不复写第二套文案（否则口径就有了第二个真相源）
+D4TXT=$(d4drill ai_served 30 | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('OK' if d.get('label')=='AI 独立接待客户' and '同一判据' in (d.get('note') or '') else 'BAD:label=%s note=%s'%(d.get('label'),d.get('note')))
+" 2>/dev/null)
+[ "$D4TXT" = "OK" ] && check "下钻随行下发指标名与口径说明" y y || check "下钻随行下发指标名与口径说明" y "${D4TXT:-PARSE_FAIL}"
+# 跨租户：同一时刻用另一个租户的作用域打同一个指标，不得看到合成租户的人
+D4ISO=$(curl -s -m 15 "$B/api/v1/stats/ai-contribution/customers?metric=ai_served&days=90&page_size=100" -H "$D4H" -H "X-Tenant-ID: ${ACME_ID}" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+hit=[r for r in (d.get('list') or []) if str(r.get('name','')).startswith('D4')]
+print('OK' if not hit else 'LEAK:%s'%hit)
+" 2>/dev/null)
+[ "$D4ISO" = "OK" ] && check "下钻名单跨租户不可见(带明细的端点更要守)" y y || check "下钻名单跨租户不可见(带明细的端点更要守)" y "${D4ISO:-PARSE_FAIL}"
+# 现场回收（顺序：消息→会话→客户→租户）
+$PSQL "DELETE FROM messages WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D4CODE}');
+       DELETE FROM conversations WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D4CODE}');
+       DELETE FROM customers WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D4CODE}');
+       DELETE FROM tenants WHERE code='${D4CODE}';" >/dev/null 2>&1
+D4LEFT=$($PSQL "SELECT (SELECT count(*) FROM customers WHERE name LIKE 'D4%') + (SELECT count(*) FROM messages WHERE content LIKE 'D4%') + (SELECT count(*) FROM tenants WHERE code='${D4CODE}')" 2>/dev/null | tr -d '[:space:]')
+check "本段合成客户/消息/租户已清零" 0 "${D4LEFT:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

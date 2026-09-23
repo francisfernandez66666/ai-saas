@@ -111,6 +111,35 @@ func IncOutreachSent() { atomic.AddUint64(&outreachSentTotal, 1) }
 // IncOutreachFailed 触达任务发送失败 +1
 func IncOutreachFailed() { atomic.AddUint64(&outreachFailedTotal, 1) }
 
+// ---- D3 用量预警与催缴计数（2026-09-23）----
+// 四个口径分两组，各自回答一个运维问题：
+//
+//	usage_alert_sent / usage_alert_skipped  = 预警"说出口"的量 vs "想说但没通道"的量
+//	dunning_sent / dunning_suspended        = 催缴邮件发出量 / 自动封禁施加量
+//
+// 为什么 sent 与 skipped 必须分开数：SMTP/群机器人没配时 sweeper 依然会"命中档位"，
+// 若只记一个总数，看板看起来一片繁荣，实际一封邮件都没出去（= 上线首日最容易踩的静默失效）。
+// skipped 单独一个计数就是那件事的探针：它大于 0 就说明该去配 SMTP 了。
+// dunning_suspended 更是资金侧红线探针：它涨而 dunning_sent 不涨 = 只封不催，客户莫名掉线。
+var (
+	usageAlertSentTotal    uint64
+	usageAlertSkippedTotal uint64
+	dunningSentTotal       uint64
+	dunningSuspendedTotal  uint64
+)
+
+// IncUsageAlertSent 用量预警成功经至少一条真实通道发出 +1
+func IncUsageAlertSent() { atomic.AddUint64(&usageAlertSentTotal, 1) }
+
+// IncUsageAlertSkipped 用量预警命中但无可用投递通道（SMTP/群未配置或无管理员邮箱）+1
+func IncUsageAlertSkipped() { atomic.AddUint64(&usageAlertSkippedTotal, 1) }
+
+// IncDunningSent 催缴档位通知实际发出（邮件或群任一成功）+1
+func IncDunningSent() { atomic.AddUint64(&dunningSentTotal, 1) }
+
+// IncDunningSuspended 催缴宽限期末自动封禁施加 +1
+func IncDunningSuspended() { atomic.AddUint64(&dunningSuspendedTotal, 1) }
+
 // ---- G-15 Kafka 消息队列指标（2026-09-11）----
 // 说明：Kafka 是生产环境的消息总线，负责异步事件发布/消费
 // 这三个指标用于监控 Kafka 的健康状态和吞吐量
@@ -467,6 +496,22 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_outreach_failed_total outreach tasks failed (send error/exhausted retries/missing receipt)\n"...)
 	b = append(b, "# TYPE ai_scrm_outreach_failed_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_outreach_failed_total %d\n", atomic.LoadUint64(&outreachFailedTotal))...)
+
+	// ---- D3 用量预警与催缴四计数（2026-09-23）----
+	// 判读口径：usage_alert_skipped_total > 0 而 usage_alert_sent_total = 0，
+	// 说明预警"命中了但一封都没发出去"——十有八九是 SMTP/群机器人未配置，属上线首日静默失效。
+	b = append(b, "# HELP ai_scrm_usage_alert_sent_total usage alerts delivered via at least one real channel\n"...)
+	b = append(b, "# TYPE ai_scrm_usage_alert_sent_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_usage_alert_sent_total %d\n", atomic.LoadUint64(&usageAlertSentTotal))...)
+	b = append(b, "# HELP ai_scrm_usage_alert_skipped_total usage alerts hit but no delivery channel available (SMTP/group unset)\n"...)
+	b = append(b, "# TYPE ai_scrm_usage_alert_skipped_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_usage_alert_skipped_total %d\n", atomic.LoadUint64(&usageAlertSkippedTotal))...)
+	b = append(b, "# HELP ai_scrm_dunning_sent_total dunning stage notifications delivered\n"...)
+	b = append(b, "# TYPE ai_scrm_dunning_sent_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_dunning_sent_total %d\n", atomic.LoadUint64(&dunningSentTotal))...)
+	b = append(b, "# HELP ai_scrm_dunning_suspended_total tenants auto-suspended by dunning grace period (data retained)\n"...)
+	b = append(b, "# TYPE ai_scrm_dunning_suspended_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_dunning_suspended_total %d\n", atomic.LoadUint64(&dunningSuspendedTotal))...)
 
 	// ---- P1-2 指标4：支付成功率 ----
 	pp := atomic.LoadUint64(&paymentPaidTotal)

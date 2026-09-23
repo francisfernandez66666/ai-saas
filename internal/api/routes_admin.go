@@ -19,6 +19,10 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		// 审计日志 / 用量看板（M5/M3，本租户）
 		admin.GET("/audit-logs", AdminAuditLogs)
 		admin.GET("/usage/summary", AdminUsageSummary)
+		// D3（2026-09-23）：额度预警留痕 + 催缴进度。都是只读——档位与序列节奏是平台级热配，
+		// 给租户写入口只会造出"改了不生效"的假开关。
+		admin.GET("/usage/alerts", AdminUsageAlerts)
+		admin.GET("/billing/dunning", AdminTenantDunning)
 
 		// 数据导出（D7，企业交付项：客户/会话 CSV 流式下载，PII 掩码+数据范围双闸）
 		admin.GET("/export/customers.csv", AdminExportCustomers)

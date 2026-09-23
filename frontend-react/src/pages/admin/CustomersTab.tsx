@@ -1,10 +1,14 @@
 // 客户线索 Tab（F1/F10）：阶段筛选、列表、详情抽屉、编辑、打标、导出。
+// D4(2026-09-23) 追加「下钻态」：从 AI 贡献度看板点客户数进来时，本 Tab 改打
+// /stats/ai-contribution/customers 只展示那个数字背后的客户。
+// 下钻态刻意隐藏阶段筛选与"新建线索/导出客户"——名单是后端按同一谓词算出的归因结果，
+// 再叠一层前端筛选就会和卡片上的数字对不上，而"对不上"正是这张看板最不能出现的形态。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Drawer, Input, InputNumber, MessagePlugin, Select, Tag, Textarea } from 'tdesign-react'
 import { apiFetch, AUTH, type ApiEnvelope } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import type { CrudRow } from '../../hooks/useCrud'
-import type { TableRowData } from '../../types'
+import type { AIContributionDrillResp, ContributionDrill, TableRowData } from '../../types'
 
 const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
 const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
@@ -14,6 +18,8 @@ const STAGE_OPTS = [
   { label: '已到店', value: 'arrived' }, { label: '已下单', value: 'ordered' }, { label: '已交车', value: 'delivered' }, { label: '已战败', value: 'lost' },
 ]
 const USER_OPTS = [{ label: '未分配', value: 0 }]
+/** D4 下钻名单页大小：与后端默认一致，后端硬上限 100（下钻是核对用，不是导数用）。 */
+const DRILL_PAGE_SIZE = 20
 const STATUS_EDIT_OPTS = [{ label: '有效', value: 1 }, { label: '停用', value: 0 }]
 const SOURCE_OPTS = [{ label: '手工录入', value: 'manual' }, { label: '广告投放', value: 'ad' }, { label: '老客推荐', value: 'referral' }, { label: '到店自然', value: 'walkin' }, { label: '线上咨询', value: 'online' }]
 
@@ -37,12 +43,14 @@ async function downloadCsv(url: string, filename: string) {
   MessagePlugin.success('已开始下载')
 }
 
-/** 客户列表 Tab：支持筛选、标签、阶段和 CSV 导出。 */
-export function CustomersTab() {
+/** 客户列表 Tab：支持筛选、标签、阶段和 CSV 导出；带 drill 时进入 AI 贡献度下钻名单态。 */
+export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill | null; onExitDrill?: () => void }) {
   const [filter, setFilter] = useState('')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
   const [leads, setLeads] = useState<TableRowData[]>([])
+  // 下钻响应（指标名/窗口/口径说明随行下发，前端不复写第二套文案）
+  const [drillResp, setDrillResp] = useState<AIContributionDrillResp | null>(null)
   const [loading, setLoading] = useState(false)
   const [detail, setDetail] = useState<TableRowData | null>(null)
   const [drawer, setDrawer] = useState(false)
@@ -70,16 +78,38 @@ export function CustomersTab() {
   const H = nameOf
   const HI = initialOf
 
-  // 拉取客户线索列表（阶段筛选 + 分页 + 归属=all），useCallback 随筛选/页码重建
+  // 拉取客户线索列表（阶段筛选 + 分页 + 归属=all），useCallback 随筛选/页码重建。
+  // drill 在位时走另一条真相源：/stats/ai-contribution/customers，只传 metric + days，
+  // 名单与看板卡片数字由后端同一谓词算出（analytics.MatchContributionMetric），前端不补条件。
   const load = useCallback(async () => {
     setLoading(true)
+    if (drill) {
+      const q = new URLSearchParams({ metric: drill.metric, days: String(drill.days), page: String(page), page_size: String(DRILL_PAGE_SIZE) })
+      const j = await AUTH<ApiEnvelope<'/api/v1/stats/ai-contribution/customers', 'GET'>>(`/api/v1/stats/ai-contribution/customers?${q}`)
+      if (j?.code === 0 && j.data) {
+        setDrillResp(j.data)
+        setLeads(j.data.list || [])
+        setTotal(j.data.total || 0)
+        // 越界页后端只回空列表、total 如实（例如换了指标但页码还停在第 3 页）：收回首页，
+        // 否则会停在"共 12 位客户 / 第 3 页空白"这种自相矛盾的形态
+        if (j.data.total > 0 && (j.data.list || []).length === 0 && page > 1) setPage(1)
+      } else {
+        setDrillResp(null)
+        setLeads([])
+        setTotal(0)
+      }
+      setLoading(false)
+      return
+    }
     const r = await apiFetch(`/api/v1/advisor/customers?status=${filter}&page=${page}&page_size=20&assigned=all`)
     const j = await r.json().catch(() => null)
     if (j?.code === 0) { setLeads(j.data?.list || []); setTotal(j.data?.total || (j.data?.list || []).length) }
     setLoading(false)
-  }, [filter, page])
+  }, [filter, page, drill])
 
   useEffect(() => { void load() }, [load])
+  // 指标或窗口一变就是"另一份名单"，页码必须回到第 1 页（留在旧页码会得到一页空白）
+  useEffect(() => { setPage(1) }, [drill?.metric, drill?.days])
   useEffect(() => {
     ;(async () => {
       // GET 收敛第二参：同路径 POST /admin/tags 返回单条 Tag，不指定方法会取到 Tag|Paginated<Tag> 联合
@@ -278,6 +308,11 @@ export function CustomersTab() {
   }
 
   const c = detail?.customer
+  // 下钻态派生值：名单标题/页码/口径说明都以后端响应为准，响应未回来时用入参兜底显示
+  const inDrill = !!drill
+  const drillLabel = drillResp?.label || drill?.metric || ''
+  const drillDays = drillResp?.period_days || drill?.days || 0
+  const drillPages = Math.max(1, Math.ceil(total / DRILL_PAGE_SIZE))
   // 聊天发送方中文名/颜色与编辑表单受控更新的小工具
   const who = (t: string) => (t === 'customer' ? '客户' : t === 'ai' ? 'AI' : t === 'human' ? '人工' : '系统')
   const wcolor = (t: string) => (t === 'customer' ? 'text-blue-600' : t === 'ai' ? 'text-green-600' : 'text-orange-600')
@@ -285,19 +320,41 @@ export function CustomersTab() {
 
   return (
     <div>
-      <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
-        <span className="text-sm text-gray-500">筛选阶段：</span>
-        <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} aria-label="客户阶段筛选" className="px-3 py-2 border rounded-lg text-sm">
-          {STATUS_OPTS.map((s) => <option key={s} value={s}>{s === '' ? '全部' : (STAGE_LABELS[s] || s)}</option>)}
-        </select>
-        <Button theme="primary" onClick={() => setCreateVisible(true)}>+ 新建线索</Button>
-        <Button variant="outline" onClick={() => { setPage(1); void load() }}>刷新</Button>
-        <Button variant="outline" theme="success" onClick={() => void downloadCsv('/api/v1/admin/export/customers.csv', 'customers.csv')}>导出客户</Button>
-        <span className="text-xs text-gray-400">共 {total || leads.length} 条</span>
-      </div>
+      {inDrill ? (
+        /* D4 下钻横幅：说清"这是谁的名单、哪段窗口、多少人"，并给出唯一的退出口 */
+        <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-gray-800">
+              AI 贡献度下钻：<span className="text-indigo-600">{drillLabel}</span> · 近 {drillDays} 天 · 共 {total} 位客户
+            </p>
+            <p className="text-xs text-gray-400 mt-1">{drillResp?.note || '名单与看板同一判据：登录者数据范围 ∩ 窗口内有消息往来的会话所涉客户。'}</p>
+            {drillResp && (
+              <p className="text-[10px] text-gray-300 mt-0.5">
+                窗口 {drillResp.since?.slice(0, 10)} ~ {drillResp.until?.slice(0, 10)}
+                {drillPages > 1 ? ` · 第 ${page}/${drillPages} 页` : ''}
+              </p>
+            )}
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <Button variant="outline" onClick={() => { setPage(1); void load() }}>刷新</Button>
+            <Button theme="primary" variant="outline" onClick={() => onExitDrill?.()}>返回看板</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
+          <span className="text-sm text-gray-500">筛选阶段：</span>
+          <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} aria-label="客户阶段筛选" className="px-3 py-2 border rounded-lg text-sm">
+            {STATUS_OPTS.map((s) => <option key={s} value={s}>{s === '' ? '全部' : (STAGE_LABELS[s] || s)}</option>)}
+          </select>
+          <Button theme="primary" onClick={() => setCreateVisible(true)}>+ 新建线索</Button>
+          <Button variant="outline" onClick={() => { setPage(1); void load() }}>刷新</Button>
+          <Button variant="outline" theme="success" onClick={() => void downloadCsv('/api/v1/admin/export/customers.csv', 'customers.csv')}>导出客户</Button>
+          <span className="text-xs text-gray-400">共 {total || leads.length} 条</span>
+        </div>
+      )}
       <div className="space-y-2">
         {loading && <div className="text-center text-gray-400 py-6">加载中...</div>}
-        {!loading && leads.length === 0 && <div className="text-center text-gray-400 py-6">暂无客户线索</div>}
+        {!loading && leads.length === 0 && <div className="text-center text-gray-400 py-6">{inDrill ? '该窗口内没有命中这个指标的客户' : '暂无客户线索'}</div>}
         {leads.map((l) => (
           <div key={l.id} className="bg-white rounded-lg border border-gray-100 p-3 hover:bg-gray-50 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 cursor-pointer min-w-0" onClick={() => openDetail(l.id)}>
@@ -312,15 +369,31 @@ export function CustomersTab() {
               </div>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <div className="text-right hidden md:block">
-                <p className="text-xs text-gray-400 truncate max-w-[240px]">{l.last_message ? l.last_message.slice(0, 30) + '...' : '暂无消息'}</p>
-                <p className="text-[10px] text-gray-300">{l.updated_at ? new Date(l.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</p>
-              </div>
+              {inDrill ? (
+                /* 下钻态右侧给的是"为什么在这个名单里"：接待归属 + 当前意向分 */
+                <div className="text-right hidden md:block">
+                  <p className="text-xs text-gray-500">{l.served_by === 'human' ? '人工参与接待' : 'AI 独立接待'}</p>
+                  <p className="text-[10px] text-gray-300">意向 {((Number(l.intent_score) || 0) * 100).toFixed(0)}%</p>
+                </div>
+              ) : (
+                <div className="text-right hidden md:block">
+                  <p className="text-xs text-gray-400 truncate max-w-[240px]">{l.last_message ? l.last_message.slice(0, 30) + '...' : '暂无消息'}</p>
+                  <p className="text-[10px] text-gray-300">{l.updated_at ? new Date(l.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</p>
+                </div>
+              )}
               <Button size="small" variant="text" onClick={() => openDetail(l.id)}>详情</Button>
             </div>
           </div>
         ))}
       </div>
+      {/* D4：下钻名单可超过一页（后端页大小上限 100），核对完一个指标还要能翻完 */}
+      {inDrill && drillPages > 1 && (
+        <div className="flex items-center justify-center gap-3 mt-3">
+          <Button size="small" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</Button>
+          <span className="text-xs text-gray-500">第 {page} / {drillPages} 页</span>
+          <Button size="small" variant="outline" disabled={page >= drillPages} onClick={() => setPage(page + 1)}>下一页</Button>
+        </div>
+      )}
 
       <Drawer visible={drawer} onClose={() => setDrawer(false)} size="560px" header="客户线索详情">
         {c && (

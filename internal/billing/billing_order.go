@@ -210,6 +210,11 @@ func MarkOrderPaid(orderID uint, channel string) (*model.BillingOrder, bool, err
 	if err := db.DB.First(&o, orderID).Error; err != nil {
 		return nil, false, err
 	}
+	// D3 催缴解除：钱已到账（本函数是 pending→paid 的唯一流转点，webhook 与人工确认都过这里），
+	// 停掉后续催缴档位并解除由催缴序列施加的停用。旁路动作，失败绝不影响发货主链路。
+	if o.TenantID != nil {
+		DunningOnPaid(*o.TenantID, o.OrderNo)
+	}
 	return &o, true, nil
 }
 
@@ -255,6 +260,12 @@ func ReopenClosedOrderPaid(orderID uint, channel string) (*model.BillingOrder, b
 		}
 	}
 	metrics.IncPaymentPaid()
+	// D3 催缴解除：本函数不经 MarkOrderPaid（closed→paid 是自己的条件 UPDATE），
+	// 迟到到账同样是"真钱信号"，欠费停用必须一并解除——否则客户付了钱仍登不进来，
+	// 只能靠超管手工救，这是最容易变成投诉的一种半完成态。
+	if o.TenantID != nil {
+		DunningOnPaid(*o.TenantID, o.OrderNo)
+	}
 	log.Printf("[Billing][WARN] 订单%s 超时关闭后迟到到账，已自动恢复 paid 并补发权益 channel=%s", o.OrderNo, channel)
 	notify.NotifyGroup(fmt.Sprintf("【迟到到账】订单 %s（%d分）超时关闭后收到 %s 渠道到账，已自动恢复发放，请财务复核", o.OrderNo, o.AmountCents, channel))
 	return &o, true, nil

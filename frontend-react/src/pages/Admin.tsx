@@ -7,6 +7,7 @@ import { useBrand } from '../lib/branding'
 import { useIsMobile } from '../hooks/useMedia'
 import { getToken, setToken, logoutAndRedirect, AUTH, apiJSON, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
 import { isSuperAdmin, ROLES } from '../lib/roles'
+import type { ContributionDrill } from '../types'
 import { CONFIG_CATS, MENU_GROUPS, type Cfg, type MenuItemDef } from './admin/shared'
 
 // P2-13(2026-09-22)：后台各业务 Tab 全量 lazy 化（数目随菜单增长，此处刻意不写死计数——
@@ -76,6 +77,11 @@ export default function Admin() {
     setImpTenant(id)
     setImpReload((n) => n + 1)
   }
+
+  // D4(2026-09-23)：AI 贡献度看板的下钻预设。持有在 Admin 而非卡片/列表内部，
+  // 因为点数字要换 Tab——谁跨 Tab，谁负责状态。菜单点击即清空：从侧栏进「客户线索」
+  // 永远是完整列表，不会带着上一次看板的滤镜却看不见任何提示。
+  const [drill, setDrill] = useState<ContributionDrill | null>(null)
 
   // 管理员登录：带租户码换 token；命中首登强改密标记则跳登录页改密，否则进后台并加载配置
   // P1-7 迁移(2026-09-20)：裸 fetch → apiJSON（断网/超时归一 {res:null,json:null} 不再抛错），
@@ -169,11 +175,19 @@ export default function Admin() {
   const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
   const userName = localStorage.getItem('username') || ''
+  // 切 Tab 的唯一入口：任何菜单点击都清掉下钻预设——从侧栏进「客户线索」必须是完整列表，
+  // 不能带着上一次看板点进来的指标筛选却没有任何提示
+  const openTab = (k: string) => { setDrill(null); setTab(k) }
   // 菜单点击：外链直接跳转，内链切当前 Tab
   const onMenuClick = (item: MenuItemDef) => {
     if (item.link) { location.href = item.link; return }
-    setTab(item.k)
+    openTab(item.k)
   }
+  // 看板点数字 → 客户名单：切 Tab 并带上「指标 + 窗口」。Admin 是当前 SPA 里唯一能跨 Tab
+  // 传状态的持有者（各 Tab 之间没有路由参数），所以预设只能放在这里。
+  const openDrill = (d: ContributionDrill) => { setDrill(d); setTab('customers') }
+  // 名单页「返回看板」：清预设并回工作台，回来时窗口仍是卡片自己的态
+  const exitDrill = () => { setDrill(null); setTab('dashboard') }
   const pickMobileMenu = (k: string) => {
     if (k === 'super_link') { location.href = '/super'; return }
     for (const g of MENU_GROUPS) {
@@ -230,7 +244,7 @@ export default function Admin() {
           </div>
         ) : (
         <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
-          <Menu value={tab} onChange={(v) => setTab(v as string)} style={{ borderRight: 'none' }}>
+          <Menu value={tab} onChange={(v) => openTab(v as string)} style={{ borderRight: 'none' }}>
             {MENU_GROUPS.map((g) => (
               <MenuGroup key={g.title} title={g.title}>
                 {g.items.map((it) => (
@@ -260,7 +274,7 @@ export default function Admin() {
               }
               return (
                 <Suspense fallback={<TabLoading />}>
-                  <PanelContent key={isSuper ? 'imp' + impReload : 't'} tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} />
+                  <PanelContent key={isSuper ? 'imp' + impReload : 't'} tab={tab} configsFor={configsFor} edits={edits} setEdits={setEdits} all={all} drill={drill} onDrill={openDrill} onExitDrill={exitDrill} />
                 </Suspense>
               )
             })()}
@@ -290,10 +304,12 @@ function TabLoading() {
   )
 }
 
-/** 后台 Tab 内容分发器，根据当前菜单渲染对应管理面板。 */
-function PanelContent({ tab, configsFor, edits, setEdits, all }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[] }) {
-  if (tab === 'dashboard') return <DashboardTab />
-  if (tab === 'customers') return <CustomersTab />
+/** 后台 Tab 内容分发器，根据当前菜单渲染对应管理面板。
+ *  drill / onDrill / onExitDrill 是 D4 的下钻三件套：工作台卡片发起、客户列表消费、
+ *  「返回看板」回到发起处，状态本身由 Admin 持有。 */
+function PanelContent({ tab, configsFor, edits, setEdits, all, drill, onDrill, onExitDrill }: { tab: string; configsFor: (c: string) => Cfg[]; edits: Record<string, string>; setEdits: (k: string, v: string) => void; all: Cfg[]; drill?: ContributionDrill | null; onDrill?: (d: ContributionDrill) => void; onExitDrill?: () => void }) {
+  if (tab === 'dashboard') return <DashboardTab onDrill={onDrill} />
+  if (tab === 'customers') return <CustomersTab drill={drill} onExitDrill={onExitDrill} />
   if (tab === 'cdp') return <CdpTab />
   if (tab === 'knowledge') return <KnowledgeTab />
   if (tab === 'tenant_kb') return <TenantKBTab configs={all} />

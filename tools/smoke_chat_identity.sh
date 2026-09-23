@@ -186,11 +186,23 @@ $PSQL "UPDATE customers SET status=0 WHERE id IN ($CID_A,$CID_B)" >/dev/null 2>&
 # ---- 10. P1-3(2026-09-20 审计批) /chat/history 公开面 IP 限流：连打超限 429 ----
 # 刻意放全脚本最后：打爆 chat_history 桶（30/min/IP）不回踩本脚本前序断言，
 # 60s 窗口自然重置，后续 smoke 套件不再触 /chat/history。
+#
+# 先睡满一个窗口再连打，是 2026-09-23 全量回归抓到的 flake 的正解：
+# 桶是「首个计数请求 + 60s TTL」语义（middleware/ip_limit.go 的 IncrWithTTL），不是自然分钟。
+# 落到这里时桶可能刚被前面的用例建起、并且**正好在这次循环中途过期**——过期即计数归零，
+# 35 次里剩下的不足 30 次，最后一次就是 200（实测：期望 429 实际 200）。
+# 睡眠把循环放到一个干净窗口里，429 从概率变必然；同时补一条"超限期间持续被拒"，
+# 防"只有一次抖到 429"被当成功。
+echo "  …等待 /chat/history 限流窗口重置（60s，防跨窗口计数归零造成假红）"
+sleep 61
 HIST_LAST=""
+HIST_429=0
 for i in $(seq 1 35); do
   HIST_LAST=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/chat/history?customer_id=$CID_A&visitor_key=$VK_A")
+  [ "$HIST_LAST" = "429" ] && HIST_429=$((HIST_429+1))
 done
 check "chat/history 连打35次超限(429)" 429 "$HIST_LAST"
+[ "$HIST_429" -ge 4 ] && check "超限后持续被拒(第 $HIST_429 次仍 429，非单次抖动)" y y || check "超限后持续被拒(非单次抖动)" y "n(429 次数=$HIST_429)"
 
 echo ""; echo "==== G-3 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

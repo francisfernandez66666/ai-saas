@@ -68,7 +68,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.29.0"
+const appVersion = "v2.30.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -327,6 +327,10 @@ func main() {
 	// 9.3 月度用量重置（缺口5修复，2026-08-22）：
 	// 每小时检查一次，跨自然月的租户 used_ai_calls 清零（幂等，详见 usage_service）
 	// 9.35 商业包到期巡检（M2，2026-08-23）：到期摘除(active→expired) + 到期提醒(企微群)
+	// 9.36 D3 商业化触达（2026-09-23）：用量预警（越档通知租户管理员）+ 到期催缴序列
+	//      （第 N 天各催一次、宽限期末自动停用、到账自动解除）。二者自带总闸与 Redis 选主，
+	//      默认关闭，故挂在同一小时节拍上：欠费与额度问题本来就该和"到期摘除"同一轮裁决，
+	//      分两个 ticker 只会多一个竞态窗口（见 billing/dunning.go 设计决定 4）。
 	// 9.4 订单超时关闭（M4，2026-08-25）：pending 超 order_timeout_minutes(默认15分钟) 自动 closed
 	go func() {
 		// P2-6 修复(2026-09-09)：启动即补一次同样加锁——原实现 9.3 三处启动即跑
@@ -335,22 +339,26 @@ func main() {
 		run := func() {
 			billing.ResetAllTenantsMonthlyUsageIfDue()
 			billing.ExpireCheck()
+			billing.SweepUsageAlerts()   // D3：额度越档触达（开关关=直接返回）
+			billing.SweepDunning()       // D3：到期催缴推进
 			billing.SweepExpiredOrders() // 启动即扫一次僵尸单
 		}
 		if redisclient.IsEnabled() {
 			if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
-				safeRun("usage:reset+expire@startup", run)
+				safeRun("usage:reset+expire+d3@startup", run)
 				h.Unlock()
 			}
 		} else {
-			safeRun("usage:reset+expire@startup", run)
+			safeRun("usage:reset+expire+d3@startup", run)
 		}
 		ticker := time.NewTicker(1 * time.Hour)
 		for range ticker.C {
-			safeRun("usage:reset+expire", func() {
+			safeRun("usage:reset+expire+d3", func() {
 				runWithLock := func() {
 					billing.ResetAllTenantsMonthlyUsageIfDue()
 					billing.ExpireCheck()
+					billing.SweepUsageAlerts()
+					billing.SweepDunning()
 				}
 				if redisclient.IsEnabled() {
 					if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {

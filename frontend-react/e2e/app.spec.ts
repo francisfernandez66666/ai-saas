@@ -1,5 +1,6 @@
-// Playwright 真浏览器 E2E（17 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
+// Playwright 真浏览器 E2E（19 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
 // 外加 390px 窄屏三台（Admin/Super 折叠下拉、Org 单栏不炸版，P1-10 批二）、D2 AI 贡献度卡片、
+// D4 看板数字下钻（第 19 项）、主动触达队列 Tab（第 18 项）、
 // S2 找回密码通道文案（2026-09-23 批二：页面上不得再出现"服务端日志"这类内部实现提示）。需 9090 服务在跑。
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
@@ -154,14 +155,17 @@ test('openapi docs page renders endpoints from spec', async ({ page }) => {
 // 折叠为顶栏下拉菜单；
 // ②整页横向滚动宽度不超视口（防内容炸版，表格横滚应局限在 .t-table__content 内）；
 // ③下拉切 Tab 真实联动（/admin 选"回复速度"出配置动作条）。
-async function seedDesktopLogin(page: import('@playwright/test').Page, request: APIRequestContext) {
+async function seedDesktopLogin(page: import('@playwright/test').Page, request: APIRequestContext, impersonateTenant = '') {
   const token = await adminToken(request);
   // addInitScript 在每次导航前注入登录三键（与真实登录后的 localStorage 形态一致）
-  await page.addInitScript(([t]) => {
+  await page.addInitScript(([t, imp]) => {
     localStorage.setItem('scrm_auth_token', t);
     localStorage.setItem('role', 'super_admin');
     localStorage.setItem('username', 'admin');
-  }, [token]);
+    // D4 用例带上代管租户：与顶栏下拉点选写入的是同一个键（lib/api.ts 的 IMPERSONATE_TENANT_KEY），
+    // 后续所有租户作用域请求由 apiFetch/authHeaders 统一注入 X-Tenant-ID。
+    if (imp) localStorage.setItem('scrm_impersonate_tenant', imp);
+  }, [token, impersonateTenant]);
 }
 
 test.describe('P1-10 390px 桌面三台可达', () => {
@@ -231,6 +235,40 @@ async function pickOperableTenant(request: APIRequestContext): Promise<string> {
     if (probe.ok()) return id;
   }
   throw new Error('无租户作用域可进入的租户（全为停用/过期），浏览器用例前置不成立');
+}
+
+// D4 用例专用：探一个「AI 独立接待客户数 > 0」的租户（按给定窗口）。
+// 为什么单独一个探针：pickOperableTenant 只保证"进得去"，进得去的租户完全可能是零数据新租户，
+// 那时"卡片数字 == 名单条数"会在 0==0 上恒绿——等式成立但什么都没测。探针只判存在性，
+// 真实数字由用例自己从页面上读，绝不把探针结论当断言。
+//
+// 探针顺序按「最旧租户优先」：/super/tenants 硬编码 id DESC（P2-29：新注册租户不能被挤出视野），
+// 而承载演示/历史数据的是 ID 最小的种子租户，从末页倒着探通常第一次即命中；
+// 从首页往下探则要空跑两百多次零数据租户（当前库 254 家，其中 250+ 是历史测试租户）。
+// 注意这只是**探针顺序**，不是断言口径——命中与否仍由真实接口结论决定。
+async function pickTenantWithAiServed(request: APIRequestContext, days = 90): Promise<string> {
+  const token = await adminToken(request);
+  const auth = { Authorization: `Bearer ${token}` };
+  const first = await request.get(`${BASE}/api/v1/super/tenants?page=1&page_size=100`, { headers: auth });
+  expect(first.ok()).toBeTruthy();
+  const f = (await first.json())?.data ?? {};
+  const total = Number(f.total ?? 0);
+  const pageSize = Number(f.page_size ?? 100) || 100;
+  const seen = new Set<string>();
+  for (let page = Math.max(1, Math.ceil(total / pageSize)); page >= 1; page--) {
+    const resp = page === 1 ? first : await request.get(`${BASE}/api/v1/super/tenants?page=${page}&page_size=${pageSize}`, { headers: auth });
+    if (!resp.ok()) continue;
+    const rows = (((await resp.json())?.data ?? {}).list ?? []) as { id?: number }[];
+    for (const t of rows.slice().reverse()) {
+      const id = String(t?.id ?? '');
+      if (!id || id === '0' || seen.has(id)) continue;
+      seen.add(id);
+      const r = await request.get(`${BASE}/api/v1/stats/ai-contribution?days=${days}`, { headers: { ...auth, 'X-Tenant-ID': id } });
+      if (!r.ok()) continue;
+      if (((await r.json())?.data?.ai_served_customers ?? 0) > 0) return id;
+    }
+  }
+  throw new Error(`近 ${days} 天没有任何租户有 AI 接待数据，D4 下钻用例前置不成立`);
 }
 
 test('D2 admin AI 贡献度卡片渲染且窗口切换发真实请求', async ({ page, request }) => {
@@ -317,6 +355,64 @@ test('主动触达 Tab 真浏览器渲染且提示跟随真实开关', async ({ 
   const banner = page.getByText('主动触达未开启');
   if (enabled) await expect(banner).toHaveCount(0);
   else await expect(banner).toBeVisible({ timeout: 10000 });
+
+  const body = await page.locator('body').innerText();
+  expect(body).not.toMatch(/NaN|undefined|\[object Object\]/);
+});
+
+// 19. D4 看板数字下钻到客户名单（2026-09-23 D4）
+// 接口层的"名单条数 == 看板数字"由 smoke §三十四逐指标钉死（六个指标 total 与卡片字段逐字相等），
+// 这里只钉用户看得见的那一次点击，四件事各不相同、缺一即失真：
+//  ① 数字格子真的挂了点击（Tile 未接 onDrill 时页面看起来完全正常）；
+//  ② 下钻请求带上了看板**当前**窗口——窗口切到 90 天后仍发 days=30，就是"筛选条件没跟过去"；
+//  ③ 横幅上的「共 N 位客户」与卡片上那个数字逐字相同（两套判据各写一遍的典型后果在这里现形）；
+//  ④ 「返回看板」回得去，且横幅真的消失（回不去的下钻等于把工作台藏了一半）。
+// 前置租户由 pickTenantWithAiServed 探（零数据租户会让 ③ 在 0==0 上假绿），卡片数字则从页面读。
+test('D4 看板数字可下钻且名单数量与卡片一致', async ({ page, request }) => {
+  const tid = await pickTenantWithAiServed(request);
+  // 代管租户直接写键而非点下拉：下拉数据源是 /super/tenants 首页（id DESC 最新 20 家，P2-29 口径），
+  // 承载历史接待数据的种子租户排在 20 名之外，点选路径拿不到它——下拉本身的点选联动已由
+  // 上面的 D2 卡片与主动触达两项覆盖，本项只负责下钻链路。
+  await seedDesktopLogin(page, request, tid);
+  const drillHits: string[] = [];
+  // 卡片数字按「响应」取，不按「请求」取：请求发出去时页面渲染的还是上一个窗口的数，
+  // 拿它去比本次下钻的名单必然不等（2026-09-23 全量回归首跑即以 flake 现形：期望 198、横幅另一个数）。
+  const cardNums: { days: number; aiServed: number }[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/stats/ai-contribution/customers')) drillHits.push(r.url());
+  });
+  page.on('response', (r) => {
+    const m = /\/stats\/ai-contribution\?days=(\d+)/.exec(r.url());
+    if (!m || r.status() !== 200) return;
+    void r.json()
+      .then((j) => cardNums.push({ days: Number(m[1]), aiServed: Number(j?.data?.ai_served_customers ?? -1) }))
+      .catch(() => {});
+  });
+  await page.goto('/admin');
+
+  await expect(page.getByRole('heading', { name: 'AI 贡献度' })).toBeVisible({ timeout: 15000 });
+
+  await page.getByText('近 90 天').first().click();
+  await expect.poll(() => cardNums.some((x) => x.days === 90 && x.aiServed > 0), { timeout: 15000 }).toBeTruthy();
+  const cardNum = cardNums.filter((x) => x.days === 90).pop()!.aiServed;
+
+  const tile = page.locator('div[role="button"]', { hasText: 'AI 独立接待客户' }).first();
+  await expect(tile).toBeVisible({ timeout: 10000 });
+  // 前端只是显示器：格子上那个数必须逐字等于 90 天窗口接口给的值（前端复算一遍就有两套口径了）
+  await expect(tile.locator('b')).toHaveText(String(cardNum), { timeout: 10000 });
+
+  await tile.click();
+  await expect.poll(() => drillHits.length, { timeout: 15000 }).toBeGreaterThan(0);
+  expect(drillHits[drillHits.length - 1]).toContain('metric=ai_served');
+  expect(drillHits[drillHits.length - 1]).toContain('days=90');
+
+  await expect(page.getByText(`共 ${cardNum} 位客户`)).toBeVisible({ timeout: 15000 });
+  // 零命中态不得出现（出现即名单为空，与上面的数量等式自相矛盾）
+  await expect(page.getByText('该窗口内没有命中这个指标的客户')).toHaveCount(0);
+
+  await page.getByRole('button', { name: '返回看板' }).click();
+  await expect(page.getByText('AI 贡献度下钻：')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'AI 贡献度' })).toBeVisible({ timeout: 10000 });
 
   const body = await page.locator('body').innerText();
   expect(body).not.toMatch(/NaN|undefined|\[object Object\]/);

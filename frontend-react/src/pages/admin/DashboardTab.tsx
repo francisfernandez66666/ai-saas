@@ -3,8 +3,9 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, Progress, Table, Tag } from 'tdesign-react'
 import type { CrudRow } from '../../hooks/useCrud'
 import { AUTH } from '../../lib/api'
-import type { CellProps, TableRowData } from '../../types'
+import type { CellProps, ContributionDrill, TableRowData } from '../../types'
 import { AIContributionCard } from './AIContributionCard'
+import { QuotaAlertCard } from './QuotaAlertCard'
 
 type Overview = {
   total_customers: number
@@ -47,8 +48,10 @@ function formatCooldown(sec: number) {
   return `${Math.ceil(sec / 60)}min`
 }
 
-/** 后台工作台：聚合核心指标、模型状态和近期运营事件。 */
-export function DashboardTab() {
+/** 后台工作台：聚合核心指标、模型状态和近期运营事件。
+ *  onDrill 由 Admin 持有（下钻目标「客户线索」是同级 Tab，工作台自己不做跨 Tab 跳转），
+ *  工作台只负责把「指标 + 窗口」原样递出去。 */
+export function DashboardTab({ onDrill }: { onDrill?: (drill: ContributionDrill) => void }) {
   const [overview, setOverview] = useState<Overview | null>(null)
   const [advisorStats, setAdvisorStats] = useState<StatItem[]>([])
   const [models, setModels] = useState<CrudRow[]>([])
@@ -123,7 +126,9 @@ export function DashboardTab() {
         </div>
       </div>
 
-      <AIContributionCard />
+      <AIContributionCard onDrill={onDrill} />
+
+      <QuotaAlertCard />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border border-gray-200 p-5">

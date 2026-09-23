@@ -749,6 +749,50 @@ export interface AIContribution {
   notes: string[]
 }
 
+// 可下钻指标定义（schema.ContributionMetricDefinition，随下钻响应 metrics 字段回带）。
+export interface ContributionMetricOption {
+  metric: string
+  label: string
+}
+
+// 下钻名单一行（schema.AIContributionCustomerRow，stats/ai-contribution/customers，D4）。
+export interface AIContributionCustomerRow {
+  id: number
+  name: string
+  phone: string
+  journey_stage: string
+  intent_score: number
+  interest_model: string
+  assigned_user_id: number
+  assigned_user_name: string
+  served_by: string // ai=AI 独立接待 / human=人工参与
+}
+
+// AI 贡献度下钻响应（schema.AIContributionDrillResp，D4）。
+// total 与看板卡片上的数字同一判据算出，list 是"此刻还能看到的明细"，两者可不等
+// （客户被注销或落在本人数据范围外时少一行），前端如实分列展示，不做补齐。
+export interface AIContributionDrillResp {
+  metric: string
+  label: string
+  period_days: number
+  since: string
+  until: string
+  total: number
+  page: number
+  page_size: number
+  metrics: ContributionMetricOption[]
+  note: string
+  list: AIContributionCustomerRow[]
+}
+
+// 看板 → 客户列表的下钻预设（D4）。
+// 刻意只带 metric 与 days 两个字段：归属/阶段判定全在后端那一份谓词里，
+// 前端若再传"补充条件"，就变成前后端各持一套判据——名单与卡片数字必然对不上。
+export interface ContributionDrill {
+  metric: string
+  days: number
+}
+
 // 流程实例（model.FlowInstance，flows/instances 与 start/advance 响应）
 export interface FlowInstance {
   id: number
@@ -889,4 +933,104 @@ export interface OutreachListResp {
 // OutreachCancelResp 撤回成功的回显（仅 pending 可撤，撤不动一律 404 不回显原因）。
 export interface OutreachCancelResp {
   id: number
+}
+
+// ============================================================
+// D3 用量预警 + 到期催缴（2026-09-23）
+// 字段与 internal/billing/{usage_alert,dunning}.go 的视图结构体一一对应；
+// metric/status 是后端稳定字面量，前端只按它出文案，不自造第二套枚举。
+// ============================================================
+
+// UsageAlertConfig 额度预警的平台生效口径（档位与水位都是平台级，租户只读）
+export interface UsageAlertConfig {
+  enabled: boolean
+  thresholds: number[] // 已用百分比分档，升序（如 [80,95,100]）
+  token_balance_below: number // 预充值余额低于该绝对值才提示（此档无分母）
+  group_ready: boolean // 平台群通道是否已配（配了才有人真在盯）
+  email_ready: boolean // SMTP 是否已配
+}
+
+// UsageProgressRow 单项指标当前进度；unlimited=true 表示这项没有分母，不画进度条
+export interface UsageProgressRow {
+  metric: string // monthly_calls/monthly_tokens/token_balance
+  label: string
+  used: number
+  max: number // 0=不限额
+  pct: number // 已用百分比（上限钳 100）
+  remaining: number
+  unlimited: boolean
+  warn_below: number // 绝对水位预警线（仅余额档非 0）
+}
+
+// UsageAlertRow 一条额度预警留痕（="某账期某档已经通知过你"）
+export interface UsageAlertRow {
+  metric: string
+  threshold: number
+  period_key: string // 'YYYY-MM' 账期锚
+  usage_pct: number
+  remaining: number
+  channels: string // email/group 逗号串；空串=没有可用收件人
+  created_at: string
+}
+
+// AdminUsageAlertsResp GET /admin/usage/alerts 出参（进度 + 口径 + 留痕三段）
+export interface AdminUsageAlertsResp {
+  period_key: string
+  config: UsageAlertConfig
+  progress: UsageProgressRow[]
+  list: UsageAlertRow[]
+}
+
+// DunningConfig 催缴生效口径（第几天各催一次、第几天停用）
+export interface DunningConfig {
+  enabled: boolean
+  steps: number[] // 到期后第 N 天各发一次催缴
+  suspend_after_days: number // 0=只催不封
+}
+
+// TenantDunningView 本租户催缴进度（exists=false 表示从未欠费，不是错误）
+export interface TenantDunningView {
+  exists: boolean
+  status: string // running/resolved/exhausted
+  stage: number // 已发到的档位序号
+  total_stages: number
+  day_past: number // 到期后第几天
+  due_at: string | null
+  grace_end: string | null
+  suspended: boolean
+}
+
+// AdminDunningResp GET /admin/billing/dunning 出参
+export interface AdminDunningResp {
+  dunning: TenantDunningView
+  config: DunningConfig
+}
+
+// DunningRow 超管催缴队列一行（一家租户当前这一轮走到哪）
+export interface DunningRow {
+  tenant_id: number
+  tenant_name: string
+  code: string
+  tenant_status: string // active/trial/expired/suspended/...
+  status: string // running/resolved/exhausted
+  stage: number
+  day_past: number
+  due_at: string | null
+  next_notify_at: string | null
+  last_notified_at: string | null
+  suspended: boolean
+  grace_end: string | null
+  sent_to: string // 脱敏收件人（a***@b.com，最多 3 个）
+}
+
+// SuperDunningQueueResp GET /super/dunning 出参（队列 + 两份平台口径）
+export interface SuperDunningQueueResp {
+  list: DunningRow[]
+  config: DunningConfig
+  usage_alert_config: UsageAlertConfig
+}
+
+// SuperDunningActionResult 人工催缴动作回显（档位是否前进由状态机决定，接口不回推进度）
+export interface SuperDunningActionResult {
+  tenant_id: number
 }

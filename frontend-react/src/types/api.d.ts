@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
+import type { AIContribution, AIContributionDrillResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -23,6 +23,7 @@ export interface ApiRoutes {
   "DELETE /api/v1/super/packages/:id": unknown
   "GET /api/v1/admin/apikeys": unknown
   "GET /api/v1/admin/audit-logs": unknown
+  "GET /api/v1/admin/billing/dunning": AdminDunningResp
   "GET /api/v1/admin/channel-dlq": OutboundListResp
   "GET /api/v1/admin/channels": ChannelListResp
   "GET /api/v1/admin/config": unknown
@@ -48,6 +49,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/tags": Paginated<Tag>
   "GET /api/v1/admin/tags/:id": Tag
   "GET /api/v1/admin/tenant/branding": unknown
+  "GET /api/v1/admin/usage/alerts": AdminUsageAlertsResp
   "GET /api/v1/admin/usage/summary": unknown
   "GET /api/v1/admin/webhooks": unknown
   "GET /api/v1/admin/webhooks/:id/deliveries": unknown
@@ -98,6 +100,7 @@ export interface ApiRoutes {
   "GET /api/v1/plans": unknown
   "GET /api/v1/public/branding": unknown
   "GET /api/v1/stats/ai-contribution": AIContribution
+  "GET /api/v1/stats/ai-contribution/customers": AIContributionDrillResp
   "GET /api/v1/stats/overview": StatsOverview
   "GET /api/v1/strategy/features": Paginated<SellingFeature>
   "GET /api/v1/strategy/stats/anchors": AnchorStat[]
@@ -106,6 +109,7 @@ export interface ApiRoutes {
   "GET /api/v1/super/agreements": unknown
   "GET /api/v1/super/audit-logs": unknown
   "GET /api/v1/super/billing/refund-requests": unknown
+  "GET /api/v1/super/dunning": SuperDunningQueueResp
   "GET /api/v1/super/feedbacks": unknown
   "GET /api/v1/super/invoices": unknown
   "GET /api/v1/super/materials": unknown
@@ -220,6 +224,8 @@ export interface ApiRoutes {
   "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
   "POST /api/v1/super/billing/orders/:id/refund": unknown
   "POST /api/v1/super/billing/orders/:id/refund/reject": unknown
+  "POST /api/v1/super/dunning/:id/nudge": SuperDunningActionResult
+  "POST /api/v1/super/dunning/:id/reset": SuperDunningActionResult
   "POST /api/v1/super/feedbacks/resolve": unknown
   "POST /api/v1/super/invoices/:id/issue": unknown
   "POST /api/v1/super/invoices/:id/void": unknown

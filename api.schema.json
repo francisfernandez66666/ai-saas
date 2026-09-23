@@ -201,6 +201,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/billing/dunning",
+      "group": "admin",
+      "handler": "AdminTenantDunning",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AdminDunningResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/channel-dlq",
       "group": "admin",
       "handler": "ListChannelDeadLetters",
@@ -454,6 +465,17 @@
         "jwt",
         "admin_required"
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/usage/alerts",
+      "group": "admin",
+      "handler": "AdminUsageAlerts",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "AdminUsageAlertsResp"
     },
     {
       "method": "GET",
@@ -946,6 +968,16 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/stats/ai-contribution/customers",
+      "group": "stats",
+      "handler": "GetAIContributionCustomers",
+      "auth": [
+        "jwt"
+      ],
+      "data_ts": "AIContributionDrillResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/stats/overview",
       "group": "stats",
       "handler": "GetOverview",
@@ -1023,6 +1055,17 @@
         "jwt",
         "super_required"
       ]
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/super/dunning",
+      "group": "super",
+      "handler": "SuperDunningQueue",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperDunningQueueResp"
     },
     {
       "method": "GET",
@@ -2160,6 +2203,28 @@
         "jwt",
         "super_required"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/dunning/:id/nudge",
+      "group": "super",
+      "handler": "SuperDunningNudge",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperDunningActionResult"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/dunning/:id/reset",
+      "group": "super",
+      "handler": "SuperDunningReset",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperDunningActionResult"
     },
     {
       "method": "POST",

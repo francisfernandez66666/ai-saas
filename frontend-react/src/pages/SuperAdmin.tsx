@@ -11,6 +11,8 @@ import { MonitorTab } from './super/MonitorTab'
 // §八-6 平台运营 UI 批：发票受理 + 行业包上架/共享管理（独立 Tab 组件，按需挂载）
 import { InvoiceTab } from './super/InvoiceTab'
 import { RefundTab } from './super/RefundTab'
+// D3 批（2026-09-23）：欠费催缴队列——催缴序列是平台侧动作，租户端只读
+import { DunningTab } from './super/DunningTab'
 import { PackTab } from './super/PackTab'
 // P1-9 零UI补齐批（2026-09-20）：素材审核——/super/materials 三端点此前前端零消费者
 import { MaterialsTab } from './super/MaterialsTab'
@@ -254,6 +256,7 @@ export default function SuperAdmin() {
             {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
             {view === 'invoices' && <InvoiceTab />}
             {view === 'refunds' && <RefundTab />}
+            {view === 'dunning' && <DunningTab />}
             {view === 'industry_packs' && <PackTab />}
             {view === 'materials' && <MaterialsTab />}
             {view === 'tenants' && (

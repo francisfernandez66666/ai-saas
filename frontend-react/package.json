@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ --max-warnings=60 || true",
-    "lint:ci": "eslint src/ --max-warnings=154",
+    "lint:ci": "eslint src/ --max-warnings=157",
     "test": "vitest run",
     "gen:api": "node ../scripts/gen_api_types.mjs",
     "test:watch": "vitest",

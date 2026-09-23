@@ -187,6 +187,19 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "billing", Key: "pay_alipay_seller_id", Value: "\"\"", ValueType: "string", Description: "支付宝商户seller_id(可选,配置后异步通知强制核对归属商户)", DefaultValue: "\"\"", SortOrder: 28},
 	{Category: "billing", Key: "gateway_webhook_amount_required", Value: "true", ValueType: "bool", Description: "P1-2(2026-09-20)：通用支付网关回调amount_cents必传且参与签名+订单金额核对(false=存量聚合商兼容放行,readiness亮warn)", DefaultValue: "true", SortOrder: 29},
 
+	// ---- D3 用量预警触达 + 到期催缴 dunning（2026-09-23，商业漏斗最后一段）----
+	// 六个键**全部平台级**（见 PlatformLevelKeys）：预警阈值与催缴节奏是**全平台统一的运营政策**，
+	// 不是租户偏好——租户若能各自改，等于欠费户可以自己把催缴频率调到零，漏斗直接失守。
+	// 出厂一律 false：与本仓"外呼型开关默认关"同一口径（触达批 outreach_enabled 同理），
+	// 因为 SMTP/群机器人一旦配好，sweep 每小时就会真发信给租户管理员，
+	// 未确认文案与收件人质量前默认不发；上线首件事是 DEPLOY_CHECKLIST 里显式打开。
+	{Category: "billing", Key: "usage_alert_enabled", Value: "false", ValueType: "bool", Description: "用量预警总开关(true=月度配额/余额越档时邮件+群通知租户管理员)；出厂关防未配SMTP时误发", DefaultValue: "false", SortOrder: 30},
+	{Category: "billing", Key: "usage_alert_thresholds", Value: "[80,95,100]", ValueType: "json", Description: "用量预警档位(已用百分比,升序;同档同账期只发一次)", DefaultValue: "[80,95,100]", SortOrder: 31},
+	{Category: "billing", Key: "usage_alert_token_balance_below", Value: "200000", ValueType: "number", Description: "预充值token余额低于该值即预警(②永久桶无分母,按绝对水位;每账期每档限发一次)", DefaultValue: "200000", SortOrder: 32},
+	{Category: "billing", Key: "dunning_enabled", Value: "false", ValueType: "bool", Description: "到期催缴总开关(true=按dunning_steps逐档催续费并在宽限期末自动封禁)；出厂关,上线需显式打开", DefaultValue: "false", SortOrder: 33},
+	{Category: "billing", Key: "dunning_steps", Value: "[0,3,7,14]", ValueType: "json", Description: "催缴档位=到期后第N天各发一次催缴通知(升序,首档通常0=到期当天)", DefaultValue: "[0,3,7,14]", SortOrder: 34},
+	{Category: "billing", Key: "dunning_suspend_after_days", Value: "14", ValueType: "number", Description: "到期后第几天自动封禁(status→suspended,数据完整保留)；0=只催不封", DefaultValue: "14", SortOrder: 35},
+
 	// ---- 分类7：notify（触达通道类，批次一顺手做：企微群机器人 + 重置码通道）----
 	{Category: "notify", Key: "wecom_webhook_url", Value: "\"\"", ValueType: "string", Description: "企微群机器人webhook(敏感配置勿外泄；留资/人工确认订单推送)", DefaultValue: "\"\"", SortOrder: 1},
 	{Category: "notify", Key: "reset_code_channel", Value: "\"log\"", ValueType: "string", Description: "重置码发送通道(log=打日志需校验手机号/smtp=邮件直发)", DefaultValue: "\"log\"", SortOrder: 2},
@@ -313,4 +326,13 @@ var PlatformLevelKeys = map[string]bool{
 	"evals_pack_alert_score":           true, // D9：低分阈值(平台级默认，避免租户关闭质量监控)
 	"evals_pack_alert_consecutive":     true, // D9：连续低分次数阈值(平台级)
 	"evals_pack_alert_min_samples":     true, // D9：告警最小样本数(平台级)
+	// D3(2026-09-23)：用量预警与到期催缴六键全平台级。
+	// 判据不是"看起来像运营参数就平台级"，而是**租户能改它会不会削弱我方收款漏斗**——
+	// 会（欠费户把自己的催缴频率调零、把预警阈值调到 100% 以上=永不通知），故一律压到系统层。
+	"usage_alert_enabled":             true, // D3：用量预警总开关(平台级，租户不可自关)
+	"usage_alert_thresholds":          true, // D3：预警档位序列(平台级统一口径)
+	"usage_alert_token_balance_below": true, // D3：余额预警水位(平台级)
+	"dunning_enabled":                 true, // D3：催缴总开关(平台级，租户不可自关催缴)
+	"dunning_steps":                   true, // D3：催缴档位天数序列(平台级)
+	"dunning_suspend_after_days":      true, // D3：宽限期封禁阈值(平台级，可关成"只催不封"但不能由各租户自定)
 }
