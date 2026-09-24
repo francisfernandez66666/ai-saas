@@ -13,7 +13,19 @@ const BASE = 'http://localhost:9090';
 // 必挂（实测 strategy test 用例 403）。这里做 API 回环自适应：检测到强改密标记 → 改密（服务端清标记，
 // B4 同时 bump token_version 故需重登）→ 再改回 admin123 恢复出厂凭据。change-password 无"新旧相同拒绝"
 // 限制（auth_password.go:89-96 仅验旧密码+强度），回环不污染任何账号密码，smoke/uat 脚本继续用 admin123。
+// 登录态在进程内缓存一份：二十一项各登一次就是 21 发 /auth/login，而它的 IP 桶是 20/分钟，
+// 且窗口是「首请求 + TTL」而非自然分钟——本轮 playwright 就是被自己顶进限流的：
+// 登录被 429 → token 是空串 → 后续接口 401 → 响应体读成「空列表」，报错长得像"数据不对"，
+// 真因却是"我们根本没问到"。缓存后用 /auth/me 复核（不计入登录桶）；若某个用例改过密码
+// 把 token_version bump 掉（B4 吊销），这里会拿到非 2xx 并自动重登，不会把脏 token 传下去。
+let cachedAdminToken = '';
+
 async function adminToken(request: APIRequestContext): Promise<string> {
+  if (cachedAdminToken) {
+    const check = await request.get(`${BASE}/api/v1/auth/me`, { headers: { Authorization: `Bearer ${cachedAdminToken}` } });
+    if (check.ok()) return cachedAdminToken;
+    cachedAdminToken = '';
+  }
   const login = (password: string) =>
     request
       .post(`${BASE}/api/v1/auth/login`, { data: { username: 'admin', password } })
@@ -35,6 +47,8 @@ async function adminToken(request: APIRequestContext): Promise<string> {
     j = await login('admin123');
     token = j.data?.token || '';
   }
+  if (!token) throw new Error(`admin 登录未拿到 token（响应：${JSON.stringify(j).slice(0, 160)}）——空 token 会让后面的断言把 401 读成"数据为空"`);
+  cachedAdminToken = token;
   return token;
 }
 
@@ -220,8 +234,10 @@ test.describe('P1-10 390px 桌面三台可达', () => {
 // 旧写法 `option.nth(1)` 依赖后端返回顺序，而 cleanup_test_tenants 会删测试租户、trial 租户会到期，
 // 2026-09-23 清库后实跑即踩到 nth(1) 落在已过期 trial 上（接口 402「试用期已结束」）——
 // 那时断言测的是"这个租户不可用"，不是产品行为。故逐个租户用真实作用域端点探 200，探不到即前置失败。
-async function pickOperableTenant(request: APIRequestContext): Promise<string> {
-  const token = await adminToken(request);
+async function pickOperableTenant(request: APIRequestContext, preToken = ''): Promise<string> {
+  // preToken：调用方已有登录态时传进来，别在这里再登一次。/auth/login 的 IP 桶是 20/分钟，
+  // 而十套断言脚本 + 二十一项 playwright 共用同一个出口 IP，多烧一次登录就可能把后面的脚本顶进 429。
+  const token = preToken || await adminToken(request);
   const auth = { Authorization: `Bearer ${token}` };
   const resp = await request.get(`${BASE}/api/v1/super/tenants`, { headers: auth });
   expect(resp.ok()).toBeTruthy();
@@ -529,17 +545,22 @@ test('获客活码后台页可建码、漏斗可下钻且扫码格子不给点',
 //  ④ 再搜一个谁都不命中的关键字，当前代管那一家**必须还挂在下拉里**：它一消失，下拉显示
 //     空白，看着像"代管被取消了"，而请求还在往那个租户发 X-Tenant-ID——这条链上最危险的错位。
 test('超管代管租户检索走服务端且换批结果不丢当前代管', async ({ page, request }) => {
-  const tid = await pickOperableTenant(request);
   const token = await adminToken(request);
   const auth = { Authorization: `Bearer ${token}` };
+  const tid = await pickOperableTenant(request, token);
   // 关键字取该家的编码（无编码则取名称）——只用它自己的信息，不猜库里的其它租户
   const byId = await request.get(`${BASE}/api/v1/super/tenants?q=${encodeURIComponent(tid)}&page_size=100`, { headers: auth });
+  // 状态码必须先看：把 401/403/429 的响应体当"空列表"读，报出来的就是"这个租户没有编码"，
+  // 而真相是"我们根本没问到"（本轮首跑就是这么红的：多烧一次登录撞了 login 限流桶）。
+  expect(byId.ok(), `按 ID 检索租户 ${tid} 失败：HTTP ${byId.status()}`).toBeTruthy();
   const byIdRows = ((((await byId.json())?.data ?? {}).list ?? []) as { id?: number; name?: string; code?: string }[]);
   // 纯数字关键字还带名称/编码模糊这条腿，所以必须按 ID 精确挑出那一行，不能拿 list[0]
-  const row = byIdRows.find((t) => String(t.id) === tid) ?? {};
-  const keyword = String(row.code || row.name || '');
+  const hit = byIdRows.find((t) => String(t.id) === tid);
+  expect(hit, `按 ID 检索没命中租户 ${tid}（返回 ${byIdRows.length} 行）`).toBeTruthy();
+  const keyword = String(hit?.code || hit?.name || '');
   expect(keyword, `租户 ${tid} 既无编码也无名称，本项前置不成立`).toBeTruthy();
   const expectResp = await request.get(`${BASE}/api/v1/super/tenants?q=${encodeURIComponent(keyword)}&page_size=100`, { headers: auth });
+  expect(expectResp.ok(), `按关键字「${keyword}」检索失败：HTTP ${expectResp.status()}`).toBeTruthy();
   const expectIds = ((((await expectResp.json())?.data ?? {}).list ?? []) as { id?: number }[])
     .map((t) => String(t.id ?? '')).filter((s) => s && s !== '0').sort();
   expect(expectIds, '服务端按该关键字应有命中').toContain(tid);

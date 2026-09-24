@@ -48,6 +48,13 @@ function row(over: Partial<DealRow> = {}): DealRow {
 
 const OK: DealWriteResult = { ok: true, message: '' }
 
+// 点弹窗主按钮。必须先等按钮回到"空闲文案"再点：请求在途时它写的是「提交中…」，
+// 同一用例里连点两次（第一次故意让它失败）时，上一发的 busy 态还没落地就同步 getByRole，
+// 就会报"找不到按钮"——机器负载高时实测 flake 过一次（用例耗时 1.2s，正是默认等待窗口）。
+async function clickConfirm(name: string) {
+  fireEvent.click(await screen.findByRole('button', { name }))
+}
+
 // 打开「开一张商机」弹窗
 function openCreate() {
   fireEvent.click(screen.getByTestId('deal-open-btn'))
@@ -106,7 +113,7 @@ describe('DealCard 顾问台商机卡', () => {
     openCreate()
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版 · 置换'), { target: { value: '秋季置换单' } })
     fireEvent.change(screen.getByPlaceholderText('还没谈到钱就空着'), { target: { value: '0.29' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建' }))
+    await clickConfirm('创建')
     await waitFor(() => expect(onCreate).toHaveBeenCalledTimes(1))
     const form = onCreate.mock.calls[0][0] as DealCreateForm
     expect(form.title).toBe('秋季置换单')
@@ -120,13 +127,13 @@ describe('DealCard 顾问台商机卡', () => {
     const onCreate = vi.fn()
     render(<DealCard deals={[]} cfg={CFG} onCreate={onCreate} onMove={vi.fn()} onQuote={vi.fn()} />)
     openCreate()
-    fireEvent.click(screen.getByRole('button', { name: '创建' }))
+    await clickConfirm('创建')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('起个名字')
     expect(onCreate).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版 · 置换'), { target: { value: '秋季置换单' } })
     fireEvent.change(screen.getByPlaceholderText('还没谈到钱就空着'), { target: { value: '1.234' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建' }))
+    await clickConfirm('创建')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('两位小数')
     expect(onCreate).not.toHaveBeenCalled()
   })
@@ -136,12 +143,12 @@ describe('DealCard 顾问台商机卡', () => {
     render(<DealCard deals={[]} cfg={CFG} onCreate={onCreate} onMove={vi.fn()} onQuote={vi.fn()} />)
     openCreate()
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版 · 置换'), { target: { value: '秋季置换单' } })
-    fireEvent.click(screen.getByRole('button', { name: '创建' }))
+    await clickConfirm('创建')
     await waitFor(() => expect(screen.getByTestId('deal-form-err').textContent).toBe('阶段不能往回退'))
     expect(screen.getByText('开一张商机')).toBeTruthy() // 窗还开着，允许改完再交
 
     onCreate.mockResolvedValue({ ok: false, message: '已有在途单', dismiss: true })
-    fireEvent.click(screen.getByRole('button', { name: '创建' }))
+    await clickConfirm('创建')
     await waitFor(() => expect(screen.queryByText('开一张商机')).toBeNull())
   })
 
@@ -152,18 +159,18 @@ describe('DealCard 顾问台商机卡', () => {
 
     const selects = () => Array.from(document.querySelectorAll('select'))
     fireEvent.change(selects()[0], { target: { value: 'won' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await clickConfirm('保存')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('成交金额')
     expect(onMove).not.toHaveBeenCalled()
 
     fireEvent.change(selects()[0], { target: { value: 'lost' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await clickConfirm('保存')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('流失')
     expect(onMove).not.toHaveBeenCalled()
 
     // 选了原因才交出去，交的是原因码不是中文名
     fireEvent.change(selects()[1], { target: { value: 'competitor' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await clickConfirm('保存')
     await waitFor(() => expect(onMove).toHaveBeenCalledTimes(1))
     expect(onMove.mock.calls[0][0]).toBe(501)
     expect((onMove.mock.calls[0][1] as DealMoveForm).lost_reason).toBe('competitor')
@@ -181,13 +188,13 @@ describe('DealCard 顾问台商机卡', () => {
     const onQuote = vi.fn().mockResolvedValue(OK)
     render(<DealCard deals={[row({})]} cfg={CFG} onCreate={vi.fn()} onMove={vi.fn()} onQuote={onQuote} />)
     fireEvent.click(screen.getByTestId('deal-newquote-501'))
-    fireEvent.click(screen.getByRole('button', { name: '保存并发出' }))
+    await clickConfirm('保存并发出')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('至少要有明细行')
     expect(onQuote).not.toHaveBeenCalled()
 
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版'), { target: { value: '整车' } })
     fireEvent.change(screen.getByLabelText('单价（元）'), { target: { value: '299000.00' } })
-    fireEvent.click(screen.getByRole('button', { name: '保存并发出' }))
+    await clickConfirm('保存并发出')
     await waitFor(() => expect(onQuote).toHaveBeenCalledTimes(1))
     const [dealId, form, send] = onQuote.mock.calls[0] as [number, DealQuoteForm, boolean]
     expect(dealId).toBe(501)
@@ -203,7 +210,7 @@ describe('DealCard 顾问台商机卡', () => {
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版'), { target: { value: '整车' } })
     fireEvent.change(screen.getByLabelText('数量'), { target: { value: '0' } })
     fireEvent.change(screen.getByLabelText('单价（元）'), { target: { value: '10' } })
-    fireEvent.click(screen.getByRole('button', { name: '存草稿' }))
+    await clickConfirm('存草稿')
     expect(screen.getByTestId('deal-form-err').textContent).toContain('正整数')
     expect(onQuote).not.toHaveBeenCalled()
     // 上限 1 行：加一行必须真的禁点（不是藏起来，让人以为没这功能）

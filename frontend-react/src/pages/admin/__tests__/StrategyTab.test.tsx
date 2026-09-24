@@ -74,6 +74,10 @@ describe('StrategyTestTab', () => {
     })
     render(<StrategyTestTab />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/api/v1/customers')))
+    // 光等到"/customers 请求发过"不够：组件是在响应回来后自动把第一家客户填进表单的，
+    // 而 run() 在 customer_id=0 时只弹一句"请选择测试客户"就返回——抢在这个 effect 落地前点，
+    // 断言就会以"没发出 /strategy/test"失败（机器负载高时实测红过一次，用例耗时正好顶满等待窗口）。
+    await waitFor(() => expect(screen.getByDisplayValue('7 张三')).toBeTruthy())
     fireEvent.click(screen.getByRole('button', { name: '运行策略' }))
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/strategy/test', expect.objectContaining({ method: 'POST' })))
     expect(await screen.findByText('你和坦克比过吗？')).toBeTruthy()
