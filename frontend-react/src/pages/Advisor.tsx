@@ -12,14 +12,22 @@ import { collectFreshMessages } from '../lib/chat'
 // §八-6 D 块：企微侧边栏 JS-SDK 按需装配（失败只告警，不阻断渲染）
 import { setupWecomJsSdk } from '../lib/wecomJsSdk'
 import { Cust, Detail, Msg } from '../types'
+import type { DealConfig, DealRow, DealDetailResp, AdvisorDealListResp, DealQuoteResp } from '../types'
+import { yuanToFen } from '../lib/money'
+import { dealReasonText } from '../lib/dealReasons'
 import { API, NAV_TABS, type ChannelContext, type Followup, type Quota, type Recommend, type Stat, type TestDrive } from './advisor/shared'
 import HomeView from './advisor/HomeView'
 import FollowupView from './advisor/FollowupView'
 import MeView from './advisor/MeView'
 import DetailView from './advisor/DetailView'
+import type { DealCreateForm, DealMoveForm, DealQuoteForm, DealWriteResult } from './advisor/DealCard'
 import { EditDialog, FeedbackDialog, FollowupDialog, StageDialog, TagDialog, TestDriveDialog, type FuForm, type StageForm, type TdForm } from './advisor/dialogs'
 
 // 客户详情（资料+标签+会话）由 ../types 的 Detail 承载，统一领域口径
+
+// DealResp 商机接口的响应信封：reason 是后端的**稳定原因码**（deal_rejected 一类），
+// 页面按它分支给中文话术；message 是给人看的句子，不参与判定。
+type DealResp<T> = { code: number; message?: string; reason?: string; data?: T }
 
 // Advisor 销售顾问工作台入口：承载首页、客户详情、会话、跟进等视图的路由容器。
 export default function Advisor() {
@@ -37,6 +45,11 @@ export default function Advisor() {
   // 进详情随会话同步，接管/转回操作后就地翻转（避免整页重拉）
   const [convMode, setConvMode] = useState('')
   const [testDrives, setTestDrives] = useState<TestDrive[]>([])
+  // 商机批（前端批3）：这个客户名下的全部商机（含终局单）+ 后端下发的枚举口径
+  // cfg 与列表同请求回来（GET /advisor/customer/:id/deals 一次给 list+config），
+  // 不在前端再写一份中文阶段名——两份枚举迟早对不上，而且错位发生在页面看不见的地方
+  const [deals, setDeals] = useState<DealRow[]>([])
+  const [dealCfg, setDealCfg] = useState<DealConfig | null>(null)
   const [followups, setFollowups] = useState<Followup[]>([])
   const [quota, setQuota] = useState<Quota | null>(null)
   const [input, setInput] = useState('')
@@ -126,7 +139,10 @@ export default function Advisor() {
     }
     // P1-9：切客户重置时间线展开态与评分草稿（防上一客户的消息/分数串显）
     setTlConv(null); setTlMsgs([]); setRate({ score: 0, comment: '' })
-    loadChat(id); loadTestDrives(id); loadRecommend(id, convIdNow)
+    // 商机批：切客户必须先清空商机列表——单子 ID 是全局的，留着上一客户的行，
+    // 顾问点"推进"就会去改**另一个人**的商机（界面看着是自己的客户，数据早已错位）
+    setDeals([])
+    loadChat(id); loadTestDrives(id); loadRecommend(id, convIdNow); loadDeals(id)
   }
   // 拉取客户聊天记录（最多50条，供右侧会话窗口展示）
   // P2-84 修复：打开详情时重置 ID 集合并全量替换；WS/轮询增量时只追加新消息
@@ -141,6 +157,68 @@ export default function Advisor() {
   }
   // 拉取客户试驾单列表
   async function loadTestDrives(id: number) { const j = await AUTH(API + '/test-drives?customer_id=' + id); setTestDrives(j.data || []) }
+  // ===== 商机（前端批3）：GET /advisor/customer/:id/deals + 开单/推进/出报价三个写入口 =====
+  // 三个写接口全部**回读落库后的真实形态**再刷列表：拿提交值更新界面会出现
+  // "报价合计已被服务端按明细重算、界面还显示我输入的那份"这类错位。
+  // 拉取这个客户名下的全部商机（含终局单）。空列表是正常态，不当错误处理。
+  // 客户不在自己数据范围内时后端也回空列表（不外泄"这个 ID 存在"），前端无需分支。
+  async function loadDeals(id: number) {
+    const j = await AUTH(API + '/customer/' + id + '/deals') as DealResp<AdvisorDealListResp> | null
+    if (detailIdRef.current !== id) return // 迟到的错位响应丢弃（同 P1-13 口径）
+    if (j?.code === 0 && j.data) {
+      setDeals(j.data.list || [])
+      if (j.data.config) setDealCfg(j.data.config)
+    }
+  }
+  // 开一张商机：**不传 source**（来源由后端按客户身上的活码判定），也不传 customer_id（在路径上）
+  async function createDeal(form: DealCreateForm): Promise<DealWriteResult> {
+    if (!detailId) return { ok: false, message: '客户未选定' }
+    const amount = form.amount_yuan === '' ? 0 : yuanToFen(form.amount_yuan)
+    if (amount === null) return { ok: false, message: '金额格式不对：最多两位小数' }
+    const j = await AUTH(API + '/customer/' + detailId + '/deals', {
+      method: 'POST',
+      body: { title: form.title, stage: form.stage, amount_cents: amount, expected_close_at: form.expected_close_at },
+    }) as DealResp<DealDetailResp> | null
+    if (j?.code !== 0) {
+      const text = dealReasonText(j?.reason, j?.message || '开单失败')
+      // 已有在途单：不是"用户填错了"，而是这单本来就在——刷列表让他直接看到原单
+      if (j?.reason === 'deal_already_open') { MessagePlugin.warning(text); loadDeals(detailId); return { ok: false, message: text, dismiss: true } }
+      return { ok: false, message: text }
+    }
+    MessagePlugin.success('商机已创建')
+    loadDeals(detailId)
+    return { ok: true, message: '' }
+  }
+  // 推进阶段（成交必带金额、流失必带原因，判据在后端；此处只做元→分与原因码话术翻译）
+  async function moveDeal(dealId: number, form: DealMoveForm): Promise<DealWriteResult> {
+    if (!detailId) return { ok: false, message: '客户未选定' }
+    let amount = 0
+    if (form.to === 'won' || (form.change_amount && form.amount_yuan !== '')) {
+      const v = yuanToFen(form.amount_yuan)
+      if (v === null) return { ok: false, message: '金额格式不对：最多两位小数' }
+      amount = v
+    }
+    const j = await AUTH(API + '/deals/' + dealId + '/move', {
+      method: 'POST',
+      body: { to: form.to, amount_cents: amount, change_amount: form.change_amount || form.to === 'won', lost_reason: form.lost_reason },
+    }) as DealResp<DealDetailResp> | null
+    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || '推进失败') }
+    MessagePlugin.success('已推进')
+    loadDeals(detailId)
+    return { ok: true, message: '' }
+  }
+  // 出一版报价（send=true 存完即发出并锁死）；表单里的单价是元，提交体里全部分
+  async function createQuoteDeal(dealId: number, form: DealQuoteForm, send: boolean): Promise<DealWriteResult> {
+    if (!detailId) return { ok: false, message: '客户未选定' }
+    const lines = form.lines.map((l) => ({ name: l.name, qty: Number(l.qty), unit_cents: yuanToFen(l.unit_yuan) ?? 0 }))
+    const j = await AUTH(API + '/deals/' + dealId + '/quotes', {
+      method: 'POST', body: { lines, note: form.note, valid_until: form.valid_until, send },
+    }) as DealResp<DealQuoteResp> | null
+    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || '报价保存失败') }
+    MessagePlugin.success(send ? '报价已发出并锁死' : '草稿已保存')
+    loadDeals(detailId)
+    return { ok: true, message: '' }
+  }
   // P1-9 零UI补齐(2026-09-20)：展开/收起某历史会话的消息时间线（同会话再点收起；换会话清空重拉）
   async function toggleTimeline(cid: number) {
     if (tlConv === cid) { setTlConv(null); setTlMsgs([]); return }
@@ -334,6 +412,7 @@ export default function Advisor() {
           onBack={backToList} onEdit={() => setEditOpen(true)} onEditTags={openTagDialog}
           onNewFollowup={() => setFuOpen(true)} onStage={openStageDialog} onNewTestDrive={openNewTestDrive}
           rec={rec} onFillInput={setInput}
+          deals={deals} dealCfg={dealCfg} onCreateDeal={createDeal} onMoveDeal={moveDeal} onQuoteDeal={createQuoteDeal}
           testDrives={testDrives} onEditTestDrive={openEditTestDrive} onSetTDStatus={setTDStatus}
           msgs={msgs} chatRef={chatRef} convId={convId} convMode={convMode} aiOn={aiOn}
           onClearDelay={clearDelay} onTakeover={takeover} onTransferBackAI={transferBackAI} onToggleAI={toggleAI}

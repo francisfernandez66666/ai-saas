@@ -2,18 +2,20 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）：本文件只做骨架与分区编排，各区块已拆为独立卡片组件
 import { Button, Input, Tag } from 'tdesign-react'
 import type { RefObject } from 'react'
-import type { Customer, Detail, Msg } from '../../types'
+import type { Customer, DealConfig, DealRow, Detail, Msg } from '../../types'
 import { H, STAGE_LABELS, type ChannelContext, type Recommend, type TestDrive } from './shared'
 import ChannelCard from './ChannelCard'
 import RecommendCard from './RecommendCard'
 import TestDriveCard from './TestDriveCard'
+import DealCard, { type DealCreateForm, type DealMoveForm, type DealQuoteForm, type DealWriteResult } from './DealCard'
 import ChatCard from './ChatCard'
 import HistoryTimeline from './HistoryTimeline'
 import RatingCard from './RatingCard'
 
-// DetailView 顾问工作台「客户详情」视图：聚合画像、标签、跟进、试驾与推荐入口。
+// DetailView 顾问工作台「客户详情」视图：聚合画像、标签、跟进、商机、试驾与推荐入口。
 export default function DetailView({ detail, chanCtx, chanKey, jsSdkOk, onBack, onEdit, onEditTags,
   onNewFollowup, onStage, onNewTestDrive, rec, onFillInput,
+  deals, dealCfg, onCreateDeal, onMoveDeal, onQuoteDeal,
   testDrives, onEditTestDrive, onSetTDStatus,
   msgs, chatRef, convId, convMode, aiOn, onClearDelay, onTakeover, onTransferBackAI, onToggleAI,
   tlConv, tlMsgs, onToggleTimeline, rate, onRate, onSubmitRating,
@@ -30,6 +32,11 @@ export default function DetailView({ detail, chanCtx, chanKey, jsSdkOk, onBack, 
   onNewTestDrive: () => void
   rec: Recommend | null
   onFillInput: (s: string) => void
+  deals: DealRow[]
+  dealCfg: DealConfig | null
+  onCreateDeal: (form: DealCreateForm) => Promise<DealWriteResult>
+  onMoveDeal: (dealId: number, form: DealMoveForm) => Promise<DealWriteResult>
+  onQuoteDeal: (dealId: number, form: DealQuoteForm, send: boolean) => Promise<DealWriteResult>
   testDrives: TestDrive[]
   onEditTestDrive: (td: TestDrive) => void
   onSetTDStatus: (td: TestDrive, s: string) => void
@@ -83,6 +90,8 @@ export default function DetailView({ detail, chanCtx, chanKey, jsSdkOk, onBack, 
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>预算</span><span>{c?.budget > 0 ? c.budget + '万' : '-'}</span></div>
           <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 6 }}><span style={{ color: '#a0aec0' }}>备注</span><span style={{ maxWidth: 200, textAlign: 'right' }}>{c?.remark || '-'}</span></div>
         </div>
+        {/* 商机批：这客户跟过几单、现在谈到哪、要不要再出一版价——写在客户台面上，不让顾问回后台查 */}
+        <DealCard deals={deals} cfg={dealCfg} onCreate={onCreateDeal} onMove={onMoveDeal} onQuote={onQuoteDeal} />
         <TestDriveCard testDrives={testDrives} onNew={onNewTestDrive} onEdit={onEditTestDrive} onSetStatus={onSetTDStatus} />
         <ChatCard msgs={msgs} chatRef={chatRef} convId={convId} convMode={convMode} aiOn={aiOn}
           onClearDelay={onClearDelay} onTakeover={onTakeover} onTransferBackAI={onTransferBackAI} onToggleAI={onToggleAI} />
