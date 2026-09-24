@@ -102,7 +102,7 @@ func archiveChannel(c *gin.Context) (*model.Channel, bool) {
 	id := chanID(c)
 	ch, err := channel.Get(tenantIDOf(c), id)
 	if err != nil {
-		RespErr(c, http.StatusNotFound, 404, "通道不存在")
+		archiveErr(c, http.StatusNotFound, "channel_not_found", "通道不存在")
 		return nil, false
 	}
 	return ch, true
@@ -135,7 +135,7 @@ func UpdateChannelArchive(c *gin.Context) {
 		return
 	}
 	if req.PublicKeyVer != nil && *req.PublicKeyVer < 0 {
-		RespErr(c, http.StatusBadRequest, 400, "public_key_ver 不能为负")
+		archiveErr(c, http.StatusBadRequest, "param_error", "public_key_ver 不能为负")
 		return
 	}
 	if _, err := channel.UpdateArchiveConfig(db.RQ(c), tid, chanID(c), channel.ArchiveConfigInput{
@@ -172,7 +172,7 @@ func GenerateChannelArchiveKey(c *gin.Context) {
 		bits = 2048
 	}
 	if bits != 2048 && bits != 4096 {
-		RespErr(c, http.StatusBadRequest, 400, "bits 仅 2048|4096")
+		archiveErr(c, http.StatusBadRequest, "param_error", "bits 仅 2048|4096（企微后台拒绝更短的密钥）")
 		return
 	}
 	ver := req.PublicKeyVer
@@ -255,7 +255,7 @@ func ListChannelArchiveRecords(c *gin.Context) {
 	since, ok1 := parseArchiveTime(c.Query("since"))
 	until, ok2 := parseArchiveTime(c.Query("until"))
 	if !ok1 || !ok2 {
-		RespErr(c, http.StatusBadRequest, 400, "since/until 时间格式不合法（RFC3339 或 2006-01-02）")
+		archiveErr(c, http.StatusBadRequest, "param_error", "since/until 时间格式不合法（RFC3339 或 2006-01-02）")
 		return
 	}
 	page, size := channel.NormalizeArchivePage(archiveQueryInt(c, "page", 1), archiveQueryInt(c, "page_size", archiveDefaultPageSize))
@@ -322,25 +322,43 @@ func archiveQueryInt(c *gin.Context, key string, def int) int {
 	return n
 }
 
-// archiveWriteErr 存档接口的错误出口：已知状态码 → 404/400 稳定文案，其余 5xx 脱敏。
+// archiveWriteErr 存档接口的错误出口：已知状态码 → 404/400 + **稳定 reason 码**，其余 5xx 脱敏。
+//
+// 为什么带 reason 而不只带一句中文（口径同商机批 dealWriteErr）：文案会改、码不会改。
+// 前端要按"该去配密钥"还是"该重录凭据"给不同引导，冒烟要按码断言，
+// 只回中文就等于把提示语当成契约——改一个字崩一片。
 //
 // 为什么内部错误一律 RespErrInternal：存档表名、列宽、SQLSTATE 都是探测面，
 // 一条超长错误回显出去等于把 schema 送出去（P1-1 同口径）。
 func archiveWriteErr(c *gin.Context, err error, safeMsg string) {
 	switch {
+	case err == nil:
+		return
 	case errors.Is(err, channel.ErrChannelNotFound):
-		RespErr(c, http.StatusNotFound, 404, "通道不存在")
+		archiveErr(c, http.StatusNotFound, "channel_not_found", "通道不存在")
 	case errors.Is(err, channel.ErrArchiveRecordNotFound):
-		RespErr(c, http.StatusNotFound, 404, "存档记录不存在")
+		archiveErr(c, http.StatusNotFound, "archive_record_not_found", "存档记录不存在")
 	case errors.Is(err, channel.ErrArchiveKeyMissing):
-		RespErr(c, http.StatusBadRequest, 400, channel.ErrArchiveKeyMissing.Error()+"：开启存档前请先生成或上传 RSA 私钥")
+		// 开开关要的是"能跑"：没私钥就开等于起一条只会产 decrypt_error 的链路
+		archiveErr(c, http.StatusBadRequest, channel.ErrArchiveKeyMissing.Error(), "开启会话存档前请先生成或上传 RSA 私钥")
 	case errors.Is(err, channel.ErrCredentialRekey):
-		RespErr(c, http.StatusBadRequest, 400, "archive_secret_rekey_required：存档凭据需重新录入（加密密钥已轮换）")
+		archiveErr(c, http.StatusBadRequest, "archive_secret_rekey_required", "存档凭据需重新录入（加密密钥已轮换）")
 	case errors.Is(err, channel.ErrArchiveKeyFormat):
-		// 粘错格式与"库里那把坏了"必须是两个文案：前者改入参就好，后者按提示去重新生成
-		// 一把反而会永久丢掉历史存档（旧密文是旧公钥加的密）。
-		RespErr(c, http.StatusBadRequest, 400, "archive_key_format：私钥格式不合法，需 PEM 编码的 RSA 私钥（PKCS#1 或 PKCS#8）")
+		// 这条文案指错方向会出大事：管理员被告知"密钥非法"后若去**重新生成一把**，
+		// 历史存档（旧公钥加的密）就永久解不开了——所以这里说的是"粘贴的格式"，不是"你的密钥坏了"。
+		archiveErr(c, http.StatusBadRequest, channel.ErrArchiveKeyFormat.Error(), "私钥格式不合法：需 PEM 编码的 RSA 私钥（PKCS#1 或 PKCS#8）")
 	default:
 		RespErrInternal(c, err, safeMsg)
 	}
+}
+
+// archiveErr 带稳定 reason 的错误响应（error_code 仍按 HTTP 码推导，与全局口径一致）。
+func archiveErr(c *gin.Context, status int, reason, msg string) {
+	code := status
+	if status >= 500 {
+		code = 500
+	}
+	c.JSON(status, gin.H{
+		"code": code, "message": msg, "error_code": codeNameFromCode(code), "reason": reason,
+	})
 }

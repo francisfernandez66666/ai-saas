@@ -69,7 +69,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.31.0"
+const appVersion = "v2.32.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -773,6 +773,54 @@ func main() {
 		}
 	}()
 
+	// 8.12 企微会话存档增量拉取（E8-4，2026-09-24）：60s 一轮扫「已启用存档且 active」的通道，
+	// 按各通道 archive_seq 游标增量取数 → 解密 → 落 chat_archive_records → 单调推游标。
+	// 与其它后台任务不同的两点：
+	// ① 入口闸在函数内部（channel.ArchiveFetcher == nil 直接返回）——官方 C SDK 没编进来之时，
+	//    逐通道跑一遍只会把日志刷成一片 archive_sdk_not_built，而这三个字的真相由观测位说；
+	//    这里仍按轮调用，是为了让「ticker 在跑」这件事留在进程记忆里（sync_ran 判据）。
+	// ② 存档是合规留痕不是收发货，慢一点没关系，但一轮不能挂死：单轮 50s 超时 + Redis 选主，
+	//    多实例下同一条消息不会被拉两遍（真拉两遍会撞 ux_archive_one_row_per_msgid，
+	//    数据不会错，但白烧一次存档许可额度）。
+	metrics.SetArchiveProbe(func() (metrics.ArchiveProbe, error) {
+		snap := channel.ArchivePlatformSnapshotFn()
+		return metrics.ArchiveProbe{
+			EnabledChannels: snap.EnabledChannels,
+			FetcherReady:    snap.FetcherReady,
+			Stored:          snap.Stored,
+			Failed:          snap.Failed,
+			SyncRan:         snap.SyncRan,
+			SyncRanAt:       snap.SyncRanAt,
+			SyncErrors:      snap.SyncErrors,
+		}, nil
+	})
+	go func() {
+		tk := time.NewTicker(60 * time.Second)
+		defer tk.Stop()
+		for range tk.C {
+			run := func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+				defer cancel()
+				sum := channel.SyncAllArchiveChannels(ctx)
+				if sum.Channels == 0 && len(sum.Errors) == 0 {
+					return // 没开存档：一声不吭（默认关闭是出厂形态，不是事件）
+				}
+				log.Printf("[会话存档] 本轮 通道=%d 取数=%d 入库=%d 重复=%d 过期=%d 解密失败=%d 游标=%d 失败码=%v",
+					sum.Channels, sum.Ingest.Fetched, sum.Ingest.Stored,
+					sum.Ingest.DupSkipped, sum.Ingest.StaleSkipped, sum.Ingest.DecryptFailed,
+					sum.Ingest.MaxSeq, sum.Errors)
+			}
+			if redisclient.IsEnabled() {
+				if h := redisclient.TryLock("lock:channel:archive_sync", 55*time.Second); h != nil {
+					safeRun("channel:archive_sync", run)
+					h.Unlock()
+				}
+			} else {
+				safeRun("channel:archive_sync", run)
+			}
+		}
+	}()
+
 	// 9. 初始化Gin引擎
 	r := gin.Default()
 
@@ -970,12 +1018,17 @@ func registerRoutes(r *gin.Engine) {
 		// 让"清没清干净"可被冒烟脚本稳定断言（旧口径只能人肉查库，迁移 019 回填后无回归护栏）。
 		orphanMsgs, archiveBacklog, archiveOn := metrics.DataHygiene()
 		c.JSON(200, gin.H{"code": 0, "data": gin.H{
-			"version":             appVersion,
-			"uptime_sec":          int(time.Since(startTime).Seconds()),
-			"db_ok":               snap.DBOK,
-			"orphan_messages":     orphanMsgs,
-			"archive_enabled":     archiveOn,
-			"archive_backlog":     archiveBacklog,
+			"version":         appVersion,
+			"uptime_sec":      int(time.Since(startTime).Seconds()),
+			"db_ok":           snap.DBOK,
+			"orphan_messages": orphanMsgs,
+			"archive_enabled": archiveOn,
+			"archive_backlog": archiveBacklog,
+			// 企微会话存档形态（E8-4）：几个通道开了 / 落库几行 / 解密失败几行 / 上一轮为什么没拉到。
+			// 直出为项而不是只汇总进 status=warn——"开了存档却一条都没有"是合规问题，运维要知道原因码。
+			// ⚠ 与上面两个 archive_* 不是一回事：那对是 messages 冷数据归档（internal/archive），
+			// 这项是企微会话内容存档（internal/channel）；名字相近、处置动作完全相反。
+			"chat_archive":        metrics.ChatArchiveHealth(),
 			"redis_enabled":       redisclient.IsEnabled(),
 			"replicas":            config.GlobalConfig.Server.Replicas,
 			"critical_alerts_24h": crit24h,

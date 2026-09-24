@@ -45,6 +45,26 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         公开解析四类失败同形 404 不透露存在性、扫码窗口去重只记一次、归因租户取自码行、
 #         别家的码打到本家只记不上（列仍空且客户照常建成）、停用码不再归因、
 #         「新增客户」卡片数字与名单 total 逐字相等、扫码次数/缺 metric 判 400、page_size 硬顶 100、未登录 401、自清理）
+#       / 2026-09-24 商机批：商机管道看板与报价版本链 76 断言（三十六：迁移023两表实存、
+#         一客户一在途单=复合唯一+部分索引（终局行不占位、流失后可重开新单且不覆盖历史）、
+#         一单一在途报价=部分唯一（只算 draft/sent）、建单/推进/终局的稳定原因码
+#         （title_required/stage_unknown/amount_negative/amount_too_large/deal_already_open/
+#         same_stage/stage_backward/won_amount_required/lost_reason_required/deal_closed）、
+#         报价合计一律服务端按明细算、已发出内容锁死只能出新版（旧版标 superseded 不删）、
+#         接受报价≠成交（两步分开）、看板 4 分组+6 阶段共 10 格与下钻名单逐字同源
+#         （先自检"参与比对的格子数=10、非零格子≥5"防 0==0 假绿）、在途金额/赢单率口径、
+#         缺/非法 filter 判 400、page_size 硬顶与越界页 total 如实、跨租户 404 同形态、
+#         AI 自动开单键出厂 false、顾问台面来源由后端判定、自清理）
+#       / 2026-09-24 E8 批：企微会话存档 65 断言（三十七：迁移024五个存档列与留痕表实存、
+#         同通道同 msgid 唯一=部分索引（空 msgid 的 switch/event 报文不占位）、两条取数索引、开关出厂 false、
+#         未登录 401 与 sales 403、跨租户与不存在同码同文案（自增 ID 探测不到别家通道）、
+#         状态摘要零密钥材料、无密钥不许开开关且被拒不半落库、密钥位数校验、只公钥出接口且私钥密文入库、
+#         手动同步回 HTTP200+ok=false+稳定码（SDK 缺口是环境状态不是 5xx）且绝不编造留痕行、
+#         未开存档的通道回 archive_disabled、空态 []、page_size 硬顶 100 回显生效值、非法时间判 400、
+#         列表不含 content_text 且 176 字长文只回 120 字摘要+省略号（按字符截断）、按 seq 倒序让无 msg_time
+#         的解不开行不消失、failed/keyword 筛选（% 当字面量）、详情逐字节回显全文且读一次留一条审计、
+#         /status/detail 直出 chat_archive 观测位（有启用通道时不得报 not_wired/disabled、判 warn 不判 crit）、
+#         公开 /status 零泄露、关开关只改开关不删留痕、自清理）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -1980,6 +2000,242 @@ $PSQL "DELETE FROM quotes WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0});
        DELETE FROM tenants WHERE code IN ('${DEAL_CA}','${DEAL_CB}');" >/dev/null 2>&1
 DEAL_LEFT=$($PSQL "SELECT (SELECT count(*) FROM opportunities WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0})) + (SELECT count(*) FROM quotes WHERE tenant_id IN (${DEAL_TA:-0},${DEAL_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${DEAL_CA}','${DEAL_CB}'))" 2>/dev/null | tr -d '[:space:]')
 check "本段商机/报价/租户已清零" 0 "${DEAL_LEFT:-1}"
+
+# ---------- 第三十七节：企微会话存档（E8 批 · 凭据/解密/留痕/观测位，2026-09-24）----------
+# 这一段守的是"合规留痕能力在凭据未接入时也必须诚实"。四件事最容易出事：
+#   1) **密钥绝不能出接口**：存档私钥泄露＝交出全部客户聊天记录明文。连掩码都不给
+#      （掩码会露长度），所以断响应体里连 "PRIVATE KEY" 的片段都不许出现，而不是断"看起来脱敏了"。
+#   2) **开关出厂关 + 没密钥不许开**：开了就等于"忘了关就把客户会话整段抄进我们库"（PIPL 级），
+#      与主动触达/催缴同一条口径；开开关还要求先有私钥，否则起的是只会产 decrypt_error 的空转链路。
+#   3) **"没接 SDK"必须是一个类型，不是一句日志**：0 条留痕有三种相反的解释
+#      （没开 / 开了没接 / 接了但全拉失败）。三种必须给三个不同的稳定码
+#      （archive_disabled / archive_sdk_not_built / 上一轮原因码聚合），否则前端只能显示一句模糊话。
+#   4) **列表不等于详情**：列表只回摘要（一次几十位客户的原文进不了日志/截图），
+#      全文只在详情接口回显且每次读都留痕——所以既断"列表里没有正文键"，也断"详情读了真留了一条审计"。
+# 顺序：数据层实存 → 鉴权闸 → 凭据写入与密钥生成 → 开关前置校验 → 手动同步（不得 5xx）
+#       → 读侧（摘要/分页/时间入参/跨租户同形 404）→ 观测位 → 现场清零。
+echo "---- 三十七、会话存档：凭据密文→密钥不回显→开关前置→同步不编造→名单摘要与详情留痕→观测位 ----"
+ARC_CA="smoke_arc_a_$$"
+ARC_CB="smoke_arc_b_$$"
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('存档甲租户','${ARC_CA}','personal','active',NOW(),NOW()),
+              ('存档乙租户','${ARC_CB}','personal','active',NOW(),NOW());" >/dev/null 2>&1
+ARC_TA=$($PSQL "SELECT id FROM tenants WHERE code='${ARC_CA}'" 2>/dev/null | tr -d '[:space:]')
+ARC_TB=$($PSQL "SELECT id FROM tenants WHERE code='${ARC_CB}'" 2>/dev/null | tr -d '[:space:]')
+# 通道直插（凭据由接口写，这里只给"一家一个 active 通道"的最小形态）
+$PSQL "INSERT INTO channels (tenant_id, type, name, status, created_at, updated_at)
+       VALUES (${ARC_TA:-0},'wecom_app','存档甲通道','active',NOW(),NOW()),
+              (${ARC_TB:-0},'wecom_app','存档乙通道','active',NOW(),NOW());" >/dev/null 2>&1
+ARC_CHA=$($PSQL "SELECT id FROM channels WHERE tenant_id=${ARC_TA:-0} AND name='存档甲通道'" 2>/dev/null | tr -d '[:space:]')
+ARC_CHB=$($PSQL "SELECT id FROM channels WHERE tenant_id=${ARC_TB:-0} AND name='存档乙通道'" 2>/dev/null | tr -d '[:space:]')
+# 前置自检：两租户两通道必须真的在库里（缺这步时下面所有跨租户/404 断言会在"两边都查不到"上假绿）
+ARC_PRE=$($PSQL "SELECT (SELECT count(*) FROM tenants WHERE code IN ('${ARC_CA}','${ARC_CB}')) + (SELECT count(*) FROM channels WHERE id IN (${ARC_CHA:-0},${ARC_CHB:-0}))" 2>/dev/null | tr -d '[:space:]')
+check "合成两租户两通道落库自检" 4 "${ARC_PRE:-0}"
+# arc_at <租户ID> <方法> <路径> [body]：以某租户作用域打管理端存档接口
+arc_at() {
+  if [ "$2" = "GET" ]; then
+    curl -s -m 15 -H "$AH" -H "X-Tenant-ID: $1" "$B$3"
+  else
+    curl -s -m 15 -X "$2" -H "$AH" -H "X-Tenant-ID: $1" -H "Content-Type: application/json" -d "${4:-}" "$B$3"
+  fi
+}
+arc_a() { arc_at "$ARC_TA" "$@"; }
+arc_b() { arc_at "$ARC_TB" "$@"; }
+arc_code() { curl -s -m 15 -o /dev/null -w "%{http_code}" "$@"; }
+# arc_http <租户ID> <方法> <路径> [body]：只要 HTTP 状态码（信封 code 恒 0，判不了 200/500）
+arc_http() {
+  curl -s -m 20 -o /dev/null -w "%{http_code}" -X "$2" -H "$AH" -H "X-Tenant-ID: $1" \
+    -H "Content-Type: application/json" -d "${4:-}" "$B$3"
+}
+
+# (1)~(7) 数据层实存：迁移登记、五个存档列、留痕表、部分唯一索引的定义、两条取数索引、开关默认值
+ARC_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='024_chat_archive'" 2>/dev/null | tr -d '[:space:]')
+check "迁移024已登记版本账本" 1 "${ARC_MIG:-0}"
+ARC_COL=$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_name='channels'
+  AND column_name IN ('archive_enabled','archive_secret_cipher','archive_private_key_cipher','archive_public_key_ver','archive_seq')" 2>/dev/null | tr -d '[:space:]')
+check "通道五个存档列实存" 5 "${ARC_COL:-0}"
+ARC_TBL=$($PSQL "SELECT count(*) FROM information_schema.tables WHERE table_name='chat_archive_records'" 2>/dev/null | tr -d '[:space:]')
+check "存档留痕表实存" 1 "${ARC_TBL:-0}"
+# 唯一锚必须**只盖 msgid 非空的行**：全表唯一会让第二条 switch/event 报文（企微本就不给 msgid）永久撞锚
+ARC_UX=$($PSQL "SELECT (indexdef LIKE '%UNIQUE%') AND (indexdef LIKE '%(channel_id, msgid)%') AND (indexdef LIKE '%WHERE%') AND (indexdef LIKE '%msgid%') FROM pg_indexes WHERE indexname='ux_archive_one_row_per_msgid'" 2>/dev/null | tr -d '[:space:]')
+check "同通道同msgid唯一=部分索引(空msgid事件报文不占位)" t "${ARC_UX:-f}"
+ARC_IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname IN ('idx_archive_channel_seq','idx_archive_tenant_time')" 2>/dev/null | tr -d '[:space:]')
+check "增量取数与合规检索各有自己的取数索引(探针不扫全表)" 2 "${ARC_IDX:-0}"
+ARC_DEF=$($PSQL "SELECT column_default FROM information_schema.columns WHERE table_name='channels' AND column_name='archive_enabled'" 2>/dev/null | tr -d '[:space:]')
+check "存档开关出厂默认false(泛抄客户会话是PIPL级动作)" false "${ARC_DEF:-MISSING}"
+# 新建通道在库里确实没开存档（默认值真的生效，不是只在 DDL 里写着）
+ARC_OFF=$($PSQL "SELECT count(*) FROM channels WHERE id IN (${ARC_CHA:-0},${ARC_CHB:-0}) AND archive_enabled=FALSE" 2>/dev/null | tr -d '[:space:]')
+check "合成通道出厂未开存档" 2 "${ARC_OFF:-0}"
+
+# (8)~(12) 闸：未登录 401 / sales 403 / 跨租户 404 与不存在同码同形
+check "未登录取存档状态判401" 401 "$(arc_code "$B/api/v1/admin/channels/${ARC_CHA:-0}/archive")"
+check "sales取存档状态判403(整条留痕链是管理视图)" 403 "$(arc_code "$B/api/v1/admin/channels/${ARC_CHA:-0}/archive" -H "Authorization: Bearer $STOKEN")"
+ARC_XBody=$(arc_b GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive")
+ARC_X404=$(printf '%s' "$ARC_XBody" | jsonget "['code']")
+check "乙租户读甲家通道存档判404" 404 "${ARC_X404:-X}"
+ARC_N404=$(arc_a GET "/api/v1/admin/channels/99999999/archive")
+ARC_NCode=$(printf '%s' "$ARC_N404" | jsonget "['code']")
+ARC_XMsg=$(printf '%s' "$ARC_XBody" | jsonget "['message']")
+ARC_NMsg=$(printf '%s' "$ARC_N404" | jsonget "['message']")
+check "跨租户与不存在同码(自增ID不能用来探测别家通道)" "$ARC_NCode" "${ARC_X404:-X}"
+check "跨租户与不存在同文案(不回显存在但不归你)" "$ARC_NMsg" "${ARC_XMsg:-MISSING}"
+check "跨租户响应不含对方通道名等任何字段" 0 "$(printf '%s' "$ARC_XBody" | grep -c "存档甲通道" 2>/dev/null)"
+
+# (13)~(17) 状态摘要：只报事实，不报密钥；SDK 缺口是一个稳定码
+ARC_ST=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive")
+check "未配置时enabled为false" False "$(printf '%s' "$ARC_ST" | jsonget "['data']['status']['enabled']")"
+check "未配置时key_configured为false" False "$(printf '%s' "$ARC_ST" | jsonget "['data']['status']['key_configured']")"
+check "取数器未接入回稳定码archive_sdk_not_built" archive_sdk_not_built "$(printf '%s' "$ARC_ST" | jsonget "['data']['status']['sdk_reason']")"
+check "游标出厂为0" 0 "$(printf '%s' "$ARC_ST" | jsonget "['data']['status']['cursor_seq']")"
+check "状态摘要里没有任何密钥材料" 0 "$(printf '%s' "$ARC_ST" | grep -c "PRIVATE KEY\|private_key_pem\|archive_secret" 2>/dev/null)"
+
+# (18)~(20) 开关前置：没密钥不许开（开了只会产 decrypt_error 空转链路）
+ARC_NOKEY=$(arc_a PUT "/api/v1/admin/channels/${ARC_CHA:-0}/archive" '{"enabled":true}')
+check "无密钥开存档判400" 400 "$(printf '%s' "$ARC_NOKEY" | jsonget "['code']")"
+check "无密钥开存档回稳定码" archive_key_missing "$(printf '%s' "$ARC_NOKEY" | jsonget "['reason']")"
+check "被拒的开启不得半落库(开关仍是false)" false "$($PSQL "SELECT archive_enabled::text FROM channels WHERE id=${ARC_CHA:-0}" 2>/dev/null | tr -d '[:space:]')"
+
+# (21)~(26) 密钥生成：只有公钥出接口，私钥密文入库，轮换版本号自增
+ARC_BADBITS=$(arc_a POST "/api/v1/admin/channels/${ARC_CHA:-0}/archive/key" '{"bits":1024}' | jsonget "['reason']")
+check "密钥位数非2048/4096判param_error(企微后台拒绝短密钥)" param_error "${ARC_BADBITS:-NONE}"
+ARC_KEY=$(arc_a POST "/api/v1/admin/channels/${ARC_CHA:-0}/archive/key" '{"bits":2048,"public_key_ver":1}')
+check "密钥生成回公钥PEM" 1 "$(printf '%s' "$ARC_KEY" | grep -c "BEGIN PUBLIC KEY" 2>/dev/null)"
+check "私钥明确声明不回显(private_key_echo=false)" False "$(printf '%s' "$ARC_KEY" | jsonget "['data']['private_key_echo']")"
+check "密钥生成响应零私钥痕迹" 0 "$(printf '%s' "$ARC_KEY" | grep -c "PRIVATE KEY" 2>/dev/null)"
+ARC_FP=$(printf '%s' "$ARC_KEY" | jsonget "['data']['fingerprint']")
+check "公钥指纹随行下发(前端据此核对企微后台那一版)" y "$([ -n "${ARC_FP:-}" ] && [ "${ARC_FP:-}" != "None" ] && echo y || echo n)"
+ARC_KVER=$($PSQL "SELECT archive_public_key_ver FROM channels WHERE id=${ARC_CHA:-0}" 2>/dev/null | tr -d '[:space:]')
+check "公钥版本号按入参落库" 1 "${ARC_KVER:-0}"
+# 密文列里存的必须不是明文 PEM（加密链真的走过）
+ARC_CIPHERHEAD=$($PSQL "SELECT left(archive_private_key_cipher, 20) FROM channels WHERE id=${ARC_CHA:-0}" 2>/dev/null | tr -d '\n')
+check "私钥以密文列落库(不是PEM明文)" n "$([ "${ARC_CIPHERHEAD:0:5}" = "-----" ] && echo y || echo n)"
+
+# (27)~(29) 配好凭据后开关才允许打开，且状态摘要如实反映
+ARC_SECRET=$(arc_a PUT "/api/v1/admin/channels/${ARC_CHA:-0}/archive" '{"enabled":true,"archive_secret":"smoke_arc_secret"}')
+check "有密钥后开存档成功且enabled回true" True "$(printf '%s' "$ARC_SECRET" | jsonget "['data']['status']['enabled']")"
+check "密钥与secret各自如实报已配置" True "$(printf '%s' "$ARC_SECRET" | jsonget "['data']['status']['secret_configured']")"
+check "更新接口响应同样零密钥痕迹" 0 "$(printf '%s' "$ARC_SECRET" | grep -c "PRIVATE KEY\|smoke_arc_secret" 2>/dev/null)"
+
+# (30)~(33) 手动同步：环境缺口不是这次请求写错了 → HTTP 200 + data.ok=false + data.reason 稳定码，绝不 500
+# ⚠ 这里必须断 **HTTP 状态码**，不能拿信封 code 当 200：成功信封的 code 恒为 0（全站统一），
+# 断"code 不等于 500"之类形同不断——真 500 的 code 是 500，而这条链路的正确形态是 200+ok=false。
+ARC_SYNCHT=$(arc_http "$ARC_TA" POST "/api/v1/admin/channels/${ARC_CHA:-0}/archive/sync" '{}')
+ARC_SYNC=$(arc_a POST "/api/v1/admin/channels/${ARC_CHA:-0}/archive/sync" '{}')
+check "手动同步回HTTP200而非500(SDK缺口是环境状态)" 200 "${ARC_SYNCHT:-0}"
+check "手动同步信封code=0(不是错误响应)" 0 "$(printf '%s' "$ARC_SYNC" | jsonget "['code']")"
+check "手动同步ok=false并带稳定码" archive_sdk_not_built "$(printf '%s' "$ARC_SYNC" | jsonget "['data']['reason']")"
+check "未接入SDK时不得编造留痕行" 0 "$($PSQL "SELECT count(*) FROM chat_archive_records WHERE channel_id=${ARC_CHA:-0}" 2>/dev/null | tr -d '[:space:]')"
+# 未开存档的通道：同一入口回 archive_disabled（与"开了没接"是两种决定）
+ARC_SYNCOFF=$(arc_b POST "/api/v1/admin/channels/${ARC_CHB:-0}/archive/sync" '{}' | jsonget "['data']['reason']")
+check "未开存档的通道同步回archive_disabled" archive_disabled "${ARC_SYNCOFF:-NONE}"
+
+# (33)~(39) 读侧：空态是 []、摘要纪律、分页硬顶回显、时间入参、详情留痕
+ARC_EMPTY=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records")
+check "空态list是[]而不是null(前端直接map不炸)" "[]" "$(printf '%s' "$ARC_EMPTY" | python3 -c "
+import sys,json
+d=(json.load(sys.stdin).get('data') or {})
+print('[]' if d.get('list')==[] else 'NOT_EMPTY_LIST')" 2>/dev/null)"
+check "默认页大小20并回显生效值" 20 "$(printf '%s' "$ARC_EMPTY" | jsonget "['data']['page_size']")"
+check "page_size=1000被钳到硬顶100且回显钳后值" 100 "$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records?page_size=1000" | jsonget "['data']['page_size']")"
+check "硬顶常数随行下发(前端不各写一套)" 100 "$(printf '%s' "$ARC_EMPTY" | jsonget "['data']['page_size_cap']")"
+ARC_BADTIME=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records?since=昨天" | jsonget "['reason']")
+check "非法时间入参判param_error(不静默当成不筛)" param_error "${ARC_BADTIME:-NONE}"
+# 真库直插一行带正文的留痕（不这么插，"列表不含正文"就会在空名单上假绿）
+# 正文必须**长过摘要上限 120 字**：短正文的"摘要"就是全文，那样"列表不含全文"这条断言
+# 会在摘要上恒绿——摘要纪律只有拿长文本才测得出来。
+ARC_LONGTXT=$(python3 -c "print('客户要求保密的会话原文，请逐条核对后再决定。'*8)")
+$PSQL "INSERT INTO chat_archive_records (tenant_id, channel_id, msgid, seq, biz_type, action, from_user, sender_name,
+        to_list, chat_type, chatid, msg_type, content_text, decrypt_error, msg_time, created_at, updated_at)
+       VALUES (${ARC_TA:-0},${ARC_CHA:-0},'smoke_arc_m1',900,'business','send','zhangsan','张三','[\"lisi\"]',
+               'single','smoke_arc_room','text','${ARC_LONGTXT}','','2026-09-24 10:00:00+08',NOW(),NOW()),
+              (${ARC_TA:-0},${ARC_CHA:-0},'smoke_arc_m2',901,'business','send','lisi','李四','[\"zhangsan\"]',
+               'single','smoke_arc_room','text','','random key 解不开',NULL,NOW(),NOW());" >/dev/null 2>&1
+ARC_SEED=$($PSQL "SELECT count(*) FROM chat_archive_records WHERE channel_id=${ARC_CHA:-0}" 2>/dev/null | tr -d '[:space:]')
+check "留痕两行落库自检(1行有正文/1行只有信封)" 2 "${ARC_SEED:-0}"
+ARC_LIST=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records")
+check "名单total如实为2" 2 "$(printf '%s' "$ARC_LIST" | jsonget "['data']['total']")"
+check "列表绝不序列化正文全文字段" 0 "$(printf '%s' "$ARC_LIST" | grep -c '"content_text"' 2>/dev/null)"
+check "列表绝不出现正文全文(176字长文不得整段推送)" 0 "$(printf '%s' "$ARC_LIST" | grep -c "$ARC_LONGTXT" 2>/dev/null)"
+# 摘要与"有没有全文"的标记：前端要能在不解密全文的前提下区分"这条能点开"与"这条本来就解不开"
+ARC_HASFULL=$(printf '%s' "$ARC_LIST" | python3 -c "
+import sys,json
+lst=(json.load(sys.stdin).get('data') or {}).get('list') or []
+print('|'.join(('T' if r.get('has_full_text') else 'F') for r in lst))" 2>/dev/null)
+check "列表按行给出has_full_text标记(有正文T/仅信封F)" "F|T" "${ARC_HASFULL:-PARSE_FAIL}"
+# 摘要按**字符**截断：按字节切会把中文劈成半个字，前端拿到的就是乱码方块
+ARC_TRUNC=$(printf '%s' "$ARC_LIST" | python3 -c "
+import sys,json
+lst=(json.load(sys.stdin).get('data') or {}).get('list') or []
+row=next((r for r in lst if r.get('has_full_text')), {})
+p=row.get('text_preview') or ''
+print('len=%d' % len(p), 'ellipsis' if p.endswith('…') else 'noellipsis')" 2>/dev/null)
+check "摘要截到120字并补省略号(按字符不按字节)" "len=121 ellipsis" "${ARC_TRUNC:-PARSE_FAIL}"
+check "列表下发正文摘要字段" 1 "$(printf '%s' "$ARC_LIST" | grep -c '"text_preview"' 2>/dev/null)"
+# 排序口径钉死：按 seq 倒序（企微原始顺序）。为什么不用 msg_time——解不开的留痕行没有 msg_time，
+# 按时间排（PG 默认 DESC NULLS FIRST）会让它们要么长期霸占首页、要么在某页彻底消失，
+# 而"哪几条拉不下来"恰恰是最该一眼看见的。
+ARC_ORDER=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records" | python3 -c "
+import sys,json
+lst=(json.load(sys.stdin).get('data') or {}).get('list') or []
+print('|'.join(str(r.get('seq')) for r in lst))" 2>/dev/null)
+check "名单按seq倒序(无msg_time的留痕行不消失)" "901|900" "${ARC_ORDER:-PARSE_FAIL}"
+ARC_FAILED=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records?failed=true" | jsonget "['data']['total']")
+check "failed=true只回留痕行" 1 "${ARC_FAILED:-X}"
+ARC_HIT=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records?keyword=%E4%BF%9D%E5%AF%86" | jsonget "['data']['total']")
+check "keyword命中正文子串(ILIKE)" 1 "${ARC_HIT:-X}"
+ARC_WILD=$(arc_a GET "/api/v1/admin/channels/${ARC_CHA:-0}/archive/records?keyword=100%25" | jsonget "['data']['total']")
+check "keyword里的%被当字面量(通配符不越权)" 0 "${ARC_WILD:-X}"
+# 详情：全文只在这里回显，且每次读都留痕
+ARC_RID=$($PSQL "SELECT id FROM chat_archive_records WHERE channel_id=${ARC_CHA:-0} AND msgid='smoke_arc_m1'" 2>/dev/null | tr -d '[:space:]')
+ARC_DET=$(arc_a GET "/api/v1/admin/channel-archive/records/${ARC_RID:-0}")
+check "详情逐字节回显正文全文" y "$(printf '%s' "$ARC_DET" | grep -c "$ARC_LONGTXT" 2>/dev/null | awk '{print ($1>0)?"y":"n"}')"
+# 审计走异步 goroutine（writeAuditSimple 不阻塞响应），不等一下就查会读到 0——
+# 这条 sleep 不是"等接口"，是"等留痕"，而留痕正是本断言的断言对象。
+sleep 1
+ARC_AUDIT=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${ARC_TA:-0} AND action='channel_archive_record_read' AND resource='archive_record:${ARC_RID:-0}'" 2>/dev/null | tr -d '[:space:]')
+check "读全文即留痕(谁在什么时候看了哪条会话)" 1 "${ARC_AUDIT:-0}"
+ARC_404A=$(arc_a GET "/api/v1/admin/channel-archive/records/99999999" | jsonget "['reason']")
+check "不存在记录判archive_record_not_found" archive_record_not_found "${ARC_404A:-NONE}"
+ARC_404B=$(arc_b GET "/api/v1/admin/channel-archive/records/${ARC_RID:-0}" | jsonget "['reason']")
+check "跨租户读别人留痕同码同形(404)" archive_record_not_found "${ARC_404B:-NONE}"
+
+# (40)~(43) 观测位：/status/detail 必须看得见存档形态，公开 /status 不得泄露
+ARC_HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+ARC_DETAIL=$(curl -s -m 15 -H "X-Health-Token: $ARC_HT" "$B/status/detail")
+ARC_HASCHECK=$(printf '%s' "$ARC_DETAIL" | grep -c '"chat_archive"' 2>/dev/null)
+check "详情端点含会话存档观测位" 1 "${ARC_HASCHECK:-0}"
+# 观测位取数走独立键（data.chat_archive.value），不用 readiness[]：
+# readiness 是"配置开关体检"（ComputeReadiness），而存档是"数据形态体检"（ComputeHealth）——
+# 两件事合成一个数组会让"缺哪一项"再也无法按名断言（本项首跑就是这么漏的：字段没直出、探针却全绿）。
+ARC_PROBE=$(printf '%s' "$ARC_DETAIL" | python3 -c "
+import sys,json
+d=json.load(sys.stdin); d=d.get('data',d)
+p=d.get('chat_archive') or {}
+print((p.get('value') or 'ABSENT')+'@@'+(p.get('status') or ''))" 2>/dev/null)
+# 已有一个启用通道时，观测位绝不能报 not_wired/disabled——那等于"探针说没这回事，数据却在库里"
+# （case 不写进 $() 里：bash 在命令替换内解析 `)` 会错位，本段首跑就是这条语法错）
+ARC_PROBE_BAD=n
+case "${ARC_PROBE:-ABSENT@@}" in
+  not_wired* | disabled* | ABSENT*) ARC_PROBE_BAD=y ;;
+esac
+check "有启用通道时观测位如实报数(不报not_wired/disabled)" n "$ARC_PROBE_BAD"
+check "观测位点明sdk_not_built(开了但一条都不会有必须看得见)" 1 "$(printf '%s' "${ARC_PROBE:-}" | grep -c "sdk_not_built" 2>/dev/null)"
+# 判级只到 warn：存档缺数据是"该有人去看"，不是半夜刷群（MaybeAlert 只对 crit 发信）
+check "存档观测位判级为warn而非crit(合规留痕不刷群)" warn "$(printf '%s' "${ARC_PROBE:-}" | sed 's/.*@@//')"
+check "公开/status不泄露会话存档观测位" 0 "$(curl -s "$B/status" | grep -c 'chat_archive' 2>/dev/null)"
+
+# (43)~(44) 关掉开关即止：留痕行不删（那是客户要的合规证据），但不再拉取
+ARC_OFF2=$(arc_a PUT "/api/v1/admin/channels/${ARC_CHA:-0}/archive" '{"enabled":false}')
+check "关闭存档回显enabled=false" False "$(printf '%s' "$ARC_OFF2" | jsonget "['data']['status']['enabled']")"
+check "关闭只改开关不删留痕(证据必须留着)" 2 "$($PSQL "SELECT count(*) FROM chat_archive_records WHERE channel_id=${ARC_CHA:-0}" 2>/dev/null | tr -d '[:space:]')"
+
+# 现场回收：留痕行→审计→通道→租户，逐层清，不留半截
+$PSQL "DELETE FROM chat_archive_records WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0});
+       DELETE FROM tenant_audit_logs WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0}) AND action LIKE 'channel_archive%';
+       DELETE FROM channels WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0});
+       DELETE FROM tenants WHERE code IN ('${ARC_CA}','${ARC_CB}');" >/dev/null 2>&1
+ARC_LEFT=$($PSQL "SELECT (SELECT count(*) FROM chat_archive_records WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0})) + (SELECT count(*) FROM channels WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${ARC_CA}','${ARC_CB}'))" 2>/dev/null | tr -d '[:space:]')
+check "本段留痕/通道/租户已清零" 0 "${ARC_LEFT:-1}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

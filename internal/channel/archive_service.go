@@ -20,12 +20,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 
+	"ai-scrm/internal/db"
 	"ai-scrm/internal/model"
 	"ai-scrm/pkg/crypto"
 )
@@ -373,6 +377,151 @@ func SyncArchiveOnce(ctx context.Context, gdb *gorm.DB, ch *model.Channel) (Arch
 		return res, err
 	}
 	return IngestArchiveItems(gdb, ch, items)
+}
+
+// ArchiveSyncSummary 一轮"扫全部开了存档的通道"的结果摘要（日志与观测位看同一份数）。
+type ArchiveSyncSummary struct {
+	Channels int            `json:"channels"` // 本轮扫到几个启用的存档通道
+	Errors   map[string]int `json:"errors"`   // 稳定原因码 → 命中通道数（不落中文文案，日志按码聚合）
+	Ingest   ArchiveIngestResult
+}
+
+// SyncAllArchiveChannels 扫一轮启用存档的通道并逐条同步，由 main.go 后台 ticker（channel:archive_sync）调用。
+//
+// 入口闸两把，缺一不可：
+//  1. ArchiveFetcher == nil → 整轮直接返回。官方 C SDK 没编进来时逐通道跑一遍再去逐通道报
+//     "archive_sdk_not_built"，只会把日志刷满而结果完全一样；"开了但没接"这个事实改由
+//     readiness/观测位说清楚。
+//  2. archive_enabled 默认 false → 没开的通道一条都不查（与触达/催缴同一口径：
+//     "忘了关就把客户聊天记录整段抄进我们库"是 PIPL 级事故）。
+//
+// 只扫 status=active：停用通道的应用 secret 往往已经换过，拿旧凭据去拉存档只会得到
+// 一片解密失败行，把 failed_total 污染成看不出真问题的样子。
+func SyncAllArchiveChannels(ctx context.Context) ArchiveSyncSummary {
+	sum := ArchiveSyncSummary{Errors: map[string]int{}}
+	// 无论走到哪个返回分支都记一轮：观测位要能区分"这轮跑了但没结果"和"ticker 压根没跑过"，
+	// 后者是"功能开了却没接调度"，只有记时间戳才看得出来。
+	defer func() { recordArchiveSyncRound(sum) }()
+	if ArchiveFetcher == nil {
+		return sum
+	}
+	var list []model.Channel
+	// 跨租户扫描：本函数由 main.go ticker 发起、无请求 ctx，故意不带租户条件（故需 G-12 豁免）
+	if err := db.DB.Where("archive_enabled = ? AND status = ? AND deleted_at IS NULL", // g12:platform
+		true, model.ChannelStatusActive).Find(&list).Error; err != nil {
+		log.Printf("[会话存档] 通道清单读取失败: %v", err)
+		return sum
+	}
+	sum.Channels = len(list)
+	for i := range list {
+		ch := list[i]
+		res, err := SyncArchiveOnce(ctx, db.DB, &ch)
+		if err != nil {
+			code := "archive_sync_failed"
+			switch {
+			case errors.Is(err, ErrArchiveSDKNotBuilt):
+				code = ErrArchiveSDKNotBuilt.Error()
+			case errors.Is(err, ErrArchiveKeyMissing):
+				code = ErrArchiveKeyMissing.Error()
+			case errors.Is(err, ErrCredentialRekey):
+				code = "archive_secret_rekey_required"
+			}
+			sum.Errors[code]++
+			// 每个通道一行日志：管理员在页面上看到的是"游标不动"，没有这行就查不出是密钥还是许可
+			log.Printf("[会话存档] channel=%d 本轮未同步 reason=%s: %v", ch.ID, code, clipArchiveError(err))
+			continue
+		}
+		sum.Ingest.Stored += res.Stored
+		sum.Ingest.DupSkipped += res.DupSkipped
+		sum.Ingest.StaleSkipped += res.StaleSkipped
+		sum.Ingest.DecryptFailed += res.DecryptFailed
+		sum.Ingest.Fetched += res.Fetched
+		if res.MaxSeq > sum.Ingest.MaxSeq {
+			sum.Ingest.MaxSeq = res.MaxSeq
+		}
+	}
+	return sum
+}
+
+// lastArchiveRound 上一轮同步的进程内记忆（仅诊断用，重启即清零）。
+type lastArchiveRound struct {
+	at       time.Time
+	channels int
+	errs     string // "reason=次数" 逗号拼接，稳定码不是中文文案
+}
+
+var (
+	archiveRoundMu   sync.Mutex
+	archiveRoundMemo lastArchiveRound
+)
+
+// recordArchiveSyncRound 记下本轮结果供观测位读取（键排序保证同一轮结果字符串稳定）
+func recordArchiveSyncRound(sum ArchiveSyncSummary) {
+	codes := make([]string, 0, len(sum.Errors))
+	for code, n := range sum.Errors {
+		codes = append(codes, fmt.Sprintf("%s=%d", code, n))
+	}
+	sort.Strings(codes)
+	archiveRoundMu.Lock()
+	archiveRoundMemo = lastArchiveRound{at: time.Now(), channels: sum.Channels, errs: strings.Join(codes, ",")}
+	archiveRoundMu.Unlock()
+}
+
+// LastArchiveSyncRound 返回上一轮同步的时间、扫到的通道数与失败原因码聚合。
+// ran=false 表示本进程还没跑过存档 ticker（与"跑了但全跳过"是两件事）。
+func LastArchiveSyncRound() (at time.Time, channels int, errs string, ran bool) {
+	archiveRoundMu.Lock()
+	defer archiveRoundMu.Unlock()
+	if archiveRoundMemo.at.IsZero() {
+		return time.Time{}, 0, "", false
+	}
+	return archiveRoundMemo.at, archiveRoundMemo.channels, archiveRoundMemo.errs, true
+}
+
+// ArchivePlatformSnapshot 平台级存档总览（供 metrics 观测位与 /status/detail 取数）。
+type ArchivePlatformSnapshot struct {
+	EnabledChannels int64     `json:"enabled_channels"` // 启用存档且 status=active 的通道数
+	FetcherReady    bool      `json:"fetcher_ready"`    // 官方 SDK 拉取器是否已注入
+	Stored          int64     `json:"stored"`           // 这些通道名下已落库的存档行数
+	Failed          int64     `json:"failed"`           // 其中 decrypt_error 非空的行数（有信封没正文）
+	SyncRan         bool      `json:"sync_ran"`         // 本进程是否跑过存档 ticker
+	SyncRanAt       time.Time `json:"sync_ran_at"`
+	SyncErrors      string    `json:"sync_errors"` // 上一轮稳定原因码聚合（""=没跑过或全绿）
+}
+
+// ArchivePlatformSnapshotFn 取平台总览。db.DB 未就绪（单测/启动早期）时返回零值不报错。
+//
+// 为什么要单独一个跨租户取数、而不是让运维逐个通道看：最容易静默失效的组合恰好是
+// "有人开了存档，但二进制里没编 C SDK"——单通道页面上 fetcher_ready=false 会被当成
+// "还没接入"（正常），只有"开了 N 个通道 + 一个 fetcher 都没有 + 库里零行"三个数放在一起
+// 才是故障。
+//
+// 取数成本：没开任何通道时只跑一条 channels 查询就返回，绝不为一条展示语句去扫存档表。
+func ArchivePlatformSnapshotFn() ArchivePlatformSnapshot {
+	var snap ArchivePlatformSnapshot
+	snap.FetcherReady = ArchiveFetcher != nil
+	snap.SyncRanAt, _, snap.SyncErrors, snap.SyncRan = LastArchiveSyncRound()
+	if db.DB == nil {
+		return snap
+	}
+	var ids []uint
+	// 跨租户取数：本函数由观测位发起、无请求 ctx，故意不带租户条件（故需 G-12 豁免）
+	if err := session(db.DB).Model(&model.Channel{}). // g12:platform
+								Where("archive_enabled = ? AND status = ? AND deleted_at IS NULL", true, model.ChannelStatusActive).
+								Pluck("id", &ids).Error; err != nil {
+		return snap
+	}
+	snap.EnabledChannels = int64(len(ids))
+	if len(ids) == 0 {
+		return snap
+	}
+	if err := session(db.DB).Model(&model.ChatArchiveRecord{}).
+		Where("channel_id IN ?", ids).Count(&snap.Stored).Error; err != nil {
+		return snap
+	}
+	session(db.DB).Model(&model.ChatArchiveRecord{}).
+		Where("channel_id IN ? AND decrypt_error <> ''", ids).Count(&snap.Failed)
+	return snap
 }
 
 // ArchiveStatus 汇总单通道存档状态（多条查询，句柄已复位）。

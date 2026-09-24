@@ -16,6 +16,9 @@
 //
 // 缓存纪律：探针会被 /status/detail 与告警 tick 反复调用，热表计数绝不逐次现算——
 // TTL 内复用上一次结果，取数失败沿用旧值并标记 stale（宁可不新，也不要每次扫全表）。
+//
+// 同族的第三项「企微会话存档形态」在 archive_hygiene.go（取数由 main.go 注入，
+// 因为观测位不得反向 import internal/channel）；三项一起由 hygieneChecks 组装。
 package metrics
 
 import (
@@ -105,10 +108,11 @@ func ResetHygieneCache() {
 	hygieneMu.Unlock()
 }
 
-// hygieneChecks 组装两项健康检查（由 ComputeHealth 调用）
+// hygieneChecks 组装健康观测项（由 ComputeHealth 调用）：
+// 两项数据层卫生 + 一项企微会话存档形态（archive_hygiene.go，未装配时判 not_wired 不报故障）
 func hygieneChecks() []HealthCheck {
 	orphan, backlog, backlogOn, stale := hygieneSnapshot()
-	out := make([]HealthCheck, 0, 2)
+	out := make([]HealthCheck, 0, 3)
 
 	warn := monitorCfgInt("monitor_orphan_warn", 100)
 	ch := intCheck("orphan_messages", orphan, warn, monitorCfgInt("monitor_orphan_crit", 1<<40),
@@ -119,7 +123,7 @@ func hygieneChecks() []HealthCheck {
 	}
 	out = append(out, ch)
 
-	archiveCheck := HealthCheck{
+	backlogCheck := HealthCheck{
 		Name: "message_archive_backlog", Status: StatusOK, Value: "disabled",
 		WarnAt: "-", CritAt: "-",
 		Desc: "message_archive_days=0（默认）：冷数据不归档，messages 只增不减——启用前需产品确认历史可见性",
@@ -129,13 +133,14 @@ func hygieneChecks() []HealthCheck {
 		if runtimecfg.DefaultSystemConfigService != nil {
 			days = runtimecfg.DefaultSystemConfigService.GetInt("message_archive_days", 0)
 		}
-		archiveCheck.Value = strconv.FormatInt(backlog, 10)
-		archiveCheck.Desc = "热表中已超过 " + strconv.Itoa(days) + " 天、下次归档会搬走的行数"
+		backlogCheck.Value = strconv.FormatInt(backlog, 10)
+		backlogCheck.Desc = "热表中已超过 " + strconv.Itoa(days) + " 天、下次归档会搬走的行数"
 		if backlog >= monitorCfgInt("monitor_archive_warn", 200000) {
-			archiveCheck.Status = StatusWarn
+			backlogCheck.Status = StatusWarn
 		}
 	}
-	out = append(out, archiveCheck)
+	out = append(out, backlogCheck)
+	out = append(out, archiveCheck())
 	return out
 }
 

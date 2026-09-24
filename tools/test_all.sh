@@ -182,6 +182,29 @@ HYG_RC=$?
 verdict "工作树卫生护栏" $HYG_RC
 
 # ---------- 阶段一：单元测试层 ----------
+# 单测前置：先把数据库让给单测独占。历史那条「internal/billing 与在线服务后台 ticker 共库存在
+# 偶发竞态（首跑红、复跑即绿）」的登记残项，根因不是用例并发，而是**开发者手工起的 ./ai-scrm
+# 还在跑**：它的到期巡检 / UsageSink / 存档同步 ticker 会在同一批 tenants、billing_orders 行上
+# 与单测断言抢同一个时间窗。E2E 层本来就会 stop→build→重启（阶段三），这里只是把「起服务前先静默」
+# 提前到单测之前，让 --unit/--fast 的总账也可信。
+# 只杀「本仓自己起的那个实例」：按端口找监听者，再用**进程 cwd** 认领归属，绝不按进程名通杀
+# （同名 ./ai-scrm 在另一个 checkout 里也叫这个名，按名字杀会互踩）。
+STRAY_PID=$(lsof -ti ":$PORT" -sTCP:LISTEN 2>/dev/null | head -1 || true)
+STRAY_CWD=$(lsof -p "${STRAY_PID:-0}" -a -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1 || true)
+if [ -n "$STRAY_PID" ] && [ "$STRAY_CWD" = "$ROOT" ]; then
+  step "单元测试层前置：停掉本机已起的本仓实例（PID ${STRAY_PID}，避免与单测共库竞态）"
+  ./stop.sh >/dev/null 2>&1 || true
+  kill "$STRAY_PID" 2>/dev/null || true
+  sleep 2
+  # 仍在监听就判红：静默不下来等于整层单测跑在脏库上，总账不可信，别往下走
+  if lsof -ti ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "  FAIL 端口 ${PORT} 仍被占用（PID ${STRAY_PID} 未退出），请先手工停止再起回归"
+    verdict "单元测试层前置：停止残留实例" 1
+  else
+    verdict "单元测试层前置：停止残留实例" 0
+  fi
+fi
+
 step "单元测试层：go vet + go test -cover（含 DB 依赖用例，连不上自动跳过）"
 go vet ./... >/tmp/test_all_vet.log 2>&1
 verdict "go vet ./..." $?
@@ -349,7 +372,7 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（388 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一）"
+step "E2E 层：smoke.sh（453 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一、E8 企微会话存档密文/留痕/观测位 §三十七）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"

@@ -497,3 +497,112 @@ func TestIngestArchiveItemsRequiresKey(t *testing.T) {
 	}
 	_ = time.Now()
 }
+
+// TestSyncAllArchiveChannelsCoversEveryTenant 后台一轮必须扫到**每个**租户的启用通道，
+// 同时把"没开"和"开了但通道已停用"两类排除在外。
+//
+// 为什么值得单测：这条 SQL 是 ticker 唯一的取数面，写错的方向是"只查到第一个租户"
+// （漏租户=静默少留痕，客户永远不会发现），而单租户页面上什么都看不出来。
+// 判据用"每个通道各自落了几行"逐条钉，不用总数——总数会被别的用例留下的行干扰。
+func TestSyncAllArchiveChannelsCoversEveryTenant(t *testing.T) {
+	tidA := newArchiveTenant(t)
+	tidB := newArchiveTenant(t)
+	chA := newArchiveChannel(t, tidA, "arc_all_a")
+	chB := newArchiveChannel(t, tidB, "arc_all_b")
+	// 同租户第三路：存档开关开着但通道已停用 → 一律不碰（旧凭据只会生产解密失败行）
+	chOff := newArchiveChannel(t, tidB, "arc_all_off")
+	if err := db.DB.Model(&model.Channel{}).Where("id = ?", chOff.ID).
+		Update("status", model.ChannelStatusDisabled).Error; err != nil {
+		t.Fatalf("置停用失败: %v", err)
+	}
+
+	old := ArchiveFetcher
+	t.Cleanup(func() { ArchiveFetcher = old })
+	// 每个通道回一条自己的消息：msgid 带通道名，逐条对账才不会互相冒充。
+	// 判据用"访问了哪些通道 ID"而不是"本轮扫到几个"——同库还有别的包在用例跑，
+	// 绝对数会随并发包数漂，包含/不包含才是这条扫描谓词的真正承诺。
+	seen := map[uint]int{}
+	ArchiveFetcher = func(_ context.Context, ch *model.Channel, _ string, _ string, _ int64, _ int) ([]ArchiveCipherItem, error) {
+		seen[ch.ID]++
+		return []ArchiveCipherItem{
+			makeArchiveItem(t, ch, 700, ch.ArchivePublicKeyVer,
+				`{"msgid":"arc_all_`+ch.Name+`","msgtype":"text","text":{"content":"一轮扫到"}}`),
+		}, nil
+	}
+	_ = SyncAllArchiveChannels(context.Background())
+	if seen[chA.ID] != 1 || seen[chB.ID] != 1 {
+		t.Fatalf("两个租户的启用通道各该被访问一次（跨租户扫描漏租户是静默故障）: A=%d B=%d", seen[chA.ID], seen[chB.ID])
+	}
+	if n := seen[chOff.ID]; n != 0 {
+		t.Fatalf("停用通道不得被拉取（旧凭据只会生产 decrypt_error 脏行），实得访问 %d 次", n)
+	}
+	for _, ch := range []*model.Channel{chA, chB} {
+		var n int64
+		db.DB.Model(&model.ChatArchiveRecord{}).Where("channel_id = ?", ch.ID).Count(&n)
+		if n != 1 {
+			t.Fatalf("通道 %d 应落 1 行，实得 %d（跨租户扫描漏了它）", ch.ID, n)
+		}
+	}
+	var offRows int64
+	db.DB.Model(&model.ChatArchiveRecord{}).Where("channel_id = ?", chOff.ID).Count(&offRows)
+	if offRows != 0 {
+		t.Fatalf("停用通道名下不得出现存档行，实得 %d 行", offRows)
+	}
+
+	// 取数器没接：整轮静默跳过，一条日志不刷、一行不写、不报错
+	ArchiveFetcher = nil
+	if sum2 := SyncAllArchiveChannels(context.Background()); sum2.Channels != 0 || len(sum2.Errors) != 0 {
+		t.Fatalf("SDK 未接入应整轮跳过，实得 %+v", sum2)
+	}
+	db.DB.Model(&model.ChatArchiveRecord{}).Where("channel_id = ?", chA.ID).Count(&offRows)
+	if offRows != 1 {
+		t.Fatalf("跳过轮不得改动已落库行数，实得 %d", offRows)
+	}
+}
+
+// TestArchivePlatformSnapshotAndRound 观测位取数：启用通道数 / 落库数 / 解密失败数 / 上一轮记忆。
+//
+// 判据按"本通道实数 ≤ 平台总数"配着钉，同时把失败行真的数到（1 行 decrypt_error）——
+// 平台聚合写错方向（漏数某一通道、把失败行混进总数）在这里就会红。
+func TestArchivePlatformSnapshotAndRound(t *testing.T) {
+	tid := newArchiveTenant(t)
+	ch := newArchiveChannel(t, tid, "arc_snap")
+	old := ArchiveFetcher
+	t.Cleanup(func() { ArchiveFetcher = old })
+	ArchiveFetcher = func(context.Context, *model.Channel, string, string, int64, int) ([]ArchiveCipherItem, error) {
+		return nil, nil // 空批次：本用例要证的是"记忆被写下"，不是取数
+	}
+	if _, err := IngestArchiveItems(db.DB, ch, []ArchiveCipherItem{
+		makeArchiveItem(t, ch, 801, ch.ArchivePublicKeyVer, `{"msgid":"arc_snap_ok","msgtype":"text","text":{"content":"明文"}}`),
+		// 解不开的信封也要留痕：随机密钥不是合法 Base64，RSA 解第一步就失败
+		{Seq: 802, PublicKeyVer: ch.ArchivePublicKeyVer, EncryptRandomKey: "not-base64!!"},
+	}); err != nil {
+		t.Fatalf("入库失败: %v", err)
+	}
+	snap := ArchivePlatformSnapshotFn()
+	if !snap.FetcherReady {
+		t.Fatalf("已注入取数器，快照的 fetcher_ready 必须为真")
+	}
+	if snap.EnabledChannels < 1 {
+		t.Fatalf("至少应数到本用例的启用通道，实得 %d", snap.EnabledChannels)
+	}
+	var mine, mineFailed int64
+	db.DB.Model(&model.ChatArchiveRecord{}).Where("channel_id = ?", ch.ID).Count(&mine)
+	db.DB.Model(&model.ChatArchiveRecord{}).Where("channel_id = ? AND decrypt_error <> ''", ch.ID).Count(&mineFailed)
+	if mine != 2 || mineFailed != 1 {
+		t.Fatalf("本通道应 2 行/其中 1 行解密失败，实得 %d/%d", mine, mineFailed)
+	}
+	if snap.Stored < mine || snap.Failed < mineFailed {
+		t.Fatalf("平台总览数不得小于单通道实数: snap=%+v 本通道=%d/%d", snap, mine, mineFailed)
+	}
+	// 跑过一轮才留进程记忆（"ticker 没装配"与"跑了但没数据"的分界）。
+	// 只断"这一轮之后有记忆"，不断"之前没有"——同包别的用例会先跑，进程记忆是全局的。
+	_ = SyncAllArchiveChannels(context.Background())
+	at, channels, _, ran := LastArchiveSyncRound()
+	if !ran || at.IsZero() || channels < 1 {
+		t.Fatalf("跑过一轮后应留下时间与通道数，实得 ran=%v at=%v channels=%d", ran, at, channels)
+	}
+	if s2 := ArchivePlatformSnapshotFn(); !s2.SyncRan || s2.SyncRanAt.IsZero() {
+		t.Fatalf("快照应带上一轮时间，实得 %+v", s2)
+	}
+}

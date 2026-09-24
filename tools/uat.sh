@@ -17,10 +17,28 @@ try:
 except Exception: print('')" "$1"; }
 code(){ jget "d['code']"; }
 
+# uat_login <登录请求体JSON> → 原样打出服务端响应（调用方自己 jget 取 token）
+# 为什么要重试而不是直接 curl：/auth/login 挂 IPRateLimit("login", 20, 1min)，而 test_all 是顺序跑
+# 十套脚本共用同一实例、同一出口 IP，前序冒烟的登录足以把这个桶打满。更要命的是这个窗口是
+# 「首个请求 + TTL」而不是自然分钟，脚本在自己的窗口里连打 20 次就整窗被拒。
+# 现场：uat 单跑 98/98 全绿，夹在 test_all 里 PASS=50 FAIL=48——第一条红就是「甲登录」（响应 429），
+# token 空 → 邀请码 0 位 → 后续所有带 Bearer 的断言集体 401。被测的是登录之后的业务链，
+# 把限流当成产品缺陷报会让 20 条下游断言一起变红且看不出根因，故等窗口过去再试。
+# 4 次仍拒则原样返回最后一次响应，让下游断言如实报红（不掩盖真故障）。
+uat_login(){ local body="$1" resp i
+  for i in 1 2 3 4; do
+    resp=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" -d "$body")
+    case "$resp" in
+      *'"code":429'*) echo "    [retry] /auth/login 命中 IP 限流桶，等 61s 后重试（第 $i 次）" >&2; sleep 61 ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "$resp"
+}
+
 echo "== 0. 准备：清强改密标记 / 放开注册限流(内测兜底口径) / 关邮箱验证 =="
 $PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
-ADMIN_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
+ADMIN_TOKEN=$(uat_login '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
 AH="Authorization: Bearer $ADMIN_TOKEN"
 [ -n "$ADMIN_TOKEN" ] && check "超管登录" y y || check "超管登录" y n
 
@@ -70,8 +88,7 @@ R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json
   -d "{\"company_name\":\"UAT甲\",\"code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}")
 check "甲注册(code=0)" 0 "$(echo "$R"|code)"
 UA_ID=$($PSQL "SELECT id FROM tenants WHERE code='$UA_CODE'")
-UA_LOGIN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}")
+UA_LOGIN=$(uat_login "{\"tenant_code\":\"$UA_CODE\",\"username\":\"ua$TS\",\"password\":\"uat123456\"}")
 UA_TOKEN=$(echo "$UA_LOGIN" | jget "d['data']['token']")
 [ -n "$UA_TOKEN" ] && R=y || R=n
 check "甲登录" y "$R"
@@ -108,8 +125,7 @@ check "无效ref不产生绑定" "$($PSQL "SELECT COALESCE(invited_by_tenant_id,
 
 echo ""
 echo "== 三、付费×邀请：paid订阅→邀请人永久token（多邀累计）=="
-UB_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$UB_CODE\",\"username\":\"ub$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+UB_TOKEN=$(uat_login "{\"tenant_code\":\"$UB_CODE\",\"username\":\"ub$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 BH="Authorization: Bearer $UB_TOKEN"
 # 按 code 精确锁定 seed 包（此前 ORDER BY sort_order LIMIT 1 会被单测残留的 ut_* 包
 # 抢占——它们 sort_order=0 且非确定性，导致月度额度断言在 300万/100万 间随机漂移）
@@ -127,8 +143,7 @@ check "乙①月度额度=300万" 3000000 "$($PSQL "SELECT monthly_token_quota F
 A_BAL=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$UA_ID")
 check "甲得乙付费永久奖+50万" 500000 "$A_BAL"
 # 丙也付费 → 甲再+50万（多邀累计）
-UC_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$UC_CODE\",\"username\":\"uc$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+UC_TOKEN=$(uat_login "{\"tenant_code\":\"$UC_CODE\",\"username\":\"uc$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 CH="Authorization: Bearer $UC_TOKEN"
 ORDER_C=$(curl -s -X POST "$B/api/v1/billing/subscribe" -H "$CH" -H "Content-Type: application/json" \
   -d "{\"package_id\":$PAID_PKG}" | jget "d['data']['order']['id']")
@@ -205,8 +220,7 @@ $PSQL "UPDATE tenant_users SET must_change_password=false WHERE tenant_id IN (SE
 # （M3 首登强改密），导致第八节用重启前旧 token 改开关被 MustChangePasswordGuard 拦成 403，
 # token_billing 双开关从未生效 → 三桶扣减全绿不扣。重启后补清默认租户 admin 标记并刷新超管 token。
 $PSQL "UPDATE tenant_users SET must_change_password=false WHERE username='admin'" >/dev/null 2>&1
-ADMIN_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
+ADMIN_TOKEN=$(uat_login '{"username":"admin","password":"admin123"}' | jget "d['data']['token']")
 AH="Authorization: Bearer $ADMIN_TOKEN"
 STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='${STALE_NO}'"); check "僵尸单已写入待小时巡检ExpireCheck关闭" closed "$STALE"
 
@@ -342,8 +356,7 @@ UF_CODE="uatf$((TS%100000))"
 curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
   -d "{\"company_name\":\"UAT戊注销户\",\"code\":\"$UF_CODE\",\"username\":\"uf$TS\",\"password\":\"uat123456\"}" >/dev/null
 UF_ID=$($PSQL "SELECT id FROM tenants WHERE code='$UF_CODE'")
-UF_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$UF_CODE\",\"username\":\"uf$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+UF_TOKEN=$(uat_login "{\"tenant_code\":\"$UF_CODE\",\"username\":\"uf$TS\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 FH="Authorization: Bearer $UF_TOKEN"
 AK2=$(curl -s -X POST "$B/api/v1/admin/apikeys" -H "$FH" -H "Content-Type: application/json" -d '{"name":"f-key","perms":["all"]}' | jget "d['data']['key']")
 [ -n "$AK2" ] && R=y || R=n
@@ -396,8 +409,7 @@ E_IND=$($PSQL "SELECT industry FROM tenants WHERE code='$C_E'")
 check "已知行业保留不回落" education "$E_IND"
 # 14.4 邀请记录接口（甲=既有受邀链顶层租户）
 A_ID2=$($PSQL "SELECT id FROM tenants WHERE code LIKE 'uata%' ORDER BY id DESC LIMIT 1")
-ATOK2=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$($PSQL "SELECT code FROM tenants WHERE id=$A_ID2")\",\"username\":\"$($PSQL "SELECT username FROM tenant_users WHERE tenant_id=$A_ID2 AND role='tenant_admin' LIMIT 1")\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+ATOK2=$(uat_login "{\"tenant_code\":\"$($PSQL "SELECT code FROM tenants WHERE id=$A_ID2")\",\"username\":\"$($PSQL "SELECT username FROM tenant_users WHERE tenant_id=$A_ID2 AND role='tenant_admin' LIMIT 1")\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 REC=$(curl -s "$B/api/v1/advisor/referral/records" -H "Authorization: Bearer $ATOK2")
 check "邀请记录接口可达且含记录" True "$(echo "$REC" | jget "len(d['data']['list'])>0")"
 KEYS_OK=$(echo "$REC" | python3 -c '
@@ -417,8 +429,7 @@ R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json
   -d "{\"company_name\":\"UAT退款\",\"code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}")
 check "退款租户注册" 0 "$(echo "$R"|code)"
 RF_ID=$($PSQL "SELECT id FROM tenants WHERE code='$RF_CODE'")
-RF_TOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
-  -d "{\"tenant_code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
+RF_TOKEN=$(uat_login "{\"tenant_code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}" | jget "d['data']['token']")
 RH="Authorization: Bearer $RF_TOKEN"
 check "退款租户登录" y "$([ -n "$RF_TOKEN" ] && echo y || echo n)"
 # 15.1 零消耗 increment：mock-pay → ②桶 +300万 → 全额退款 → 桶回收 → 重复退 409
