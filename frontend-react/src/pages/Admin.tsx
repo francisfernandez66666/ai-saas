@@ -33,6 +33,8 @@ const UsageTab = lazy(() => import('./admin/UsageTab').then(m => ({ default: m.U
 const WebhookTab = lazy(() => import('./admin/WebhookTab').then(m => ({ default: m.WebhookTab })))
 const OutreachTab = lazy(() => import('./admin/OutreachTab').then(m => ({ default: m.OutreachTab })))
 const AcquisitionTab = lazy(() => import('./admin/AcquisitionTab').then(m => ({ default: m.AcquisitionTab })))
+const DealsTab = lazy(() => import('./admin/DealsTab').then(m => ({ default: m.DealsTab })))
+const ChatArchiveTab = lazy(() => import('./admin/ChatArchiveTab').then(m => ({ default: m.ChatArchiveTab })))
 const PrivacyTab = lazy(() => import('./admin/PrivacyTab').then(m => ({ default: m.PrivacyTab })))
 
 const { Header, Aside, Content } = Layout
@@ -41,6 +43,13 @@ const { MenuItem, MenuGroup } = Menu
 const ZERO_DELAY_KEYS = [
   'merge_window_seconds', 'simple_msg_delay', 'store_visit_first_delay', 'store_visit_second_delay',
 ]
+
+// 代管下拉的一项。后端字段历史上叫过 name/company_name 两个名，归一在这里做一次，
+// 不在渲染处再写一遍 || 链。
+type TenantOpt = { id: number; name: string; code?: string }
+function toTenantOpt(t: { id: number; name?: string; company_name?: string; code?: string }): TenantOpt {
+  return { id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code }
+}
 
 // Admin 租户管理端页面入口：按 Tab 组织知识库、行业包、CDP、租户等后台功能。
 export default function Admin() {
@@ -63,19 +72,48 @@ export default function Admin() {
   const role = localStorage.getItem('role') || ''
   const isSuper = isSuperAdmin(role)
   const [impTenant, setImpTenant] = useState(getImpersonateTenant())
-  const [tenants, setTenants] = useState<{ id: number; name: string; code?: string }[]>([])
+  const [tenants, setTenants] = useState<TenantOpt[]>([])
   const [impReload, setImpReload] = useState(0) // 切换租户后强制各 Tab 重挂载刷新
-  // 超管代管用：拉取平台全部租户（名称/标识）填充「代管租户」选择器
+  // R-4(2026-09-24)：租户列表改服务端关键字检索。此前只拉默认首页（后端 page_size 缺省 20），
+  // 清库之后承载历史数据的种子租户排在最新若干家之外，超管在 UI 上**再也代管不到它**——
+  // e2e 当时是靠直接写 localStorage 绕过去的，那是绕过不是修复。
+  const [tq, setTq] = useState('')
+  // 已代管租户的显示名：搜索结果换一批也要留在下拉里，否则下拉框显示空白，
+  // 看着像"代管被取消了"，而请求其实还在往那个租户发 X-Tenant-ID
+  const [picked, setPicked] = useState<TenantOpt | null>(null)
+  // 超管代管用：拉取租户（名称/标识）填充「代管租户」选择器；传 q 走服务端检索
   // P1-7 迁移(2026-09-20)：裸 fetch → apiJSON（超时/断网归一 res:null，不抛错）；选择器失败仍静默留空，故不走会 toast 的 AUTH
-  async function loadTenants() {
-    const { json: j } = await apiJSON('/api/v1/super/tenants')
+  async function loadTenants(q: string = tq) {
+    const kw = q.trim()
+    const url = '/api/v1/super/tenants?page_size=100' + (kw ? '&q=' + encodeURIComponent(kw) : '')
+    const { json: j } = await apiJSON(url)
     const list: Array<{ id: number; name?: string; company_name?: string; code?: string }> = j?.data?.list || j?.data || []
-    setTenants(Array.isArray(list) ? list.map((t) => ({ id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code })) : [])
+    setTenants(Array.isArray(list) ? list.map(toTenantOpt) : [])
   }
+  // 刷新后代管上下文来自 localStorage，但它多半不在当前这一批搜索结果里——按 ID 单点回查，
+  // 让下拉框老实说出"现在在管谁"（q 传纯数字时后端按 ID 精确命中，见 SuperTenantList）
+  useEffect(() => {
+    if (!logged || !isSuper || !impTenant) return
+    if (tenants.some((t) => String(t.id) === impTenant)) return
+    if (picked && String(picked.id) === impTenant) return
+    let dead = false
+    void (async () => {
+      const { json: j } = await apiJSON('/api/v1/super/tenants?q=' + encodeURIComponent(impTenant))
+      const hit = ((j?.data?.list) || []).find((t: { id: number }) => String(t.id) === impTenant)
+      if (!dead && hit) setPicked(toTenantOpt(hit))
+    })()
+    return () => { dead = true }
+    // picked 入依赖是自限的：回查成功那次才会改它，改完下一轮命中"已经记住了"就早退，不会来回打
+  }, [logged, isSuper, impTenant, tenants, picked])
+  // 下拉的候选 = 搜索结果 + 当前代管但不在结果里的那一家
+  const tenantOptions = picked && !tenants.some((t) => t.id === picked.id) ? [picked, ...tenants] : tenants
   // 选定代管租户：写入全局注入键 + 本地态 + 自增 impReload 强制各 Tab 重挂载刷新
   function pickTenant(id: string) {
     setImpersonateTenant(id)
     setImpTenant(id)
+    // 换人就把上一家的缓存标签交出去：清空选择（id 为空）时不留残余，
+    // 从搜索结果里选则直接记住它的名字，免得再检索一次就变成空白
+    setPicked(id ? (tenants.find((t) => String(t.id) === id) || null) : null)
     setImpReload((n) => n + 1)
   }
 
@@ -173,7 +211,7 @@ export default function Admin() {
 
   // 按分类取配置项子集
   const configsFor = (cat: string) => all.filter((c) => c.category === cat)
-  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'acquisition', 'usage', 'referral', 'branding', 'billing'].includes(tab)
+  const noAction = ['dashboard', 'customers', 'cdp', 'knowledge', 'tenant_kb', 'advisor', 'org', 'flow_engine', 'industry_packs', 'tags', 'strategy_templates', 'strategy_test', 'channels', 'audit', 'openapi', 'webhooks', 'outreach', 'acquisition', 'deals', 'chat_archive', 'usage', 'referral', 'branding', 'billing'].includes(tab)
   const logo = brand.logoUrl ? <img src={brand.logoUrl} alt="" style={{ height: 28, marginRight: 8 }} /> : null
   const userName = localStorage.getItem('username') || ''
   // 切 Tab 的唯一入口：任何菜单点击都清掉下钻预设——从侧栏进「客户线索」必须是完整列表，
@@ -215,8 +253,19 @@ export default function Admin() {
               代管租户：
               <select aria-label="代管租户" value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
                 <option value="">（未选择·仅平台级）</option>
-                {tenants.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
+                {tenantOptions.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
               </select>
+              {/* R-4：租户多了以后首页装不下，改服务端检索——名称/编码模糊，纯数字按 ID 直达 */}
+              <input
+                aria-label="搜索租户"
+                value={tq}
+                onChange={(e) => setTq(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') void loadTenants() }}
+                placeholder="搜名称/编码/ID"
+                style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, width: 118, minWidth: 0 }}
+              />
+              <Button size="small" variant="outline" onClick={() => void loadTenants()}>搜索</Button>
+              {tq && <Button size="small" variant="text" onClick={() => { setTq(''); void loadTenants('') }}>看全部</Button>}
             </span>
           )}
           <a href="/client" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>客户对话页</a>
@@ -328,6 +377,8 @@ function PanelContent({ tab, configsFor, edits, setEdits, all, drill, onDrill, o
   if (tab === 'webhooks') return <WebhookTab />
   if (tab === 'outreach') return <OutreachTab />
   if (tab === 'acquisition') return <AcquisitionTab />
+  if (tab === 'deals') return <DealsTab />
+  if (tab === 'chat_archive') return <ChatArchiveTab />
   if (tab === 'usage') return <UsageTab />
   if (tab === 'referral') return <ReferralTab />
   if (tab === 'privacy') return <PrivacyTab />

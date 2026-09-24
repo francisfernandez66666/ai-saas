@@ -65,6 +65,10 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         的解不开行不消失、failed/keyword 筛选（% 当字面量）、详情逐字节回显全文且读一次留一条审计、
 #         /status/detail 直出 chat_archive 观测位（有启用通道时不得报 not_wired/disabled、判 warn 不判 crit）、
 #         公开 /status 零泄露、关开关只改开关不删留痕、自清理）
+#       / 2026-09-24 残项收口：超管租户检索 10 断言（三十八：/super/tenants 补 q——纯数字按 ID
+#         直达、名称/编码模糊、total 只算命中数、无命中回 [] 不是 null、% 与 _ 按字面量不被
+#         当成通配符放大成全表、超整型范围数字不 5xx、未登录 401、自清理；含"page_size=1 时
+#         最旧租户看不见"的对照前提，缺它本段会在一家本来看得见的租户上假绿）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -2236,6 +2240,44 @@ $PSQL "DELETE FROM chat_archive_records WHERE tenant_id IN (${ARC_TA:-0},${ARC_T
        DELETE FROM tenants WHERE code IN ('${ARC_CA}','${ARC_CB}');" >/dev/null 2>&1
 ARC_LEFT=$($PSQL "SELECT (SELECT count(*) FROM chat_archive_records WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0})) + (SELECT count(*) FROM channels WHERE tenant_id IN (${ARC_TA:-0},${ARC_TB:-0})) + (SELECT count(*) FROM tenants WHERE code IN ('${ARC_CA}','${ARC_CB}'))" 2>/dev/null | tr -d '[:space:]')
 check "本段留痕/通道/租户已清零" 0 "${ARC_LEFT:-1}"
+
+echo "---- 三十八、超管租户检索：代管下拉不再只看首页（名称/编码模糊 + ID 直达）----"
+# 起因（2026-09-24 残项收口）：/super/tenants 只有分页没有检索，前端「代管租户」下拉拿的是
+# 缺省首页，清库后承载历史数据的种子租户排在最新若干家之外，超管在界面上**再也代管不到它**——
+# 当时 e2e 是靠直接写 localStorage 绕过去的，那是绕过不是修复。本段断的就是这条路真被修好。
+QS_TS=$(date +%s)
+QS_CA="qs${QS_TS}a"
+QS_CB="qs${QS_TS}b"
+# 时间戳放在共同前缀之后、区分字之前：q=检索靶子${QS_TS} 才能一次框住这两家
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+   VALUES ('检索靶子${QS_TS}甲', '${QS_CA}', 'personal', 'active', NOW(), NOW()),
+          ('检索靶子${QS_TS}乙', '${QS_CB}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+QS_A=$($PSQL "SELECT id FROM tenants WHERE code='${QS_CA}'" 2>/dev/null | tr -d '[:space:]')
+# 对照用「最旧一家」：它必然不在 page_size=1 的首页。缺了这条前提，下面"q=ID 命中"
+# 会在一家本来看得见的租户上假绿——护栏空转。
+QS_OLD=$($PSQL "SELECT min(id) FROM tenants" 2>/dev/null | tr -d '[:space:]')
+
+QS_PAGE1=$(curl -s "$B/api/v1/super/tenants?page_size=1" -H "Authorization: Bearer $TOKEN")
+check "首页只有1家时最旧租户看不见(本段对照前提)" 0 "$(printf '%s' "$QS_PAGE1" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
+# 纯数字关键字走 ID 精确 + 名称/编码模糊两条腿（"搜 2024" 也要命中"2024旗舰店"），
+# 所以这里断的是"那一家在结果里、且只出现一次"，而不是"结果只有它"——后者是口径写错不是缺陷。
+QS_BYID=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "page_size=100" --data-urlencode "q=${QS_OLD}" -H "Authorization: Bearer $TOKEN")
+check "q=租户ID 能把首页之外的最旧一家搜回来" 1 "$(printf '%s' "$QS_BYID" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
+# 名称/编码模糊：下拉里显示的是「名称（编码）」，两个都得搜得动
+QS_BYNAME=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "q=检索靶子${QS_TS}" -H "Authorization: Bearer $TOKEN")
+check "q=名称片段 命中恰两家" 2 "$(printf '%s' "$QS_BYNAME" | jsonget "['data']['total']")"
+QS_BYCODE=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "q=${QS_CA}" -H "Authorization: Bearer $TOKEN")
+check "q=租户编码 命中对应那一家" "${QS_A:-1}" "$(printf '%s' "$QS_BYCODE" | jsonget "['data']['list'][0]['id']")"
+check "q=编码 不误伤同名前缀的另一家" 1 "$(printf '%s' "$QS_BYCODE" | jsonget "['data']['total']")"
+# 空态一律 []：前端直接 map，回 null 就是整块白屏
+QS_NONE=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "q=绝不可能出现的租户名zzz" -H "Authorization: Bearer $TOKEN")
+check "无命中时 list 回 [] 而不是 null" "[]" "$(printf '%s' "$QS_NONE" | python3 -c "import sys,json;d=json.load(sys.stdin);print(json.dumps(d['data']['list']))" 2>/dev/null)"
+check "通配符 % 按字面量搜(不放大成全表)" 0 "$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "q=%" -H "Authorization: Bearer $TOKEN" | jsonget "['data']['total']")"
+check "q=超出整型范围的数字不报5xx" 200 "$(curl -s -o /dev/null -w '%{http_code}' -G "$B/api/v1/super/tenants" --data-urlencode "q=99999999999999999999999" -H "Authorization: Bearer $TOKEN")"
+# 未登录与 sales 一律进不来（检索面不改变端点的鉴权边界）
+check "未登录搜租户判 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -G "$B/api/v1/super/tenants" --data-urlencode "q=${QS_CA}")"
+$PSQL "DELETE FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}');" >/dev/null 2>&1
+check "本段靶子租户已清零" 0 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}')" 2>/dev/null | tr -d '[:space:]')"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

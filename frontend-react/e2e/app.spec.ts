@@ -516,3 +516,61 @@ test('获客活码后台页可建码、漏斗可下钻且扫码格子不给点',
   });
   expect(off.ok()).toBeTruthy();
 });
+
+// 21. R-4 超管代管租户检索：搜索真走服务端，且换一批结果不会把当前代管那一家弄丢（2026-09-24 残项收口）
+// 起因：/super/tenants 此前只有分页没有检索，代管下拉拿的是后端缺省首页，清库后承载历史
+// 数据的种子租户排在最新若干家之外，超管在界面上再也代管不到它——当时的 e2e 是直接写
+// localStorage 绕过的（见 seedDesktopLogin 注释），那是绕过不是修复。
+// 后端那条检索链由 smoke §三十八 无条件钉死（含"page_size=1 时最旧一家看不见"的对照前提）；
+// 本项只钉界面这一段，四件事各不重复：
+//  ① 点「搜索」真的发出带 q= 的请求——在前端挑数据的话，租户一多就又只剩首页；
+//  ② 下拉候选与服务端同一关键字的命中结果**逐字相同**（页面没自己加戏也没漏）；
+//  ③ 选定后租户作用域请求真带上 X-Tenant-ID（下拉只是显示了、没接进请求头＝白做）；
+//  ④ 再搜一个谁都不命中的关键字，当前代管那一家**必须还挂在下拉里**：它一消失，下拉显示
+//     空白，看着像"代管被取消了"，而请求还在往那个租户发 X-Tenant-ID——这条链上最危险的错位。
+test('超管代管租户检索走服务端且换批结果不丢当前代管', async ({ page, request }) => {
+  const tid = await pickOperableTenant(request);
+  const token = await adminToken(request);
+  const auth = { Authorization: `Bearer ${token}` };
+  // 关键字取该家的编码（无编码则取名称）——只用它自己的信息，不猜库里的其它租户
+  const byId = await request.get(`${BASE}/api/v1/super/tenants?q=${encodeURIComponent(tid)}&page_size=100`, { headers: auth });
+  const byIdRows = ((((await byId.json())?.data ?? {}).list ?? []) as { id?: number; name?: string; code?: string }[]);
+  // 纯数字关键字还带名称/编码模糊这条腿，所以必须按 ID 精确挑出那一行，不能拿 list[0]
+  const row = byIdRows.find((t) => String(t.id) === tid) ?? {};
+  const keyword = String(row.code || row.name || '');
+  expect(keyword, `租户 ${tid} 既无编码也无名称，本项前置不成立`).toBeTruthy();
+  const expectResp = await request.get(`${BASE}/api/v1/super/tenants?q=${encodeURIComponent(keyword)}&page_size=100`, { headers: auth });
+  const expectIds = ((((await expectResp.json())?.data ?? {}).list ?? []) as { id?: number }[])
+    .map((t) => String(t.id ?? '')).filter((s) => s && s !== '0').sort();
+  expect(expectIds, '服务端按该关键字应有命中').toContain(tid);
+
+  await seedDesktopLogin(page, request);
+  const qUrls: string[] = [];
+  const sentHeaders: string[] = [];
+  page.on('request', (r) => {
+    if (r.url().includes('/super/tenants') && r.url().includes('q=')) qUrls.push(r.url());
+    const h = r.headers()['x-tenant-id'];
+    if (h) sentHeaders.push(h);
+  });
+  const impSel = page.locator('select[aria-label="代管租户"]');
+  const optionValues = () => impSel.locator('option')
+    .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean).sort());
+
+  await page.goto('/admin');
+  await expect(impSel).toBeVisible({ timeout: 10000 });
+
+  await page.getByLabel('搜索租户').fill(keyword);
+  await page.getByRole('button', { name: '搜索' }).click();
+  await expect.poll(() => qUrls.length, { timeout: 15000 }).toBeGreaterThan(0);
+  await expect.poll(optionValues, { timeout: 15000 }).toEqual(expectIds);
+
+  await impSel.selectOption(tid);
+  await expect.poll(() => sentHeaders.includes(tid), { timeout: 20000 }).toBe(true);
+  expect(await page.evaluate((k) => localStorage.getItem(k), 'scrm_impersonate_tenant')).toBe(tid);
+
+  // ④ 换一批"谁都不命中"的搜索结果：候选清空，但当前代管那一家不能跟着消失
+  await page.getByLabel('搜索租户').fill('绝无此租户zzz');
+  await page.getByRole('button', { name: '搜索' }).click();
+  await expect.poll(optionValues, { timeout: 15000 }).toEqual([tid]);
+  await expect(impSel).toHaveValue(tid);
+});

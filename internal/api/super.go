@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"ai-scrm/internal/db"
@@ -41,9 +42,10 @@ func SuperRequired() gin.HandlerFunc {
 }
 
 // SuperTenantList 获取全平台租户列表（含用量与套餐信息）
-// GET /api/v1/super/tenants
-// LEFT JOIN subscription_plans 带出套餐名，最多返回500条
-// 用于超管运营视图，监控所有租户状态和资源使用情况
+// GET /api/v1/super/tenants?page=&page_size=&q=
+// LEFT JOIN subscription_plans 带出套餐名；page_size 上限 100，q 为关键字检索
+// （纯数字优先按租户 ID 精确命中，另按名称/编码模糊）。
+// 用于超管运营视图与「代管租户」选择器，监控所有租户状态和资源使用情况
 func SuperTenantList(c *gin.Context) {
 	// row 全平台租户列表聚合行：LEFT JOIN subscription_plans 带出套餐名，便于超管运营视图
 	type row struct {
@@ -67,15 +69,44 @@ func SuperTenantList(c *gin.Context) {
 		page = 1
 	}
 	var total int64
-	db.DB.Table("tenants t").Count(&total)
+	// q 关键字检索(2026-09-24 残项收口)：超管「代管租户」下拉此前只吃列表首页，
+	// 清库后承载历史数据的种子租户排在最新 100 家之外，在 UI 上再也代管不到。
+	// 纯数字按 ID 直达（"我知道租户号"），其余按名称/编码模糊。
+	// 条件分别挂到两条独立链上，**不复用同一个句柄**——db.DB.Table() 起的是 clone=0
+	// 句柄，共享会把 Select/Order 一起带进 Count 查询（见 GORM 句柄复用红线）。
+	kw := strings.TrimSpace(c.Query("q"))
+	var conds []string
+	var args []any
+	if kw != "" {
+		if id, err := strconv.ParseUint(kw, 10, 64); err == nil {
+			conds = append(conds, "t.id = ?")
+			args = append(args, id)
+		}
+		// 关键字里的 % 和 _ 是 LIKE 的通配符，必须按字面量处理——"搜一个名字带下划线的
+		// 租户"不该变成"搜出全表"。反斜杠先转，否则把后面两个转义再破坏一遍。
+		like := "%" + strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(kw) + "%"
+		conds = append(conds, "t.name ILIKE ?", "t.code ILIKE ?")
+		args = append(args, like, like)
+	}
+	where := strings.Join(conds, " OR ")
+
+	countQ := db.DB.Table("tenants t")
+	if where != "" {
+		countQ = countQ.Where(where, args...)
+	}
+	countQ.Count(&total)
 	rows := []row{}
-	err := db.DB.Table("tenants t").
+	listQ := db.DB.Table("tenants t").
 		Select(`t.id, t.name, t.code, t.tier, t.status,
 			COALESCE(p.name,'') as plan_name,
 			t.used_customers, t.max_customers, t.plan_id, t.max_users,
 			(SELECT count(*) FROM tenant_users u WHERE u.tenant_id = t.id AND u.status = 1) as used_users,
 			TO_CHAR(t.created_at,'YYYY-MM-DD') as created_at`).
-		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id").
+		Joins("LEFT JOIN subscription_plans p ON t.plan_id = p.id")
+	if where != "" {
+		listQ = listQ.Where(where, args...)
+	}
+	err := listQ.
 		// 2026-09-11：改 id DESC——前端无翻页 UI（一次拉 page_size 上限），
 		// ASC 会让超管只看到最旧 N 家、新注册租户被挤出视野；DESC 优先展示最新
 		Order("t.id DESC").Offset((page - 1) * pageSize).Limit(pageSize).Scan(&rows).Error
