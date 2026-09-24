@@ -171,6 +171,7 @@ export interface Customer {
   assigned_user_id?: number
   external_user_id?: string // 外部渠道用户ID（OpenAPI 对话端点）
   assignment_reason?: string
+  acquisition_code?: string // 获客活码归因码（空=非扫码进来）；随 /customers 一起下发，看板/列表可按渠道筛选
   status?: number // 1-正常 0-无效
   created_at?: string
   updated_at?: string

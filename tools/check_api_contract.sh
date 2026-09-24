@@ -116,6 +116,24 @@ else
   fi
 fi
 
+# ---- 4.6 响应体级字段对账（残项收口，2026-09-24）----
+# §4.5 管到"每条路由的响应有没有类型名"，但**类型名对得上不代表字段对得上**：
+# 后端改一个 json tag、前端 interface 忘了跟，tsc 与 apidump 都照样绿（interface 是前端自己的
+# 断言，运行时无人校验），事故形态是"页面某一列永远空白"。这里补上字段级的两条对账
+# （A 后端吐而前端没声明 / B 前端在读后端从不吐的键）+ 检查器自身的 --selftest。
+# 无基线、当场归零：首跑即抓到 Customer.acquisition_code 一例真漂移（活码批加了列没同步类型）。
+if ! python3 tools/check_body_contract.py --selftest > /dev/null; then
+  echo "  FAIL  响应体契约检查器自证失败（解析器已失配，此时的\"零差异\"不可信）"
+  FAIL=1
+fi
+if ! BODY_OUT=$(python3 tools/check_body_contract.py 2>&1); then
+  printf '%s\n' "$BODY_OUT" | sed 's/^/  /'
+  echo "  FAIL  响应体级契约不一致（见上：改 frontend-react/src/types.ts 或后端响应，别改门禁口径）"
+  FAIL=1
+else
+  printf '%s\n' "$BODY_OUT" | sed 's/^/  /'
+fi
+
 # ---- 5. 裸 fetch 棘轮只降不升（P2-6，2026-09-19 审计批三）----
 # 统一请求层 lib/api.ts 负责 30s 超时/401 登出/租户头；业务页裸 fetch( 每多一处
 # 就多一个击穿点（DashboardTab 超管代管 400 静默即坐实例）。存量 46 处分批迁移，

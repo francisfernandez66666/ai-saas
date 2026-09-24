@@ -30,7 +30,10 @@ func exportLimit(c *gin.Context) int {
 }
 
 // csvWriter 创建带 UTF-8 BOM 的流式 CSV 写入器。
+// 写截止延长放在**这个唯一出口**里，而不是每个 handler 各调一次：新增导出端点只要走本函数
+// 就自动带上预算。漏调的后果不是报错而是半截文件，这种"错了也不响"的事正适合用结构而非纪律来防。
 func csvWriter(c *gin.Context, filename string) *csv.Writer {
+	extendWriteDeadlineForExport(c) // 5 万行逐行 Flush，全局 60s 写截止会把正文截成半截且静默
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=\""+filename+"\"")
 	c.Header("X-Content-Type-Options", "nosniff")
