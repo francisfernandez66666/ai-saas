@@ -224,6 +224,66 @@ func TestClawbackPaidReferralReward(t *testing.T) {
 	}
 }
 
+// TestClawbackPaidReferralRewardDebt 2026-09-24 用户拍板口径「奖励追不平就挂账」：
+// 邀请人已把推荐奖花掉时，旧写法 GREATEST(token_balance-?,0) 把回收折成"少扣一点"，
+// 差额一分不追——于是「邀 B → B 付费 → 领 50 万 → 立刻花光 → 退 B 的单」可以反复洗奖励。
+// 现在：能扣的当场扣到零，扣不到的差额必须以 usage_flush_retry 挂账行留在邀请人名下等补扣。
+// 反证要点：断"余额=0 且挂账行金额=差额"两件事同时成立，只断其一都会让"静默放弃"漏过去。
+func TestClawbackPaidReferralRewardDebt(t *testing.T) {
+	testutil.SetupTestDB(t)
+	inviterID := testutil.CreateTenantCode(t, "ut_cbdebt_a")
+	invitedID := testutil.CreateTenantCode(t, "ut_cbdebt_b")
+	defer testutil.CleanupTenant(t, inviterID)
+	defer testutil.CleanupTenant(t, invitedID)
+	// 挂账行不属于租户清理链路（它是平台侧欠账队列），用例内自行收口防污染后续测试
+	t.Cleanup(func() {
+		db.DB.Where("tenant_id IN ?", []uint{inviterID, invitedID}).Delete(&model.UsageFlushRetry{})
+	})
+	db.DB.Where("tenant_id IN ?", []uint{inviterID, invitedID}).Delete(&model.UsageFlushRetry{})
+
+	// 装配：邀请人只得 10 万（奖励 50 万已被花掉 40 万），受邀人无其它付费单
+	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", invitedID).Updates(map[string]any{
+		"invited_by_tenant_id": inviterID, "referral_paid_rewarded": true,
+	}).Error; err != nil {
+		t.Fatalf("设绑定失败: %v", err)
+	}
+	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", inviterID).
+		Update("token_balance", 100000).Error; err != nil {
+		t.Fatalf("设邀请人余额失败: %v", err)
+	}
+	claim := model.RewardClaim{GrantType: "referral_paid", TenantID: inviterID,
+		RefID: &invitedID, Note: "bonus:500000"}
+	if err := db.DB.Create(&claim).Error; err != nil {
+		t.Fatalf("建推荐奖台账失败: %v", err)
+	}
+
+	invited := model.Tenant{ID: invitedID}
+	db.DB.First(&invited, invitedID)
+	ClawbackPaidReferralReward(db.DB, invited)
+
+	var inv model.Tenant
+	if err := db.DB.First(&inv, inviterID).Error; err != nil {
+		t.Fatalf("读邀请人失败: %v", err)
+	}
+	if inv.TokenBalance != 0 {
+		t.Fatalf("可用余额应被即时扣光, got %d", inv.TokenBalance)
+	}
+	var debt model.UsageFlushRetry
+	if err := db.DB.Where("tenant_id = ? AND tokens = ?", inviterID, 400000).
+		First(&debt).Error; err != nil {
+		t.Fatalf("差额 40 万必须落成挂账行待补扣（旧口径在此静默放弃）: %v", err)
+	}
+	// C7 红线：后台链路写的挂账行必须带 tenant_id，否则补扣会落到别人名下
+	if debt.TenantID != inviterID {
+		t.Fatalf("挂账行 tenant_id 应为邀请人 %d, got %d", inviterID, debt.TenantID)
+	}
+	var claims int64
+	db.DB.Model(&model.RewardClaim{}).Where("grant_type = ? AND ref_id = ?", "referral_paid", invitedID).Count(&claims)
+	if claims != 0 {
+		t.Fatalf("挂账后奖励台账应删除（额度不再算已发放）, got %d", claims)
+	}
+}
+
 // TestReferralBindingTrialLedgerOnce R9：受邀注册礼走 signup_trial 台账——
 // 同邮箱二次受邀开新站不再拿第二份免费桶
 func TestReferralBindingTrialLedgerOnce(t *testing.T) {

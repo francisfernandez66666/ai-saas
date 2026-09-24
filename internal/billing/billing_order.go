@@ -51,7 +51,11 @@ func CreateOrderForPackage(tenantID uint, pkg *model.Package) (*model.BillingOrd
 	// 同包续订不抵扣（走原顺延语义）；无生效订阅为全新购买。
 	if pkg.PType == model.PackageTypePaid {
 		if oldOrder, oldPkg, left, ok := ActivePaidSubscription(tenantID); ok && oldOrder.PackageID != pkg.ID {
-			// 旧包剩余价值 = 旧实付 × 剩余天数 / 总天数（与 computeRefundForOrder paid 口径一致）
+			// 旧包剩余价值 = 旧实付 × 剩余天数 / 总天数
+			// ⚠ 2026-09-24 起与 computeRefundForOrder 的退款口径【不再一致】：退款已改为
+			// 按「未消耗积分比例」（不退已消耗积分），升级抵扣仍按剩余天数。此处是换购时
+			// 把旧包未享服务折成优惠、不是出金，风险方向相反（按天算只会少抵不会多退），
+			// 故未随退款口径一起改；若要统一成积分口径需先定"抵扣额=未消耗积分份额"的产品语义。
 			oldValue := int64(oldOrder.AmountCents) * int64(left) / int64(oldPkg.DurationDays)
 			net := int64(pkg.PriceCents) - oldValue
 			if net < 0 {

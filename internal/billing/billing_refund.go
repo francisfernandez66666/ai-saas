@@ -63,7 +63,8 @@ type refundClawback struct {
 // 再退款白嫖」的口子。新语义（已消费的不能退）：
 //
 //	increment 增量包：按「该单未消费 token 份额 / 包总 token」比例退钱，并回收对应②桶余额
-//	paid      包月包：按「剩余生效天数 / 包总天数」比例退钱，并摘除订阅（立即失效+月配额清零）
+//	paid      包月包：按「未消耗积分 / 本单应发放积分」比例退钱（2026-09-24 口径变更，
+//	          旧为剩余天数比例——见 paidRefundCents），并摘除订阅（立即失效+月配额清零）
 //	其余类型（free/0元单）：只置状态，无权益可回收
 //
 // 幂等/并发：事务内先 FOR UPDATE 锁订单行（重复退款串行、二次进来自检状态），
@@ -242,7 +243,7 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 		refund := (int64(o.AmountCents)*remaining + pkg.TokenAmount/2) / pkg.TokenAmount // 四舍五入到分
 		return &refundClawback{tokens: remaining}, refund, nil
 	case model.PackageTypePaid:
-		// token 制包月按剩余天退；次数制旧包同规则（DurationDays 兜底）
+		// token 制包月按未消耗积分比例退；次数制旧包（无月度 token 配额）回退剩余天数比例
 		if pkg.DurationDays <= 0 || o.AmountCents <= 0 {
 			return nil, 0, nil
 		}
@@ -260,11 +261,18 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 		if !end.After(nowT) {
 			return nil, 0, ErrRefundNoRemaining // 本单窗口已耗尽，已消费不退
 		}
+		refund := paidRefundCents(t, pkg, int64(o.AmountCents), start, nowT)
+		if refund <= 0 {
+			// 2026-09-24 用户拍板口径「不退已消耗积分」：①桶当期额度已用满即视为这份钱
+			// 花完了，一律拒退（旧的天数比例口径在这里仍会退钱——见 paidRefundCents 注释）。
+			return nil, 0, ErrRefundNoRemaining
+		}
+		// 到期日回退量仍按"本单未交付完的剩余天数"（服务窗口的物理长度），与退款金额解耦：
+		// 钱按积分消耗算，日期按天回退。
 		left := int(end.Sub(nowT).Hours()/24) + 1 // 本单剩余天数（当天即退向上取整）
 		if left > pkg.DurationDays {
 			left = pkg.DurationDays
 		}
-		refund := int64(o.AmountCents) * int64(left) / int64(pkg.DurationDays)
 		// 是否存在比本单更晚生效且仍 paid 的包月单：有 → 只回到期日；无 → 整体摘除
 		var later int64
 		tx.Model(&model.BillingOrder{}).
@@ -296,6 +304,73 @@ func computeRefundForOrder(tx *gorm.DB, o model.BillingOrder, t model.Tenant) (*
 	default:
 		return nil, 0, nil // free 等：金额0/注册礼，无权益可回收
 	}
+}
+
+// paidRefundCents 包月订单按「未消耗积分比例」计算应退金额（分）。
+//
+// 口径（2026-09-24 用户拍板：按积分余额比例退款，不退已消耗积分）：
+//
+//	应退 = 实付 × 未消耗积分 / 本单应发放积分
+//	未消耗 = 尚未过完的期数 × 月度额度 − 当期已消耗（used 是租户级共享计数，
+//	        多单并存时钳到本包额度：宁可少退不超退，见函数内注释）
+//
+// 为什么不用旧的天数比例：天数只反映"服务期过了多久"，不反映"额度用了多少"。
+// 第 2 天就把整月 300 万 token 跑完的租户，按天数比例仍能退 28/30≈93% 的钱，
+// 而那笔额度是真实发生的算力成本——退款后等于白拿一个月用量。按额度比例退，
+// 用满即一分不退（拒退走 ErrRefundNoRemaining），与增量包"已消费不可退"同口径。
+//
+// 期数：包月按月度额度分期发放（DurationDays=30 → 1 期，90 → 3 期）。
+// 已整月过完的期次额度随月重置作废，计为全额消耗——所以历史期不参与退，
+// 只有"当期剩余 + 未到期数"折算成可退份额。
+// legacy 次数制包（token_amount=0，无额度维度）回退剩余天数比例，保持旧行为。
+func paidRefundCents(t model.Tenant, pkg model.Package, amount int64, start, now time.Time) int64 {
+	if amount <= 0 {
+		return 0
+	}
+	if pkg.TokenAmount <= 0 {
+		// legacy 次数制：没有积分维度可退，只能按剩余天数
+		elapsed := int(now.Sub(start).Hours() / 24)
+		left := pkg.DurationDays - elapsed
+		if left < 0 {
+			left = 0
+		}
+		if left > pkg.DurationDays {
+			left = pkg.DurationDays
+		}
+		return amount * int64(left) / int64(pkg.DurationDays)
+	}
+	periods := (pkg.DurationDays + 29) / 30 // 本单覆盖的月度额度期数（向上取整，30→1 期）
+	if periods < 1 {
+		periods = 1
+	}
+	elapsedDays := int(now.Sub(start).Hours() / 24)
+	if elapsedDays < 0 {
+		elapsedDays = 0
+	}
+	elapsedPeriods := elapsedDays / 30 // 已整月过完的期数（额度已作废，视为全额消耗）
+	if elapsedPeriods > periods {
+		elapsedPeriods = periods
+	}
+	notYet := periods - elapsedPeriods // 含当期在内的"还活着"的期数
+	if notYet <= 0 {
+		return 0
+	}
+	// 当期已消耗：①桶 monthly_token_used 是租户级共享计数。多笔包月并存时它可能大于
+	// 本包额度，此处钳到本包额度——宁可判"这份已用满"少退钱，也不能反过来把别人的用量
+	// 算成本单未消耗而超退。真实用量按各单额度分摊是后续项，本口径不会漏钱只会偏保守。
+	used := t.MonthlyTokenUsed
+	if used < 0 {
+		used = 0 // 脏数据/并发清零窗口：欠账不为负，按零消耗处理
+	}
+	if used > pkg.TokenAmount {
+		used = pkg.TokenAmount
+	}
+	remaining := int64(notYet)*pkg.TokenAmount - used
+	if remaining <= 0 {
+		return 0
+	}
+	total := int64(periods) * pkg.TokenAmount
+	return (amount*remaining + total/2) / total
 }
 
 // orderIncrementRemaining 计算某笔增量包订单「仍未消耗的 token 份额」。

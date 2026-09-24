@@ -213,9 +213,10 @@ func TestRefundPaidProportional(t *testing.T) {
 	if err != nil || !flowed {
 		t.Fatalf("包月退款应成功 flowed=%v err=%v", flowed, err)
 	}
-	// 剩20/30天 → 退款 = 9900×20/30 = 6600分
-	if po.RefundAmountCents != 6600 {
-		t.Fatalf("包月退款应为6600分(20/30天), got %d", po.RefundAmountCents)
+	// 2026-09-24 口径变更：包月按「未消耗积分比例」退，零消耗即全额退 9900 分
+	// （旧天数口径在此会退 6600=20/30 天，与用量无关，是白嫖路径）
+	if po.RefundAmountCents != 9900 {
+		t.Fatalf("零消耗包月应全额退9900分, got %d", po.RefundAmountCents)
 	}
 	var tnt model.Tenant
 	if err := db.DB.First(&tnt, tid).Error; err != nil {
@@ -263,7 +264,8 @@ func TestRefundPaidMultiOrderShrink(t *testing.T) {
 	mkOrder(5)         // 新单窗口剩 25 天（租户 expired_at 被续到 +25d）
 	exp := time.Now().Add(25 * 24 * time.Hour)
 	if err := db.DB.Model(&model.Tenant{}).Where("id=?", tid).
-		Updates(map[string]any{"expired_at": exp, "monthly_token_quota": pkg.TokenAmount, "status": "active"}).Error; err != nil {
+		Updates(map[string]any{"expired_at": exp, "monthly_token_quota": pkg.TokenAmount,
+			"monthly_token_used": 400000, "status": "active"}).Error; err != nil {
 		t.Fatalf("设订阅失败: %v", err)
 	}
 
@@ -271,9 +273,10 @@ func TestRefundPaidMultiOrderShrink(t *testing.T) {
 	if err != nil || !flowed {
 		t.Fatalf("退旧单应成功 flowed=%v err=%v", flowed, err)
 	}
-	// 旧单自身窗口 20/30 → 6600 分（若按租户级 expired_at 25 天会算出 8250，即旧 bug 超退口径）
-	if o.RefundAmountCents != 6600 {
-		t.Fatalf("退旧单应为6600分(旧单窗口20/30), got %d", o.RefundAmountCents)
+	// 2026-09-24 口径变更：钱按未消耗积分比例（当期已用 40 万/100 万 → 退 60%）= 5940 分；
+	// 日期仍按本单窗口回退。旧"全部剩余天"超退口径由下面的 expired_at 断言继续封堵。
+	if o.RefundAmountCents != 5940 {
+		t.Fatalf("退旧单应为5940分(未消耗积分六成), got %d", o.RefundAmountCents)
 	}
 	var tnt model.Tenant
 	if err := db.DB.First(&tnt, tid).Error; err != nil {
@@ -289,5 +292,131 @@ func TestRefundPaidMultiOrderShrink(t *testing.T) {
 	}
 	if tnt.MonthlyTokenQuota != pkg.TokenAmount {
 		t.Fatalf("非最新单退款不应清零月配额, got %d", tnt.MonthlyTokenQuota)
+	}
+}
+
+// mkPaidSubOrder 造一笔"已到账 N 天"的包月订单 + 生效中的订阅配额（退款口径用例共用夹具）
+func mkPaidSubOrder(t *testing.T, tid uint, pkg *model.Package, daysAgo int) uint {
+	t.Helper()
+	paidAt := time.Now().Add(-time.Duration(daysAgo) * 24 * time.Hour)
+	o := &model.BillingOrder{
+		OrderNo:             fmt.Sprintf("UTPSO%d%d", time.Now().UnixNano(), daysAgo),
+		TenantID:            &tid,
+		PackageID:           pkg.ID,
+		AmountCents:         pkg.PriceCents,
+		OriginalAmountCents: pkg.PriceCents,
+		Status:              "paid",
+		Channel:             "mock",
+		Period:              "monthly",
+		PaidAt:              &paidAt,
+	}
+	if err := db.DB.Create(o).Error; err != nil {
+		t.Fatalf("建包月订单失败: %v", err)
+	}
+	return o.ID
+}
+
+// TestRefundPaidFullyConsumedRejected 2026-09-24 口径「不退已消耗积分」的核心断言：
+// ①桶当期额度用满即拒退（409 语义由 ErrRefundNoRemaining 映射），且订阅权益不得被摘除——
+// 旧天数比例口径在这里会退 28/30≈93% 现金，正是"用满一个月再来退款"的白嫖路径。
+func TestRefundPaidFullyConsumedRejected(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	pkg := &model.Package{Code: fmt.Sprintf("ut_pfull_%d", time.Now().UnixNano()), Name: "满消耗包月",
+		PType: "paid", TokenAmount: 1000000, PriceCents: 9900, DurationDays: 30, Enabled: true}
+	if err := db.DB.Create(pkg).Error; err != nil {
+		t.Fatalf("建包失败: %v", err)
+	}
+	oid := mkPaidSubOrder(t, tid, pkg, 2) // 生效 2 天，窗口还剩 28 天
+	exp := time.Now().Add(28 * 24 * time.Hour)
+	if err := db.DB.Model(&model.Tenant{}).Where("id=?", tid).
+		Updates(map[string]any{"expired_at": exp, "monthly_token_quota": pkg.TokenAmount,
+			"monthly_token_used": pkg.TokenAmount, "status": "active"}).Error; err != nil {
+		t.Fatalf("设订阅失败: %v", err)
+	}
+
+	_, flowed, err := MarkOrderRefunded(oid)
+	if !errors.Is(err, ErrRefundNoRemaining) {
+		t.Fatalf("额度用满应拒退 ErrRefundNoRemaining, got err=%v", err)
+	}
+	if flowed {
+		t.Fatalf("拒退时不得流转订单状态")
+	}
+	var tnt model.Tenant
+	if err := db.DB.First(&tnt, tid).Error; err != nil {
+		t.Fatalf("读租户失败: %v", err)
+	}
+	if tnt.MonthlyTokenQuota != pkg.TokenAmount {
+		t.Fatalf("拒退后月配额不得被清零, got %d", tnt.MonthlyTokenQuota)
+	}
+	var st string
+	var amt int64
+	db.DB.Model(&model.BillingOrder{}).Where("id = ?", oid).Select("status").Row().Scan(&st)
+	db.DB.Model(&model.BillingOrder{}).Where("id = ?", oid).Select("refund_amount_cents").Row().Scan(&amt)
+	if st != "paid" || amt != 0 {
+		t.Fatalf("拒退后订单应保持 paid 且无退款金额, got status=%s refund=%d", st, amt)
+	}
+}
+
+// TestRefundPaidMultiPeriodPack 跨期包月（90 天 = 3 期月度额度）：已过整月的期次额度随月
+// 重置作废、计为全额消耗，只有"当期剩余 + 未到期数"折成可退份额——
+// 第 65 天、当期零消耗 → 可退 1 期/共 3 期 = 29700×1/3 = 9900 分。
+// 若按天数比例会退 25/90≈8250；若忽略期数会退全额，两者都不符合"不退已消耗"。
+func TestRefundPaidMultiPeriodPack(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	pkg := &model.Package{Code: fmt.Sprintf("ut_p90_%d", time.Now().UnixNano()), Name: "季付包月",
+		PType: "paid", TokenAmount: 1000000, PriceCents: 29700, DurationDays: 90, Enabled: true}
+	if err := db.DB.Create(pkg).Error; err != nil {
+		t.Fatalf("建包失败: %v", err)
+	}
+	oid := mkPaidSubOrder(t, tid, pkg, 65)
+	exp := time.Now().Add(25 * 24 * time.Hour)
+	if err := db.DB.Model(&model.Tenant{}).Where("id=?", tid).
+		Updates(map[string]any{"expired_at": exp, "monthly_token_quota": pkg.TokenAmount,
+			"monthly_token_used": 250000, "status": "active"}).Error; err != nil {
+		t.Fatalf("设订阅失败: %v", err)
+	}
+
+	o, flowed, err := MarkOrderRefunded(oid)
+	if err != nil || !flowed {
+		t.Fatalf("季付退款应成功 flowed=%v err=%v", flowed, err)
+	}
+	// 未消耗 = (3-2)期×100万 - 当期已用25万 = 75万；分母 = 3期×100万 = 300万
+	// 应退 = 29700 × 75万/300万 = 7425 分
+	if o.RefundAmountCents != 7425 {
+		t.Fatalf("季付退款应为7425分(未消耗75万/发放300万), got %d", o.RefundAmountCents)
+	}
+}
+
+// TestRefundPaidLegacyCountPack 次数制 legacy 包（token_amount=0，无积分维度可核）
+// 回退剩余天数比例——新口径不得把这类历史订单一律判成"零可退"而拒掉正常退款。
+func TestRefundPaidLegacyCountPack(t *testing.T) {
+	testutil.SetupTestDB(t)
+	tid := testutil.CreateTenant(t)
+	defer testutil.CleanupTenant(t, tid)
+
+	pkg := &model.Package{Code: fmt.Sprintf("ut_plegacy_%d", time.Now().UnixNano()), Name: "legacy次数包",
+		PType: "paid", TokenAmount: 0, AICalls: 1000, PriceCents: 9900, DurationDays: 30, Enabled: true}
+	if err := db.DB.Create(pkg).Error; err != nil {
+		t.Fatalf("建包失败: %v", err)
+	}
+	oid := mkPaidSubOrder(t, tid, pkg, 10) // 生效 10 天 → 剩 20 天
+	exp := time.Now().Add(20 * 24 * time.Hour)
+	if err := db.DB.Model(&model.Tenant{}).Where("id=?", tid).
+		Updates(map[string]any{"expired_at": exp, "status": "active"}).Error; err != nil {
+		t.Fatalf("设订阅失败: %v", err)
+	}
+
+	o, flowed, err := MarkOrderRefunded(oid)
+	if err != nil || !flowed {
+		t.Fatalf("legacy 次数包退款应成功 flowed=%v err=%v", flowed, err)
+	}
+	if o.RefundAmountCents != 6600 {
+		t.Fatalf("legacy 次数包应按天数退6600分(20/30), got %d", o.RefundAmountCents)
 	}
 }

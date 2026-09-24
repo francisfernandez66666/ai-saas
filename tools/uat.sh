@@ -423,7 +423,7 @@ except Exception:
 check "记录含邮箱/支付/奖励字段" True "$KEYS_OK"
 
 echo ""
-echo "== 十五、退款 E2E（T3：零消耗增量全额退 + 包月按窗口摘除）=="
+echo "== 十五、退款 E2E（T3：零消耗增量全额退 + 包月按未消耗积分比例退 + 奖励差额挂账）=="
 RF_CODE="uatrf$((TS%100000))"; RF_USER="rf$TS"
 R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
   -d "{\"company_name\":\"UAT退款\",\"code\":\"$RF_CODE\",\"username\":\"$RF_USER\",\"password\":\"uat123456\"}")
@@ -472,6 +472,68 @@ check "退款后到期日回退且月配额清零" "0|t" "$RF_AFTER"
 RF_LIST_RAW=$(curl -s "$B/api/v1/billing/orders?limit=50" -H "$RH")
 RF_LIST_REFUND=$(echo "$RF_LIST_RAW" | jget "sum(1 for o in d['data'] if o['id']==$RF_ORDER and o.get('refund_amount_cents')==$RF_AMT and o.get('refunded_at'))")
 check "订单列表含退款金额与退款时间(F1)" 1 "$RF_LIST_REFUND"
+# 15.4 2026-09-24 口径变更：包月按「未消耗积分比例」退款，不退已消耗积分。
+#     旧口径只看时间不看用量——第 2 天把整月 300 万额度跑完仍能退 28/30≈93% 现金，
+#     而那份算力成本摘除订阅时并不会吐回来，是一条可反复走的用量白嫖路径。
+RF_SUB2=$(curl -s -X POST "$B/api/v1/billing/subscribe" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"package_id\":$PAID_PKG}" | jget "d['data']['order']['id']")
+curl -s -X POST "$B/api/v1/billing/orders/mock-pay" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$RF_SUB2}" >/dev/null
+RF_Q2=$($PSQL "SELECT COALESCE(monthly_token_quota,0) FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "二次订阅后月度配额重新生效" 3000000 "$RF_Q2"
+# 前置自检：先证明"已消耗四成"真落进了①桶，否则下面的比例等式会在 used=0 上假绿
+$PSQL "UPDATE tenants SET monthly_token_used=1200000 WHERE id=$RF_ID" > /dev/null
+RF_U2=$($PSQL "SELECT monthly_token_used FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "已消耗四成落库前置自检" 1200000 "$RF_U2"
+RF_R2=$(curl -s -X POST "$B/api/v1/billing/orders/$RF_SUB2/refund" -H "$RH")
+check "消耗四成包月退款受理" 0 "$(echo "$RF_R2" | code)"
+# 9900×(300万-120万)/300万 = 5940 分（按天数口径此际会退 9900×剩余天/30，与用量无关）
+check "包月按未消耗积分比例退(60%=5940分)" 5940 "$(echo "$RF_R2" | jget "d['data']['refund_amount_cents']")"
+# 15.5 额度用满 → 一分不退：409 拒退且订阅权益不得被摘除（拒退不能顺手把人家包月清掉）
+RF_SUB3=$(curl -s -X POST "$B/api/v1/billing/subscribe" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"package_id\":$PAID_PKG}" | jget "d['data']['order']['id']")
+curl -s -X POST "$B/api/v1/billing/orders/mock-pay" -H "$RH" -H "Content-Type: application/json" \
+  -d "{\"order_id\":$RF_SUB3}" >/dev/null
+$PSQL "UPDATE tenants SET monthly_token_used=monthly_token_quota WHERE id=$RF_ID" > /dev/null
+RF_FULL_HTTP=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/billing/orders/$RF_SUB3/refund" -H "$RH")
+check "额度用满包月拒退409" 409 "$RF_FULL_HTTP"
+RF_FULL_STATE=$($PSQL "SELECT o.status||'|'||COALESCE(t.monthly_token_quota,0) FROM billing_orders o, tenants t WHERE o.id=$RF_SUB3 AND t.id=$RF_ID" | tr -d '[:space:]')
+check "拒退后订单仍paid且配额未被摘除" "paid|3000000" "$RF_FULL_STATE"
+# 15.6 2026-09-24 口径变更：推荐奖励追不平就挂账（旧 GREATEST 兜底=静默放弃差额）
+#     邀请人②桶不足以即时回收 50 万时，扣到零 + 差额落成 usage_flush_retry 待补扣行。
+#     邀请人当场自建：不赌注册链路有没有带邀请码——旧写法 if [ -n "$RF_INVID" ] 在
+#     空值时静默跳过整段，两条断言从来没跑过却依旧显示全绿（假绿）。
+RF_INV_CODE="uatinv$((TS%100000))"; RF_INV_USER="inv$TS"
+R=$(curl -s -X POST "$B/api/v1/tenant/signup" -H "Content-Type: application/json" \
+  -d "{\"company_name\":\"UAT邀请人\",\"code\":\"$RF_INV_CODE\",\"username\":\"$RF_INV_USER\",\"password\":\"uat123456\"}")
+check "邀请人租户注册(15.6)" 0 "$(echo "$R"|code)"
+RF_INVID=$($PSQL "SELECT id FROM tenants WHERE code='$RF_INV_CODE'" | tr -d '[:space:]')
+# 把邀请人②桶配成"只够扣 10 万"，制造追不平 40 万的条件（直改后读回，防钳位/触发器把值改掉）
+$PSQL "UPDATE tenants SET token_balance=100000 WHERE id=$RF_INVID" > /dev/null
+RF_INVBAL=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$RF_INVID" | tr -d '[:space:]')
+check "邀请人可用余额前置自检" 100000 "$RF_INVBAL"
+$PSQL "UPDATE tenants SET invited_by_tenant_id=$RF_INVID, referral_paid_rewarded=true WHERE id=$RF_ID" > /dev/null
+$PSQL "DELETE FROM reward_claims WHERE grant_type='referral_paid' AND ref_id=$RF_ID" > /dev/null
+$PSQL "INSERT INTO reward_claims(grant_type,tenant_id,ref_id,note,created_at) VALUES('referral_paid',$RF_INVID,$RF_ID,'bonus:500000',NOW())" > /dev/null
+$PSQL "DELETE FROM usage_flush_retry WHERE tenant_id=$RF_INVID" > /dev/null
+# 15.5 那笔因"额度用满"被拒的订阅单：把①桶消耗归零使其可退——退款成功才会触发奖励回收
+$PSQL "UPDATE tenants SET monthly_token_used=0 WHERE id=$RF_ID" > /dev/null
+RF_R3=$(curl -s -X POST "$B/api/v1/billing/orders/$RF_SUB3/refund" -H "$RH")
+check "奖励回收前置：包月退款受理成功" 0 "$(echo "$RF_R3" | code)"
+RF_LEFT=$($PSQL "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=$RF_INVID" | tr -d '[:space:]')
+RF_DEBT=$($PSQL "SELECT COALESCE(SUM(tokens),0) FROM usage_flush_retry WHERE tenant_id=$RF_INVID" | tr -d '[:space:]')
+check "奖励即时扣到零(可用10万花光)" 0 "$RF_LEFT"
+check "差额40万转挂账行(留在邀请人名下)" 400000 "$RF_DEBT"
+# 挂账行必须带 tenant_id（C7 红线：后台事务写租户表不得盖成 0，否则欠账记到平台名下）
+RF_DEBT_ORPHAN=$($PSQL "SELECT count(*) FROM usage_flush_retry WHERE tenant_id=0" | tr -d '[:space:]')
+check "挂账行无tenant_id=0脏数据" 0 "$RF_DEBT_ORPHAN"
+# 台账删除 + 幂等闸门重置：受邀人再付费应能再获奖（不重置=一次退款永久吃掉邀请资格）
+RF_CLAIM_LEFT=$($PSQL "SELECT count(*) FROM reward_claims WHERE grant_type='referral_paid' AND ref_id=$RF_ID" | tr -d '[:space:]')
+RF_GATE=$($PSQL "SELECT referral_paid_rewarded FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
+check "奖励台账行已删除" 0 "$RF_CLAIM_LEFT"
+check "回收后幂等闸门已重置" "f" "$RF_GATE"
+# 收尾：挂账行会被 UsageSink 60s sweep 补扣，测试租户马上被清理，须就地撤掉避免残账
+$PSQL "DELETE FROM usage_flush_retry WHERE tenant_id=$RF_INVID" > /dev/null
 
 echo ""
 echo "== 十一、会话单活跃收口批（2026-09-16C，AUDIT_GAP_REALITY G1）=="

@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
 
 	"gorm.io/gorm"
@@ -258,15 +259,52 @@ func ClawbackPaidReferralReward(tx *gorm.DB, invited model.Tenant) {
 		if _, e := fmt.Sscanf(claim.Note, "bonus:%d", &bonus); e != nil || bonus <= 0 {
 			bonus = int64(cfgInt("referral_paid_bonus_tokens", 500000)) // 存量台账无金额：按当前配置兜底
 		}
-		if err := tx.Model(&model.Tenant{}).Where("id = ?", claim.TenantID).
-			Update("token_balance", gorm.Expr("GREATEST(COALESCE(token_balance,0)-?,0)", bonus)).Error; err != nil {
-			log.Printf("[Referral] 奖励回收扣减失败 inviter=%d: %v", claim.TenantID, err)
+		// 2026-09-24 用户拍板口径：**奖励追不平就挂账**，不再静默放弃差额。
+		// 旧写法 GREATEST(token_balance-?,0) 在"邀请人已把奖励花掉"时把回收折成少扣一点，
+		// 于是「邀 B → B 付费 → 领 50 万 → 立刻花光 → 退 B 的单」可以反复洗奖励——
+		// 白拿的部分已经变成真实用量留在②桶历史里，回收却每次都能少扣。
+		// 现在：能扣的当场扣（先锁定邀请人行读实际余额，与 UsageSink 扣减互斥），
+		// 扣不到的差额以 usage_flush_retry 挂账行留在邀请人名下，由 UsageSink 60s sweep
+		// 在其后续余额进账时按三桶序（③→①→②）补扣，超 30 分钟未清走既有【计费告警】人工介入。
+		// 锁序与本事务既有顺序一致（先受邀人后邀请人），不构成反向死锁。
+		var inviter model.Tenant
+		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Select("id", "token_balance").First(&inviter, claim.TenantID).Error; err != nil {
+			log.Printf("[Referral] 奖励回收读取邀请人失败 inviter=%d: %v", claim.TenantID, err)
 			return
+		}
+		collected := bonus
+		if inviter.TokenBalance < collected {
+			collected = inviter.TokenBalance
+		}
+		if collected < 0 {
+			collected = 0 // 脏数据负余额：一分都扣不到，差额全额挂账
+		}
+		shortfall := bonus - collected
+		if collected > 0 {
+			// 已锁行且已核实际余额，故不再需要 GREATEST 兜底——出现负数即是 bug
+			if err := tx.Model(&model.Tenant{}).Where("id = ?", claim.TenantID).
+				Update("token_balance", gorm.Expr("token_balance - ?", collected)).Error; err != nil {
+				log.Printf("[Referral] 奖励回收扣减失败 inviter=%d: %v", claim.TenantID, err)
+				return
+			}
+		}
+		if shortfall > 0 {
+			// 后台链路无请求 ctx，TenantID 必须显式落列（C7 事务内写租户表红线）
+			debt := model.UsageFlushRetry{TenantID: claim.TenantID, Tokens: shortfall}
+			if err := tx.Create(&debt).Error; err != nil {
+				log.Printf("[Referral][ERROR] 奖励回收差额挂账失败 inviter=%d 差额=%d: %v（本笔回收随退款事务回滚）",
+					claim.TenantID, shortfall, err)
+				return
+			}
+			metrics.AddTokenDebtTokens(uint64(shortfall))
+			log.Printf("[Referral][WARN] 邀请人%d 余额不足以即时回收推荐奖：即时扣 %d、挂账 %d tokens（待补扣）",
+				claim.TenantID, collected, shortfall)
 		}
 		tx.Delete(&model.RewardClaim{}, claim.ID)
 		InvalidateShadow(claim.TenantID)
-		log.Printf("[Referral] R7 付费推荐奖励已回收：invited=%d 退款触发，inviter=%d -%d token",
-			invited.ID, claim.TenantID, bonus)
+		log.Printf("[Referral] R7 付费推荐奖励已回收：invited=%d 退款触发，inviter=%d 即时扣 %d / 挂账 %d token",
+			invited.ID, claim.TenantID, collected, shortfall)
 	} else {
 		log.Printf("[Referral] invited=%d 无 referral_paid 台账行（存量数据），仅重置闸门不动 token", invited.ID)
 	}

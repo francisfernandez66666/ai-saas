@@ -216,7 +216,23 @@ verdict "go vet ./..." $?
 GO_TEST_RC=0
 # P1-5(2026-09-22)：加 -coverprofile 采集全量覆盖率产物，供单测判定后接覆盖率棘轮门禁复用
 #（不再额外跑一遍全量 go test）。
-go test -json -cover -coverprofile=/tmp/ai_scrm_coverage.out ./... >/tmp/test_all_go.json 2>&1 || GO_TEST_RC=$?
+# 2026-09-24 连接槽根因：`go test ./...` 默认按 CPU 核数并发跑包二进制，每个二进制的池上限
+# DB_MAX_OPEN_CONNS=25，而本机 PG max_connections=100（另有 3 个超管保留位）——并发 4~8 个包
+# 即可能打出 100~200 连接。现场是 internal/billing 的两条用例红：
+#   · TestConsumeAIQuotaConcurrentStats：100 个 goroutine 里恰有 12 次
+#     "[Usage] 计数失败 … SQLSTATE 53300 remaining connection slots are reserved"，
+#     断言 used_ai_calls +100 实得 88（递增本身是 SQL 原子的，丢的是取不到连接的那 12 次）；
+#   · TestReconcileBillingLedgerDriven：期望 400 万实得 200 万。同一次运行日志里有 60 处 53300，
+#     但对账链自身没报错，真机制是 ReconcileBilling 的全局扫描带 Limit(200) 且无 ORDER BY——
+#     库里"paid 缺台账"历史行一多（当日 257 个测试租户残留），本用例那条单就被挤出这 200 行。
+#     清理测试数据后该谓词命中 0 行，用例恢复稳定；Limit 无排序的饿死风险另计待决项。
+# 两条都与产品代码无关（错误被统计旁路只记日志不抛出），是测试层自伤。两道收口：
+#   1) -p 限并发包数（机器更强时用 GO_TEST_PARALLEL 放宽）；
+#   2) 单测层把每包连接池压到 8——-p 3 仍见过一次同样的 53300（并发包二进制 + 各自 25 池
+#      之和可以逼近 100），而 8×3=24 距上限很远；池满时 goroutine 只是排队等连接，
+#      100 个 goroutine 跑一发短 UPDATE 用 8 条连接足够，不改变用例语义。
+#      godotenv 不覆盖已存在的环境变量，故此处 export 优先于 .env 的 DB_MAX_OPEN_CONNS=25。
+DB_MAX_OPEN_CONNS="${GO_TEST_DB_MAX_CONNS:-8}" go test -json -p "${GO_TEST_PARALLEL:-3}" -cover -coverprofile=/tmp/ai_scrm_coverage.out ./... >/tmp/test_all_go.json 2>&1 || GO_TEST_RC=$?
 SKIP_SUMMARY="$(python3 - /tmp/test_all_go.json /tmp/test_all_go.log <<'PY'
 import json, sys, collections
 
@@ -412,7 +428,7 @@ else
 fi
 
 if [ "$MODE" != "fast" ]; then
-  step "E2E 层：uat.sh（98 断言全场景，较长；含 M1 账目守恒与 A1 正式链落库双入口）"
+  step "E2E 层：uat.sh（112 断言全场景，较长；含 M1 账目守恒、A1 正式链落库双入口与 §十五 退款口径批）"
   # uat 含真实 AI 调用与长时间等待，默认纳入 full 模式；CI 建议 --fast
   ./tools/uat.sh "$PORT" >/tmp/test_all_uat.log 2>&1; verdict "uat.sh" $?; tail -3 /tmp/test_all_uat.log
 else
