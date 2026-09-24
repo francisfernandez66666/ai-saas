@@ -254,6 +254,17 @@
     },
     {
       "method": "GET",
+      "path": "/api/v1/admin/channel-archive/records/:id",
+      "group": "admin",
+      "handler": "GetChannelArchiveRecord",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveRecordDetailResp"
+    },
+    {
+      "method": "GET",
       "path": "/api/v1/admin/channel-dlq",
       "group": "admin",
       "handler": "ListChannelDeadLetters",
@@ -273,6 +284,28 @@
         "admin_required"
       ],
       "data_ts": "ChannelListResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/channels/:id/archive",
+      "group": "admin",
+      "handler": "GetChannelArchive",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveStatusResp"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/admin/channels/:id/archive/records",
+      "group": "admin",
+      "handler": "ListChannelArchiveRecords",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveRecordListResp"
     },
     {
       "method": "GET",
@@ -1477,6 +1510,28 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/admin/channels/:id/archive/key",
+      "group": "admin",
+      "handler": "GenerateChannelArchiveKey",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveKeyResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/admin/channels/:id/archive/sync",
+      "group": "admin",
+      "handler": "SyncChannelArchive",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveSyncResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/admin/channels/:id/verify",
       "group": "admin",
       "handler": "VerifyChannel",
@@ -2604,6 +2659,17 @@
         "jwt",
         "admin_required"
       ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/admin/channels/:id/archive",
+      "group": "admin",
+      "handler": "UpdateChannelArchive",
+      "auth": [
+        "jwt",
+        "admin_required"
+      ],
+      "data_ts": "ArchiveStatusResp"
     },
     {
       "method": "PUT",

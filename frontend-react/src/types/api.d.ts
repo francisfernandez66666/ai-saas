@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, ArchiveKeyResp, ArchiveRecordDetailResp, ArchiveRecordListResp, ArchiveStatusResp, ArchiveSyncResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -28,8 +28,11 @@ export interface ApiRoutes {
   "GET /api/v1/admin/apikeys": unknown
   "GET /api/v1/admin/audit-logs": unknown
   "GET /api/v1/admin/billing/dunning": AdminDunningResp
+  "GET /api/v1/admin/channel-archive/records/:id": ArchiveRecordDetailResp
   "GET /api/v1/admin/channel-dlq": OutboundListResp
   "GET /api/v1/admin/channels": ChannelListResp
+  "GET /api/v1/admin/channels/:id/archive": ArchiveStatusResp
+  "GET /api/v1/admin/channels/:id/archive/records": ArchiveRecordListResp
   "GET /api/v1/admin/config": unknown
   "GET /api/v1/admin/deals": DealDrillResp
   "GET /api/v1/admin/deals/:id": DealDetailResp
@@ -150,6 +153,8 @@ export interface ApiRoutes {
   "POST /api/v1/admin/apikeys/:id/enable": unknown
   "POST /api/v1/admin/channel-dlq/:id/retry": unknown
   "POST /api/v1/admin/channels": CreateChannelResp
+  "POST /api/v1/admin/channels/:id/archive/key": ArchiveKeyResp
+  "POST /api/v1/admin/channels/:id/archive/sync": ArchiveSyncResp
   "POST /api/v1/admin/channels/:id/verify": unknown
   "POST /api/v1/admin/config/init": unknown
   "POST /api/v1/admin/config/reset": unknown
@@ -262,6 +267,7 @@ export interface ApiRoutes {
   "POST /api/v1/tenant/signup": unknown
   "POST /openapi/v1/chat/completions": unknown
   "PUT /api/v1/admin/channels/:id": unknown
+  "PUT /api/v1/admin/channels/:id/archive": ArchiveStatusResp
   "PUT /api/v1/admin/channels/:id/status": unknown
   "PUT /api/v1/admin/config": unknown
   "PUT /api/v1/admin/deals/:id": DealDetailResp

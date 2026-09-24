@@ -614,6 +614,104 @@ export interface OutboundListResp {
 }
 
 // ============================================================
+// 会话存档（E8，2026-09-24）：企微「会话内容存档」的配置、同步与留痕查询
+// 口径三条：密钥材料永不出接口（只给公钥与指纹）；列表只给摘要，全文走详情；
+// SDK 未接入是「待办引导」而不是失败弹窗，故以稳定原因码表达。
+// ============================================================
+
+/** 单通道存档状态：enabled/key_configured 是「配了没」，fetcher_ready 是「取数接了没」，
+ *  三个 total 让管理员一眼看出「一条没有」是还没开、没接 SDK、还是全都解不开 */
+export interface ArchiveStatus {
+  enabled: boolean
+  key_configured: boolean
+  secret_configured: boolean
+  public_key_ver: number
+  /** 当前私钥对应公钥的 SHA-1 指纹（冒号分隔），与企微后台显示的那把比对用 */
+  fingerprint: string
+  /** 拉取游标：只单调前移，回退等于把历史重抄一遍 */
+  cursor_seq: number
+  /** false=官方 C SDK 未编入（正常，等接入），不是链路故障 */
+  fetcher_ready: boolean
+  last_msg_at?: string | null
+  stored_total: number
+  /** decrypt_error 非空行数：钥匙与后台公钥版本不符时会在这里体现 */
+  failed_total: number
+  /** 加解密公钥版本与当前配置不符的行数（可读，但该改 public_key_ver） */
+  ver_mismatch_total: number
+  /** 取数能力缺口的稳定原因码（""=已接入），值同 archive_sdk_not_built */
+  sdk_reason: string
+}
+
+/** GET / PUT /admin/channels/:id/archive 出参 */
+export interface ArchiveStatusResp {
+  status: ArchiveStatus
+}
+
+/** POST /admin/channels/:id/archive/key 出参：**只有公钥**，private_key_echo 恒 false */
+export interface ArchiveKeyResp {
+  public_key_pem: string
+  fingerprint: string
+  public_key_ver: number
+  private_key_echo: boolean
+}
+
+/** 一轮同步的计数（fetched/stored/dup_skipped/stale_skipped/decrypt_failed 互不重叠） */
+export interface ArchiveIngestResult {
+  fetched: number
+  stored: number
+  dup_skipped: number
+  stale_skipped: number
+  decrypt_failed: number
+  max_seq: number
+}
+
+/** POST /admin/channels/:id/archive/sync 出参：ok=false 时 reason 给稳定码
+ *  （archive_disabled / archive_sdk_not_built / archive_key_missing / archive_secret_rekey_required） */
+export interface ArchiveSyncResp {
+  ok: boolean
+  reason: string
+  result: ArchiveIngestResult
+}
+
+/** 存档名单一行：**不含 content_text**，正文降为 120 字摘要（全文走详情接口，读一次留一条审计） */
+export interface ArchiveRecordRow {
+  id: number
+  channel_id: number
+  msgid: string
+  seq: number
+  public_key_ver: number
+  biz_type: string
+  action: string
+  from_user: string
+  sender_name: string
+  chat_type: string
+  chatid: string
+  msg_type: string
+  media_id: string
+  media_status: string
+  /** 非空即这条只有信封没有正文（解不开也留痕，否则游标卡死） */
+  decrypt_error: string
+  msg_time?: string | null
+  text_preview: string
+  has_full_text: boolean
+}
+
+/** GET /admin/channels/:id/archive/records 出参：page_size 回显实际生效值（硬顶 100） */
+export interface ArchiveRecordListResp {
+  list: ArchiveRecordRow[]
+  total: number
+  page: number
+  page_size: number
+  page_size_cap: number
+  note: string
+}
+
+/** GET /admin/channel-archive/records/:id 出参：详情含正文全文与 to_list 原始 JSON */
+export interface ArchiveRecordDetailResp {
+  record: ArchiveRecordRow & { content_text: string; to_list: string }
+}
+
+// ============================================================
 // 表格行数据类型（P1-2：消除 TDesign 单元格回调中的 any 漂移）
 // ============================================================
 

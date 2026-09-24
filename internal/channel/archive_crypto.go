@@ -38,6 +38,13 @@ import (
 // archiveZeroIV 官方样例的固定 IV：16 个字符 '0'。
 var archiveZeroIV = []byte("0000000000000000")
 
+// ErrArchiveKeyFormat 私钥 PEM 入参形态不对（解不出/不是 RSA/自检不过）。
+//
+// 为什么单独一个码：调用方要区分"管理员粘错了，改入参就行（400）"和
+// "我们这边环境或库里的东西坏了，要排查（5xx）"。两者都回一句中文"私钥非法"时，
+// 前者会去查日志、后者会去重粘一遍，正好都做反。
+var ErrArchiveKeyFormat = errors.New("archive_key_format")
+
 // ArchiveCipherItem 一条待解密的存档信封（对应 SDK GetChatData 返回数组的一项）。
 type ArchiveCipherItem struct {
 	PublicKeyVer     int    `json:"publickey_ver"`      // 用哪一版公钥加的密
@@ -91,27 +98,30 @@ func GenerateArchiveKeyPair(bits int) (privPEM string, pubPEM string, err error)
 // 只解一种的代价很实在：粘错格式时报"非法私钥"，人第一反应是"密钥坏了"去重新生成一对，
 // 而**重新生成等于历史存档永久解不开**（旧密文是旧公钥加的密）。这种把人往绝路上引的
 // 误导性失败必须堵住——所以两种格式都吃，并且错误文案直接说清该检查什么。
+//
+// 四类失败统一包 ErrArchiveKeyFormat：调用方（Admin 接口）按它判"这是入参不对（400 该改）"
+// 还是"链路与环境不对（5xx 该查）"，不必去匹配中文文案——文案会改，码不会。
 func ParseArchivePrivateKey(pemStr string) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode([]byte(strings.TrimSpace(pemStr)))
 	if block == nil {
-		return nil, errors.New("私钥 PEM 解码失败（确认是否粘全了 -----BEGIN/END----- 两行）")
+		return nil, fmt.Errorf("%w: 私钥 PEM 解码失败（确认是否粘全了 -----BEGIN/END----- 两行）", ErrArchiveKeyFormat)
 	}
 	if k, err := x509.ParsePKCS1PrivateKey(block.Bytes); err == nil {
 		if verr := k.Validate(); verr != nil {
-			return nil, fmt.Errorf("私钥自检失败: %w", verr)
+			return nil, fmt.Errorf("%w: 私钥自检失败: %v", ErrArchiveKeyFormat, verr)
 		}
 		return k, nil
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		return nil, errors.New("私钥格式不支持（须 RSA PKCS#1 或 PKCS#8 PEM）")
+		return nil, fmt.Errorf("%w: 私钥格式不支持（须 RSA PKCS#1 或 PKCS#8 PEM）", ErrArchiveKeyFormat)
 	}
 	rk, ok := key.(*rsa.PrivateKey)
 	if !ok || rk == nil {
-		return nil, errors.New("PEM 里没有 RSA 私钥（可能是 ECC 或其它算法）")
+		return nil, fmt.Errorf("%w: PEM 里没有 RSA 私钥（可能是 ECC 或其它算法）", ErrArchiveKeyFormat)
 	}
 	if verr := rk.Validate(); verr != nil {
-		return nil, fmt.Errorf("私钥自检失败: %w", verr)
+		return nil, fmt.Errorf("%w: 私钥自检失败: %v", ErrArchiveKeyFormat, verr)
 	}
 	return rk, nil
 }

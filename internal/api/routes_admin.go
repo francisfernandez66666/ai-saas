@@ -201,5 +201,17 @@ func registerAdmin(v1 *gin.RouterGroup) {
 		admin.POST("/channels/:id/verify", VerifyChannel)
 		admin.GET("/channel-dlq", ListChannelDeadLetters)
 		admin.POST("/channel-dlq/:id/retry", RetryChannelDeadLetter)
+
+		// ---- 会话存档（E8-3，2026-09-24）：凭据/密钥/同步/留痕查询 ----
+		// 与收发凭据分开的接口是刻意的：存档 secret 解不开时，引导只该指向存档那一格，
+		// 不该把本来正常工作的收发货凭据一起拖进"重录"流程。
+		// 详情走独立父节点 /admin/channel-archive/*：gin 同层不允许静态段与 :id 并存
+		// （/admin/channels/dead-letters 就是这么冲突的），二级嵌套会再撞一次。
+		admin.GET("/channels/:id/archive", GetChannelArchive)
+		admin.PUT("/channels/:id/archive", UpdateChannelArchive)
+		admin.POST("/channels/:id/archive/key", GenerateChannelArchiveKey)
+		admin.POST("/channels/:id/archive/sync", SyncChannelArchive)
+		admin.GET("/channels/:id/archive/records", ListChannelArchiveRecords)
+		admin.GET("/channel-archive/records/:id", GetChannelArchiveRecord)
 	}
 }

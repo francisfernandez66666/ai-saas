@@ -410,3 +410,178 @@ func ArchiveStatus(gdb *gorm.DB, tenantID, id uint) (ArchiveStatusView, error) {
 	}
 	return v, nil
 }
+
+// ---- 存档查询面（E8-3，2026-09-24）----
+
+// ArchivePageSizeCap 存档名单每页硬顶。下钻是核对用的（"这段时间到底说了什么"），
+// 导数走 /admin/export，不给一次拉全量的口子。
+const ArchivePageSizeCap = 100
+
+// archiveListPreviewRunes 列表页正文摘要长度（字符数）。全文只在详情接口回显，
+// 而详情接口每次写审计——摘要与全文的分工就是"随手翻"和"取证看"的分工。
+const archiveListPreviewRunes = 120
+
+// ArchiveRecordView 存档列表行视图：**不含正文全文**。
+// 为什么不用 model.ChatArchiveRecord 直接序列化：它的 json tag 把 content_text 带上了，
+// 一次列表请求就会把几十位客户的聊天原文整批推给浏览器（进日志、进插件、进截图）。
+type ArchiveRecordView struct {
+	ID           uint       `json:"id"`
+	ChannelID    uint       `json:"channel_id"`
+	MsgID        string     `json:"msgid"`
+	Seq          int64      `json:"seq"`
+	PublicKeyVer int        `json:"public_key_ver"`
+	BizType      string     `json:"biz_type"`
+	Action       string     `json:"action"`
+	FromUser     string     `json:"from_user"`
+	SenderName   string     `json:"sender_name"`
+	ChatType     string     `json:"chat_type"`
+	ChatID       string     `json:"chatid"`
+	MsgType      string     `json:"msg_type"`
+	MediaID      string     `json:"media_id"`
+	MediaStatus  string     `json:"media_status"`
+	DecryptError string     `json:"decrypt_error"`
+	MsgTime      *time.Time `json:"msg_time"`
+	TextPreview  string     `json:"text_preview"`
+	HasFullText  bool       `json:"has_full_text"`
+}
+
+// ArchiveDetail 存档详情（含正文全文，仅此接口回显，调用方必须写审计）。
+type ArchiveDetail struct {
+	ArchiveRecordView
+	ToList      string `json:"to_list"`
+	ContentText string `json:"content_text"`
+}
+
+// ArchiveListQuery 存档名单筛选入参（零值=不筛）。
+type ArchiveListQuery struct {
+	Since    *time.Time
+	Until    *time.Time
+	MsgType  string
+	ChatType string
+	FromUser string
+	ChatID   string
+	Keyword  string // 正文子串（ILIKE，转义过 % 和 _）
+	Failed   *bool  // true=只看解密失败留痕行
+	Page     int
+	PageSize int
+}
+
+// ListArchiveRecords 按通道列存档消息（租户锚定 + 摘要不回显全文）。
+//
+// tenant_id 与 channel_id 双条件而不是"先查通道归属再查消息"：
+// 中间那一跳的窗口里通道可以被改属/软删，只按 channel_id 查就会跨租户读到别人的会话原文。
+func ListArchiveRecords(gdb *gorm.DB, tenantID, channelID uint, q ArchiveListQuery) ([]ArchiveRecordView, int64, error) {
+	gdb = session(gdb)
+	qq := gdb.Model(&model.ChatArchiveRecord{}).
+		Where("tenant_id = ? AND channel_id = ?", tenantID, channelID)
+	if q.Since != nil {
+		qq = qq.Where("msg_time >= ?", *q.Since)
+	}
+	if q.Until != nil {
+		qq = qq.Where("msg_time <= ?", *q.Until)
+	}
+	for col, val := range map[string]string{
+		"msg_type":  strings.TrimSpace(q.MsgType),
+		"chat_type": strings.TrimSpace(q.ChatType),
+		"from_user": strings.TrimSpace(q.FromUser),
+		"chatid":    strings.TrimSpace(q.ChatID),
+	} {
+		if val != "" {
+			qq = qq.Where(col+" = ?", val)
+		}
+	}
+	if k := strings.TrimSpace(q.Keyword); k != "" {
+		qq = qq.Where("content_text ILIKE ?", `%`+escapeLikePattern(k)+`%`)
+	}
+	if q.Failed != nil {
+		if *q.Failed {
+			qq = qq.Where("decrypt_error <> ''")
+		} else {
+			qq = qq.Where("decrypt_error = ''")
+		}
+	}
+	var total int64
+	if err := qq.Count(&total).Error; err != nil {
+		return nil, 0, fmt.Errorf("存档名单统计失败: %w", err)
+	}
+	page, size := NormalizeArchivePage(q.Page, q.PageSize)
+	var rows []model.ChatArchiveRecord
+	// seq DESC 而不是 msg_time DESC：解不开的留痕行没有 msg_time，
+	// 按时间排会让它们长期霸占或彻底消失在某一页；seq 恒有值且就是企微的原始顺序。
+	if err := qq.Order("seq DESC").Order("id DESC").
+		Offset((page - 1) * size).Limit(size).Find(&rows).Error; err != nil {
+		return nil, 0, fmt.Errorf("存档名单读取失败: %w", err)
+	}
+	views := make([]ArchiveRecordView, 0, len(rows))
+	for _, r := range rows {
+		views = append(views, toArchiveRecordView(r))
+	}
+	return views, total, nil
+}
+
+// GetArchiveRecord 取一条存档详情（租户锚定；查不到/跨租户同为 ErrArchiveRecordNotFound）。
+func GetArchiveRecord(gdb *gorm.DB, tenantID, recordID uint) (ArchiveDetail, error) {
+	var d ArchiveDetail
+	gdb = session(gdb)
+	var r model.ChatArchiveRecord
+	// 不回显"这条存在但不在你的租户"与"根本没这条"的差别：存档 ID 是自增，
+	// 能探测就等于把别家的留痕行数分布送给外人。
+	if err := gdb.Where("id = ? AND tenant_id = ?", recordID, tenantID).First(&r).Error; err != nil {
+		return d, ErrArchiveRecordNotFound
+	}
+	d.ArchiveRecordView = toArchiveRecordView(r)
+	d.ContentText = r.ContentText
+	d.ToList = r.ToList
+	return d, nil
+}
+
+// ErrArchiveRecordNotFound 存档记录不存在或不属于本租户（两种情况同码同形，不回显差别）。
+var ErrArchiveRecordNotFound = errors.New("archive_record_not_found")
+
+// toArchiveRecordView 行 → 视图（正文降为摘要）。
+func toArchiveRecordView(r model.ChatArchiveRecord) ArchiveRecordView {
+	return ArchiveRecordView{
+		ID: r.ID, ChannelID: r.ChannelID, MsgID: r.MsgID, Seq: r.Seq,
+		PublicKeyVer: r.PublicKeyVer, BizType: r.BizType, Action: r.Action,
+		FromUser: r.FromUser, SenderName: r.SenderName, ChatType: r.ChatType, ChatID: r.ChatID,
+		MsgType: r.MsgType, MediaID: r.MediaID, MediaStatus: r.MediaStatus,
+		DecryptError: r.DecryptError, MsgTime: r.MsgTime,
+		TextPreview: archivePreview(r.ContentText, archiveListPreviewRunes),
+		HasFullText: r.ContentText != "",
+	}
+}
+
+// archivePreview 按**字符**截断摘要（企微正文里中文占多数，按字节切会劈出半个字，
+// 前端拿到就是乱码方块），并在截断时补省略号。
+func archivePreview(s string, max int) string {
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "…"
+}
+
+// NormalizeArchivePage 分页入参归一（越界页只回空列表，total 如实——见 D4 同口径）。
+// 导出是给接口层回显用的：响应里的 page_size 必须是**实际生效**的那个，
+// 各写各的钳制规则迟早对不上（前端据此算总页数）。
+func NormalizeArchivePage(page, size int) (int, int) {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 {
+		size = 20
+	}
+	if size > ArchivePageSizeCap {
+		size = ArchivePageSizeCap
+	}
+	return page, size
+}
+
+// escapeLikePattern 转义 ILIKE 通配符：不转义的话关键字里的 % 变成"任意字符串"，
+// 管理员搜"100%"会得到一堆不含该字样的行。
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
