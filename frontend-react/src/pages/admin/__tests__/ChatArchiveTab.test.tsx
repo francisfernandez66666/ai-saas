@@ -99,9 +99,15 @@ describe('ChatArchiveTab', () => {
   it('下拉只列企微自建应用，首屏就按选中的通道取状态', async () => {
     route()
     render(<ChatArchiveTab />)
+    // 等的是「状态面板已按响应渲染出来」，不是「请求发出去了」。
+    // 面板标题（通道名）挂在 status 之后（ChatArchiveTab.tsx:113 `status && <StatusPanel …>`），
+    // 而 status 要等 /archive 响应回来才 setState——旧写法 waitFor 命中"调用已发生"就同步读 DOM，
+    // 抢在渲染前读到空，本机刚跑完高负载并发抽查时实测 1/3 概率红（同批 QuotaAlertCard、
+    // playwright D4 下钻是同一个形态的第三次复发）。
+    expect(await screen.findByText('门店自建应用')).toBeTruthy()
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/admin/channels/3/archive'))
+    // 其余通道类型不得出现在界面上（存档是企业微信自建应用专属能力）
     expect(screen.queryByText('微信客服')).toBeNull()
-    expect(screen.getByText('门店自建应用')).toBeTruthy()
   })
 
   it('一个企微应用都没有时直说"先去建通道"，不空转一个假下拉', async () => {
