@@ -37,3 +37,33 @@ describe('AppSettings 个人信息删除', () => {
     expect(await screen.findByText(/已受理/)).toBeTruthy()
   })
 })
+
+// G-23(2026-09-25)：知识库改「全员只读 + 管理员可写」。旧口径是成员整块隐藏，
+// 销售在移动端看不到公司沉淀的资料；后端另开了 /advisor/kb/my 只读子集，
+// 上传/删除/注销仍只在 admin 组——所以成员侧必须不发出这两个请求，否则得到 403。
+describe('AppSettings 知识库角色分流（G-23）', () => {
+  const kbResp = { code: 0, data: { list: [{ id: 7, title: '售后政策' }], total: 1, page: 1, page_size: 50 } }
+
+  it('成员读 /advisor/kb/my，列表只读（无上传表单、无删除入口）', async () => {
+    localStorage.setItem('role', 'user')
+    authMock.mockImplementation(async (url: string) => (url.includes('/kb/my') ? kbResp : { code: 0, data: {} }))
+    render(<AppSettings />)
+    await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/api/v1/advisor/kb/my')))
+    expect(await screen.findByText('售后政策')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '上传切片入库' })).toBeNull()
+    expect(screen.queryByText('删除')).toBeNull()
+    expect(screen.getByText(/请联系管理员/)).toBeTruthy()
+    // 成员侧不得打管理端点（打了就是 403）
+    expect(authMock.mock.calls.some((c) => String(c[0]).startsWith('/api/v1/admin/'))).toBe(false)
+  })
+
+  it('管理员读 /admin/kb/my 且保留上传/删除', async () => {
+    localStorage.setItem('role', 'tenant_admin')
+    authMock.mockImplementation(async (url: string) => (url.includes('/kb/my') ? kbResp : { code: 0, data: {} }))
+    render(<AppSettings />)
+    await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/api/v1/admin/kb/my')))
+    expect(await screen.findByText('售后政策')).toBeTruthy()
+    expect(screen.getByRole('button', { name: '上传切片入库' })).toBeTruthy()
+    expect(screen.getByText('删除')).toBeTruthy()
+  })
+})

@@ -1,10 +1,66 @@
 {
-  "industry_code": "general",
-  "industry_name": "通用行业",
-  "description": "泛行业通用兜底配置，适用于未指定行业的租户",
-  "default_persona": "专业顾问",
-  "greeting_template": "你好！我是你的专属顾问，有什么可以帮你？",
-  "离题阈值": 3,
-  "到店意图词": ["到店", "上门", "参观", "体验", "试用"],
-  "询价意图词": ["多少钱", "价格", "费用", "报价", "优惠"]
+  "notes": "通用行业中立兜底包（G-21/G-22b，2026-09-24 内容化）——不含任何行业专属动作（试驾/看房/约评测），只承载「咨询式销售通用能力」。行业差异由具体行业包覆盖。",
+  "faqs": [],
+  "features": [
+    {
+      "id": "feat_gen_consulting",
+      "feature_name": "一对一需求诊断",
+      "category": "服务",
+      "desc_template": "先问清用途、预算和时间，再给方案。不是一上来就报产品清单，而是按你的实际场景排出优先级，省得你在不相关的选项上浪费时间。",
+      "short_desc": "按用途和预算定制方案",
+      "params": {},
+      "applicable_tags": ["需求明确"],
+      "applicable_models": [],
+      "priority": 10,
+      "status": 1
+    },
+    {
+      "id": "feat_gen_service",
+      "feature_name": "全程同一顾问跟进",
+      "category": "服务",
+      "desc_template": "从第一次沟通到后面落地，都是同一个顾问跟到底，不用每次重新讲一遍你的情况。有问题随时找人，不会出现成交前后两套态度的情况。",
+      "short_desc": "一个顾问跟到底，中途不换人",
+      "params": {},
+      "applicable_tags": ["对比多家"],
+      "applicable_models": [],
+      "priority": 9,
+      "status": 1
+    },
+    {
+      "id": "feat_gen_flexible",
+      "feature_name": "分阶段付费与组合",
+      "category": "费用",
+      "desc_template": "总价可以拆开谈：先做最要紧的那部分，后面按效果再加。预算紧就先上核心项，不用一次性把全部投入压上。",
+      "short_desc": "可拆分、可按阶段投入",
+      "params": {},
+      "applicable_tags": ["价格敏感"],
+      "applicable_models": [],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_gen_trial",
+      "feature_name": "免费体验与真实案例",
+      "category": "体验",
+      "desc_template": "先看后定。可以安排一次免费体验，也能给你看同场景已落地的真实案例和数据，你自己判断靠不靠谱，不用听我说。",
+      "short_desc": "免费体验+同场景案例参考",
+      "params": {},
+      "applicable_tags": ["体验意愿"],
+      "applicable_models": [],
+      "priority": 8,
+      "status": 1
+    },
+    {
+      "id": "feat_gen_aftercare",
+      "feature_name": "交付后保障",
+      "category": "售后",
+      "desc_template": "交付不是结束。约定好的内容按清单验收，期内问题按承诺返修，后续要调整也有明确的价格和响应时间，不靠临时沟通。",
+      "short_desc": "清单验收+期内返修+明确响应",
+      "params": {},
+      "applicable_tags": ["决策周期长"],
+      "applicable_models": [],
+      "priority": 7,
+      "status": 1
+    }
+  ]
 }

@@ -24,6 +24,7 @@ import (
 	"ai-scrm/internal/engine/strategy"
 	"ai-scrm/internal/logx"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
 
 	"gorm.io/gorm"
@@ -48,6 +49,7 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	// 系统事件（change_contact/add_external_contact 等）→ CDP 摄入，不进对话
 	if in.IsEvent {
 		log.Printf("[通道] channel=%d 事件 %s external=%s（走 CDP，不回复）", ch.ID, in.EventKey, in.ExternalID)
+		publishFollowEvent(ch, in)
 		return nil
 	}
 	if in.Content == "" {
@@ -367,6 +369,50 @@ func deliverAI(ch *model.Channel, conv *model.Conversation, customerID uint, tex
 	})
 	if _, err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
 		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err)
+	}
+}
+
+// followEventKeys 哪些通道事件等于"客户加了商家"这一条关注事实（CDP 的 beh_followed）。
+// 白名单而非黑名单：新接入的事件类型（企业微信的各种回执）默认不发事件，
+// 免得把一个员工变更回执打成客户关注标签——脏标签比缺标签更难查。
+var followEventKeys = map[string]bool{
+	"subscribe":                 true, // 公众号关注
+	"add_external_contact":      true, // 企微外部联系人新增
+	"add_half_external_contact": true, // 企微扫码添加（未通过好友验证）
+}
+
+// publishFollowEvent G-19(2026-09-24)：把通道关注事件接进 CDP。
+// 此前 ProcessInbound 的事件分支只打一行日志、注释写"走 CDP"，摄入端 case "follow"
+// 自建立起没有生产者。刻意**只给已有身份映射的客户**发事件：一条系统回执不该顺带
+// 建档一个新客户（虚增客户数/席位配额，且 staff 类事件的 external_userid 根本不是客户）。
+func publishFollowEvent(ch *model.Channel, in *InboundMessage) {
+	if !followEventKeys[in.EventKey] || in.ExternalID == "" {
+		return
+	}
+	var ident model.ChannelIdentity
+	// 谓词带上 ch.TenantID：external_id 的命名空间是"每个通道各自唯一"而不是全局唯一，
+	// 只按 channel_id+external_id 查在逻辑上等价于信任通道行没被配错租户。
+	// 显式带租户后，配错也查不到别人家的客户身份（G-12 裸 db.DB 收口顺带把这层守住）。
+	if err := db.DB.Where("tenant_id = ? AND channel_id = ? AND external_id = ?", ch.TenantID, ch.ID, in.ExternalID).
+		First(&ident).Error; err != nil {
+		log.Printf("[通道] 事件 %s 无对应客户身份（channel=%d external=%s），跳过 CDP 发布",
+			in.EventKey, ch.ID, logx.Safe(in.ExternalID, 12))
+		return
+	}
+	if err := mq.Publish(logx.ContextWithTrace(context.Background(), in.TraceID),
+		mq.TopicUserEvent, ch.TenantID, fmt.Sprintf("c:%d", ident.CustomerID), "follow", mq.UserEvent{
+			EventType:  "identity",
+			EventName:  "follow",
+			AnchorType: "wechat_openid",
+			Attributes: map[string]any{
+				"customer_id": ident.CustomerID,
+				"channel_id":  ch.ID,
+				"event_key":   in.EventKey,
+				"path":        "channel_inbound_event",
+			},
+			OccurredAt: time.Now(),
+		}); err != nil {
+		log.Printf("[MQ] follow(通道关注事件) 发布失败: %v", err)
 	}
 }
 

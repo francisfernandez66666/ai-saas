@@ -558,17 +558,19 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSimilarSuppress() bool {
 		Emotion:        strategy.DetectEmotion(s.req.Content),
 		CreatedAt:      time.Now(),
 	}
-	db.RQ(s.c).Create(&suppressedMsg)
-	s.c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.ChatResponse{
-			ConversationID:    conv.ID,
-			Merged:            true,
-			MergedNote:        "相似消息已合并处理",
-			CustomerMsgID:     suppressedMsg.ID,
-			AssistantMessages: []model.Message{},
-		},
+	// G-13 成功形态收敛：这条留痕消息就是本次请求回给前端的 customer_msg_id，
+	// 写失败还回 200 等于给了一个不存在的消息 ID（前端后续"撤回/重发"都指向空气）。
+	// 旧写法把 error 整个丢掉，实测只在库抖动时出现"响应成功但库里没这条"。
+	if err := db.RQ(s.c).Create(&suppressedMsg).Error; err != nil {
+		RespErrInternal(s.c, err, "消息处理失败，请重试")
+		return true
+	}
+	RespOK(s.c, "success", schema.ChatResponse{
+		ConversationID:    conv.ID,
+		Merged:            true,
+		MergedNote:        "相似消息已合并处理",
+		CustomerMsgID:     suppressedMsg.ID,
+		AssistantMessages: []model.Message{},
 	})
 	return true
 }
@@ -763,27 +765,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedHumanTakeover() bool {
 		}
 		now := time.Now()
 		s.conversation.LastMessageAt = &now
-		db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
-			Update("last_message_at", now)
-		db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
-		var lockedCustMsg model.Message
-		db.RQ(s.c).First(&lockedCustMsg, s.testCustomerMsgID)
-		if lockedCustMsg.ID > 0 {
-			notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", lockedCustMsg.ID, lockedCustMsg.Content, s.customer.Name, lockedCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
-		}
-		s.c.JSON(http.StatusOK, schema.Response{
-			Code:    0,
-			Message: "success",
-			Data: schema.ChatResponse{
-				ConversationID:    s.conversation.ID,
-				AssistantMessages: []model.Message{},
-				RouteResult:       chatflow.RouteHumanLockedNoAI,
-				Mode:              "human",
-				CustomerMsgID:     s.testCustomerMsgID,
-			},
-		})
-		// 处理权早退必须归还队列锁
-		service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
+		s.replyHumanEarlyExit(chatflow.RouteHumanLockedNoAI, now)
 		return true
 	}
 
@@ -792,29 +774,41 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedHumanTakeover() bool {
 		s.customer.ID, s.conversation.ID, aiTimeout)
 	now := time.Now()
 	s.conversation.LastMessageAt = &now
-	db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
-		Update("last_message_at", now)
-	db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).Update("conversation_id", s.conversation.ID)
-	var skipCustMsg model.Message
-	db.RQ(s.c).First(&skipCustMsg, s.testCustomerMsgID)
-	if skipCustMsg.ID > 0 {
-		notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", skipCustMsg.ID, skipCustMsg.Content, s.customer.Name, skipCustMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
-	}
+	s.replyHumanEarlyExit(chatflow.RouteHumanSkipAI, now)
+	return true
+}
 
-	s.c.JSON(http.StatusOK, schema.Response{
-		Code:    0,
-		Message: "success",
-		Data: schema.ChatResponse{
-			ConversationID:    s.conversation.ID,
-			AssistantMessages: []model.Message{},
-			RouteResult:       chatflow.RouteHumanSkipAI,
-			Mode:              "human",
-			CustomerMsgID:     s.testCustomerMsgID,
-		},
+// replyHumanEarlyExit 人工态早退的统一出口（G-13：两路此前各写一份，信封与错误处理都漂移过）。
+//
+// 副作用：会话 last_message_at 前移、把已入库的客户消息挂回会话、WS 通知顾问、归还队列处理权。
+// 为什么错误只落日志不改成 5xx：客户消息此刻**已经入库**，这条回复对客户是对的；
+// 但 conversation_id 挂不上就是一行孤儿消息（既进不了会话统计，也会被 orphan_messages 观测位
+// 点名），所以必须 ERROR 级留痕，而不是像旧写法那样把 error 直接丢掉。
+func (s *chatUnauthorizedCtx) replyHumanEarlyExit(route string, now time.Time) {
+	if err := db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
+		Update("last_message_at", now).Error; err != nil {
+		log.Printf("[ChatUnauthorized][ERROR] 会话%d last_message_at 更新失败: %v", s.conversation.ID, err)
+	}
+	if err := db.RQ(s.c).Model(&model.Message{}).Where("id = ?", s.testCustomerMsgID).
+		Update("conversation_id", s.conversation.ID).Error; err != nil {
+		log.Printf("[ChatUnauthorized][ERROR] 消息%d 挂会话%d 失败（会成孤儿行）: %v", s.testCustomerMsgID, s.conversation.ID, err)
+	}
+	var custMsg model.Message
+	if err := db.RQ(s.c).First(&custMsg, s.testCustomerMsgID).Error; err != nil {
+		log.Printf("[ChatUnauthorized] 客户消息%d 回读失败（WS 通知跳过）: %v", s.testCustomerMsgID, err)
+	} else if custMsg.ID > 0 {
+		notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", custMsg.ID, custMsg.Content,
+			s.customer.Name, custMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+	}
+	RespOK(s.c, "success", schema.ChatResponse{
+		ConversationID:    s.conversation.ID,
+		AssistantMessages: []model.Message{},
+		RouteResult:       route,
+		Mode:              "human",
+		CustomerMsgID:     s.testCustomerMsgID,
 	})
 	// 处理权早退必须归还队列锁
 	service.DefaultMessageQueueService.SetReply(s.tenantID, s.customer.ID, s.processEpoch, "")
-	return true
 }
 
 // chatUnauthorizedLeadIntercept 处理权段的硬拦截留资检测（手机号校验+分配顾问）。

@@ -264,9 +264,19 @@ B4=$($PSQL "SELECT token_balance FROM tenants WHERE id=$UB_ID")
 [ "$B4" -lt 25000 ] && [ "$B4" -ge 15000 ] && R=y || R=n
 check "①耗尽→扣②余额" y "$R"
 $PSQL "UPDATE tenants SET token_balance=0 WHERE id=$UB_ID" >/dev/null
+# G-5(2026-09-24)：原断言是 grep ai-scrm.log 找「降级规则话术」——日志落哪个文件是部署细节
+# （nohup 重定向到别处就假失败，AGENTS 已登记过一次），线上也没人 tail 日志。
+# 改为读 /metrics 的 ai_scrm_ai_fallback_total{reason="quota_exhausted"}：
+#  ① 断**增量**不断绝对值——计数器有意不带租户标签（租户数=series 基数），
+#     本机同期若有别的租户耗尽额度也会 +1，"变大"是本指标能诚实证明的上限；
+#  ② 该 series 在第一次命中前**根本不存在**（renderLabeledCounter 空集不输出），
+#     所以底数取不到按 0 算，而不是"缺行即失败"。
+fbcount() { curl -s "$B/metrics" | awk -F' ' '/^ai_scrm_ai_fallback_total\{reason="quota_exhausted"\}/{print $2}' | head -1; }
+FB_BEFORE=$(fbcount); FB_BEFORE=${FB_BEFORE:-0}
 round "全空降级测试"
-grep "三桶余额不足" ai-scrm.log | tail -1 | grep -q "降级规则话术" && R=y || R=n
-check "全空→降级规则话术" y "$R"
+FB_AFTER=$(fbcount); FB_AFTER=${FB_AFTER:-0}
+awk -v a="$FB_BEFORE" -v b="$FB_AFTER" 'BEGIN{exit !(b>a)}' && R=y || R=n
+check "全空→降级规则话术(指标增量 $FB_BEFORE→$FB_AFTER)" y "$R"
 # M1(2026-09-22 批三)字节级护栏：三桶全空时旧实现"挂账行已 DELETE、扣减却没发生"=静默吞账。
 # 现口径是哨兵错误回滚整笔结算，欠账必须以挂账行形态**留在自己租户名下**。
 # 两条断言各守一侧：① 余额不得被扣成负数（负账与吞账同样是账目失真）；

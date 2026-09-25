@@ -1,17 +1,44 @@
-{
-  "attitude": {
-    "greeting": ["你好！", "你好！", "欢迎咨询！"],
-    "fareback": ["再见！", "祝你生活愉快！", "有需要随时联系！"],
-    "apology": ["抱歉给你带来不便", "非常抱歉", "不好意思"]
+[
+  {
+    "code": "需求明确",
+    "name": "需求明确",
+    "category": "需求",
+    "weight": 1.2,
+    "description": "说清了用途和场景，可以进入方案推荐"
   },
-  "behavior": {
-    "store_visit": ["到店参观", "上门体验", "现场了解"],
-    "complaint": ["不满意", "有问题", "投诉"],
-    "inquiry": ["咨询", "了解", "询问"]
+  {
+    "code": "价格敏感",
+    "name": "价格敏感",
+    "category": "客群标签",
+    "weight": 1.0,
+    "description": "反复确认费用、要求拆分报价或给出预算区间"
   },
-  "demand": {
-    "price_inquiry": ["价格", "多少钱", "费用", "报价"],
-    "service_inquiry": ["服务", "产品", "功能"],
-    "urgency": ["急需", "马上", "尽快"]
+  {
+    "code": "对比多家",
+    "name": "对比多家",
+    "category": "客群标签",
+    "weight": 1.0,
+    "description": "提到正在看别家，需要做价值对比而非降价挽留"
+  },
+  {
+    "code": "体验意愿",
+    "name": "体验意愿",
+    "category": "行为",
+    "weight": 1.3,
+    "description": "愿意到店/上门/先试一次，属于高意向信号"
+  },
+  {
+    "code": "决策周期长",
+    "name": "决策周期长",
+    "category": "客群标签",
+    "weight": 0.8,
+    "description": "需与人商量或明确说要再考虑，转入低打扰培育"
+  },
+  {
+    "code": "已留资",
+    "name": "已留资",
+    "category": "阶段",
+    "weight": 1.5,
+    "description": "已提交手机号或联系方式，可安排专人跟进"
   }
-}
+]

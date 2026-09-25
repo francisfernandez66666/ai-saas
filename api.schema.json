@@ -389,7 +389,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "KbListResp"
     },
     {
       "method": "GET",
@@ -500,7 +501,8 @@
       "auth": [
         "jwt",
         "admin_required"
-      ]
+      ],
+      "data_ts": "AdminPackListView"
     },
     {
       "method": "GET",
@@ -679,6 +681,17 @@
         "readonly_write"
       ],
       "data_ts": "FollowUpRow[]"
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/advisor/kb/my",
+      "group": "advisor",
+      "handler": "TenantKBMy",
+      "auth": [
+        "jwt",
+        "readonly_write"
+      ],
+      "data_ts": "KbListResp"
     },
     {
       "method": "GET",
@@ -2633,6 +2646,28 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/super/tenants/:id/pack/bind",
+      "group": "super",
+      "handler": "SuperTenantPackBind",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperPackBindResp"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/tenants/:id/pack/reapply",
+      "group": "super",
+      "handler": "SuperTenantPackReapply",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperPackReapplyResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/tenant/signup",
       "group": "tenant",
       "handler": "TenantSignup",
@@ -2928,6 +2963,17 @@
         "jwt",
         "super_required"
       ]
+    },
+    {
+      "method": "PUT",
+      "path": "/api/v1/super/packs/:id/tier",
+      "group": "super",
+      "handler": "SuperPackTier",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "SuperPackTierResp"
     },
     {
       "method": "PUT",

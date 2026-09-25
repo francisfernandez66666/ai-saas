@@ -26,7 +26,16 @@ func (InboxEvent) TableName() string {
 	return "inbox_events"
 }
 
-// MessageEventRecord 事件记录表：持久化所有发布事件（审计/重放用）
+// MessageEventRecord 事件记录表：事件全生命周期的一条台账（审计/重放/死信留痕）
+//
+// G-15① 收口批（2026-09-24）：这张表以前只记**发布阶段**（created/sent/failed），
+// 消费侧无论成功、还是重试耗尽被丢弃，台账一个字都不改——于是"sent"看起来永远等于
+// "已妥投"，观测面是不真实的。现在补第二阶段终态 consumed / dead_letter，
+// 并带 trace_id + err_msg 让"这条事件在哪条链路上、为什么被丢掉"可回溯。
+//
+// ⚠ 清理器（service.CleanupMQTables）**不得删 dead_letter 行**：重试耗尽后 Kafka offset
+// 已提交、进程内总线也无重投，这一行就是那条事件的**唯一副本**，按天数清掉等于
+// 把"我们丢过什么"这件事一起丢掉。
 type MessageEventRecord struct {
 	ID        uint      `gorm:"primaryKey" json:"id"`                      // 主键ID
 	TenantID  uint      `gorm:"index;not null;default:0" json:"tenant_id"` // 来自 Header（0=系统事件）
@@ -36,8 +45,11 @@ type MessageEventRecord struct {
 	Topic     string    `gorm:"size:100" json:"topic"`                     // 主题
 	Key       string    `gorm:"size:100" json:"key"`                       // 分区键
 	Payload   string    `gorm:"type:text" json:"payload"`                  // 事件内容
-	Status    string    `gorm:"size:20;default:sent" json:"status"`        // created/sent/failed
+	Status    string    `gorm:"size:20;index;default:sent" json:"status"`  // created/sent/failed/consumed/dead_letter
+	TraceID   string    `gorm:"size:64;index" json:"trace_id"`             // 链路追踪 ID（Header 原样落库，发布/消费同 trace）
+	ErrMsg    string    `gorm:"size:512" json:"err_msg"`                   // 失败/死信原因（consumed 时为空）
 	CreatedAt time.Time `json:"created_at"`                                // 创建时间
+	UpdatedAt time.Time `json:"updated_at"`                                // 终态回写时间（与 created_at 差即"在途多久"）
 }
 
 // TableName 指定表名

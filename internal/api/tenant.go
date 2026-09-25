@@ -365,8 +365,11 @@ func ListPlans(c *gin.Context) {
 
 // resolveIndustry 行业解析与兜底（UAT定稿②，2026-08-26）
 // 规则：入参为空 → 直接通用行业；非空时校验是否为已上架的行业级包 code，
-// 命中返回原值，未命中不拒绝、回落通用行业(general)。通用行业无需包文件，
-// 仅作为租户身份标签存在（后续可挂载通用内容包）。
+// 命中返回原值，未命中不拒绝、回落通用行业(general)。
+// G-22b（2026-09-24）：general 从"纯身份标签"升级为带内容的中立兜底包
+// （packs-src/general 六件套 + data/packs/general_*.aipack），
+// 回落后的租户注册时会被 BindTenantToIndustryPack 落上这套中立话术，
+// 而不是继续吃汽车基包的人设与询价话术。
 func resolveIndustry(industry string) string {
 	industry = strings.ToLower(strings.TrimSpace(industry))
 	if industry == "" {

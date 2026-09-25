@@ -1,23 +1,54 @@
 [
   {
-    "id": "welcome",
-    "name": "欢迎语",
-    "trigger": "greeting",
-    "response": "你好！我是你的专属顾问，有什么可以帮你？",
-    "next": null
+    "code": "general_consult_nurture",
+    "name": "通用咨询培育流程",
+    "description": "未指定细分行业租户的中立动线：AI 摸底 → 策略分流（继续对话/询价/转人工/养鱼）→ 落标或转人工。节点类型取 model.NodeType* 实际枚举，分支条件取 strategy.Route* 实际路由值，顺序与 next_nodes 一一对应。",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始", "next_nodes": ["ai_intake"]},
+      {"id": "ai_intake", "type": "ai", "name": "AI接待与需求摸底", "next_nodes": ["route"]},
+      {"id": "route", "type": "strategy", "name": "策略分流",
+       "config": {"conditions": ["ai", "price", "human", "fish"]},
+       "next_nodes": ["ai_deep", "price_quote", "handoff", "nurture_wait"]},
+      {"id": "ai_deep", "type": "ai", "name": "继续确认用途与预算", "next_nodes": ["route"]},
+      {"id": "price_quote", "type": "ai", "name": "拆解报价并引导体验", "next_nodes": ["tag_price"]},
+      {"id": "tag_price", "type": "tag_update", "name": "标记价格探询",
+       "config": {"add_tags": ["beh_price_inquiry"], "remove_tags": []},
+       "next_nodes": ["end"]},
+      {"id": "handoff", "type": "human", "name": "转人工跟进", "next_nodes": ["end"]},
+      {"id": "nurture_wait", "type": "wait", "name": "转入低打扰培育", "next_nodes": ["end"]},
+      {"id": "end", "type": "end", "name": "结束"}
+    ],
+    "edges": [
+      {"from": "start", "to": "ai_intake"},
+      {"from": "ai_intake", "to": "route"},
+      {"from": "route", "to": "ai_deep", "condition": "ai"},
+      {"from": "route", "to": "price_quote", "condition": "price"},
+      {"from": "route", "to": "handoff", "condition": "human"},
+      {"from": "route", "to": "nurture_wait", "condition": "fish"},
+      {"from": "price_quote", "to": "tag_price"},
+      {"from": "tag_price", "to": "end"},
+      {"from": "handoff", "to": "end"},
+      {"from": "nurture_wait", "to": "end"}
+    ],
+    "start_node_id": "start"
   },
   {
-    "id": "inquiry",
-    "name": "需求询问",
-    "trigger": "any",
-    "response": "请问你想了解什么呢？",
-    "next": "collect_info"
-  },
-  {
-    "id": "collect_info",
-    "name": "信息收集",
-    "trigger": "any",
-    "response": "方便留一下你的联系方式吗？",
-    "next": null
+    "code": "general_lead_followup",
+    "name": "通用留资后跟进流程",
+    "description": "客户已留资后的动线：落「已留资」标记 → 转人工专人跟进，避免 AI 继续占线导致线索冷掉。",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始", "next_nodes": ["tag_lead"]},
+      {"id": "tag_lead", "type": "tag_update", "name": "标记已留资",
+       "config": {"add_tags": ["beh_lead_captured"], "remove_tags": []},
+       "next_nodes": ["handoff"]},
+      {"id": "handoff", "type": "human", "name": "分配专人跟进", "next_nodes": ["end"]},
+      {"id": "end", "type": "end", "name": "结束"}
+    ],
+    "edges": [
+      {"from": "start", "to": "tag_lead"},
+      {"from": "tag_lead", "to": "handoff"},
+      {"from": "handoff", "to": "end"}
+    ],
+    "start_node_id": "start"
   }
 ]

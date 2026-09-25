@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"ai-scrm/config"
+	"ai-scrm/internal/logx"
 
 	"github.com/segmentio/kafka-go"
 )
@@ -123,54 +124,80 @@ func (c *KafkaCenter) consumeLoop(ctx context.Context, topic string) {
 			continue
 		}
 
+		// G-15④：消费侧接上链路——Header 里的 trace 此前只是被解出来放进 env 结构体，
+		// 传给 handler 的 ctx 里没有，消费者内部所有日志/下游调用全成了无 trace 的孤儿行。
+		// 在这里注入一次，handler 及其派生调用即可沿用同一 trace（与发布端同值）。
+		hctx := logx.ContextWithTrace(ctx, env.Header.TraceID)
+
 		// Inbox 幂等抢占：event_id 已处理(done)则直接提交跳过；pending(首次)则执行
 		processed, err := EnsureProcessed(env.Header.EventID, env.Header.TenantID, env.Header.OneID, topic)
 		if err != nil {
-			log.Printf("[MQ-Kafka] Inbox 抢占失败 event=%s: %v", env.Header.EventID, err)
+			log.Printf("[MQ-Kafka] Inbox 抢占失败 event=%s trace=%s: %v", env.Header.EventID, env.Header.TraceID, err)
 			// 不提交，等待重投
 			continue
 		}
 		if processed {
+			// 幂等跳过也记 consumed：台账要能区分"这条事件我们看过"与"从没到过"
+			recordConsumeOutcome(env, StatusConsumed, []string{"幂等跳过：该事件此前已处理"})
 			_ = reader.CommitMessages(ctx, msg)
 			continue
 		}
-		// H2修复(2026-08-27)：处理失败走进程内重试队列（指数退避，最多5次），不进DLQ
-		if c.processWithRetry(ctx, env, topic) {
-			_ = MarkInboxDone(env.Header.EventID)
+		// H2修复(2026-08-27)：处理失败走进程内重试队列（指数退避，最多5次）
+		// G-15①：重试耗尽**不再只打一行 log 就提交 offset**。事件在 broker 侧已被越过，
+		// 台账必须留下 dead_letter 行（含 payload 与原因），否则"我们丢过什么"无从查起——
+		// 这是把"静默丢事件"变成"可核对的丢事件"，不改变提交语义（不提交会让整组卡死）。
+		outcome, errs := c.processWithRetry(hctx, env, topic)
+		// Inbox 状态与台账终态同步维护：done 是幂等复投的判据，漏标会让重投二次执行副作用
+		if outcome == StatusConsumed {
+			if err := MarkInboxDone(env.Header.EventID); err != nil {
+				log.Printf("[MQ-Kafka] Inbox 标 done 失败 event=%s: %v", env.Header.EventID, err)
+			}
 		} else {
-			MarkInboxFailed(env.Header.EventID) // 超限放弃，仅记日志，无死信队列
+			if err := MarkInboxFailed(env.Header.EventID); err != nil {
+				log.Printf("[MQ-Kafka] Inbox 标 failed 失败 event=%s: %v", env.Header.EventID, err)
+			}
 		}
+		recordConsumeOutcome(env, outcome, errs)
 		_ = reader.CommitMessages(ctx, msg)
 	}
 }
 
-// processWithRetry 消费失败重试（H2，2026-08-27）：指数退避最多5次，全部失败返回 false。
+// processWithRetry 消费失败重试（H2，2026-08-27）：指数退避最多5次。
+// 返回终态（consumed / dead_letter）与最后一轮的失败原因列表——原因要进台账，
+// 否则运维只看到"丢了"，看不到"为什么丢"，每条死信都得重新复现一遍。
 // 各 handler 自身应幂等（Inbox 已防重复事件），此处重试仅应对瞬时失败。
-func (c *KafkaCenter) processWithRetry(ctx context.Context, env Envelope, topic string) bool {
+func (c *KafkaCenter) processWithRetry(ctx context.Context, env Envelope, topic string) (string, []string) {
 	const maxRetry = 5
 	delay := time.Second
+	var lastErrs []string
 	for attempt := 0; attempt <= maxRetry; attempt++ {
 		if attempt > 0 {
-			time.Sleep(delay)
+			select {
+			case <-ctx.Done():
+				// 停机/取消：不再退避重试，把这次半途而废也记进原因
+				return StatusDeadLetter, append(lastErrs, "重试期间上下文结束: "+ctx.Err().Error())
+			case <-time.After(delay):
+			}
 			delay *= 2
 			if delay > 30*time.Second {
 				delay = 30 * time.Second
 			}
 			log.Printf("[MQ-Kafka] 事件%s 第%d次重试", env.Header.EventID, attempt)
 		}
-		failed := false
+		var errs []string
 		for i, h := range c.handlers[topic] {
 			if err := h(ctx, env); err != nil {
 				log.Printf("[MQ-Kafka] 处理失败 event=%s consumer#%d: %v", env.Header.EventID, i, err)
-				failed = true
+				errs = append(errs, fmt.Sprintf("consumer#%d: %v", i, err))
 			}
 		}
-		if !failed {
-			return true
+		lastErrs = errs
+		if len(errs) == 0 {
+			return StatusConsumed, nil
 		}
 	}
-	log.Printf("[MQ-Kafka] 事件%s 重试%d次仍失败，放弃(无DLQ)", env.Header.EventID, maxRetry)
-	return false
+	log.Printf("[MQ-Kafka] 事件%s 重试%d次仍失败，转死信台账", env.Header.EventID, maxRetry)
+	return StatusDeadLetter, lastErrs
 }
 
 // fromKafkaMessage kafka 消息 → 信封（Header 校验：铁律字段缺失即拒收）

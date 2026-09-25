@@ -261,6 +261,30 @@ type createTestDriveRequest struct {
 	Note         string `json:"note"`
 }
 
+// publishCustomerBehavior 把一条客户行为事实经 user_event 发进 CDP（标签由摄入端算）。
+// G-19(2026-09-24)：试驾/预约这类人工侧动作此前只在"顾问推进阶段"埋点，
+// 试驾单本身的状态流转没人发布，beh_testdrive/beh_booked 标签在真实开单链上空转。
+// 发布失败只记日志、不改写业务响应——业务行已落库，因旁路失败回滚用户操作反而更糟
+// （与 UpdateCustomerStage 到店分支同口径）。oneID 约定 "c:{customerID}"。
+func publishCustomerBehavior(c *gin.Context, customerID uint, eventName string, attrs map[string]any) {
+	if customerID == 0 {
+		return
+	}
+	if attrs == nil {
+		attrs = map[string]any{}
+	}
+	attrs["customer_id"] = customerID
+	if err := mq.Publish(middleware.CtxWithTrace(c), mq.TopicUserEvent, middleware.EffectiveTenantID(c),
+		fmt.Sprintf("c:%d", customerID), eventName, mq.UserEvent{
+			EventType:  "behavior",
+			EventName:  eventName,
+			Attributes: attrs,
+			OccurredAt: time.Now(),
+		}); err != nil {
+		log.Printf("[MQ] %s(顾问台) 发布失败: %v", eventName, err)
+	}
+}
+
 // CreateTestDrive POST /api/v1/advisor/test-drive 创建试驾单
 // apidump:ts TestDriveRow
 // 创建成功回整行试驾单。
@@ -312,6 +336,15 @@ func CreateTestDrive(c *gin.Context) {
 
 	db.RQ(c).Create(&td)
 	log.Printf("[试驾单] 创建试驾单 #%d 客户%d 顾问%d 时间%s", td.ID, td.CustomerID, td.AdvisorID, td.ScheduledAt.Format("2006-01-02 15:04"))
+	// G-19：开单即"已预约"事实——CDP 的 beh_booked 标签此前无任何生产者，
+	// 消费端分支（ingest_consumer.go 的 case "booking"）自建立起空转。
+	if td.ID > 0 {
+		publishCustomerBehavior(c, td.CustomerID, "booking", map[string]any{
+			"test_drive_id": td.ID,
+			"model_name":    td.ModelName,
+			"path":          "advisor_test_drive_create",
+		})
+	}
 
 	RespOK(c, "试驾单创建成功", td)
 }
@@ -407,6 +440,10 @@ func UpdateTestDrive(c *gin.Context) {
 		return
 	}
 
+	// G-19：状态流转前留一份旧状态——事件只在"真的翻到已完成"时发一次，
+	// 否则每次 PATCH 别字段都会重发 test_drive，标签虽幂等但事件流会被灌水。
+	prevStatus := td.Status
+
 	// PLAN_FIX_2026-09-21 B3：补 status 枚举校验——此前 `*req.Status` 直赋，任意字符串
 	// 都能落库（同模块 UpdateCustomerStage 有 validStages 校验并返 400，标准不一致）。
 	// 脏状态会让列表筛选（following/pending/…）与统计口径失配，且无法在写入侧拦截。
@@ -442,7 +479,21 @@ func UpdateTestDrive(c *gin.Context) {
 		td.Result = *req.Result
 	}
 
-	db.RQ(c).Save(&td)
+	if saveErr := db.RQ(c).Save(&td).Error; saveErr != nil {
+		// 落库失败时绝不发事件：CDP 只记"确实发生过的动作"，否则标签会领先于事实
+		log.Printf("[试驾单] 更新失败 #%d: %v", td.ID, saveErr)
+	} else if td.Status == "completed" && prevStatus != "completed" {
+		// G-19(2026-09-24)：试驾单状态流转到"已完成"→ 发 test_drive。
+		// 此前该事件只有"顾问把阶段推到到店+子状态=已试驾"一条埋点路径，
+		// 真正的试驾单闭环（开单→完成）没人发布，beh_testdrive 标签与
+		// 「AI 销售」的旅程阶段回填都拿不到这条事实。
+		publishCustomerBehavior(c, td.CustomerID, "test_drive", map[string]any{
+			"test_drive_id": td.ID,
+			"model_name":    td.ModelName,
+			"from_status":   prevStatus,
+			"path":          "advisor_test_drive_update",
+		})
+	}
 	log.Printf("[试驾单] 更新试驾单 #%d 状态=%s", td.ID, td.Status)
 
 	RespOK(c, "更新成功", td)

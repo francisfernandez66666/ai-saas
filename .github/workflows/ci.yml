@@ -1,9 +1,27 @@
 name: CI
 
+# G-25(2026-09-25)：触发档分离。此前 main 每次 push 同时跑 `--fast`（八套 E2E +
+# playwright）和 `--full`（全场景 UAT，含付费/邀请/三桶/退款/注销），两档同频等于
+# 没有分档——UAT 那段要真改全局开关再恢复，跑不完就是"今天的合入没有回归"。
+# 现口径：快档每次 push/PR 必跑；慢档只在每日凌晨定时、release tag、或人工指定时跑。
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  schedule:
+    # UTC 18:00 = 北京 02:00，低峰且避开当日合入高峰；只在全量档跑完当天快档之后补一次深回归
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+    inputs:
+      run_fast:
+        description: 跑快档（单测+构建+八套 E2E+playwright，test_all --fast）
+        type: boolean
+        default: true
+      run_uat:
+        description: 跑慢档（全场景 UAT，test_all --full）
+        type: boolean
+        default: true
 
 jobs:
   go:
@@ -144,9 +162,13 @@ jobs:
         run: ./tools/check_api_contract.sh
 
   e2e:
-    name: E2E 自动化回归（八套 E2E + playwright（fast 跳过 uat））
+    name: E2E 快档回归（八套 E2E + playwright，--fast 跳过 uat）
     runs-on: ubuntu-latest
     needs: [go, frontend]
+    # 每次 push/PR/定时都跑；人工触发时尊重 run_fast 勾选（不勾即只跑慢档做定向 UAT 复核）
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      github.event.inputs.run_fast == 'true'
     services:
       postgres:
         image: pgvector/pgvector:0.8.6-pg16-trixie
@@ -200,7 +222,12 @@ jobs:
     name: UAT 全场景回归（完整商业闭环，较长）
     runs-on: ubuntu-latest
     needs: [go, frontend]
-    if: github.ref == 'refs/heads/main'
+    # G-25 慢档三入口：每日定时 / release tag（上线前最后一次全量）/ 人工勾选。
+    # 刻意不再挂在 main push 上——普通合入的回归由 e2e 快档负责，本档跑不完也不该挡合。
+    if: >-
+      github.event_name == 'schedule' ||
+      startsWith(github.ref, 'refs/tags/v') ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.run_uat == 'true')
     services:
       postgres:
         image: pgvector/pgvector:0.8.6-pg16-trixie

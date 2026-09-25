@@ -4,6 +4,7 @@
 //   POST /api/v1/super/packs（multipart 字段 file，≤20MB；新入库 status=disabled）
 //   PUT  /api/v1/super/packs/:id/status {status:'active'|'disabled'}
 //   PUT  /api/v1/super/packs/:id/share {share:0|1}（KB 继承链部门包 opt-out，仅 department 级有意义）
+//   PUT  /api/v1/super/packs/:id/tier  {min_tier:''|personal|enterprise|custom}（G-22c 档位门槛，空串=不设门槛）
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Button, Select, Switch, Table, Tag, MessagePlugin } from 'tdesign-react'
 import { AUTH, authHeaders } from '../../lib/api'
@@ -19,6 +20,8 @@ type SuperPack = {
   pack_level: string
   parent_code: string
   share_cross_dept: number
+  /** 最低可绑档位（G-22c）：'' = 不设门槛 */
+  min_tier: string
   file_name: string
   file_size: number
   status: string
@@ -29,6 +32,11 @@ type PackListResp = { code: number; message?: string; data?: SuperPack[] }
 // 层级/状态展示映射
 const LEVEL_LABELS: Record<string, string> = { industry: '行业包', enterprise: '企业包', department: '部门包' }
 const LEVEL_THEME: Record<string, 'primary' | 'success' | 'default'> = { industry: 'primary', enterprise: 'success', department: 'default' }
+
+// 档位门槛词表（G-22c）：与 tenants.tier / industry_packs.min_tier 同一套码。
+// '' 是"不设门槛"而不是"个人版"——存量包全靠这个空值保持现状零变化。
+const TIER_LABELS: Record<string, string> = { '': '全部档位', personal: '个人版+', enterprise: '企业版+', custom: '定制版' }
+const TIER_OPTIONS = ['', 'personal', 'enterprise', 'custom'].map((v) => ({ label: TIER_LABELS[v], value: v }))
 
 /** 包上架/共享管理：level 筛选 + 表格 + 行内上下架/共享 Switch + .aipack 上传区。 */
 export function PackTab() {
@@ -94,6 +102,15 @@ export function PackTab() {
     load()
   }
 
+  // 档位门槛（G-22c）：哪个包对哪一档客户开放是平台销售口径，不写进包内容——
+  // 写进包就要重新打包签名，改一次门槛发一次版。失败同样回读，把下拉复位到库值，
+  // 绝不让界面停在一个"看起来改了但没生效"的值上。
+  async function setTier(id: number, minTier: string) {
+    const j = await AUTH(`/api/v1/super/packs/${id}/tier`, { method: 'PUT', body: { min_tier: minTier } })
+    if (j?.code === 0) MessagePlugin.success(minTier ? `已设为${TIER_LABELS[minTier]}可绑` : '已取消档位门槛')
+    load()
+  }
+
   const cols = [
     { colKey: 'id', title: 'ID', width: 60 },
     { colKey: 'code', title: '标识', width: 130 },
@@ -104,6 +121,16 @@ export function PackTab() {
     { colKey: 'parent_code', title: '上级包', width: 110, cell: (p: CellProps) => p.row.parent_code || '-' },
     { colKey: 'file_name', title: '文件', width: 180, ellipsis: true, cell: (p: CellProps) => `${p.row.file_name || '-'}${p.row.file_size ? ` (${Math.round(Number(p.row.file_size) / 1024)}KB)` : ''}` },
     { colKey: 'status', title: '状态', width: 80, cell: (p: CellProps) => <Tag theme={p.row.status === 'active' ? 'success' : 'default'}>{p.row.status === 'active' ? '上架' : '下架'}</Tag> },
+    { colKey: 'min_tier', title: '可绑档位', width: 130, cell: (p: CellProps) => (
+      // 档位门槛逐行可改：租户侧列表据此置灰、写侧据此 403，改完立刻在两端生效
+      <Select
+        size="small"
+        value={String(p.row.min_tier ?? '')}
+        options={TIER_OPTIONS}
+        onChange={(v) => setTier(Number(p.row.id), String(v ?? ''))}
+        style={{ width: 110 }}
+      />
+    ) },
     { colKey: 'share', title: '跨部门共享', width: 110, cell: (p: CellProps) => (
       // 共享开关仅部门包有意义；非部门行禁用置灰（后端不改其行为）
       <Switch
@@ -144,6 +171,7 @@ export function PackTab() {
       <Table rowKey="id" data={rows as unknown as TableRowData[]} columns={cols} size="small" loading={loading}
         empty="暂无行业包" pagination={{ defaultPageSize: 20 }} />
       <p style={{ fontSize: 12, color: '#718096', marginTop: 12 }}>三级树形：行业包 → 企业包 → 部门包（parent_code 挂链）。上架前需其上级包已 active；下架不解绑已物化租户，但新绑定与重放包会被拦截。</p>
+      <p style={{ fontSize: 12, color: '#718096', marginTop: 6 }}>「可绑档位」只拦自助换包与注册/启动时的自动落包；超管代客换包不受此限，但每次越档都会在该租户的审计里留一条凭据。</p>
     </div>
   )
 }

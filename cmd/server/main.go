@@ -69,7 +69,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.34.0"
+const appVersion = "v2.35.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -518,6 +518,10 @@ func main() {
 		// 泛行业化 P4：先自动上架 data/packs 预置行业包（入库 industry_packs），
 		// 否则 resolveIndustry 无法识别 realty/b2b/... 等新行业，注册一律回落 general
 		api.AutoRegisterLocalPacks()
+		// G-24(2026-09-25) 演示数据绑定：先按种子集合声明的包族把**演示租户**落对包
+		// （seed 写的是 auto_rox 那套货），再跑面向全部未绑租户的默认落包。
+		// 顺序不能反：默认落包会先给演示租户写上 auto 基包，届时 G-24 的"无绑定才动手"守卫就永不命中。
+		api.BindSeedDemoTenantPack(seed.DemoPackBinding())
 		api.AutoApplyDefaultIndustryPack()
 	}()
 
@@ -1022,6 +1026,10 @@ func registerRoutes(r *gin.Engine) {
 			"uptime_sec":      int(time.Since(startTime).Seconds()),
 			"db_ok":           snap.DBOK,
 			"orphan_messages": orphanMsgs,
+			// 消息中心在册死信（G-15③）：重试耗尽后再没人处理的事件条数。
+			// 直出为字段而不是只汇总进 status=warn——"台账全绿"在 G-15 之前只说明没人回写过终态，
+			// 现在这个 0 才是"每一条都被吃到了"的证据；非 0 时 payload/原因都在 message_event_records。
+			"mq_dead_letters": metrics.MQDeadLetters(),
 			"archive_enabled": archiveOn,
 			"archive_backlog": archiveBacklog,
 			// 企微会话存档形态（E8-4）：几个通道开了 / 落库几行 / 解密失败几行 / 上一轮为什么没拉到。

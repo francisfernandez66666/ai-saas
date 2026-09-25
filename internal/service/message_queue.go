@@ -67,8 +67,18 @@ type CustomerQueue struct {
 	// 消息不再标进已封账批次（旧行为：等待者拿到不含自己内容的旧回复，消息以旧 BatchID
 	// 滞留 pending 成孤儿，仅靠 600s 超时自愈"清除残留"或直接随空闲清扫蒸发）。
 	// 关账后的新消息走既有积压接管路径，作为下一批第一个被处理。
-	batchClosed         bool
-	epoch               uint64                  // P1-19：处理代际号，每次处理者接管递增；SetReply 校验代际防旧处理者践踏新批次
+	batchClosed bool
+	epoch       uint64 // P1-19：处理代际号，每次处理者接管递增；SetReply 校验代际防旧处理者践踏新批次
+	// replyByEpoch D8 修复(2026-09-24，G-7 真实并发单测抓到)：按**代际**发布的回复槽位。
+	// 旧实现只有一格 lastReply，SetReply 写它、等待者读它，而下一批开账时会把 lastReply 清空
+	// 并重新置 processing=true。于是形成一条唤醒竞态：Broadcast 唤醒了上一批的等待者，但它
+	// 还没抢到锁，积压接管者已经把那一格清掉并开了新批——等待者醒来时读到
+	// "processing=true 且 lastReply==空"，判定"我的批次还没好"，重新挂起，
+	// 本批回复就此永久丢失（客户连发消息时表现为一部分消息再也等不到回复，
+	// 或拿到下一批的回复——而下一批的回复并不含自己那句话）。
+	// 改为每代一格：SetReply 按 pubEpoch 发布，等待者只读自己代际那格，
+	// 下一批清不清 lastReply 与之无关。
+	replyByEpoch        map[uint64]string
 	processingStartedAt time.Time               // 处理开始时间，用于2分钟超时自愈检测
 	redisLock           *redisclient.LockHandle // 跨实例分布式锁句柄（Redis模式处理者持有）
 	lastActivity        time.Time               // 最近活跃时间（空闲队列回收依据，2026-09-09）
@@ -517,10 +527,18 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 		log.Printf("[合并队列] 客户%s 消息合并进当前批次(第%d条,批次%d): %q%s", k, q.mergeCount, q.currentBatch, logx.Safe(content, 40), traceTag(traceID))
 
 		// 挂起等待回复
-		for q.processing && q.lastReply == "" {
+		// D8 修复(2026-09-24)：等的是"自己这一代那格"，不是共享的 lastReply——
+		// Broadcast 到本 goroutine 抢到锁之间，积压接管者会清 lastReply 并重开 processing，
+		// 只看共享格就会被误判成"批次还没好"而永久挂起（本批回复丢失）。
+		// 后两个条件维持旧语义：代际已推进（超时自愈/下一批接管）时不再干等，
+		// 回落读 lastReply，行为与修复前一致。
+		for q.processing && q.replyByEpoch[waitEpoch] == "" && q.epoch == waitEpoch {
 			q.cond.Wait()
 		}
-		reply = q.lastReply
+		reply = q.replyByEpoch[waitEpoch]
+		if reply == "" {
+			reply = q.lastReply
+		}
 		// D5：解锁前快照（P2-36 同款纪律——return 表达式里读受锁字段是数据竞争）
 		waitedCount := q.mergeCount
 		locked = false
@@ -918,6 +936,20 @@ func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uin
 	q.processing = false
 	// D5：发布用代际在锁内快照（P2-36 教训：解锁后读受锁字段 = 数据竞争）
 	pubEpoch := q.epoch
+	// D8 修复(2026-09-24)：回复额外按代际落一格，等待者读自己那格——见 replyByEpoch 字段注释。
+	// 只保留当前与上一代：更老代际的等待者早已离场，而活跃客户的队列会长跑，
+	// 不清就是单调增长的内存泄漏（pubEpoch<=1 时不做剪枝，防 uint 下溢把全表删空）。
+	if q.replyByEpoch == nil {
+		q.replyByEpoch = map[uint64]string{}
+	}
+	q.replyByEpoch[pubEpoch] = reply
+	if pubEpoch > 1 {
+		for e := range q.replyByEpoch {
+			if e < pubEpoch-1 {
+				delete(q.replyByEpoch, e)
+			}
+		}
+	}
 	log.Printf("[合并队列] 客户%s 回复已设置(代%d), 唤醒所有等待者, 回复前20字: %q", k, epoch, truncateStr(reply, 20))
 	// 唤醒所有等待的goroutine
 	q.cond.Broadcast()

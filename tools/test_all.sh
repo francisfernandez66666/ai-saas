@@ -115,6 +115,33 @@ G6_VER=$(grep -rnE --include="*.go" '"version":[[:space:]]*"v[0-9]+\.[0-9]+\.[0-
 if [ -n "$G6_VER" ]; then
   echo "  FAIL  版本号字面量分叉（应统一用 appVersion 常量）："; echo "$G6_VER" | head -5; G6_FAIL=1
 fi
+# 3.8 裸成功信封防回潮（G-13 错误码全量迁移，2026-09-24）：internal/api 的 handler 一律走
+#     RespOK / respOK / RespErr / RespErrInternal 四个出口。历史上有一批 handler 直接
+#     c.JSON(200, gin.H{"code":0}) 或手写 schema.Response{Code: 0…}，代价不是"格式不齐"，
+#     而是**错误在这条路上无处可去**——chat_unauthorized 里两处人工提前退场的 DB 写就把 err
+#     直接丢掉、一处相似消息抑制落库失败仍回 200 成功（前端拿到 CustomerMsgID=0 的幽灵消息行）。
+#     收敛后整个包只剩两个助手定义本身是裸写，故放行 code.go / response.go，
+#     其余文件再出现字面量 code=0 即红（先跑过自证：把 routes_public 的 sitekey 改回裸写会抓到）。
+G6_ENVEL=$(grep -rnE --include="*.go" '"code": ?0|Code: +(0|int\(CodeOK\))' internal/api/ 2>/dev/null | grep -v '_test.go' | grep -vE '^internal/api/(code|response)\.go:' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)')
+if [ -n "$G6_ENVEL" ]; then
+  echo "  FAIL  G-13: internal/api 裸成功信封残留（应走 RespOK/respOK 统一出口）"; echo "$G6_ENVEL" | head -5; G6_FAIL=1
+fi
+# 3.9 CI 触发档拆分（G-25，2026-09-25）：慢档（全场景 UAT，`test_all --full`）不得再挂在
+#     每次 main push 上。它与快档同频等于没有分档——UAT 段要改全局开关再恢复、且与本仓
+#     "绝不并发跑两套 E2E"的铁律相撞（抢同一测试库与同一份 ai-scrm.log），跑不完就等于
+#     "今天的合入没有回归"。故三向锁：
+#       负向：`github.ref == 'refs/heads/main'`（旧条件本身）不得再出现在 ci.yml；
+#       正向：必须有 schedule(cron) 与 workflow_dispatch，否则慢档无处可跑＝把回归从 CI 删掉；
+#       正向：快慢两档命令必须都在（--fast 每次跑 / --full 慢档跑）。
+if grep -q "github.ref == 'refs/heads/main'" .github/workflows/ci.yml 2>/dev/null; then
+  echo "  FAIL  G-25: CI 慢档又挂回 main push（应改由 schedule / release tag / 人工触发）"; G6_FAIL=1
+fi
+if ! grep -q "cron:" .github/workflows/ci.yml 2>/dev/null || ! grep -q "workflow_dispatch:" .github/workflows/ci.yml 2>/dev/null; then
+  echo "  FAIL  G-25: CI 缺定时档或人工触发档，慢档无处可跑（分档≠删掉深回归）"; G6_FAIL=1
+fi
+if ! grep -q "test_all.sh --full" .github/workflows/ci.yml 2>/dev/null || ! grep -q "test_all.sh --fast" .github/workflows/ci.yml 2>/dev/null; then
+  echo "  FAIL  G-25: 快慢两档命令缺失（--fast 每次 push/PR、--full 慢档）"; G6_FAIL=1
+fi
 # 4. D6 盖章护栏（2026-09-16）：db.DB.Create/Save 写租户表必须显式 TenantID——
 #    C7 事故形态（无 ctx 盖章落 0）历史上命中两次（C7、P1-5），接入即第三次被抓现行
 #    （message_queue.go WriteDegradedNotice，已修）。精准模式检测，见脚本头注释。
@@ -326,10 +353,17 @@ fi
 
 # D5 配套(2026-09-16B)：核心并发包 -race 抽查——合并队列/实时 Hub 是双发/挂死类
 # 缺陷高发区，此前 CI 无 race 检测器，解锁读共享字段（D5）长期隐身。
-step "单元测试层：并发包 -race 抽查（service/realtime/chatflow/channel）"
-go test -race -count=1 ./internal/service ./internal/realtime ./internal/chatflow ./internal/channel >/tmp/test_all_race.log 2>&1
+# 欠账批一(2026-09-24，G-7/G-8)补两包：
+#   ./internal/ai   —— stage_models 覆盖链路的请求体记录用 mutex（无 -race 看不见竞争）
+#   ./internal/llm  —— 硬拦截矩阵用 atomic 计数断言"端点零请求"，且整包在改包级全局
+#                      （config.GlobalConfig.AI / 五个 ai.* 客户端单例 / 知识缓存单例）
+# 连接池口径与主单测段一致（本机 PG max_connections=100，默认 -p 按核数会打出 53300）。
+step "单元测试层：并发包 -race 抽查（service/realtime/chatflow/channel/billing/ai/llm）"
+DB_MAX_OPEN_CONNS="${GO_TEST_DB_MAX_CONNS:-8}" go test -race -count=1 -p 3 \
+  ./internal/service ./internal/realtime ./internal/chatflow ./internal/channel \
+  ./internal/billing ./internal/ai ./internal/llm >/tmp/test_all_race.log 2>&1
 verdict "go test -race（并发包）" $?
-grep -E "DATA RACE|^(ok|FAIL)" /tmp/test_all_race.log | tail -10 || true
+grep -E "DATA RACE|^(ok|FAIL)" /tmp/test_all_race.log | tail -12 || true
 
 step "单元测试层：前端 vitest"
 ( cd frontend-react && npm run test >/tmp/test_all_fe.log 2>&1 )
@@ -388,10 +422,10 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（463 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一、E8 企微会话存档密文/留痕/观测位 §三十七、超管租户检索 §三十八）"
+step "E2E 层：smoke.sh（579 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一、E8 企微会话存档密文/留痕/观测位 §三十七、超管租户检索 §三十八、G-15 MQ 事件审计两段台账 §三十九、G-22c 行业包档位门槛（列表标注与写侧拒绝同源）§四十、G-21/G-22 包内容门禁与超管换包/清旧包/重物化下发 §十一、G-24 演示租户包绑定（非空壳 + 企业层真物化）§十一）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
-step "E2E 层：smoke_perm.sh（角色权限矩阵 26 项）"
+step "E2E 层：smoke_perm.sh（角色权限矩阵 33 项）"
 ./tools/smoke_perm.sh "$PORT" >/tmp/test_all_perm.log 2>&1; verdict "smoke_perm.sh" $?; tail -2 /tmp/test_all_perm.log
 
 step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸+A1 锁定超时落库 25 项）"
@@ -409,7 +443,7 @@ step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 55 项，含侧边栏双签名 §十，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
-step "E2E 层：uat_advisor.sh（顾问工作台字节级 75 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-22 文档对齐：实测 PASS=75）"
+step "E2E 层：uat_advisor.sh（顾问工作台字节级 85 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 文档对齐：实测 PASS=85）"
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
 

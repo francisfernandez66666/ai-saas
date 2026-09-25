@@ -1,4 +1,7 @@
 // F6 行业包/租户绑定管理：查看当前绑定、两级行业/企业包绑定、部门包绑定。
+// G-22c(2026-09-24)：可选包列表带档位标注——不够档的包照常在列表里，但置灰并写明
+// 需要升到哪一档。判据完全由后端下发（tier_locked/tier_reason），前端不比较档位，
+// 因此不会出现"界面说可绑、接口回 403"的错位。
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Button, MessagePlugin, Select, Table, Tag } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
@@ -18,7 +21,16 @@ type Pack = {
   status: string
   file_size?: number
   updated_at?: string
+  /** 最低可绑档位（personal/enterprise/custom），空串=不设门槛 */
+  min_tier?: string
+  /** 当前租户档位不够：下拉里置灰并提示升级 */
+  tier_locked?: boolean
+  /** 稳定原因码：pack_tier_required / pack_min_tier_invalid / tenant_tier_unknown */
+  tier_reason?: string
 }
+
+/** Select 下拉项：档位不够时 disabled=true，值仍在（用户看得见这个包存在）。 */
+type PackOption = { label: string; value: number; disabled?: boolean }
 
 type DeptBinding = {
   department_id: number
@@ -102,6 +114,31 @@ function flattenDepts(nodes: DeptNode[]): { label: string; value: number }[] {
 /** 生成行业包展示标签，包含包名、版本和层级。 */
 function packLabel(p: Pack) {
   return `${p.name} ${p.version}（${p.code}）`
+}
+
+// 档位中文名（与 tenants.tier / industry_packs.min_tier 同一词表）
+const TIER_NAME: Record<string, string> = { personal: '个人版', enterprise: '企业版', custom: '定制版' }
+// 后端稳定原因码 → 界面话术。前端不自己猜语义：码是契约，文案随时可改。
+const TIER_DENY_TEXT: Record<string, string> = {
+  pack_tier_required: '需升级套餐后才可绑定',
+  pack_min_tier_invalid: '该包的档位配置有误，已反馈平台',
+  tenant_tier_unknown: '当前套餐档位未登记，请联系平台',
+}
+
+/**
+ * 生成下拉项。档位不够的包**照常列出但置灰**（后端刻意只标注不隐藏），
+ * 标签里直接说清要升到哪一档——从下拉里悄悄消失只会让人以为产品没这个能力。
+ */
+function packOption(p: Pack): PackOption {
+  if (!p.tier_locked) return { label: packLabel(p), value: p.id }
+  const need = TIER_NAME[p.min_tier || ''] || '更高档套餐'
+  const text = TIER_DENY_TEXT[p.tier_reason || ''] || TIER_DENY_TEXT.pack_tier_required
+  return { label: `${packLabel(p)}（${need}专属，${text}）`, value: p.id, disabled: true }
+}
+
+/** 被档位拦住的包数，用于在绑定卡片下方给一句升级引导。 */
+function lockedCount(packs: Pack[]) {
+  return packs.filter((p) => p.tier_locked).length
 }
 
 /** 把行业包发布状态转换为中文标签。 */
@@ -225,6 +262,12 @@ export default function IndustryPackTab() {
   const selectedIndustry = useMemo(() => industryPacks.find((p) => p.id === Number(industryPackId)), [industryPackId, industryPacks])
   const selectedEnterprise = useMemo(() => enterprisePacks.find((p) => p.id === Number(enterprisePackId)), [enterprisePackId, enterprisePacks])
 
+  // 被档位拦住的包总数：企业包/部门包是选中行业后才加载的，所以三级一起数。
+  const lockedSummary = useMemo(
+    () => lockedCount(industryPacks) + lockedCount(enterprisePacks) + lockedCount(departmentPacks),
+    [departmentPacks, enterprisePacks, industryPacks],
+  )
+
   const currentRows = useMemo(() => packStats.filter((r) => !packVersion || r.pack_version === packVersion), [packStats, packVersion])
   const historyRows = useMemo(() => packStats.filter((r) => packVersion ? r.pack_version !== packVersion : true), [packStats, packVersion])
   const historyVersion = useMemo(() => {
@@ -336,7 +379,7 @@ export default function IndustryPackTab() {
             <Select
               value={industryPackId}
               onChange={(v) => setIndustryPackId(v as number)}
-              options={industryPacks.map((p) => ({ label: packLabel(p), value: p.id }))}
+              options={industryPacks.map(packOption)}
               filterable
               placeholder="选择行业包"
               style={{ width: '100%' }}
@@ -347,7 +390,7 @@ export default function IndustryPackTab() {
             <Select
               value={enterprisePackId}
               onChange={(v) => setEnterprisePackId(v as number)}
-              options={[{ label: '不绑定企业包', value: '' }, ...enterprisePacks.map((p) => ({ label: packLabel(p), value: p.id }))]}
+              options={[{ label: '不绑定企业包', value: '' }, ...enterprisePacks.map(packOption)]}
               filterable
               disabled={!selectedIndustry}
               placeholder="选择企业包"
@@ -366,6 +409,11 @@ export default function IndustryPackTab() {
             </div>
           </div>
         </div>
+        {lockedSummary > 0 && (
+          <p className="text-xs text-gray-400 mt-3">
+            另有 {lockedSummary} 个包对你当前套餐未开放，下拉里已置灰并写明需要升到哪一档，升级后即可绑定。
+          </p>
+        )}
       </div>
 
       <div className="bg-white rounded-lg shadow-sm p-5">
@@ -381,7 +429,7 @@ export default function IndustryPackTab() {
             <Select
               value={deptPackId}
               onChange={(v) => setDeptPackId(v as number)}
-              options={departmentPacks.map((p) => ({ label: packLabel(p), value: p.id }))}
+              options={departmentPacks.map(packOption)}
               filterable
               disabled={!current?.enterprise}
               placeholder="选择部门包"

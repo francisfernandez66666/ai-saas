@@ -24,7 +24,7 @@ func seedTenants() {
 	}
 	defaultTenant := &model.Tenant{
 		Name:           "rox-sales",
-		Code:           "default",
+		Code:           SeedDemoTenantCode,
 		Tier:           "personal",
 		PrimaryColor:   "#1890ff",
 		SecondaryColor: "#909399",
@@ -41,23 +41,17 @@ func seedTenants() {
 	}
 	log.Println("已创建默认租户：name=rox-sales code=default")
 
-	// G-24：默认租户绑定 auto 行业包（开箱即可用汽车行业话术）
-	// 业务说明：新租户注册时默认没有行业包，AI 回复使用通用模板
-	// 绑定 auto 包后，策略中心自动加载汽车行业知识库、竞品数据、话术模板
-	// 绑定逻辑：幂等设计，仅首次创建时绑定，后台可修改/解绑
+	// G-24(2026-09-24 复核)：默认租户绑定 auto 行业包——**这一步在整机启动顺序里必然落空**：
+	// seed.InitSeedData() 跑在 main.go 的 api.AutoRegisterLocalPacks()（.aipack 落 industry_packs）
+	// 之前，全新库此刻零包行。旧实现只是静默 if-else，看起来"绑定了"其实没绑，
+	// 真正把默认租户接上汽车话术的是注册之后的 AutoApplyDefaultIndustryPack（它还顺手做物化，
+	// 本函数即便命中也只写 binding 不物化——那种"有绑定、无内容"的行反而会让 sweep 因
+	// 「已绑过」而跳过，把租户永久卡在空包上）。故此处明确：命中即告警交给 sweep，不再抢写。
 	var pack model.IndustryPack
 	if err := db.DB.Where("code = ? AND status = 'active'", "auto").Order("id DESC").First(&pack).Error; err == nil {
-		binding := &model.TenantPackBinding{
-			TenantID:       defaultTenant.ID, // 绑定目标租户
-			PackID:         pack.ID,          // 行业包ID
-			PackCode:       pack.Code,        // 行业包代码（冗余字段，方便查询）
-			AppliedVersion: pack.Version,     // 应用时的版本号（快照，防后续升级影响已绑定租户）
-		}
-		if err := db.DB.Create(binding).Error; err != nil {
-			log.Printf("G-24: 默认租户绑定 auto 包失败: %v", err)
-		} else {
-			log.Printf("G-24: 默认租户已绑定 auto 行业包 v%s", pack.Version)
-		}
+		log.Printf("[G-24] 行业包目录已有 %s v%s，默认租户绑定与物化交由注册后的 AutoApplyDefaultIndustryPack 统一完成", pack.Code, pack.Version)
+	} else {
+		log.Printf("[G-24] 默认租户暂未绑定行业包（包目录尚未注册，属正常启动顺序），稍后由 AutoApplyDefaultIndustryPack 补绑")
 	}
 }
 
@@ -134,7 +128,7 @@ func seedUsers() {
 
 	// 获取默认租户ID（租户由 seedTenants() 统一创建，见 InitSeedData）
 	var defaultTenant model.Tenant
-	db.DB.First(&defaultTenant, "code = ?", "default")
+	db.DB.First(&defaultTenant, "code = ?", SeedDemoTenantCode)
 	defaultTenantID := defaultTenant.ID
 
 	// 管理员 - role=super_admin，tenant_id=0 表示超级管理员（全局不受租户隔离约束）

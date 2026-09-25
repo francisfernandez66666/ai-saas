@@ -26,25 +26,27 @@ func seedCustomers() {
 	// 问题背景：种子用户创建顺序不确定时，sales1 的 ID 可能是 2/3/4/5...
 	// 解决方案：通过用户名查询实际 ID，避免硬编码 ID 值
 	// 业务说明：客户需要分配给销售顾问（AssignedUserID），必须关联真实用户
+	//
+	// 2026-09-24 收紧两处（G-24 残项）：
+	//  1. **限定默认租户**——用户名只在租户内唯一，跨租户同名 sales1 会把演示客户
+	//     分给别家顾问（顾问工作台按 assigned_user_id 过滤，看到的就不是自己的客户）。
+	//  2. **查不到就留 0（未分配），不再兜底成字面量 2/3/4**——旧兜底写的是当年种子
+	//     自增序列，库里只要先建过别的用户，那三个 ID 可能指向别家租户的人、甚至不存在的人，
+	//     客户于是挂在一个幽灵顾问名下；"没分配"是可解释状态，"分错了人"是数据污染。
 	salesUserIDs := make(map[string]uint)
-	for _, username := range []string{"sales1", "sales2", "sales3"} {
-		var u model.User
-		if err := db.DB.Where("username = ?", username).First(&u).Error; err == nil {
-			salesUserIDs[username] = u.ID
+	var defaultTenant model.Tenant
+	if err := db.DB.Where("code = ?", "default").First(&defaultTenant).Error; err == nil {
+		for _, username := range []string{"sales1", "sales2", "sales3"} {
+			var u model.User
+			if err := db.DB.Where("username = ? AND tenant_id = ?", username, defaultTenant.ID).First(&u).Error; err == nil {
+				salesUserIDs[username] = u.ID
+			}
 		}
+	} else {
+		log.Printf("[G-24] 未找到 code=default 的默认租户，演示客户一律不分配顾问: %v", err)
 	}
-	// fallback：如果查不到用户（如种子用户未创建），使用默认 ID 值
-	// 注意：默认值仅作兜底，生产环境必须确保种子用户存在
 	s1, s2, s3 := salesUserIDs["sales1"], salesUserIDs["sales2"], salesUserIDs["sales3"]
-	if s1 == 0 {
-		s1 = 2 // 默认 sales1 ID=2
-	}
-	if s2 == 0 {
-		s2 = 3 // 默认 sales2 ID=3
-	}
-	if s3 == 0 {
-		s3 = 4 // 默认 sales3 ID=4
-	}
+	log.Printf("[G-24] 演示客户归属解析 sales1=%d sales2=%d sales3=%d（0=未分配，由分配链路后续维护）", s1, s2, s3)
 
 	customers := []model.Customer{
 		{

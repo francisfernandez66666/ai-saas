@@ -4,6 +4,7 @@ package mq
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -60,29 +61,38 @@ func (c *LogCenter) Publish(ctx context.Context, topic string, tenantID uint, on
 
 	// 本地异步分发（fan-out 到该 topic 全部订阅方；panic 隔离，不阻断发布方）
 	// P1-37(2026-09-09)：原 `_ = h(ctx, envCopy)` 错误被吞、无重试——log 模式（默认）反而是
-	// 可靠性最弱路径。现补同步重试 3 次指数退避，与 Kafka 侧重试口径对齐；仍失败记日志。
+	// 可靠性最弱路径。现补同步重试 3 次指数退避，与 Kafka 侧重试口径对齐。
+	// G-15①：仍失败时**不再只打一行 log**。log 模式是**默认形态**（MQ_TYPE=log），
+	// 也就是说此前所有部署的"事件被丢掉"都只存在于滚动日志里；台账补 dead_letter 后，
+	// 丢事件变成一条可查、可重放的记录（清理器放行该状态，见 service.CleanupMQTables）。
 	if hs := c.snapshotHandlers(topic); len(hs) > 0 {
 		for i := range hs {
 			h := hs[i]
 			envCopy := env
+			// G-15④：把发布链路的 trace 带进消费 ctx（envCopy.Header.TraceID 已由
+			// buildEnvelope 沿用请求 trace），消费者内日志与下游调用同 trace 可追
+			hctx := logx.ContextWithTrace(ctx, envCopy.Header.TraceID)
 			go func() {
 				// P2-78：信号量限并发，防止事件风暴撑爆 goroutine
 				c.sem <- struct{}{}
 				defer func() { <-c.sem; _ = recover() }()
 				const maxRetry = 3
 				delay := time.Millisecond * 200
+				var lastErr string
 				for attempt := 0; attempt <= maxRetry; attempt++ {
 					if attempt > 0 {
 						time.Sleep(delay)
 						delay *= 2
 					}
-					if err := h(ctx, envCopy); err == nil {
+					if err := h(hctx, envCopy); err == nil {
+						recordConsumeOutcome(envCopy, StatusConsumed, nil)
 						return
 					} else {
-						log.Printf("[MQ-LOG] 处理失败 event=%s consumer#%d 第%d次: %v", envCopy.Header.EventID, i, attempt, err)
+						lastErr = fmt.Sprintf("consumer#%d 第%d次: %v", i, attempt, err)
+						log.Printf("[MQ-LOG] 处理失败 event=%s trace=%s %s", envCopy.Header.EventID, envCopy.Header.TraceID, lastErr)
 					}
 				}
-				log.Printf("[MQ-LOG] 事件%s 重试3次仍失败，放弃", envCopy.Header.EventID)
+				recordConsumeOutcome(envCopy, StatusDeadLetter, []string{lastErr})
 			}()
 		}
 	}

@@ -15,6 +15,7 @@ package db
 import (
 	"fmt"
 	"log"
+	"strings"
 
 	"ai-scrm/config"
 	"gorm.io/gorm"
@@ -109,6 +110,16 @@ var rlsTenantTables = []string{
 	// 且 RLS_ENABLED 部署形态下这两表将无策略覆盖）。
 	"usage_alerts",    // 用量预警投递留痕表（配额水位快照）
 	"billing_dunning", // 到期催缴状态机表（欠费进度、封禁时刻）
+	// G-14 收口(2026-09-24 欠账批)：获客/商机/存档三批新表漏登记——**逐张都是含 tenant_id 的
+	// 租户商业数据**（活码是渠道归因资产、商机与报价是对外承诺与成交价、存档留痕是客户会话原文）。
+	// 此前只靠启动日志刷"清单外表"WARN，无人主动看即永久静默；本批同时补 rls_coverage_test.go
+	// 把"清单必须覆盖 information_schema 全部含 tenant_id 表（显式豁免除外）"变成 CI 断言，
+	// 新表漏登记从"日志里的一行 WARN"转为"测试直接红"。
+	"acquisition_codes",    // 获客活码表（迁移022，短码/落地页/归因渠道）
+	"acquisition_scans",    // 活码扫码明细表（迁移022，visitor_key 级归因）
+	"opportunities",        // 商机主表（迁移023，金额/阶段/流失归因）
+	"quotes",               // 报价版本链表（迁移023，对外承诺明细）
+	"chat_archive_records", // E8 会话存档留痕表（迁移024，解密后的会话正文）
 }
 
 // RLSStatusInfo RLS 实际生效形态（P2-2 批三 2026-09-20：readiness 观测位数据源）。
@@ -127,6 +138,143 @@ var rlsStatus = RLSStatusInfo{}
 // GetRLSStatus 返回 RLS 生效形态快照（未调 EnableRLS / 未启用时为零值 Enabled=false）
 func GetRLSStatus() RLSStatusInfo { return rlsStatus }
 
+// rlsExemptTables 设计内**不**进 RLS 清单的含 tenant_id 表，key=表名，value=不入库的理由。
+//
+// 这张表是"豁免的白名单"，因此它本身必须是**封闭集**：新增一条即等于给一张租户表关掉
+// DB 级收敛，必须在此写明理由并由 rls_coverage_test.go 的封闭性断言放行（测试里同时
+// 钉死"豁免集必须恰为这些键"，避免有人图省事往里塞一张真表蒙过门禁）。
+//
+// system_configs 为什么必须豁免：它是"系统层默认值(tenant_id=0) + 租户覆盖行(tenant_id=N)"
+// 双层同表设计，读路径靠 `tenant_id IN (0, N)` 取并集回落。RLS 策略是单值等值
+// （tenant_id = current_setting(...)），一旦激活，租户运行时读系统层默认值这条腿会被 DB
+// 直接掐断——表现为配置读不回默认、走零值，比不加 RLS 更危险。
+var rlsExemptTables = map[string]string{
+	"system_configs": "平台双层配置表：系统层 tenant_id=0 与租户覆盖同表，RLS 等值策略会切断回落默认值那条读腿",
+}
+
+// rlsCoverageCheck 对账"库内全部含 tenant_id 的基表"与"RLS 清单 + 豁免集"，是清单完整性的
+// 唯一判据源（启动 WARN 与 CI 断言共用，两侧口径不可能分叉）。
+//
+// 返回三个互斥问题集：
+//   - unlisted：库里有、清单没登记、也不在豁免集 → 该表激活 RLS 后不受 DB 收敛（真漏保）
+//   - phantom：清单登记了但库里没有（且不含 tenant_id）→ 表名拼错/改名未同步，启用时 Fatal
+//   - unusedExempt：豁免集里的键在库中并非含 tenant_id 的基表 → 死豁免，通常是表已删而豁免留档，
+//     留着它等于给未来同名的"新表"预先开了后门
+//
+// 参数为切片而非直接读包变量，是为了让反证用例能在**清单副本**上跑（不碰真数据）。
+func rlsCoverageCheck(allTables, listed []string, exempt map[string]string) (unlisted, phantom, unusedExempt []string) {
+	listedSet := make(map[string]bool, len(listed))
+	for _, t := range listed {
+		listedSet[t] = true
+	}
+	dbSet := make(map[string]bool, len(allTables))
+	for _, t := range allTables {
+		dbSet[t] = true
+	}
+	for _, t := range allTables {
+		if listedSet[t] {
+			continue
+		}
+		// 豁免必须带**非空理由**才算豁免：只认键存在的话，`"deals": ""` 这种空壳条目
+		// 就成了绕过对账的后门——加豁免的正当动机都能写成一句话，写不出理由即不该豁免。
+		if reason, exempted := exempt[t]; exempted && strings.TrimSpace(reason) != "" {
+			continue
+		}
+		unlisted = append(unlisted, t)
+	}
+	for _, t := range listed {
+		if !dbSet[t] {
+			phantom = append(phantom, t)
+		}
+	}
+	for t := range exempt {
+		if !dbSet[t] {
+			unusedExempt = append(unusedExempt, t)
+		}
+	}
+	return
+}
+
+// rlsTenantTablesDuplicate 返回清单内重复登记的表名（空=无重复）。
+// 集合式对账看不出重复，但重复项会让"清单条数"这个观测值虚高，也会让启用循环白跑一遍，
+// 属清单卫生问题，交给测试钉住。
+func rlsTenantTablesDuplicate(listed []string) []string {
+	seen := make(map[string]int, len(listed))
+	for _, t := range listed {
+		seen[t]++
+	}
+	var dups []string
+	for t, n := range seen {
+		if n > 1 {
+			dups = append(dups, t)
+		}
+	}
+	return dups
+}
+
+// rlsTenantIDTables 查出库内所有"含 tenant_id 列的基表"，是清单对账的库侧数据源。
+// 独立成函数是为了让启动 WARN 与 CI 断言读**同一条 SQL**（SQL 分叉会让两侧口径不一致，
+// 那比没有断言更糟）。排除视图（table_type='BASE TABLE'）：视图上的 tenant_id 不承载写入。
+func rlsTenantIDTables(gdb *gorm.DB) ([]string, error) {
+	var tables []string
+	err := gdb.Raw(`SELECT DISTINCT c.table_name FROM information_schema.columns c
+		JOIN information_schema.tables t ON t.table_name = c.table_name AND t.table_schema = c.table_schema
+		WHERE c.column_name = 'tenant_id' AND c.table_schema = current_schema()
+		  AND t.table_type = 'BASE TABLE'
+		ORDER BY c.table_name`).Scan(&tables).Error
+	return tables, err
+}
+
+// reconcileRLSChecklist 把 RLS 清单与库内真实含 tenant_id 的基表对账，返回三个问题集
+// （语义见 rlsCoverageCheck）。**不受 RLS_ENABLED 控制**：清单漂移是代码与库结构的事实问题，
+// 与本次是否真的建策略无关——旧实现只在 RLS_ENABLED=true 的分支里跑反向 diff，
+// 默认关的部署连一行 WARN 都不出，等于把护栏挂在了一个常关的开关后面。
+// fatalOnPhantom 只在真要启用策略时传 true：清单里多一张不存在的表，在无 RLS 形态下
+// 只是卫生问题，不足以让服务起不来；启用形态下策略会建不出来（或建在错表上），必须拒启。
+func reconcileRLSChecklist(fatalOnPhantom bool) (unlisted, phantom, deadExempt []string) {
+	if DB == nil {
+		return nil, nil, nil
+	}
+	dbTables, err := rlsTenantIDTables(DB)
+	if err != nil {
+		if fatalOnPhantom {
+			log.Fatalf("[RLS] 清单对账查询失败，禁止带病启用 RLS: %v", err)
+		}
+		log.Printf("[RLS][WARN] 清单对账查询失败（DB 不可用？本次跳过对账）: %v", err)
+		return nil, nil, nil
+	}
+	unlisted, phantom, deadExempt = rlsCoverageCheck(dbTables, rlsTenantTables, rlsExemptTables)
+	if len(phantom) > 0 {
+		if fatalOnPhantom {
+			log.Fatalf("[RLS] 清单含不存在的表（%v），请修正 rlsTenantTables 与模型迁移保持一致；禁止带病启用 RLS", phantom)
+		}
+		log.Printf("[RLS][WARN] 清单含不存在的表（%v）：与模型迁移不一致，启用 RLS 时将拒绝启动", phantom)
+	}
+	if len(deadExempt) > 0 {
+		log.Printf("[RLS][WARN] 豁免集里的这些键在库中不是含 tenant_id 的基表（%v）：属死豁免，表已删就该同步删掉——留着等于给未来同名新表预先开了后门", deadExempt)
+	}
+	if len(unlisted) > 0 {
+		log.Printf("[RLS][WARN] 下列含 tenant_id 的表未在 rlsTenantTables 清单（RLS 激活后不受 DB 收敛，需确认属\"平台表/设计内豁免\"还是漏网）：%v", unlisted)
+	}
+	return
+}
+
+// rlsPolicyUsing 租户隔离策略的 USING 表达式——**休眠式设计的核心，也是本文件唯一的行为契约**。
+// 第二条腿 `... IS NULL` 意为"未 SET app.current_tenant 即全表放行"：后台任务、迁移、
+// 超管跨租户视图全走这条腿。删掉它 RLS 看着"更严"，实际会让所有未显式设 GUC 的查询静默返回
+// 空集（全站级故障）。因此它不只写在注释里——rls_coverage_test.go 把这段表达式当 SQL 直接求值，
+// 并配"抽掉 NULL 腿必须翻红"的反证。
+const rlsPolicyUsing = `tenant_id::text = current_setting('app.current_tenant', true)
+				OR current_setting('app.current_tenant', true) IS NULL`
+
+// rlsPolicySQL 按表名生成 CREATE POLICY 语句。
+// 生产路径与测试断言共用这一模板，避免"测的是表达式 A、线上建的是表达式 B"。
+func rlsPolicySQL(table string) string {
+	return fmt.Sprintf(`CREATE POLICY tenant_isolation ON %s FOR ALL USING (
+				%s
+			)`, table, rlsPolicyUsing)
+}
+
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
 // 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
 // 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
@@ -136,27 +284,15 @@ func EnableRLS() {
 	if DB == nil {
 		return
 	}
+	// P1-5 修复(2026-09-09) / G-14 收口(2026-09-24)：清单与 information_schema 双向对账，
+	// 判据源收进 rlsCoverageCheck（启动 WARN 与 CI 断言共用同一谓词与同一条 SQL）。
+	// 未启用 RLS 时也照常刷 WARN——CI 侧的硬断言在 rls_coverage_test.go，不依赖本函数被调用。
 	if !config.GlobalConfig.RLS.Enabled {
+		reconcileRLSChecklist(false)
 		log.Printf("[RLS] 未启用（RLS_ENABLED=false），跳过策略创建；租户隔离由应用层 db.T 保证")
 		return
 	}
-	// P1-5 修复(2026-09-09)：启动时对清单与 information_schema.tables 比对，
-	// 表名不匹配即 Fatal（防漂移：新增/改名核心表后 RLS 静默漏保护）
-	var exist []string
-	DB.Raw("SELECT tablename FROM pg_tables WHERE schemaname = current_schema()").Scan(&exist)
-	existSet := make(map[string]bool, len(exist))
-	for _, t := range exist {
-		existSet[t] = true
-	}
-	missing := make([]string, 0, 4)
-	for _, t := range rlsTenantTables {
-		if !existSet[t] {
-			missing = append(missing, t)
-		}
-	}
-	if len(missing) > 0 {
-		log.Fatalf("[RLS] 清单含不存在的表（%v），请修正 rlsTenantTables 与模型迁移保持一致；禁止带病启用 RLS", missing)
-	}
+	reconcileRLSChecklist(true)
 
 	// P1-8 修复(2026-09-15)①：SUPERUSER/BYPASSRLS 检测——PG 对超级用户与 BYPASSRLS 角色
 	// **无条件旁路 RLS**，FORCE ROW LEVEL SECURITY 也管不住。默认 docker-compose 的
@@ -172,29 +308,7 @@ func EnableRLS() {
 		log.Printf("[RLS][WARN] RLS_ENABLED=true 的\"DB 级兜底\"在本部署形态下形同虚设。生产须为应用建 NOSUPERUSER NOBYPASSRLS 角色（见 DEPLOY_CHECKLIST）")
 	}
 
-	// P1-8 修复(2026-09-15)②：反向 diff——旧校验只查"清单⊆库"（表名拼错即 Fatal），
-	// 但防不住"库里有含 tenant_id 的新表没进清单"（新表静默漏保护，正是 P1-5 想防的漂移，
-	// 方向修反了）。列信息全库比对，缺失即 WARN 点名（不 Fatal：豁免表如 system_configs
-	// 属设计内排除，交给清单注释与人工裁决）。
-	var unlisted []string
-	DB.Raw(`SELECT DISTINCT c.table_name FROM information_schema.columns c
-		JOIN information_schema.tables t ON t.table_name = c.table_name AND t.table_schema = c.table_schema
-		WHERE c.column_name = 'tenant_id' AND c.table_schema = current_schema()
-		  AND t.table_type = 'BASE TABLE'
-		ORDER BY c.table_name`).Scan(&unlisted)
-	set := make(map[string]bool, len(rlsTenantTables))
-	for _, t := range rlsTenantTables {
-		set[t] = true
-	}
-	var leaked []string
-	for _, t := range unlisted {
-		if !set[t] {
-			leaked = append(leaked, t)
-		}
-	}
-	if len(leaked) > 0 {
-		log.Printf("[RLS][WARN] 下列含 tenant_id 的表未在 rlsTenantTables 清单（RLS 激活后不受 DB 收敛，需确认属\"平台表/设计内豁免\"还是漏网）：%v", leaked)
-	}
+	// P1-8 修复(2026-09-15)②的反向点名已并入上面的 reconcileRLSChecklist。
 
 	failed := 0
 	for _, t := range rlsTenantTables {
@@ -204,12 +318,7 @@ func EnableRLS() {
 			failed++
 		}
 		DB.Exec(fmt.Sprintf("DROP POLICY IF EXISTS tenant_isolation ON %s", t))
-		policy := fmt.Sprintf(
-			`CREATE POLICY tenant_isolation ON %s FOR ALL USING (
-				tenant_id::text = current_setting('app.current_tenant', true)
-				OR current_setting('app.current_tenant', true) IS NULL
-			)`, t)
-		if err := DB.Exec(policy).Error; err != nil {
+		if err := DB.Exec(rlsPolicySQL(t)).Error; err != nil {
 			log.Printf("[RLS] 表 %s 策略创建失败: %v", t, err)
 			failed++
 		}

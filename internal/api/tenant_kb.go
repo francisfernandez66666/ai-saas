@@ -167,6 +167,9 @@ TenantKBMy 处理 GET /api/v1/admin/kb/my 请求，查询当前租户已上传�
 返回：分页后的知识片段列表，包含total、page、page_size等分页元数据
 */
 // TenantKBMy 返回当前租户知识库片段列表。
+// apidump:ts KbListResp
+// G-23(2026-09-25)：本处理函数挂了两个入口——/admin/kb/my（管理岗）与 /advisor/kb/my
+// （移动端成员只读子集），取数按 tenant_id 且只认企业知识类别，两端口径同一份数据。
 func TenantKBMy(c *gin.Context) {
 	ti := middleware.GetTenantInfo(c)
 	if ti.ID == 0 {

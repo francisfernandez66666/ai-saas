@@ -8,6 +8,8 @@
 #     不再动邮箱验证等全局开关；setup 仅清 admin 首登强改密标记（Q3，seed 重启会重标）。
 #   - 旧断言"super/tenants 无头→400"是 P2-15 之前契约，现行白名单为 200（本次改断言）。
 #   - 新增租户作用域路径（/admin/apikeys）无头→400、带 X-Tenant-ID→200 的正反断言。
+#   - G-23(2026-09-25) 新增成员只读子集段：/advisor/kb/my 可读且读到同一份数据、
+#     /admin/kb/* 写面仍 403、匿名 401（现 33 项）。
 # 用法: bash tools/smoke_perm.sh 9090
 # ============================================================
 B="http://localhost:${1:-9090}"
@@ -123,6 +125,37 @@ R=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$B/api/v1/strategy/templat
 check "DELETE /strategy/templates/:id (超管→200 清理)" 200 "$R"
 R=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/strategy/templates" -H "$SH" -H "X-Tenant-ID: 1")
 check "GET /strategy/templates (sales→200 读面保持)" 200 "$R"
+
+# ---- 4.6 G-23 护栏：移动端成员只读子集（企业知识库）（2026-09-25）----
+# 背景：/app 设置页此前对成员整块隐藏知识库（打了 403 才藏），销售在手机上看不到公司资料。
+# 现口径：后端在顾问组（仅需登录 + 只读写闸）开 GET /advisor/kb/my 只读子集，
+# 上传/删除/注销仍只在 /admin 组。三段各断一次：
+#   ① 成员可读且读到的是**同一份数据面**（超管刚写的片段必须出现在成员列表里——
+#      只断 200 会得到"开了个永远返回空的新端点"这种假绿）；
+#   ② 写面没有被顺手放开（sales 上传/删除仍 403）；
+#   ③ 匿名打不开（新端点确实挂在 JWTAuth 之后，不是漏在公开组）。
+echo ""; echo "-- G-23 成员知识库只读子集 --"
+KBT="perm_g23_$TAG"
+UP=$(curl -s -X POST "$B/api/v1/admin/kb/upload" -H "$AH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"title\":\"$KBT\",\"content\":\"成员只读子集护栏用片段\",\"category\":\"企业知识\"}")
+check "POST /admin/kb/upload ($KBT 写入成功)" 0 "$(echo "$UP" | jsonget "['code']")"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/advisor/kb/my?page=1&page_size=100" -H "$SH")
+check "GET /advisor/kb/my (sales→200)" 200 "$CODE"
+ML=$(curl -s "$B/api/v1/advisor/kb/my?page=1&page_size=100" -H "$SH")
+SEES=$(echo "$ML" | python3 -c "import sys,json;d=json.load(sys.stdin);print(sum(1 for x in d.get('data',{}).get('list',[]) if '$KBT' in (x.get('title') or '')))" 2>/dev/null)
+check "sales 只读列表里看得见超管刚写的片段" 1 "${SEES:-0}"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/admin/kb/upload" -H "$SH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"title\":\"$KBT-w\",\"content\":\"x\",\"category\":\"企业知识\"}")
+check "POST /admin/kb/upload (sales→403 写面未放开)" 403 "$CODE"
+KID=$(echo "$ML" | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((str(x['id']) for x in d.get('data',{}).get('list',[]) if '$KBT' in (x.get('title') or '')),''))" 2>/dev/null)
+CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$B/api/v1/admin/kb/my/$KID" -H "$SH")
+check "DELETE /admin/kb/my/:id (sales→403)" 403 "$CODE"
+CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/advisor/kb/my")
+check "GET /advisor/kb/my (匿名→401)" 401 "$CODE"
+if [ -n "$KID" ]; then
+  CODE=$(curl -s -o /dev/null -w "%{http_code}" -X DELETE "$B/api/v1/admin/kb/my/$KID" -H "$AH" -H "X-Tenant-ID: 1")
+  check "DELETE /admin/kb/my/:id (超管清理→200)" 200 "$CODE"
+fi
 
 # ---- 6. 清理：停用测试租户角色账号（部门/租户保留供人工核查，对齐 smoke_org 惯例）----
 $PSQL "UPDATE tenant_users SET status=0 WHERE username IN ('viewer_$TAG','sales_$TAG','dept_$TAG')" >/dev/null

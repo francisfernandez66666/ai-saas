@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, ArchiveKeyResp, ArchiveRecordDetailResp, ArchiveRecordListResp, ArchiveStatusResp, ArchiveSyncResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminPackListView, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, ArchiveKeyResp, ArchiveRecordDetailResp, ArchiveRecordListResp, ArchiveStatusResp, ArchiveSyncResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, KbListResp, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, SuperPackBindResp, SuperPackReapplyResp, SuperPackTierResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -40,7 +40,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/deals/board": DealBoardResp
   "GET /api/v1/admin/export/conversations.csv": unknown
   "GET /api/v1/admin/export/customers.csv": unknown
-  "GET /api/v1/admin/kb/my": unknown
+  "GET /api/v1/admin/kb/my": KbListResp
   "GET /api/v1/admin/knowledge/brands": unknown
   "GET /api/v1/admin/knowledge/brands/:id": unknown
   "GET /api/v1/admin/knowledge/compares": unknown
@@ -51,7 +51,7 @@ export interface ApiRoutes {
   "GET /api/v1/admin/knowledge/specs": unknown
   "GET /api/v1/admin/models": unknown
   "GET /api/v1/admin/outreach/tasks": OutreachListResp
-  "GET /api/v1/admin/packs": unknown
+  "GET /api/v1/admin/packs": AdminPackListView
   "GET /api/v1/admin/packs/current": unknown
   "GET /api/v1/admin/packs/stats": PackStatsResp
   "GET /api/v1/admin/privacy/deletion-requests": unknown
@@ -69,6 +69,7 @@ export interface ApiRoutes {
   "GET /api/v1/advisor/customer/:id/deals": AdvisorDealListResp
   "GET /api/v1/advisor/customers": Paginated<AdvisorCustomerRow>
   "GET /api/v1/advisor/followups": FollowUpRow[]
+  "GET /api/v1/advisor/kb/my": KbListResp
   "GET /api/v1/advisor/list": AdvisorRef[]
   "GET /api/v1/advisor/referral/info": unknown
   "GET /api/v1/advisor/referral/qrcode": unknown
@@ -264,6 +265,8 @@ export interface ApiRoutes {
   "POST /api/v1/super/packages": unknown
   "POST /api/v1/super/packs": unknown
   "POST /api/v1/super/tenants/:id/grant-trial": unknown
+  "POST /api/v1/super/tenants/:id/pack/bind": SuperPackBindResp
+  "POST /api/v1/super/tenants/:id/pack/reapply": SuperPackReapplyResp
   "POST /api/v1/tenant/signup": unknown
   "POST /openapi/v1/chat/completions": unknown
   "PUT /api/v1/admin/channels/:id": unknown
@@ -293,6 +296,7 @@ export interface ApiRoutes {
   "PUT /api/v1/super/packages/:id": unknown
   "PUT /api/v1/super/packs/:id/share": unknown
   "PUT /api/v1/super/packs/:id/status": unknown
+  "PUT /api/v1/super/packs/:id/tier": SuperPackTierResp
   "PUT /api/v1/super/tenants/:id/branding": unknown
   "PUT /api/v1/super/tenants/:id/plan": unknown
   "PUT /api/v1/super/tenants/:id/status": unknown

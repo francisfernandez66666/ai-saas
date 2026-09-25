@@ -106,13 +106,16 @@ func ResetHygieneCache() {
 	hygieneMu.Lock()
 	hygieneState = hygieneCache{}
 	hygieneMu.Unlock()
+	// 死信观测位与卫生观测位共用"重置后立刻重探"的语义（测试与手工重探入口）
+	ResetMQAuditCache()
 }
 
 // hygieneChecks 组装健康观测项（由 ComputeHealth 调用）：
 // 两项数据层卫生 + 一项企微会话存档形态（archive_hygiene.go，未装配时判 not_wired 不报故障）
+// + 一项消息中心台账死信（mq_audit_hygiene.go，G-15③）
 func hygieneChecks() []HealthCheck {
 	orphan, backlog, backlogOn, stale := hygieneSnapshot()
-	out := make([]HealthCheck, 0, 3)
+	out := make([]HealthCheck, 0, 4)
 
 	warn := monitorCfgInt("monitor_orphan_warn", 100)
 	ch := intCheck("orphan_messages", orphan, warn, monitorCfgInt("monitor_orphan_crit", 1<<40),
@@ -141,6 +144,7 @@ func hygieneChecks() []HealthCheck {
 	}
 	out = append(out, backlogCheck)
 	out = append(out, archiveCheck())
+	out = append(out, mqAuditCheck())
 	return out
 }
 

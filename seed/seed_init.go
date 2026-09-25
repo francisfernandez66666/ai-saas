@@ -25,10 +25,14 @@ import (
 //   8) 卖点 Feature             —— 车型核心卖点话术
 //   9) 话术模板 Template         —— 8 类锚（同类/拆解/对比/损失/稀缺/代价/不抛）话术
 //  10) 流程定义 FlowDefinition   —— 默认对话流程（策略中心→AI/人工/养鱼循环）
-//  11) 品牌 Brand / 车型 CarModel / 规格 ModelSpec —— 极石+竞品车型参数库（数据外置 seed/data，随 SeedIndustry 切换）
-//  12) 竞品对比 CompetitorCompare —— 极石 vs 坦克/理想/方程豹/仰望 话术对比（auto_rox demo，P1-4 待外置）
+//  11) 品牌 Brand / 车型 CarModel / 规格 ModelSpec —— 极石+竞品车型参数库（数据外置 seed/data_car.go，随 SeedIndustry 切换）
+//  12) 竞品对比 CompetitorCompare —— 极石 vs 坦克/理想/方程豹/仰望 话术对比（同批 G-22d 外置，按 car_models.code 关联）
 //  13) 知识片段 KnowledgeFragment —— 营销/技术/竞品话术知识库（数据外置 seed/data，随 SeedIndustry 切换）
 //  14) 模拟客户 Customer         —— 10 个演示客户（含标签与 T 向量）
+//
+// 演示数据归属的行业包由 SeedIndustry 自己声明（G-24，2026-09-25）：种子只写"货"，
+// 落包由 main.go 在包注册完成后调 api.BindSeedDemoTenantPack(DemoPackBinding()) 完成，
+// 一致性由 seed/data_industry_test.go 与发布清单 tools/build_packs.sh 对账把住。
 // ============================================================
 
 // InitSeedData 初始化种子数据

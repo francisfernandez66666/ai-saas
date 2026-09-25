@@ -211,6 +211,51 @@ TDBS=$($PSQL "SELECT status FROM test_drives WHERE id=$TDID" | tr -d '[:space:]'
 check "test-drive: 非法状态零落库" completed "$TDBS"
 $PSQL "UPDATE test_drives SET status='completed' WHERE id=$TDID" >/dev/null 2>&1
 
+# ---------- G-19：试驾动作 → CDP 事件与标签（断两端）----------
+# 只断 HTTP 200 会漏两种"看起来成功"：事件发了但摄入端没落库（断 event_logs）、
+# 落库了但标签没算（断 cdp_tag_assignments）。消费端是异步分发（log 模式 goroutine+退避重试），
+# 故先 sleep 等事件链跑完；计数按本轮 $TDID 过滤，避免历史跑批残留把断言撑成恒真。
+#
+# ⚠ event_value 列类型是 json（不是 jsonb/text）：`event_value LIKE '%...%'` 直接报
+#   `operator does not exist: json ~~ unknown`，而 psql -tA 把错误只打到 stderr，
+#   命令替换里得到的是**空串**——断言看起来像"事件一条都没发"，实为断言自伤。
+#   故这里用 jsonb 路径取属性值比对（`#>>`），不去猜序列化后的空白/键序。
+#   按 test_drive_id 精确匹配还有个附带作用：阶段推进链路也会发 test_drive 事件
+#   （不带 test_drive_id），字符串模糊匹配会把那条也算进来撑高计数。
+evcount() { $PSQL "SELECT count(*) FROM event_logs WHERE event_key='$1' AND customer_id=$CID AND event_value::jsonb #>> '{data,attributes,test_drive_id}'='$TDID'" | tr -d '[:space:]'; }
+# taghas <标签码> → 该客户画像上挂了几条。只断事件落库会漏"事件到了、标签没算"这半边。
+taghas() { $PSQL "SELECT count(*) FROM cdp_tag_assignments ta JOIN cdp_tag_definitions d ON d.id=ta.definition_id JOIN cdp_profiles p ON p.id=ta.cdp_profile_id WHERE d.code='$1' AND p.customer_id=$CID" | tr -d '[:space:]'; }
+# evany <事件键> → 该客户身上这个键的事件条数（不带 test_drive_id 维度的链路用它）
+evany() { $PSQL "SELECT count(*) FROM event_logs WHERE event_key='$1' AND customer_id=$CID" | tr -d '[:space:]'; }
+sleep 2
+check "G-19: 开单→booking 事件落库 1 条" 1 "$(evcount booking)"
+check "G-19: 状态流转→test_drive 事件落库 1 条" 1 "$(evcount test_drive)"
+# 同值状态 PATCH 不得再发一次（只在"真的翻到已完成"这条边上发——否则事件流被 PATCH 灌水）
+$PSQL "UPDATE test_drives SET status='pending' WHERE id=$TDID" >/dev/null 2>&1
+curl -s -m 10 -X PUT "$B/api/v1/advisor/test-drive/$TDID" -H "$S1H" -H "Content-Type: application/json" -d '{"status":"pending","result":"仅改备注"}' >/dev/null
+check "G-19: 同值状态 PATCH 不重复发事件" 1 "$(evcount test_drive)"
+$PSQL "UPDATE test_drives SET status='completed' WHERE id=$TDID" >/dev/null 2>&1
+# 标签侧收口：beh_booked / beh_testdrive 必须真挂上该客户画像（此前无生产者，标签恒空）
+check "G-19: beh_booked 标签已打上" y "$([ "$(taghas beh_booked)" -ge 1 ] && echo y || echo n)"
+check "G-19: beh_testdrive 标签已打上" y "$([ "$(taghas beh_testdrive)" -ge 1 ] && echo y || echo n)"
+
+# ---------- G-19·补：顾问推进到店 / 低分投诉 两条生产端 ----------
+# 阶段推进那个发布分支按子状态分叉：test_driven→test_drive、其余（quoted/空）→store_visit。
+# 上面那条 stage 用例（arrived+test_driven）只走中其中一叉，另一叉自始没人跑过——
+# 事件名写错、或 beh_visit 映射缺失，现有断言一条都不会红。
+# 投诉的触发条件是"评分≤2 **且** 有文字"，两半各证一次：先只给低分不给文字（不该发），
+# 再低分带文字（恰发 1 条）。同客户每日评分上限 5 次，本段占 3 次（含第八段那次），不触限。
+curl -s -m 10 -X PUT "$B/api/v1/advisor/customer/$CID/stage" -H "$S1H" -H "Content-Type: application/json" -d '{"journey_stage":"arrived","journey_sub_stage":"quoted"}' >/dev/null
+curl -s -m 10 -X POST "$B/api/v1/feedback/rating" -H "$S1H" -H "Content-Type: application/json" -d "{\"customer_id\":$CID,\"rating\":2,\"comment\":\"\"}" >/dev/null
+sleep 2
+check "G-19: 到店(非试驾子阶段)→store_visit 事件落库 1 条" 1 "$(evany store_visit)"
+check "G-19: beh_visit 标签已打上" y "$([ "$(taghas beh_visit)" -ge 1 ] && echo y || echo n)"
+check "G-19: 低分无文字不发投诉（条件两半都要满足）" 0 "$(evany complaint)"
+curl -s -m 10 -X POST "$B/api/v1/feedback/rating" -H "$S1H" -H "Content-Type: application/json" -d "{\"customer_id\":$CID,\"rating\":1,\"comment\":\"UAT投诉-响应太慢\"}" >/dev/null
+sleep 2
+check "G-19: 低分带文字→complaint 事件落库 1 条" 1 "$(evany complaint)"
+check "G-19: beh_complained 标签已打上" y "$([ "$(taghas beh_complained)" -ge 1 ] && echo y || echo n)"
+
 # ---------- 会话：接管 / 发送 / AI 开关 ----------
 echo "---- 六、会话接管 / 人工发送 / AI 开关（字节级）----"
 TK=$(curl -s -m 10 -X POST "$B/api/v1/advisor/chat/takeover" -H "$S1H" -H "Content-Type: application/json" -d "{\"conversation_id\":$CONV}")
@@ -291,6 +336,11 @@ p "GET /api/v1/conversations/:id/messages" 200 GET "/api/v1/conversations/$CONV/
 p "POST /api/v1/feedback/rating" 200 POST "/api/v1/feedback/rating" "$S1H" "{\"customer_id\":$CID,\"rating\":5,\"comment\":\"uat\"}"
 p "POST /api/v1/chat/transfer/ai" 200 POST "/api/v1/chat/transfer/ai" "$S1H" "{\"conversation_id\":$CONV}"
 p "POST /api/v1/chat/clear-delay" 200 POST "/api/v1/chat/clear-delay" "$S1H" "{\"customer_id\":$CID}"
+# 每日额度前置（2026-09-25 欠账批）：反馈限流是「单用户每日 20 条」（internal/api/feedback.go:feedbackDailyLimit，
+# 按 created_at >= CURRENT_DATE 查表计数）。本用例断 200 的隐含前提是 sales1 当天还有额度——
+# 而额度按自然日累计，同一天里跑到第 20 次必吃 429（实测当天已累计 21 行、本段真红过一次）。
+# 这是断言前提被脚本自己写的探针行污染，不是产品缺陷；故只删本脚本自己那条（content 精确匹配），不动真实用户反馈。
+$PSQL "DELETE FROM feedbacks WHERE user_id=$U1 AND content='uat建议' AND created_at >= CURRENT_DATE" >/dev/null 2>&1
 p "POST /api/v1/feedback" 200 POST "/api/v1/feedback" "$S1H" "{\"content\":\"uat建议\",\"target_type\":\"feature\"}"
 p "GET /api/v1/chat/history(匿名无 key)" 403 GET "/api/v1/chat/history?customer_id=$CID" "X-None: 1"
 p "PUT /api/v1/advisor/customer/:id/info(未登录)" 401 PUT "/api/v1/advisor/customer/$CID/info" "X-None: 1" '{"name":"x"}'

@@ -20,6 +20,8 @@
 #   D .Transaction( 事务包装（内部通常显式 SetTenantRLS）；
 #   E 平台级表/跨租户聚合：白名单内的平台资产模型/表（IndustryPack/SystemConfig/model.Tenant/
 #     TenantAuditLog/TenantUser/PaymentPlan/model.Plan/TenantQuota/GlobalConfig/Dict*/Sys*/Migration 等）；
+#     2026-09-24 G-15 补消息中心台账 MessageEventRecord/InboxEvent：行由发布端显式盖章 tenant_id，
+#     消费端与清理器按 event_id/created_at 定位，跑在无 gin ctx 的消费协程与后台 ticker 里；
 #   F middleware 鉴权与租户解析前置路径：middleware/ 下的 tenant.go/auth.go/openapi_auth.go/org.go
 #     （此刻租户上下文尚未建立，必须全表查，设计如此）；
 #   G 行内 // g12:platform 豁免标记（沿用 D6 护栏既有豁免约定）。
@@ -45,6 +47,11 @@ PLATFORM_WHITELIST = [
     "TenantUser", "PaymentPlan", "model.Plan", "TenantQuota",
     "GlobalConfig", "DictItem", "DictType", "model.Dict",
     "SysRole", "SysMenu", "model.Sys", "Migration",
+    # 消息中心两张台账（G-15②，2026-09-24）：行由**发布端**显式盖章 tenant_id 写入，
+    # 消费端与清理器都按 event_id / created_at 定位，天然没有"请求租户作用域"可言——
+    # 它们跑在消费 goroutine 与后台 ticker 里，根本没有 gin ctx 可带。
+    # 反过来，若强行要求 db.RQ(c)，这两条链会因为 ctx 缺失而静默查不到行。
+    "MessageEventRecord", "InboxEvent",
 ]
 
 # F 类：middleware 鉴权与租户解析前置路径文件
@@ -210,6 +217,8 @@ def selftest():
         '    err := db.DB.Transaction(func(tx *gorm.DB) error { ... })',
         # B：主键直取 First(&x, id)
         '    db.DB.First(&u, userID)',
+        # E：消息中心台账（G-15 新入白名单，无请求 ctx 的消费/清理链按 event_id 定位）
+        '    q := db.DB.Model(&model.MessageEventRecord{}).Where("event_id = ?", id)',
         # G：行内 g12:platform 豁免
         '    db.DB.Model(&model.Y{}).Find(&y) // g12:platform',
         # F：middleware 前置路径（tenant.go）

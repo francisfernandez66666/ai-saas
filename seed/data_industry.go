@@ -5,7 +5,7 @@
 //
 // 换行业：在 data 包下新增一个 Industry 实例（如 NewEnergy`），提供该行业的品牌/车型/知识数据，
 // 并把 seed/seed_industry.go 的 SeedIndustry 指向它即可——seed 逻辑无需改动。
-// 车型规格(model_specs)/竞品对比(competitor_compares) 同样按此模式迁移（见 seed_car.go 顶部说明）。
+// 车型规格(model_specs)/竞品对比(competitor_compares) 已于 G-22d（2026-09-25）按同一模式迁入 data_car.go。
 package seed
 
 import "ai-scrm/internal/model"
@@ -27,13 +27,27 @@ type CarModelSeed struct {
 
 // Industry 某行业的种子演示数据集合
 type Industry struct {
+	// DemoTenantCode / IndustryPackCode / EnterprisePackCode：G-24(2026-09-25) 演示数据绑定。
+	// 种子写的是"哪个行业的货"，这三个字段声明"这套货属于哪个包族"——启动期据此把演示租户
+	// 落到对应行业包+企业包上，避免出现"货架是极石的车、AI 说通用汽车话术"。
+	// 留空即不参与绑定（例如只灌基包内容的行业集合）。
+	DemoTenantCode     string // 演示租户 code（seed 自建的那一个，非注册租户）
+	IndustryPackCode   string // 行业基包 code，如 "auto"
+	EnterprisePackCode string // 企业包 code，如 "auto_rox"（空=不落企业包）
 	Brands             []model.Brand
 	CarModels          []CarModelSeed
 	KnowledgeFragments []model.KnowledgeFragment
+	// ModelSpecs / CompetitorCompares：车型规格库与竞品对比（G-22d 外置，见 data_car.go）。
+	// 二者都按 car_models.code 关联，换行业时必须与 CarModels 一起换，否则写库阶段整批跳过并 WARN。
+	ModelSpecs         []ModelSpecSeed
+	CompetitorCompares []CompetitorCompareSeed
 }
 
 // AutoRox 极石汽车 demo 数据（原 seed_car.go / seed_kb.go 内联字面量外置）
 var AutoRox = Industry{
+	DemoTenantCode:     SeedDemoTenantCode,
+	IndustryPackCode:   "auto",
+	EnterprisePackCode: "auto_rox",
 	Brands: []model.Brand{
 		{
 			Name: "极石汽车", Code: "rox",
@@ -337,4 +351,8 @@ var AutoRox = Industry{
 			Status: 1, Sort: 42,
 		},
 	},
+
+	// 规格库 361 条 / 竞品对比 58 组（数据体量大，单独放 data_car.go，此处只挂引用）
+	ModelSpecs:         autoRoxModelSpecs,
+	CompetitorCompares: autoRoxCompetitorCompares,
 }

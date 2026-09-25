@@ -1,5 +1,12 @@
 // G-7 并发语义单测
 // 覆盖：三桶扣减原子性、退款vs扣减竞态、epoch fencing、processLocally并发合并
+//
+// ⚠ 本文件是**逻辑模型**检查：每个用例在测试内自带一份被测逻辑的副本（mockTenantBilling /
+// mockEpochQueue / mockRefundable / 内联 queue 闭包），断言的是那份副本自洽，
+// 删掉 message_queue.go 的 `if !q.processing` 判据、或删掉扣减的 FOR UPDATE 行锁，这里照样全绿。
+// 真实函数版本另建两份，改动被测代码时必须同步看它们：
+//   - internal/service/concurrency_real_test.go（合并队列：并发唯一处理者/积压接管/自愈×代际 fencing/简单消息串行锁）
+//   - internal/billing/concurrency_real_test.go（资金：三桶顺序/并发不丢更新/超卖不为负/退款守恒/双闸 no-op）
 package service
 
 import (

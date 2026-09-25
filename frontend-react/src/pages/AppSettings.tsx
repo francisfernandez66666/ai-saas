@@ -1,7 +1,8 @@
 /**
  * AppSettings.tsx：移动端账号设置页
- * 支持改密、换绑邮箱（含验证码倒计时）、企业知识库上传/删除、账号注销（次日零点停用）
- * 依赖接口：/api/v1/auth/change-password、/api/v1/auth/email/code、/api/v1/auth/email/change、/api/v1/admin/kb/*、/api/v1/admin/account/cancel
+ * 支持改密、换绑邮箱（含验证码倒计时）、企业知识库（管理员可传删/成员只读）、账号注销（次日零点停用）
+ * 依赖接口：/api/v1/auth/change-password、/api/v1/auth/email/code、/api/v1/auth/email/change、
+ * /api/v1/admin/kb/*（写）或 /api/v1/advisor/kb/my（成员只读，G-23）、/api/v1/admin/account/cancel
  */
 import { useState, useEffect } from 'react'
 import { confirmDialog, toast } from '../lib/confirm'
@@ -52,8 +53,9 @@ export default function AppSettings() {
       const p = new URLSearchParams(window.location.search)
       if (p.get('must') === '1') setMust(true)
     }
-    // 加载企业知识库列表（P1-42：仅管理员角色可查，sale 不触发 403）
-    if (isAdmin) loadKb()
+    // G-23(2026-09-25)：知识库列表全员可查——管理员读 /admin/kb/my，成员读 /advisor/kb/my，
+    // 不再是"成员整块隐藏"（旧 P1-42 做法让销售看不到公司沉淀的知识）。
+    loadKb()
   }, [])
 
   /**
@@ -87,10 +89,11 @@ export default function AppSettings() {
   }
 
   /**
-   * 加载企业知识库列表：调用 /api/v1/admin/kb/my 接口
+   * 加载企业知识库列表：管理员走 /admin/kb/my，成员走 /advisor/kb/my（G-23 只读子集）
+   * 两个端点返回同一份租户企业知识列表，成员端只开读、上传/删除仍在 admin 组。
    */
   async function loadKb() {
-    const j: ApiResp<KbListResp> = await AUTH('/api/v1/admin/kb/my?page=1&page_size=50')
+    const j: ApiResp<KbListResp> = await AUTH((isAdmin ? '/api/v1/admin/kb/my' : '/api/v1/advisor/kb/my') + '?page=1&page_size=50')
     if (j.code === 0) setKbList(j.data?.list || [])
   }
 
@@ -180,20 +183,27 @@ export default function AppSettings() {
         {dMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{dMsg}</p>}
       </div>
 
-      {/* 企业知识库模块（P1-42：仅管理员展示，成员角色不触发 403） */}
-      {isAdmin && <div style={card}>
+      {/* 企业知识库模块（G-23：全员只读可见，上传/删除仍仅管理员） */}
+      <div style={card}>
         <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>我的企业知识库</h3>
-        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>上传产品/企业资料，AI 对话自动融合检索（租户层优先）</p>
-        <label style={labelStyle}>标题</label><input placeholder="如：售后政策" value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
-        <label style={labelStyle}>内容</label><textarea rows={4} value={kbContent} onChange={(e) => setKbContent(e.target.value)} style={{ ...inputStyle, resize: 'vertical' }} />
-        <button onClick={uploadKb} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>上传切片入库</button>
-        {/* 知识库列表：展示已上传的条目，支持删除 */}
+        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>
+          {isAdmin ? '上传产品/企业资料，AI 对话自动融合检索（租户层优先）' : '本租户已沉淀的资料，AI 对话会自动引用；需要补充或修改请联系管理员'}
+        </p>
+        {isAdmin && <>
+          <label style={labelStyle}>标题</label><input placeholder="如：售后政策" value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
+          <label style={labelStyle}>内容</label><textarea rows={4} value={kbContent} onChange={(e) => setKbContent(e.target.value)} style={{ ...inputStyle, resize: 'vertical' }} />
+          <button onClick={uploadKb} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>上传切片入库</button>
+        </>}
+        {/* 知识库列表：管理员可删，成员只看 */}
         <ul style={{ marginTop: 12, paddingLeft: 18, fontSize: 14 }}>
           {kbList.map((f) => (
-            <li key={f.id} style={{ margin: '6px 0' }}>{f.title} <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>删除</a></li>
+            <li key={f.id} style={{ margin: '6px 0' }}>{f.title}
+              {isAdmin && <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>删除</a>}
+            </li>
           ))}
         </ul>
-      </div>}
+        {!isAdmin && kbList.length === 0 && <p style={{ fontSize: 13, color: '#9ca3af', margin: '12px 0 0' }}>管理员还没有上传资料</p>}
+      </div>
 
       {/* 账号注销模块（P1-42：仅管理员展示；成员角色无此权限） */}
       {isAdmin && <div style={{ ...card, border: '1px solid #fecaca' }}>

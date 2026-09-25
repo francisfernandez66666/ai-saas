@@ -54,6 +54,13 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.GET("/packs/stats", SuperPackStats)
 		super.PUT("/packs/:id/status", SuperPackStatus)
 		super.PUT("/packs/:id/share", SuperPackShare)
+		// G-22c（2026-09-24）：包可见档位门槛由平台侧声明（不进包内 manifest，见 handler 注释）。
+		// 没有这条入口，industry_packs.min_tier 就只是一列没人写得进去的死字段。
+		super.PUT("/packs/:id/tier", SuperPackTier)
+		// G-22a（2026-09-24）：超管代客换包 + 存量租户按新版重物化。
+		// reapply 是全仓唯一"发新版后让已绑定租户吃到新版"的通道（AppliedVersion 此前只写不读）。
+		super.POST("/tenants/:id/pack/bind", SuperTenantPackBind)
+		super.POST("/tenants/:id/pack/reapply", SuperTenantPackReapply)
 		// 监控告警（P1-4）
 		super.GET("/monitor/health", SuperMonitorHealth)
 		// D3 催缴工作队列（2026-09-23）：欠费户逐档催、宽限期满自动停用，这里是运营的唯一落点。

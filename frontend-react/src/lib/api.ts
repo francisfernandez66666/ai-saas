@@ -35,18 +35,44 @@ export type { ApiPath, ApiResponse }
 export const TOKEN_KEY = 'scrm_auth_token'
 
 // 业务错误码 → 用户提示（P1-4：按后端 error_code 统一 toast，去 AI 味短句）
-const ERR_MSG: Record<string, string> = {
-  param_error: '参数填错了，麻烦核对一下',
-  unauthorized: '账号或密码不对',
-  forbidden: '没有权限操作',
-  not_found: '没找到对应的内容',
-  rate_limited: '操作太频繁，稍后再试',
-  biz_error: '操作没成功',
-  internal_error: '服务开小差了，稍后再试',
+//
+// G-13 错误码全量迁移（2026-09-24）：这张表此前只有 7 格，是后端 codeName 全集的子集——
+// 后端早已在发 token_revoked / must_change_password / *_rejected 等码，前端查不到就整段
+// 回落到 message，等于"错误码精细化提示"这层只在部分码上成立。现在按后端实际发出的码补齐，
+// 并加上分级：登录态失效这类"必须去别处处理"的事用 warning 弹（黄色、会自动消失）是误导，
+// 用户会以为再点一次就好。
+//
+// text 故意留空的几格是域码（deal_rejected 等）：后端这三类响应的 message 本身就是
+// 精确的人读文案（"阶段不能往回退…"），而 error_code 只到"哪个域拒的"这一层。
+// 在这里写一句通用话反而会把它覆盖掉——用户看到"这张单暂时不能这么操作"，
+// 却看不到到底哪一格填错了。所以域码只定分级，文案让位给 message。
+type ErrLevel = 'warning' | 'error'
+
+// ERROR_CODE_MESSAGES 导出给单测做"码集对齐"锁：后端新增 error_code 时前端必须同步登记，
+// 否则新码会静默走未登记分支（只回传 message、分级恒为 warning）。
+export const ERROR_CODE_MESSAGES: Record<string, { text?: string; level: ErrLevel }> = {
+  // 与 internal/api/code.go 的 codeName 映射一一对应
+  param_error: { text: '参数填错了，麻烦核对一下', level: 'warning' },
+  unauthorized: { text: '账号或密码不对', level: 'error' },
+  forbidden: { text: '没有权限操作', level: 'error' },
+  not_found: { text: '没找到对应的内容', level: 'warning' },
+  rate_limited: { text: '操作太频繁，稍后再试', level: 'warning' },
+  biz_error: { text: '操作没成功', level: 'warning' },
+  internal_error: { text: '服务开小差了，稍后再试', level: 'error' },
+  // 后端各处显式 error_code 字面量（middleware/auth.go、org.go、openapi_auth.go、各域 handler）
+  token_revoked: { text: '这个登录已经过期了，重新登录一次', level: 'error' },
+  must_change_password: { text: '请先修改初始密码', level: 'error' },
+  invalid_api_key: { text: 'API Key 无效或已停用', level: 'error' },
+  channel_config_incomplete: { text: '通道配置还缺几项，补齐后再试', level: 'warning' },
+  deal_rejected: { level: 'warning' },
+  outreach_rejected: { level: 'warning' },
+  acquisition_rejected: { level: 'warning' },
+  // G-22c 档位门槛：不是"你操作错了"，是"这个包还没对你的套餐开放"。
+  // 后端 message 是一句固定文案，这里给一句带出口的话（warning 级，别弹成红色报错）。
+  pack_tier_denied: { text: '这个包还没对你的套餐开放，升级后才能绑', level: 'warning' },
 }
 
-/**
- * 按后端返回体给出友好提示（error_code 优先，其次 message）
+/** 按后端返回体给出友好提示（error_code 优先，其次 message）
  * @param json - 后端返回的 JSON 响应体
  * @returns 是否业务失败（code !== 0 表示失败）
  */
@@ -54,8 +80,11 @@ const ERR_MSG: Record<string, string> = {
 export function toastError(json: any): boolean {
   if (!json || json.code === 0 || json.code === undefined) return false
   const code = json.error_code as string
-  const msg = (code && ERR_MSG[code]) || json.message || '操作没成功'
-  MessagePlugin.warning(msg)
+  const entry = code ? ERROR_CODE_MESSAGES[code] : undefined
+  const msg = (entry && entry.text) || json.message || '操作没成功'
+  // 未登记的码按 warning 走：新码先能看清后端说了什么，再决定要不要升级成分级
+  if ((entry && entry.level) === 'error') MessagePlugin.error(msg)
+  else MessagePlugin.warning(msg)
   return true
 }
 

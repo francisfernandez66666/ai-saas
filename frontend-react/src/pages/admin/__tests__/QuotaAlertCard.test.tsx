@@ -177,7 +177,12 @@ describe('QuotaAlertCard', () => {
   it('点刷新重新发两路请求', async () => {
     route(OK(USAGE_OK), OK(DUNNING_RUNNING))
     render(<QuotaAlertCard />)
-    await waitFor(() => expect(authMock).toHaveBeenCalledTimes(2))
+    // 必须先等到"数据已渲染"再点，不能只等到"两发请求发出"：
+    // 卡片在加载中整块不渲染（无「刷新」按钮），而 waitFor 的判定在请求**发出**的那一刻
+    // 就满足了——机器空闲时响应先回来、侥幸通过，负载高时直接抛"找不到按钮"。
+    // 2026-09-25 欠账批全量回归即以此形态红过一次（单跑 12 例全绿，是竞态不是实现错）。
+    await screen.findByText('1,000 / 1,500（79%）')
+    expect(authMock).toHaveBeenCalledTimes(2)
     fireEvent.click(screen.getByRole('button', { name: /刷新/ }))
     await waitFor(() => expect(authMock).toHaveBeenCalledTimes(4))
   })

@@ -28,15 +28,19 @@ type IndustryPack struct {
 	ParentCode string `gorm:"size:32;index" json:"parent_code"`                   // 上级包code：企业包→行业code；部门包→企业包code；行业包为空
 	// ShareCrossDept 跨部门共享开关（KB继承链改造 2026-08-26）：1=允许跨部门回退可见（默认）
 	// 0=退出共享（仅本部门链可见，即使租户策略开也不外泄）。仅对 department 级包有意义
-	ShareCrossDept int       `gorm:"default:1" json:"share_cross_dept"`      // 跨部门共享开关
-	FileName       string    `gorm:"size:200" json:"file_name"`              // 原始文件名
-	FilePath       string    `gorm:"size:300" json:"-"`                      // 服务端存储路径（不出网）
-	FileSize       int64     `json:"file_size"`                              // 字节
-	ContentSHA256  string    `gorm:"size:64" json:"content_sha256"`          // 内容摘要（来自 manifest）
-	Status         string    `gorm:"size:20;default:disabled" json:"status"` // disabled/active
-	UploadedBy     uint      `json:"uploaded_by"`                            // 上传超管
-	CreatedAt      time.Time `json:"created_at"`                             // 创建时间
-	UpdatedAt      time.Time `json:"updated_at"`                             // 更新时间
+	ShareCrossDept int `gorm:"default:1" json:"share_cross_dept"` // 跨部门共享开关
+	// MinTier 最低可绑档位（G-22c，迁移026）：'' = 不设门槛（存量包现状）；
+	// 取值域 personal/enterprise/custom，与 Tenant.Tier 同一词表。
+	// 判据单点在 industrypack.PackAllowedForTier——列表与绑定两侧共用，勿在调用点重写比较。
+	MinTier       string    `gorm:"size:20;default:''" json:"min_tier"`
+	FileName      string    `gorm:"size:200" json:"file_name"`              // 原始文件名
+	FilePath      string    `gorm:"size:300" json:"-"`                      // 服务端存储路径（不出网）
+	FileSize      int64     `json:"file_size"`                              // 字节
+	ContentSHA256 string    `gorm:"size:64" json:"content_sha256"`          // 内容摘要（来自 manifest）
+	Status        string    `gorm:"size:20;default:disabled" json:"status"` // disabled/active
+	UploadedBy    uint      `json:"uploaded_by"`                            // 上传超管
+	CreatedAt     time.Time `json:"created_at"`                             // 创建时间
+	UpdatedAt     time.Time `json:"updated_at"`                             // 更新时间
 }
 
 // TenantPackBinding 租户绑定关系：行业主包 + 可选挂靠企业包（一租户一套）

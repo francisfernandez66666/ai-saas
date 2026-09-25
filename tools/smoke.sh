@@ -65,6 +65,20 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         的解不开行不消失、failed/keyword 筛选（% 当字面量）、详情逐字节回显全文且读一次留一条审计、
 #         /status/detail 直出 chat_archive 观测位（有启用通道时不得报 not_wired/disabled、判 warn 不判 crit）、
 #         公开 /status 零泄露、关开关只改开关不删留痕、自清理）
+#       / 2026-09-24 欠账批二 G-15：MQ 事件审计两段台账 13 断言（三十九：迁移025账本与 trace_id/err_msg/
+#         updated_at 三列、trace 索引与死信部分索引实存、真事件 guest_created 从发布走到终态 consumed
+#         （旧实现永远停在 sent）、发布腿与消费腿共用同一行不补建、台账 trace_id 与请求头 X-Trace-ID 逐字
+#         相同、consumed 行不留旧错文、updated_at 真被写、/status/detail 直出 mq_dead_letters 且取到整型真值、
+#         公开 /status 零清单泄露、自清理；清理器"死信不被删"没有 HTTP 触发端点故交内部单测——
+#         不为此开一个能删审计数据的口子）
+#       / 2026-09-25 欠账批三 G-22c：行业包档位门槛 49 断言（四十：迁移026 列实存与出厂默认空串
+#         （真插一行验默认，NULL 不算过）、设档 PUT /super/packs/:id/tier 的鉴权边界与"只拒不动"
+#         与平台级 super_pack_tier 审计、列表标注三字段（tier_locked/tier_reason/min_tier）在
+#         个人版·企业版·脏档位三种租户下的九格判定（含"无门槛包绝不误拦"两条反向）、写侧三条自助
+#         入口（行业/企业/部门级）同判据硬拒 403 + pack_tier_denied + 三种 reason、拒绝后零绑定零物化、
+#         超管代客换包故意不受档位拦（钉口径防后人补门禁）、两侧同源结构断言（locked 行数==403 次数，
+#         并先自检参与比对行数=2/1 防 0==0 假绿）、自清理；真实上架包上的越档审计
+#         super_pack_tier_override 需要开包成功才写得进，故归 §十一 6.5（keys 门内）+9 断言）
 #       / 2026-09-24 残项收口：超管租户检索 10 断言（三十八：/super/tenants 补 q——纯数字按 ID
 #         直达、名称/编码模糊、total 只算命中数、无命中回 [] 不是 null、% 与 _ 按字面量不被
 #         当成通配符放大成全表、超整型范围数字不 5xx、未登录 401、自清理；含"page_size=1 时
@@ -335,12 +349,252 @@ METRICS2=$(curl -s "$B/metrics" 2>/dev/null)
 COMP_AFTER=$(echo "$METRICS2" | grep "ai_scrm_complaint_total" | awk '{print $2}')
 [ -n "$COMP_AFTER" ] && check "投诉事件集成(complaint counter=${COMP_AFTER})" y y || check "投诉事件集成" y n
 
-echo "---- 十一、G-22 通用行业包 ----"
+echo "---- 十一、G-21/G-22 行业包内容质量与换包链路 ----"
+# 本段盯两件事：①包源内容**能不能被消费端读到**（G-21）；②换包是不是真的"换"（G-22）。
+# 两件事的缺陷形态都是"全程不报错、内容没生效"，所以断言只能往数据层钉：
+# 话术字段名写成 template（消费端认 prompt_template）、flows 用引擎不认识的 ai_chat 节点、
+# tags 缺 code（materializeTags 静默跳过）——打包成功、绑定成功、物化"成功"，
+# 现场只表现为"配了包但 AI 一个字都没拿到"。
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 [ -d "${PROJECT_ROOT}/packs-src/general" ] && check "packs-src/general/ 目录存在" y y || check "packs-src/general/ 目录存在" y n
-GEN_COUNT=$(ls "${PROJECT_ROOT}/packs-src/general/"*.json 2>/dev/null | wc -l | tr -d ' ')
-[ "${GEN_COUNT:-0}" -ge 6 ] && check "通用包JSON文件数(≥6)" y y || check "通用包JSON文件数(期望≥6 实际=${GEN_COUNT:-0})" y n
+# 内容门禁跑十件套真包源（FAIL>0 即红）：判据与消费端逐字对齐，见 tools/check_pack_content.py
+python3 "${PROJECT_ROOT}/tools/check_pack_content.py" >/tmp/pack_content.log 2>&1
+[ "$?" = "0" ] && check "包源内容校验 FAIL=0（空话术/非法节点/缺 code 三类静默缺陷）" y y || check "包源内容校验 FAIL=0（见 /tmp/pack_content.log）" y n
+# 护栏自证：校验器自己造一个"全错包"，必须抓得出 FAIL——解析器失配时的"零差异"不可信
+python3 "${PROJECT_ROOT}/tools/check_pack_content.py" --selftest >/tmp/pack_content_self.log 2>&1
+[ "$?" = "0" ] && check "包源校验器 --selftest 抓到全错包（防校验器空转）" y y || check "包源校验器 --selftest 抓到全错包" y n
+# 打包参数表单点：三级树（行业/企业/部门）与版本递增全在 tools/build_packs.sh 一张表里，
+# 这里锁"表能解析、目录都在"，防止改了包源目录名却忘了改表（表现为"打包成功但没打进新内容"）
+bash "${PROJECT_ROOT}/tools/build_packs.sh" --check >/tmp/pack_build_check.log 2>&1
+[ "$?" = "0" ] && check "打包参数表与 packs-src 目录一致（--check）" y y || check "打包参数表与 packs-src 目录一致（见 /tmp/pack_build_check.log）" y n
+
+# ---- Tier 2：换包链路的接口与数据层断言（需要打包密钥 + 已上架产物 + 包已注册）----
+# keys/ 与 data/ 都在 .gitignore 里，CI 环境拿不到签名密钥：开包必失败，物化链在此不可达。
+# 那种情况下本小节**大声 SKIP 并报数**（静默绿比缺测更有害），跨包清除的行为正确性
+# 由 internal/industrypack/purge_test.go 六条单测兜住（含"keep 全覆盖时不许删任何包"的反向用例）。
+PK_READY=n
+[ -f "${PROJECT_ROOT}/keys/pack_priv.pem" ] && PK_READY=y
+GEN_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='general' AND pack_level='industry' AND status='active' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+AUTO_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='auto' AND pack_level='industry' AND status='active' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+ROX_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='auto_rox' AND pack_level='enterprise' AND status='active' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+{ [ -z "$GEN_ID" ] || [ -z "$AUTO_ID" ] || [ -z "$ROX_ID" ]; } && PK_READY=n
+if [ "$PK_READY" != "y" ]; then
+  echo "  SKIP  换包链路接口断言（Tier 2 整节，缺 keys/pack_priv.pem 或 general/auto/auto_rox 未上架——"
+  echo "        CI 无签名密钥时物化链结构性不可达；行为正确性见 internal/industrypack/purge_test.go）"
+else
+  PKT="smoke_pk_$$"
+  $PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+         VALUES ('冒烟换包验证', '${PKT}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+  PKTID=$($PSQL "SELECT id FROM tenants WHERE code='${PKT}'" | tr -d '[:space:]')
+  # 前提自检：合成租户必须真建出来，否则后面所有"库里没行"的断言都在 0==0 上假绿
+  [ -n "$PKTID" ] && check "换包段合成租户已建（前提自检）" y y || check "换包段合成租户已建（前提自检）" y n
+  # 对照租户要在**换包动作之前**记底数：acme 是种子租户、本来就带租户级模板，
+  # 断"期望 0"从来不是有效对照（第一轮就是这么红的）。有效对照是"前后一模一样"。
+  ACME_TPL_BEFORE=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${ACME_ID}" | tr -d '[:space:]')
+  # reapply 的 404 用例必须用"确实没有绑定行"的租户：拿 acme 打会合法成功（它有种子绑定）
+  PKNB="smoke_pk_nb_$$"
+  $PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+         VALUES ('冒烟换包无绑定对照', '${PKNB}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+  PKNBID=$($PSQL "SELECT id FROM tenants WHERE code='${PKNB}'" | tr -d '[:space:]')
+  # 前提自检：这条 404 只在"租户真存在且真无绑定行"时才是有效断言
+  #（PKNBID 为空会打成 /tenants//pack/reapply，路径不匹配同样回 404 = 假绿）
+  PKNB_PRE=$($PSQL "SELECT count(*) FROM tenant_pack_bindings WHERE tenant_id=${PKNBID:-0}" | tr -d '[:space:]')
+  { [ -n "$PKNBID" ] && [ "${PKNB_PRE:-1}" = "0" ]; } \
+    && check "无绑定对照租户已建且零绑定行（404 用例前提）" y y \
+    || check "无绑定对照租户已建且零绑定行（id=${PKNBID:-空} 绑定=${PKNB_PRE:-?}）" y n
+
+  # 包前缀行计数一律用 left(col,N)='pk_{code}_t{租户}_' 精确比前缀，不用 LIKE——
+  # LIKE 里的下划线是通配符，'pk_general_%' 会连带匹配 pk_generalX…（本项目 code 允许下划线）
+  bindpack() { # bindpack <租户ID> <json体> —— 超管换包，回原始响应
+    curl -s -m 25 -X POST "$B/api/v1/super/tenants/$1/pack/bind" \
+      -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "$2"
+  }
+  reapplypack() { # reapplypack <租户ID> —— 按 code 取最新版重物化
+    curl -s -m 25 -X POST "$B/api/v1/super/tenants/$1/pack/reapply" -H "Authorization: Bearer $TOKEN"
+  }
+
+  # ===== 1) 绑 general（本批新出的中立兜底包）：内容必须真进四张表 =====
+  R1=$(bindpack "$PKTID" "{\"industry_pack_id\":${GEN_ID}}")
+  T1=$(echo "$R1" | jsonget "['data']['templates']")
+  F1=$(echo "$R1" | jsonget "['data']['features']")
+  [ "${T1:-0}" -gt 0 ] && check "绑 general 回 templates>0（${T1:-空}）" y y || check "绑 general 回 templates>0（响应=${R1:0:120}）" y n
+  GPFX="pk_general_t${PKTID}_"
+  DBT1=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND left(id, ${#GPFX})='${GPFX}'" | tr -d '[:space:]')
+  check "响应 templates 与库内模板行数逐字同源" "${T1:-x}" "${DBT1:-y}"
+  DBF1=$($PSQL "SELECT count(*) FROM features WHERE tenant_id=${PKTID} AND left(id, ${#GPFX})='${GPFX}'" | tr -d '[:space:]')
+  check "响应 features 与库内卖点行数逐字同源" "${F1:-x}" "${DBF1:-y}"
+  # G-21c 护栏在真接口上成立：一条空话术都不许落库（空模板能被召回，无触发标签时还给 0.6 基础分）
+  EMPTY_TPL=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND COALESCE(trim(prompt_template),'')='' AND COALESCE(trim(hook_template),'')=''" | tr -d '[:space:]')
+  check "空话术模板零落库（apply.go 宁缺毋空护栏）" 0 "${EMPTY_TPL:-1}"
+  # 覆盖键必须是**消费端读得到的键**且非空壳：GetBoundPackPrompts 只认 persona/system_instruction
+  PROMPT_KEY=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=${PKTID} AND key='pack_prompts_general' AND value LIKE '%persona%'" | tr -d '[:space:]')
+  check "人设写进 pack_prompts_general 且含 persona（不是空壳）" 1 "${PROMPT_KEY:-0}"
+  # flows 落库=节点类型合法（ai_chat 那类引擎不认识的节点会让整段流程永不推进）
+  FLOW_N=$($PSQL "SELECT count(*) FROM flow_definitions WHERE tenant_id=${PKTID} AND left(code, ${#GPFX})='${GPFX}'" | tr -d '[:space:]')
+  [ "${FLOW_N:-0}" -ge 1 ] && check "general 流程已物化进 flow_definitions（≥1）" y y || check "general 流程已物化进 flow_definitions（实际=${FLOW_N:-0}）" y n
+  # tags 落库=tags.json 有 code（旧 auto 包缺 code 时 5 条标签被静默跳过）
+  TAG_N=$($PSQL "SELECT count(*) FROM tags WHERE tenant_id=${PKTID} AND left(code, ${#GPFX})='${GPFX}'" | tr -d '[:space:]')
+  [ "${TAG_N:-0}" -ge 1 ] && check "general 标签已物化（materializeTags 不再静默跳过）" y y || check "general 标签已物化（实际=${TAG_N:-0}）" y n
+
+  # ===== 2) 换包 auto：旧包内容必须被清掉（G-22 缺陷本体）=====
+  R2=$(bindpack "$PKTID" "{\"industry_pack_id\":${AUTO_ID}}")
+  PURGED2=$(echo "$R2" | jsonget "['data']['purged_old_packs']")
+  check "换 auto 时报出 purged_old_packs=1" 1 "${PURGED2:-0}"
+  LEFT_GEN=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND left(id, ${#GPFX})='${GPFX}'" | tr -d '[:space:]')
+  check "旧包 general 模板已清（换包≠加包，旧话术不得留在召回池）" 0 "${LEFT_GEN:-1}"
+  LEFT_GEN_CFG=$($PSQL "SELECT count(*) FROM system_configs WHERE tenant_id=${PKTID} AND key IN ('pack_prompts_general','pack_params_general','pack_mindset_general')" | tr -d '[:space:]')
+  check "旧包三个覆盖键已清（空壳键会永久遮蔽系统层）" 0 "${LEFT_GEN_CFG:-1}"
+  T2=$(echo "$R2" | jsonget "['data']['templates']")
+  APFX="pk_auto_t${PKTID}_"
+  DBT2=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND left(id, ${#APFX})='${APFX}'" | tr -d '[:space:]')
+  check "新包 auto 模板已落库且与响应同源" "${T2:-x}" "${DBT2:-y}"
+
+  # ===== 3) 反向：同集合内叠加企业包，不许把刚绑的行业包清掉 =====
+  R3=$(bindpack "$PKTID" "{\"industry_pack_id\":${AUTO_ID},\"enterprise_pack_id\":${ROX_ID}}")
+  PURGED3=$(echo "$R3" | jsonget "['data']['purged_old_packs']")
+  check "叠加企业包时 purged_old_packs=0（keep 内的包一行不许少）" 0 "${PURGED3:-1}"
+  RPFX="pk_auto_rox_t${PKTID}_"
+  ROX_T=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND left(id, ${#RPFX})='${RPFX}'" | tr -d '[:space:]')
+  [ "${ROX_T:-0}" -ge 1 ] && check "企业包内容叠加成功（auto_rox 模板≥1）" y y || check "企业包内容叠加成功（实际=${ROX_T:-0}）" y n
+  AUTO_STILL=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${PKTID} AND left(id, ${#APFX})='${APFX}'" | tr -d '[:space:]')
+  [ "${AUTO_STILL:-0}" -ge 1 ] && check "行业包 auto 内容未被波及" y y || check "行业包 auto 内容未被波及（实际=${AUTO_STILL:-0}）" y n
+
+  # ===== 4) reapply：存量租户吃到新版的唯一通道 =====
+  # 先把绑定行的版本改脏（模拟"租户停在旧版"），再让服务端按 code 取最新可用版本刷回来
+  $PSQL "UPDATE tenant_pack_bindings SET applied_version='0.0.1' WHERE tenant_id=${PKTID}" >/dev/null 2>&1
+  R4=$(reapplypack "$PKTID")
+  FROMV=$(echo "$R4" | jsonget "['data']['from_version']")
+  TOV=$(echo "$R4" | jsonget "['data']['to_version']")
+  check "reapply 如实回显 from_version=脏写的旧值" 0.0.1 "${FROMV:-x}"
+  LATEST=$($PSQL "SELECT version FROM industry_packs WHERE code='auto' AND pack_level='industry' AND status='active' ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+  check "reapply 取到的是**最新版**（id DESC 口径，非最旧行）" "${LATEST:-x}" "${TOV:-y}"
+  APPLIED=$($PSQL "SELECT applied_version FROM tenant_pack_bindings WHERE tenant_id=${PKTID}" | tr -d '[:space:]')
+  check "reapply 后绑定行版本已回写" "${TOV:-x}" "${APPLIED:-y}"
+  # G-22 缺陷回归：auto 同 code 下曾并存"1.0.0 被误标 enterprise"+"1.1.0 industry"两行 active，
+  # 旧实现 First() 取最旧行 → 层级检查恒拒 → 默认落包与注册即时落包从没为任何租户物化过内容
+  # （现场：5 条 auto 绑定、物化产物 0 行）。这里断"取到的那行确实是 industry 级"。
+  TOV_LEVEL=$($PSQL "SELECT pack_level FROM industry_packs WHERE code='auto' AND version='${TOV}' AND status='active' ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+  check "reapply 目标版本层级为 industry（误标旧行不再遮蔽新版本）" industry "${TOV_LEVEL:-x}"
+
+  # ===== 5) 审计留痕：谁把这家租户的话术层换掉了 =====
+  AUDIT_BIND=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_bind'" | tr -d '[:space:]')
+  check "三次换包各留一条 super_pack_bind 审计" 3 "${AUDIT_BIND:-0}"
+  AUDIT_RE=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_reapply'" | tr -d '[:space:]')
+  check "reapply 留一条 super_pack_reapply 审计" 1 "${AUDIT_RE:-0}"
+  AUDIT_FROMTO=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_reapply' AND detail LIKE '%0.0.1%'" | tr -d '[:space:]')
+  check "审计 detail 带 from 版本（内容覆盖式写入无历史行，detail 是唯一凭据）" 1 "${AUDIT_FROMTO:-0}"
+  # G-22(2026-09-25)：detail 里企业层版本曾恒写空串（参数取了不用），于是"那次的企业层是哪一个
+  # 版本"这个问题没有答案——两级版本必须都进凭据，否则换包审计只能证明"换过"，不能证明"换成什么"。
+  ENT_LATEST=$($PSQL "SELECT version FROM industry_packs WHERE code='auto_rox' AND pack_level='enterprise' AND status='active' ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')
+  AUDIT_ENT=$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_reapply' AND detail LIKE '%\"auto_rox ${ENT_LATEST}\"%'" | tr -d '[:space:]')
+  check "审计 detail 带企业层版本（两级版本写全才是可核对的凭据）" 1 "${AUDIT_ENT:-0}"
+
+  # ===== 6) 鉴权与入参负向：超管面不得裸奔、错层级不得半落库 =====
+  C401=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${AUTO_ID}}")
+  check "未登录换包→401" 401 "$C401"
+  C403=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Authorization: Bearer $STOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${AUTO_ID}}")
+  check "非超管（sales）换包→403" 403 "$C403"
+  C404=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/99999999/pack/bind" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${AUTO_ID}}")
+  check "目标租户不存在→404（绝不往不存在的 tenant_id 物化孤儿内容）" 404 "$C404"
+  C400A=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${ROX_ID}}")
+  check "industry_pack_id 传企业包→400" 400 "$C400A"
+  C400B=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${AUTO_ID},\"enterprise_pack_id\":${AUTO_ID}}")
+  check "enterprise_pack_id 传行业包→400" 400 "$C400B"
+  # 层级/父子不匹配的拒绝必须是**只拒不动**：绑定行还停在 auto+auto_rox，内容一行没少
+  C400C=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${GEN_ID},\"enterprise_pack_id\":${ROX_ID}}")
+  check "企业包 parent 与所选行业不匹配→400" 400 "$C400C"
+  STILL=$($PSQL "SELECT pack_code FROM tenant_pack_bindings WHERE tenant_id=${PKTID}" | tr -d '[:space:]')
+  check "被拒的换包没改绑定行（错层级拒绝只拒不动）" auto "${STILL:-x}"
+  C400D=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKTID}/pack/bind" -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}')
+  check "缺 industry_pack_id→400" 400 "$C400D"
+  C404R=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${PKNBID}/pack/reapply" -H "Authorization: Bearer $TOKEN")
+  check "未绑定包的租户 reapply→404（不猜它该绑什么）" 404 "$C404R"
+
+  # ===== 6.5) G-22c 档位门槛在**真实上架包**上的两半：租户自助硬拒 / 超管越档放行且留痕 =====
+  # §四十用合成包行钉门禁分支（不依赖 keys/，CI 也跑）；这一段补的是只有真包才走得到的那半边：
+  # 超管越档会真的物化成功，于是 super_pack_tier_override 审计这条"后门留痕"才可测。
+  # 位置不能提前——这里会多写一条 super_pack_bind 审计与一份 auto 内容，第 5 步的
+  # "三次换包各留一条"与第 3 步的叠加断言都会红。
+  TIERPUT=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/${AUTO_ID}/tier" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":"enterprise"}')
+  check "给真实 auto 包设企业档门槛→200" 200 "${TIERPUT:-x}"
+  # 租户自助侧：个人版合成租户绑这只包必须硬拒，且绑定行一动不动
+  TB_BODY=$(curl -s -m 20 -X POST "$B/api/v1/admin/packs/bind" -H "Authorization: Bearer $TOKEN" \
+    -H "X-Tenant-ID: ${PKTID}" -H "Content-Type: application/json" -d "{\"industry_pack_id\":${AUTO_ID}}")
+  check "个人版租户自助绑企业档真包→403" 403 "$(printf '%s' "$TB_BODY" | jsonget "['code']" 2>/dev/null)"
+  check "真包拒绝同样回 error_code=pack_tier_denied" pack_tier_denied "$(printf '%s' "$TB_BODY" | jsonget "['error_code']" 2>/dev/null)"
+  STILL_TIER=$($PSQL "SELECT pack_code FROM tenant_pack_bindings WHERE tenant_id=${PKTID}" | tr -d '[:space:]')
+  check "被档位拒后绑定行仍是 auto（自助侧只拒不动）" auto "${STILL_TIER:-x}"
+  # 平台侧例外照旧放行：线下谈成的试点开通不能被档位挡，但必须留下越档凭据
+  SUPER_TIER=$(bindpack "$PKTID" "{\"industry_pack_id\":${AUTO_ID}}")
+  check "超管越档绑企业档真包→code=0（例外通道不被档位拦）" 0 "$(printf '%s' "$SUPER_TIER" | jsonget "['code']" 2>/dev/null)"
+  check "越档留一条 super_pack_tier_override 审计（后门不留痕＝门禁被悄悄掏空）" 1 \
+    "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_tier_override'" | tr -d '[:space:]')"
+  check "越档审计写全三方：包门槛/租户档位/原因（事后能回答「是谁把企业档包给个人版开的」）" 1 \
+    "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=${PKTID} AND action='super_pack_tier_override' AND detail LIKE '%pack_tier_required%' AND detail LIKE '%\"tenant_tier\":\"personal%'" | tr -d '[:space:]')"
+  # 门槛必须还原：把真实 auto 包留在"仅企业版可绑"上，等于悄悄关掉所有个人版租户的默认落包
+  curl -s -m 15 -o /dev/null -X PUT "$B/api/v1/super/packs/${AUTO_ID}/tier" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":""}'
+  check "本段把真实包门槛还原为空串（不给生产留隐形开关）" "" "$($PSQL "SELECT coalesce(min_tier,'<NULL>') FROM industry_packs WHERE id=${AUTO_ID}" | tr -d '[:space:]')"
+  $PSQL "DELETE FROM tenant_audit_logs WHERE resource='industry_pack:${AUTO_ID}' AND action='super_pack_tier';" >/dev/null 2>&1
+  check "本段设档动作的平台审计已回收（真实包不被冒烟留下脏门槛记录）" 0 \
+    "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE resource='industry_pack:${AUTO_ID}' AND action='super_pack_tier'" | tr -d '[:space:]')"
+
+  # ===== 6.6) G-24(2026-09-25) 演示数据绑定：种子声明的包族必须真落在演示租户身上 =====
+  # 这条链没有任何 HTTP 入口（跑在启动期的装配 goroutine 里），坏了也不回错，只让演示租户
+  # 拿着空壳或错包去做演示。本机实锤的坏状态就是：binding=auto v1.1.0 而 pk_auto_t1_ 前缀
+  # 零模板——"有绑定行、无内容"这种行还会让默认落包按「已绑过」永远跳过它，租户被一行假记录锁死。
+  # 所以这一段全部往数据层钉：先证明租户在、绑定在，再证明该包前缀下真有内容行。
+  DEMO_TID=$($PSQL "SELECT id FROM tenants WHERE code='default'" | tr -d '[:space:]')
+  check "演示租户 code=default 存在（seedTenants 建的那一个）" 1 "$($PSQL "SELECT count(*) FROM tenants WHERE code='default'" | tr -d '[:space:]')"
+  DEMO_BIND_N=$($PSQL "SELECT count(*) FROM tenant_pack_bindings WHERE tenant_id=${DEMO_TID:-0}" | tr -d '[:space:]')
+  check "演示租户恰有一条包绑定（tenant_id 有唯一索引，多行＝索引没建成）" 1 "${DEMO_BIND_N:-0}"
+  DEMO_PACK=$($PSQL "SELECT pack_code FROM tenant_pack_bindings WHERE tenant_id=${DEMO_TID:-0}" | tr -d '[:space:]')
+  DEMO_ENTC=$($PSQL "SELECT coalesce(enterprise_code,'') FROM tenant_pack_bindings WHERE tenant_id=${DEMO_TID:-0}" | tr -d '[:space:]')
+  [ -n "$DEMO_PACK" ] && check "演示租户绑到了行业包（pack_code 非空）" y y || check "演示租户绑到了行业包（实际空＝启动落包链没跑或包没上架）" y n
+  # 空壳判据与 Go 侧 packAppliedContentExists 同一口径：模板/卖点按 id 前缀、标签/流程按 code 前缀
+  # （\_ 是把 LIKE 里的单字符通配转成字面下划线，否则 pk_auto_t1 会连上 pk_autoXt1 这类行）
+  DEMO_CONTENT=$($PSQL "SELECT (SELECT count(*) FROM templates WHERE tenant_id=${DEMO_TID:-0} AND id LIKE 'pk\\_${DEMO_PACK}\\_t${DEMO_TID}\\_%')
+                           + (SELECT count(*) FROM features WHERE tenant_id=${DEMO_TID:-0} AND id LIKE 'pk\\_${DEMO_PACK}\\_t${DEMO_TID}\\_%')
+                           + (SELECT count(*) FROM tags WHERE tenant_id=${DEMO_TID:-0} AND code LIKE 'pk\\_${DEMO_PACK}\\_t${DEMO_TID}\\_%')
+                           + (SELECT count(*) FROM flow_definitions WHERE tenant_id=${DEMO_TID:-0} AND code LIKE 'pk\\_${DEMO_PACK}\\_t${DEMO_TID}\\_%')" | tr -d '[:space:]')
+  [ "${DEMO_CONTENT:-0}" -gt 0 ] && check "演示租户的绑定不是空壳（${DEMO_PACK} 前缀下有 ${DEMO_CONTENT} 行内容）" y y \
+    || check "演示租户的绑定不是空壳（${DEMO_PACK} 前缀下零行＝那行绑定是假的，sweep 会永久跳过它）" n y
+  if [ -n "$DEMO_ENTC" ]; then
+    DEMO_ENT_CONTENT=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${DEMO_TID:-0} AND id LIKE 'pk\\_${DEMO_ENTC}\\_t${DEMO_TID}\\_%'" | tr -d '[:space:]')
+    [ "${DEMO_ENT_CONTENT:-0}" -gt 0 ] && check "企业包 ${DEMO_ENTC} 也真物化（两级都落地才算落对）" y y \
+      || check "企业包 ${DEMO_ENTC} 也真物化（绑定写了企业码却没有内容行）" n y
+  else
+    # 存量库的这一格是刻意的：BindSeedDemoTenantPack 不越权改写"已有内容"的绑定，
+    # 企业层缺了就必须在启动日志里点名，让人去做那个动作——静默不补才是缺陷。
+    DEMO_WARN=$(grep -c "缺企业包" "${PROJECT_ROOT}/ai-scrm.log" 2>/dev/null || true)
+    if [ -f "${PROJECT_ROOT}/ai-scrm.log" ]; then
+      [ "${DEMO_WARN:-0}" -gt 0 ] && check "演示租户缺企业层时启动日志点名（不静默）" y y || check "演示租户缺企业层但启动日志没点名" n y
+    else
+      echo "  SKIP  企业层缺失点名断言（本机 ai-scrm.log 不在场，stdout 未落到该文件）"
+    fi
+  fi
+
+  # ===== 7) 现场回收：包内容/绑定/审计/租户全清，且 acme 那家没被碰 =====
+  $PSQL "DELETE FROM templates WHERE tenant_id=${PKTID};
+         DELETE FROM features WHERE tenant_id=${PKTID};
+         DELETE FROM tags WHERE tenant_id=${PKTID};
+         DELETE FROM flow_definitions WHERE tenant_id=${PKTID};
+         DELETE FROM system_configs WHERE tenant_id=${PKTID} AND key LIKE 'pack_%';
+         DELETE FROM tenant_pack_bindings WHERE tenant_id=${PKTID};
+         DELETE FROM tenant_audit_logs WHERE tenant_id=${PKTID};
+         DELETE FROM tenants WHERE id=${PKTID};
+         DELETE FROM tenants WHERE id=${PKNBID:-0};" >/dev/null 2>&1
+  PKLEFT=$($PSQL "SELECT (SELECT count(*) FROM templates WHERE tenant_id=${PKTID})
+                        + (SELECT count(*) FROM features WHERE tenant_id=${PKTID})
+                        + (SELECT count(*) FROM system_configs WHERE tenant_id=${PKTID} AND key LIKE 'pack_%')
+                        + (SELECT count(*) FROM tenant_pack_bindings WHERE tenant_id=${PKTID})
+                        + (SELECT count(*) FROM tenants WHERE id IN (${PKTID},${PKNBID:-0}))" | tr -d '[:space:]')
+  check "换包段合成内容已清零（含 404 对照租户）" 0 "${PKLEFT:-1}"
+  ACME_LEFT=$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${ACME_ID}" | tr -d '[:space:]')
+  check "对照租户 acme 模板数换包前后不变（种子内容未被波及）" "${ACME_TPL_BEFORE:-x}" "${ACME_LEFT:-y}"
+fi
 
 echo "---- 十二、商业化资金安全与契约回归（2026-09-11 修复批次） ----"
 # A2/G-13：chat/guest 响应收口 RespOK 信封——customer_id/visitor_key 必须在 data 下
@@ -650,16 +904,24 @@ print('y' if 'paths' in d and 'code' not in d else 'n')" 2>/dev/null)"
 echo "---- 二十六、2026-09-20 审计批 P1-3：公开面 IP/Key 限流护栏 ----"
 # 各面连打超限必 429（本段刻意放在最后：打爆的是各自独立桶，且其后脚本不再触这些端点；
 # 60s 窗口自然重置，勿在其它脚本前置依赖这些端点）
-KNOW_LAST=""
+#
+# ⚠ 2026-09-25 欠账批修断言自伤：旧写法只断"第 65 发的状态码 == 429"。限流窗口是
+#   **「首请求 + TTL」而不是自然分钟**，而这一串 curl 是打真实接口的——机器负载高时
+#   单发能到 ~1s，65 发跨过 60s 边界，窗口在循环中途重置、最后一发又放回 200，
+#   于是护栏红在一次**完全正常的限流行为**上（实测红过一次，产品侧无任何问题）。
+#   正确判据是"这一串里 429 出现过且不止一次"——限流器真生效就必然累计到，
+#   跨不跨边界都不影响结论；阈值取 4（配额 60、连打 65，同窗满打是 5 次，留一次抖动余量）。
+#   与 smoke_chat_identity §10 同一口径（那里连打 35 次断"429 累计 ≥4 次"）。
+know429=0
 for i in $(seq 1 65); do
-  KNOW_LAST=$(curl -s -o /dev/null -w '%{http_code}' "$B/api/v1/knowledge/brands?tenant_id=1")
+  [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/api/v1/knowledge/brands?tenant_id=1")" = "429" ] && know429=$((know429+1))
 done
-check "knowledge 连打65次超限(429)" 429 "$KNOW_LAST"
-COLL_LAST=""
+check "knowledge 连打65次触发限流(429 累计≥4)" y "$( [ "$know429" -ge 4 ] && echo y || echo n )"
+coll429=0
 for i in $(seq 1 305); do
-  COLL_LAST=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key" -d '[]')
+  [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key" -d '[]')" = "429" ] && coll429=$((coll429+1))
 done
-check "collector 连打305次超限(429)" 429 "$COLL_LAST"
+check "collector 连打305次触发限流(429 累计≥4)" y "$( [ "$coll429" -ge 4 ] && echo y || echo n )"
 # collector 限流按 Key 维度：换 Key 不受上一个桶影响（回落放行至鉴权层 401）
 COLL_B=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$B/api/v1/collector" -H "Content-Type: application/json" -H "X-Collector-Key: rl_probe_key_other" -d '[]')
 check "collector 换Key不误伤(401未授权而非429)" 401 "$COLL_B"
@@ -2253,16 +2515,22 @@ $PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
    VALUES ('检索靶子${QS_TS}甲', '${QS_CA}', 'personal', 'active', NOW(), NOW()),
           ('检索靶子${QS_TS}乙', '${QS_CB}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
 QS_A=$($PSQL "SELECT id FROM tenants WHERE code='${QS_CA}'" 2>/dev/null | tr -d '[:space:]')
-# 对照用「最旧一家」：它必然不在 page_size=1 的首页。缺了这条前提，下面"q=ID 命中"
-# 会在一家本来看得见的租户上假绿——护栏空转。
-QS_OLD=$($PSQL "SELECT min(id) FROM tenants" 2>/dev/null | tr -d '[:space:]')
+# 对照用「首页之外的老租户」：它必然不在 page_size=20（代管下拉的取数量）的首页。
+# 缺了这条前提，下面"q=ID 命中"会在一家本来看得见的租户上假绿——护栏空转。
+#
+# 为什么取"最小的四位数 ID"而不是 min(id)=1（第一版的写法，2026-09-24 自伤修正）：
+# q 是"ID 精确 + 名称/编码模糊"两条腿，q=1 会模糊命中 106 家（名字里带 1 的都算），
+# 而目标那家最老、排在 id DESC 末尾，page_size 硬顶 100 → 目标**被分页切在第 101 名之后**，
+# 断言就在"搜得回来"和"这一页装得下"之间混了两件事。四位数以上 ID 几乎不会出现在
+# 名称/编码里（本机实测 13049 命中恰 1 家），模糊腿不再放大结果集，断言只测 ID 腿。
+QS_OLD=$($PSQL "SELECT min(id) FROM tenants WHERE id >= 1000" 2>/dev/null | tr -d '[:space:]')
 
-QS_PAGE1=$(curl -s "$B/api/v1/super/tenants?page_size=1" -H "Authorization: Bearer $TOKEN")
-check "首页只有1家时最旧租户看不见(本段对照前提)" 0 "$(printf '%s' "$QS_PAGE1" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
+QS_PAGE1=$(curl -s "$B/api/v1/super/tenants?page_size=20" -H "Authorization: Bearer $TOKEN")
+check "首页20家看不见最老那几家(本段对照前提)" 0 "$(printf '%s' "$QS_PAGE1" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
 # 纯数字关键字走 ID 精确 + 名称/编码模糊两条腿（"搜 2024" 也要命中"2024旗舰店"），
 # 所以这里断的是"那一家在结果里、且只出现一次"，而不是"结果只有它"——后者是口径写错不是缺陷。
 QS_BYID=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "page_size=100" --data-urlencode "q=${QS_OLD}" -H "Authorization: Bearer $TOKEN")
-check "q=租户ID 能把首页之外的最旧一家搜回来" 1 "$(printf '%s' "$QS_BYID" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
+check "q=租户ID 能把首页之外的老租户搜回来" 1 "$(printf '%s' "$QS_BYID" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
 # 名称/编码模糊：下拉里显示的是「名称（编码）」，两个都得搜得动
 QS_BYNAME=$(curl -sG "$B/api/v1/super/tenants" --data-urlencode "q=检索靶子${QS_TS}" -H "Authorization: Bearer $TOKEN")
 check "q=名称片段 命中恰两家" 2 "$(printf '%s' "$QS_BYNAME" | jsonget "['data']['total']")"
@@ -2278,6 +2546,288 @@ check "q=超出整型范围的数字不报5xx" 200 "$(curl -s -o /dev/null -w '%
 check "未登录搜租户判 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -G "$B/api/v1/super/tenants" --data-urlencode "q=${QS_CA}")"
 $PSQL "DELETE FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}');" >/dev/null 2>&1
 check "本段靶子租户已清零" 0 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}')" 2>/dev/null | tr -d '[:space:]')"
+
+echo "---- 三十九、MQ 事件审计两段台账：发布腿与消费腿必须落在同一行（G-15 观测面真实性）----"
+# 起因（2026-09-24 欠账批二）：`message_event_records` 过去只有**发布腿**写库（status='sent'），
+# 消费结果从来不回写。这张表能告诉运维的只有一件事——"我们发过这条消息"；至于是不是有人处理了、
+# 重试了几次、错在哪一条，全都不知道，"死信 0 条"实际是"根本没数过"。更糟的是清理器按 created_at
+# 一刀切，把唯一一份"没被消费掉"的证据也在保留期后删掉。本段钉三段真实链路：
+#   ① 迁移 025 把 trace_id / err_msg / updated_at 与两条索引落到实存；
+#   ② 一次真事件（公开 /chat/guest 发 guest_created）从发布走到终态 consumed，
+#      且台账里的 trace_id 与请求头 X-Trace-ID 逐字相同——入口→队列→台账是一根线，不是各写各的；
+#   ③ 观测位 mq_dead_letters 只在 /status/detail 出，公开 /status 零泄露。
+# 清理器行为（死信不被删）刻意不在本段模拟：它是 main.go 的内部 ticker，没有 HTTP 触发端点，
+# 硬造一个"立即清理"接口等于给线上留一个删审计数据的按钮。该状态机由
+# internal/service/mq_cleanup_test.go 的 3 例覆盖（含"显式配了保留天数才删"的逃生阀用例）。
+MQT_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='025_mq_event_audit_trace'" 2>/dev/null | tr -d '[:space:]')
+check "迁移025已登记版本账本" 1 "${MQT_MIG:-0}"
+# 三列 + 两条索引实存（缺 trace_id 或 err_msg，回写就是静默丢数据而不是报错）
+MQT_COLS=$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_name='message_event_records' AND column_name IN ('trace_id','err_msg','updated_at')" 2>/dev/null | tr -d '[:space:]')
+check "台账三列(trace_id/err_msg/updated_at)齐备" 3 "${MQT_COLS:-0}"
+check "trace 索引实存(按 trace 反查一条事件的完整链路)" 1 "$($PSQL "SELECT count(*) FROM pg_indexes WHERE indexname='idx_mq_event_records_trace'" 2>/dev/null | tr -d '[:space:]')"
+# 死信索引必须是**部分**索引：全表索引会把海量 consumed 行也塞进去，而这句查询只在盯死信时跑
+MQT_DEADIDX=$($PSQL "SELECT count(*) FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname='idx_mq_event_records_dead' AND i.indpred IS NOT NULL" 2>/dev/null | tr -d '[:space:]')
+check "死线索引是部分索引(WHERE status=dead_letter)" 1 "${MQT_DEADIDX:-0}"
+
+# —— ②真事件回环：先用一条公开、免鉴权、不烧 AI 的链路发出 guest_created
+MQT_TR="smokemq$(date +%s)$RANDOM"
+MQT_RESP=$(curl -s -X POST "$B/api/v1/chat/guest" -H "Content-Type: application/json" \
+  -H "X-Trace-ID: $MQT_TR" -d '{"channel":"web","device":"smoke-mq-audit"}')
+MQT_CID=$(printf '%s' "$MQT_RESP" | jsonget "['data']['customer_id']")
+# 前置自检：拿不到客户 ID 就没发生发布，后面所有等式都会在"0 行 == 0 行"上假绿
+check "guest_created 靶事件已发出(本段前置自检)" 1 "$([ -n "${MQT_CID:-}" ] && echo 1 || echo 0)"
+# 消费是异步的（LogCenter 每事件一 goroutine + 最多 3 次重试），轮询等终态而不是固定 sleep
+MQT_ONE="c:${MQT_CID}"
+MQT_STATUS="sent"
+for _i in 1 2 3 4 5 6 7 8 9 10; do
+  MQT_STATUS=$($PSQL "SELECT status FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+  [ "$MQT_STATUS" != "sent" ] && [ -n "$MQT_STATUS" ] && break
+  sleep 1
+done
+check "台账行存在(发布腿确实落了库)" 1 "$($PSQL "SELECT count(*) FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created'" 2>/dev/null | tr -d '[:space:]')"
+# 这一条才是 G-15 的本体：旧实现永远停在 sent，"有台账"看着绿、其实第二段从没写过
+check "发布→消费终态回写为 consumed(不再停在 sent)" consumed "${MQT_STATUS:-空}"
+check "发布腿与消费腿共用同一行(终态不补建第二条)" 1 "$($PSQL "SELECT count(*) FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created'" 2>/dev/null | tr -d '[:space:]')"
+# trace 逐字相同：入口 X-Trace-ID → 信封 → 台账列，中间任何一处换成都让这条断言红
+check "台账 trace_id 等于请求头 X-Trace-ID" "$MQT_TR" "$($PSQL "SELECT trace_id FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')"
+# consumed 行不留旧错文：上一轮失败原因必须在终态时被清掉，否则运维看到的是"成功但带错误"
+check "consumed 行 err_msg 已清空" 0 "$($PSQL "SELECT count(*) FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created' AND coalesce(err_msg,'')<>''" 2>/dev/null | tr -d '[:space:]')"
+# updated_at 真被写过（终态回写用的是同一行的 UPDATE，行新建时它等于 created_at，故只判非空）
+check "终态回写留下 updated_at 时间戳" 1 "$($PSQL "SELECT count(*) FROM message_event_records WHERE one_id='${MQT_ONE}' AND event_type='guest_created' AND updated_at IS NOT NULL" 2>/dev/null | tr -d '[:space:]')"
+
+# —— ③观测位：/status/detail 有 mq_dead_letters，公开 /status 一个字的清单都不给
+HT=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+MQT_DETAIL=$(curl -s -H "X-Health-Token: $HT" "$B/status/detail")
+check "/status/detail 直出 mq_dead_letters 观测位" 0 "$(printf '%s' "$MQT_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);print(0 if 'mq_dead_letters' in d.get('data',{}) else 1)" 2>/dev/null)"
+# 0 现在有含义：它是"查过一次、确实没有"，而不是"这块没接线所以不出现"
+check "死信计数取到真值(0/正整数，不是 null)" y "$(printf '%s' "$MQT_DETAIL" | python3 -c "import sys,json;d=json.load(sys.stdin);v=d.get('data',{}).get('mq_dead_letters');print('y' if isinstance(v,int) and v>=0 else 'n')" 2>/dev/null)"
+check "公开 /status 不含死信清单(反泄露)" 0 "$(curl -s "$B/status" | grep -c "mq_dead_letters")"
+
+# —— 自清理：靶事件行与靶客户一起删，别给 D2 贡献度看板留孤儿行
+$PSQL "DELETE FROM message_event_records WHERE one_id='${MQT_ONE}';
+       DELETE FROM messages WHERE customer_id=${MQT_CID};
+       DELETE FROM conversations WHERE customer_id=${MQT_CID};
+       DELETE FROM customers WHERE id=${MQT_CID};" >/dev/null 2>&1
+check "本段靶事件与靶客户已清零" 0 "$($PSQL "SELECT count(*) FROM message_event_records WHERE one_id='${MQT_ONE}'" 2>/dev/null | tr -d '[:space:]')"
+check "本段靶客户已清零" 0 "$($PSQL "SELECT count(*) FROM customers WHERE id=${MQT_CID}" 2>/dev/null | tr -d '[:space:]')"
+
+echo "---- 四十、行业包档位门槛：列表标注与写侧拒绝必须同源（G-22c 泛行业换包入口）----"
+# 起因（2026-09-25 欠账批三）：G-21/G-22 把包内容质量与换包链路修通之后，剩下的洞是
+# **"谁能绑哪个包"**。旧行为是 GET /admin/packs 把全部 active 包原样摊给任何租户，
+# 绑定侧一个字都不查档位——个人版租户在下拉里看得见企业级行业包，点一下就把没付费的
+# 内容物化成自己租户的模板/标签/流程（现场表现是"没买的东西也生效了"，且事后无从追责）。
+# 本段钉五件事：
+#   ① 设档入口 PUT /super/packs/:id/tier 真写字段、脏值只拒不动、动作留平台审计、鉴权边界在；
+#   ② 列表**标注**而非隐藏（tier_locked/tier_reason/min_tier 三字段），存量包 min_tier='' 一律不误拦；
+#   ③ 写侧三条自助入口（行业级、企业级、部门级）在同一判据上硬拒 403 + 稳定码 + reason，且只拒不动；
+#   ④ 超管代客换包**故意不受档位拦**（这是有意的平台能力，要钉住，防后人"顺手"补一道门禁）；
+#   ⑤ 两侧同源用结构断言收口：同一租户同一份列表里，标 locked 的包逐个打 bind，
+#      403 的次数必须**恰好等于** locked 的行数——多一次是误拦，少一次是"界面拦不住接口"。
+# 门禁刻意放在 openActivePack **之前**（见 packTierBlocked 注释）：CI 无 keys/ 时开包必失败，
+# 放在后面这一整段就只能 SKIP。本段全部断言不依赖签名密钥，是真跑。
+TIER_SUF="$$"
+TIER_TP="smoke_tier_p_${TIER_SUF}"   # 个人版：越档应被拒
+TIER_TE="smoke_tier_e_${TIER_SUF}"   # 企业版：够档应放行
+TIER_TU="smoke_tier_u_${TIER_SUF}"   # tier='' 脏档位：判据 fail-closed，连它一起拒
+$PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+       VALUES ('档位冒烟-个人', '${TIER_TP}', 'personal', 'active', NOW(), NOW()),
+              ('档位冒烟-企业', '${TIER_TE}', 'enterprise', 'active', NOW(), NOW()),
+              ('档位冒烟-脏档', '${TIER_TU}', '', 'active', NOW(), NOW());" >/dev/null 2>&1
+TID_P=$($PSQL "SELECT id FROM tenants WHERE code='${TIER_TP}'" | tr -d '[:space:]')
+TID_E=$($PSQL "SELECT id FROM tenants WHERE code='${TIER_TE}'" | tr -d '[:space:]')
+TID_U=$($PSQL "SELECT id FROM tenants WHERE code='${TIER_TU}'" | tr -d '[:space:]')
+
+# tiermk <code> <level> <parent_code> <min_tier> —— file_path 指向不存在的路径是故意的：
+# 反向用例（够档/无门槛）要越过 403 之后仍**不真物化**，让开包自己回 400，
+# 这样本段既证明了"门禁能放行"，又不会往库里落下合成包的内容。
+tiermk() {
+  $PSQL "INSERT INTO industry_packs (code,name,industry,version,pack_level,parent_code,status,
+                                     file_name,file_path,file_size,content_sha256,uploaded_by,
+                                     created_at,updated_at,min_tier)
+         VALUES ('$1','档位冒烟包','smoke','1.0.0','$2','$3','active',
+                 '$1.aipack','/nonexistent/smoke_tier/$1.aipack',1,'abc',1,NOW(),NOW(),'$4');" >/dev/null 2>&1
+}
+TIER_P0="smoke_tk_none_${TIER_SUF}"  # 行业级·无门槛＝存量包现状
+TIER_P1="smoke_tk_ent_${TIER_SUF}"   # 行业级·门槛由企业设档接口写（起步为空，先验"不设门槛"）
+TIER_P2="smoke_tk_bad_${TIER_SUF}"   # 行业级·min_tier='gold'：写入口拒脏值，只能直插＝纯脏数据场景
+TIER_P3="smoke_tk_entp_${TIER_SUF}"  # 企业级（部门包的父，不设门槛）
+TIER_P4="smoke_tk_dept_${TIER_SUF}"  # 部门级·门槛 custom（企业版租户越的就是这一档）
+tiermk "$TIER_P0" industry '' ''
+tiermk "$TIER_P1" industry '' ''
+tiermk "$TIER_P2" industry '' 'gold'
+tiermk "$TIER_P3" enterprise "$TIER_P1" ''
+tiermk "$TIER_P4" department "$TIER_P3" 'custom'
+TP0=$($PSQL "SELECT id FROM industry_packs WHERE code='${TIER_P0}'" | tr -d '[:space:]')
+TP1=$($PSQL "SELECT id FROM industry_packs WHERE code='${TIER_P1}'" | tr -d '[:space:]')
+TP2=$($PSQL "SELECT id FROM industry_packs WHERE code='${TIER_P2}'" | tr -d '[:space:]')
+TP3=$($PSQL "SELECT id FROM industry_packs WHERE code='${TIER_P3}'" | tr -d '[:space:]')
+TP4=$($PSQL "SELECT id FROM industry_packs WHERE code='${TIER_P4}'" | tr -d '[:space:]')
+# 前置自检：靶子必须真在库里。缺这一步，本段所有"库里没行"的断言都会在 0==0 上假绿
+check "档位段三家合成租户已建（前提自检）" 3 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${TIER_TP}','${TIER_TE}','${TIER_TU}')" | tr -d '[:space:]')"
+check "档位段五个合成包行已建（前提自检）" 5 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code IN ('${TIER_P0}','${TIER_P1}','${TIER_P2}','${TIER_P3}','${TIER_P4}')" | tr -d '[:space:]')"
+{ [ -n "$TP0" ] && [ -n "$TP1" ] && [ -n "$TP2" ] && [ -n "$TP3" ] && [ -n "$TP4" ]; } \
+  && check "五个包 ID 全部取到（取不到会让下面的路径自己合出 404 假绿）" y y \
+  || check "五个包 ID 全部取到（TP0=${TP0:-空} TP1=${TP1:-空} TP2=${TP2:-空}）" y n
+
+# 迁移 026：列实存 + 出厂默认值。默认 '' 才是"加门禁等于零行为变化"的根据——
+# 若默认变成 personal，全库存量包会一夜之间只对最低档开放；若是 NULL，判据第一行的
+# `min_tier == ""` 短路失效，所有包都走档位比较。
+check "迁移026 min_tier 列实存" 1 "$($PSQL "SELECT count(*) FROM information_schema.columns WHERE table_name='industry_packs' AND column_name='min_tier'" | tr -d '[:space:]')"
+# 不读 information_schema 的默认值表达式（形如 ''::character varying，比字面量比不动），
+# 改用真插一行来验默认：新包行没写 min_tier 就必须是空串。
+# coalesce 是必要的——psql -tA 下 NULL 与空串都打印成空行，不写出来这条断言分不出二者，
+# 而列一旦退化成 NULL，Go 侧 `MinTier == ""` 的第一行短路就不成立（判据会去比档位）。
+$PSQL "INSERT INTO industry_packs (code,name,version,pack_level,status)
+       VALUES ('smoke_tk_dfl_${TIER_SUF}','档位默认值探针','1.0.0','industry','disabled');" >/dev/null 2>&1
+check "新包行不写 min_tier 时默认为空串（不写=不设门槛，存量包零行为变化的实证；NULL 不算过）" "" \
+  "$($PSQL "SELECT coalesce(min_tier,'<NULL>') FROM industry_packs WHERE code='smoke_tk_dfl_${TIER_SUF}'" | tr -d '[:space:]')"
+check "档位索引实存（超管台按档位筛选/清扫用）" 1 "$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='industry_packs' AND indexname='idx_industry_packs_min_tier'" | tr -d '[:space:]')"
+
+# ===== 1) 设档入口：能写、拒脏、只拒不动、留痕、鉴权边界在 =====
+HTTP_NOAUTH=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/${TP1}/tier" \
+  -H "Content-Type: application/json" -d '{"min_tier":"enterprise"}')
+check "未登录设档→401（新写入口不裸奔）" 401 "${HTTP_NOAUTH:-x}"
+HTTP_SALES_TIER=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/${TP1}/tier" \
+  -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{"min_tier":"enterprise"}')
+check "非超管（sales）设档→403（档位是平台销售口径，不给租户自己抬门槛）" 403 "${HTTP_SALES_TIER:-x}"
+check "被拒的设档没改目录行（鉴权失败同样只拒不动）" "" "$($PSQL "SELECT coalesce(min_tier,'<NULL>') FROM industry_packs WHERE id=${TP1}" | tr -d '[:space:]')"
+TIER_SET=$(curl -s -m 15 -X PUT "$B/api/v1/super/packs/${TP1}/tier" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":"enterprise"}')
+check "超管设档→code=0" 0 "$(printf '%s' "$TIER_SET" | jsonget "['code']" 2>/dev/null)"
+check "设档响应回显 min_tier=enterprise（界面据此即时更新，不必再拉全表）" enterprise "$(printf '%s' "$TIER_SET" | jsonget "['data']['min_tier']" 2>/dev/null)"
+check "设档响应带回包 code（回显对象是那一行，不是布尔）" "${TIER_P1}" "$(printf '%s' "$TIER_SET" | jsonget "['data']['code']" 2>/dev/null)"
+check "设档真的落到目录行（不是只回显）" enterprise "$($PSQL "SELECT min_tier FROM industry_packs WHERE id=${TP1}" | tr -d '[:space:]')"
+# 非法档位名必须挡在写入口：一旦落库，TierRank 返回 -1 → 该包对**所有人**永久不可绑，
+# 而界面上只表现为"这个包谁也选不了"，排查方向会被带偏成权限问题。
+BADQ=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/${TP0}/tier" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":"gold"}')
+check "非法档位名设档→400" 400 "$BADQ"
+check "非法设档被拒后行仍为空串（只拒不动）" "" "$($PSQL "SELECT coalesce(min_tier,'<NULL>') FROM industry_packs WHERE id=${TP0}" | tr -d '[:space:]')"
+MISSQ=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/${TP0}/tier" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{}')
+check "缺 min_tier 字段设档→400（不接受「省略即清除」这种歧义写法，清除必须显式传空串）" 400 "$MISSQ"
+NOIDQ=$(curl -s -m 15 -o /dev/null -w "%{http_code}" -X PUT "$B/api/v1/super/packs/99999999/tier" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":"personal"}')
+check "给不存在的包设档→404" 404 "$NOIDQ"
+# 设档是销售口径的变更（谁把这只包对个人版放开了），必须留痕；平台级动作→tenant_id=0
+check "设档留一条平台级 super_pack_tier 审计（tenant_id=0）" 1 \
+  "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE tenant_id=0 AND action='super_pack_tier' AND resource='industry_pack:${TP1}'" | tr -d '[:space:]')"
+check "审计 detail 写明设成哪一档（覆盖式改字段、无历史行，detail 是唯一凭据）" 1 \
+  "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE resource='industry_pack:${TP1}' AND detail LIKE '%enterprise%'" | tr -d '[:space:]')"
+
+# ===== 2) 列表标注：锁该锁的、绝不误拦无门槛的 =====
+# 回 "id:locked:reason:min_tier"，min_tier 一并取：界面要把"需要升到哪一档"写给人看，
+# 这个字段没随响应下发时，文案只能退化成"需升级套餐"这种没有信息量的话。
+tierlist() { # tierlist <租户ID>
+  curl -s -m 15 "$B/api/v1/admin/packs?level=industry" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: $1" \
+    | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+ids={${TP0},${TP1},${TP2}}
+for r in (d.get('data') or []):
+    if r.get('id') in ids:
+        print('%s:%s:%s:%s' % (r['id'], '1' if r.get('tier_locked') else '0',
+                               r.get('tier_reason') or '', r.get('min_tier') or ''))
+" 2>/dev/null
+}
+TL_P=$(tierlist "$TID_P")
+tierget() { printf '%s\n' "$1" | grep "^$2:" | cut -d: -f"$3"; }
+check "个人版看企业档门槛包：min_tier 逐字下发（界面据此写「需企业版」）" enterprise "$(tierget "$TL_P" "$TP1" 4)"
+check "个人版看企业档门槛包：tier_locked=1" 1 "$(tierget "$TL_P" "$TP1" 2)"
+check "个人版看企业档门槛包：tier_reason=pack_tier_required（按码分支，勿匹配中文）" pack_tier_required "$(tierget "$TL_P" "$TP1" 3)"
+check "个人版看无门槛包：tier_locked=0（存量包不得被误拦——本段最关键的反向用例）" 0 "$(tierget "$TL_P" "$TP0" 2)"
+check "个人版看无门槛包：tier_reason 为空串（不是 null、也不给编一个码）" "" "$(tierget "$TL_P" "$TP0" 3)"
+check "个人版看脏门槛包(gold)：给码 pack_min_tier_invalid 而不是默默放行" pack_min_tier_invalid "$(tierget "$TL_P" "$TP2" 3)"
+TL_E=$(tierlist "$TID_E")
+check "企业版看同一只企业档包：tier_locked=0（够档的不拦，门禁不是恒拒）" 0 "$(tierget "$TL_E" "$TP1" 2)"
+TL_U=$(tierlist "$TID_U")
+check "脏档位(tier='')租户看门槛包：reason=tenant_tier_unknown（判定不建立在猜上）" tenant_tier_unknown "$(tierget "$TL_U" "$TP1" 3)"
+check "脏档位租户看无门槛包仍放行（min_tier='' 在判据第一行短路，租户档位脏也不牵连存量包）" 0 "$(tierget "$TL_U" "$TP0" 2)"
+
+# ===== 3) 写侧硬拒：三条自助入口共用同一判据，且只拒不动 =====
+tierbar() { # tierbar <租户ID> <包ID> -> HTTP 码（响应体落 /tmp/tier_body_$$）
+  curl -s -m 20 -o "/tmp/tier_body_$$" -w "%{http_code}" -X POST "$B/api/v1/admin/packs/bind" \
+    -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: $1" -H "Content-Type: application/json" \
+    -d "{\"industry_pack_id\":$2}"
+}
+tierfield() { python3 -c "import json;print(json.load(open('/tmp/tier_body_$$')).get('$1'))" 2>/dev/null; }
+HTTP_DENY=$(tierbar "$TID_P" "$TP1")
+check "个人版自助绑企业档门槛包→403" 403 "${HTTP_DENY:-x}"
+check "拒绝体带 error_code=pack_tier_denied（前端据此定分级与文案）" pack_tier_denied "$(tierfield error_code)"
+check "拒绝体带 reason=pack_tier_required（同码不同因，靠 reason 分流）" pack_tier_required "$(tierfield reason)"
+check "档位拒绝的租户零绑定行（只拒不动）" 0 "$($PSQL "SELECT count(*) FROM tenant_pack_bindings WHERE tenant_id=${TID_P:-0}" | tr -d '[:space:]')"
+check "档位拒绝的租户零模板行（拒绝发生在物化之前，不许半落库）" 0 "$($PSQL "SELECT count(*) FROM templates WHERE tenant_id=${TID_P:-0}" | tr -d '[:space:]')"
+# 反向：门禁必须能放行，否则"个人版看不见企业包"会退化成"谁都绑不了任何包"。
+# 400 来自合成包那条不存在的文件路径，与档位无关——这一步证明请求已经走过了档位判定。
+HTTP_FREE=$(tierbar "$TID_P" "$TP0")
+check "个人版绑无门槛包：不再回 403（放行腿成立；400 是合成包文件缺失，非档位）" 400 "${HTTP_FREE:-x}"
+HTTP_OKTIER=$(tierbar "$TID_E" "$TP1")
+check "企业版绑企业档门槛包：不 403（够档即放行）" 400 "${HTTP_OKTIER:-x}"
+tierbar "$TID_P" "$TP2" >/dev/null
+check "个人版绑脏门槛包→403 + reason=pack_min_tier_invalid（运维据此知道是数据脏，不是没付费）" pack_min_tier_invalid "$(tierfield reason)"
+tierbar "$TID_U" "$TP1" >/dev/null
+check "脏档位租户自助绑门槛包→403 + reason=tenant_tier_unknown" tenant_tier_unknown "$(tierfield reason)"
+# 部门包这一级曾漏门禁（企业版租户可越档绑定制级部门包）。bind-dept 的档位判定排在
+# "已有企业包绑定 + 部门存在"之后，故先把这两个前提直插到位，请求才真走得到判据处。
+$PSQL "INSERT INTO tenant_pack_bindings (tenant_id,pack_id,pack_code,applied_version,
+                                         enterprise_pack_id,enterprise_code,enterprise_version,
+                                         bound_at,updated_at)
+       VALUES (${TID_E},${TP1},'${TIER_P1}','1.0.0',${TP3},'${TIER_P3}','1.0.0',NOW(),NOW());" >/dev/null 2>&1
+$PSQL "INSERT INTO departments (tenant_id,parent_id,name,path,depth,sort_order,status,created_at,updated_at)
+       VALUES (${TID_E},NULL,'档位冒烟部门','/smoke_tier',1,0,1,NOW(),NOW());" >/dev/null 2>&1
+TIER_DEPT=$($PSQL "SELECT id FROM departments WHERE tenant_id=${TID_E} AND name='档位冒烟部门'" | tr -d '[:space:]')
+check "部门包用例前提已就绪（企业包绑定行 1 + 部门 1）" 2 \
+  "$($PSQL "SELECT (SELECT count(*) FROM tenant_pack_bindings WHERE tenant_id=${TID_E}) + (SELECT count(*) FROM departments WHERE tenant_id=${TID_E})" | tr -d '[:space:]')"
+HTTP_DEPT=$(curl -s -m 20 -o "/tmp/tier_dept_$$" -w "%{http_code}" -X POST "$B/api/v1/admin/packs/bind-dept" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: $TID_E" -H "Content-Type: application/json" \
+  -d "{\"department_id\":${TIER_DEPT:-0},\"pack_id\":$TP4}")
+check "企业版越档绑定制级部门包→403（部门级同样受档位门槛约束）" 403 "${HTTP_DEPT:-x}"
+check "部门包拒绝同样回 pack_tier_denied + pack_tier_required（与行业级同一套码）" "pack_tier_denied pack_tier_required" \
+  "$(python3 -c "import json;d=json.load(open('/tmp/tier_dept_$$'));print(d.get('error_code'),d.get('reason'))" 2>/dev/null)"
+curl -s -m 15 -o /dev/null -X PUT "$B/api/v1/super/packs/${TP4}/tier" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"min_tier":""}'
+HTTP_DEPT2=$(curl -s -m 20 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/admin/packs/bind-dept" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: $TID_E" -H "Content-Type: application/json" \
+  -d "{\"department_id\":${TIER_DEPT:-0},\"pack_id\":$TP4}")
+check "清掉部门包门槛后同一请求不再 403（清除门槛=显式传空串，与列默认同语义）" 400 "${HTTP_DEPT2:-x}"
+
+# ===== 4) 超管代客换包：故意不受档位拦 =====
+# 这一条钉的是**口径**而不是行为：销售线下谈好的例外、给试点客户预先开通高门槛包，
+# 都是平台侧必须能做的动作；租户自助入口（TenantPackBind）才是硬拒。
+# 越档审计 super_pack_tier_override 要开包成功才写得进，CI 无 keys/ 时结构性不可达，
+# 那条断言归 §十一 Tier 2（keys 门内）；本段只钉"不被 403 拦住"这半边。
+HTTP_SUPER=$(curl -s -m 25 -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/tenants/${TID_P}/pack/bind" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d "{\"industry_pack_id\":$TP1}")
+check "超管给个人版租户绑企业档包不回 403（平台例外是有意能力，勿顺手补门禁）" 400 "${HTTP_SUPER:-x}"
+
+# ===== 5) 两侧同源（结构断言）：列表标几个 locked，写侧就拒几次，不多不少 =====
+LOCKED_N=0; UNLOCKED_N=0; DENY_N=0; ALLOW_N=0
+for line in $TL_P; do
+  rid=$(printf '%s' "$line" | cut -d: -f1)
+  lock=$(printf '%s' "$line" | cut -d: -f2)
+  code=$(tierbar "$TID_P" "$rid")
+  if [ "$lock" = "1" ]; then
+    LOCKED_N=$((LOCKED_N+1))
+    [ "$code" = "403" ] && DENY_N=$((DENY_N+1))
+  else
+    UNLOCKED_N=$((UNLOCKED_N+1))
+    [ "$code" != "403" ] && ALLOW_N=$((ALLOW_N+1))
+  fi
+done
+check "本轮参与比对的 locked 行数=2（前提自检，缺它等式在 0==0 上假绿）" 2 "${LOCKED_N}"
+check "本轮参与比对的 unlocked 行数=1（反向对照必须在同一集合里）" 1 "${UNLOCKED_N}"
+check "标 locked 的包逐个打 bind：403 次数恰等于 locked 行数（界面与接口同判据）" "${LOCKED_N}" "${DENY_N}"
+check "未标 locked 的包没有一个被档位拒（界面说可绑＝接口真放行）" "${UNLOCKED_N}" "${ALLOW_N}"
+
+# ===== 6) 现场回收：合成包/租户/绑定/部门/审计全清 =====
+$PSQL "DELETE FROM tenant_pack_bindings WHERE tenant_id IN (${TID_P},${TID_E});
+       DELETE FROM departments WHERE tenant_id=${TID_E};
+       DELETE FROM tenant_audit_logs WHERE resource IN ('industry_pack:${TP0}','industry_pack:${TP1}','industry_pack:${TP2}','industry_pack:${TP3}','industry_pack:${TP4}');
+       DELETE FROM industry_packs WHERE code IN ('${TIER_P0}','${TIER_P1}','${TIER_P2}','${TIER_P3}','${TIER_P4}','smoke_tk_dfl_${TIER_SUF}');
+       DELETE FROM tenants WHERE id IN (${TID_P},${TID_E},${TID_U});" >/dev/null 2>&1
+check "本段合成包行已清零" 0 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code IN ('${TIER_P0}','${TIER_P1}','${TIER_P2}','${TIER_P3}','${TIER_P4}','smoke_tk_dfl_${TIER_SUF}')" | tr -d '[:space:]')"
+check "本段合成租户已清零" 0 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${TIER_TP}','${TIER_TE}','${TIER_TU}')" | tr -d '[:space:]')"
+check "本段设档审计已清零（不给租户审计面留垃圾行）" 0 "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE resource IN ('industry_pack:${TP0}','industry_pack:${TP1}','industry_pack:${TP2}','industry_pack:${TP3}','industry_pack:${TP4}')" | tr -d '[:space:]')"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

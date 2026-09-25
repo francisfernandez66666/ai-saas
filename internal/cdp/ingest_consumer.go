@@ -72,6 +72,24 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	{Code: "env_browser", Name: "浏览器", Category: "environment"},      // 属性 browser
 }
 
+// 事件生产端现状（G-19 收口批 2026-09-24 逐项核实，防止下一轮审计把"消费端支持"当成"链路已通"）：
+//   - store_visit / test_drive：api/advisor.go 顾问手动推进阶段（到店、试驾子阶段）
+//   - booking：api/advisor.go 试驾单创建
+//   - follow：channel/inbound.go 关注/加微事件
+//   - complaint：api/feedback.go 低分反馈
+//   - guest_created / payment：chat_guest.go / billing 到账
+//   - model_view / share / referral：**只有消费端 case，没有生产端**——不是漏埋，是
+//     当前产品面没有对应入口（C 端没有车型详情页，前端只调 /admin/knowledge/models；
+//     分享/转介绍链路未建）。要打通得先有能力，硬造一个"没人访问的端点上的埋点"
+//     只会得到一条永不命中的分支，比空白更容易骗人。
+//
+// 护栏落点（改这些分支时必须同步动它们，否则"链路已通"又是一句自查不了的话）：
+//   - booking / test_drive / store_visit / complaint 四条：tools/uat_advisor.sh 的 G-19 段，
+//     逐条断 event_logs 落库 + cdp_tag_assignments 标签，并含"同值 PATCH 不重复发""低分无文字不发投诉"两条反向；
+//   - follow：internal/channel/inbound_follow_test.go（白名单外/无身份/空 external 三路必拒，
+//     放行路逐字段核信封）；
+//   - event_value 是 json 列，脚本里别用 LIKE 匹配它（会报 `json ~~ unknown` 且错误被吞成空串）。
+//
 // StartIngestConsumer 注册 user_event 订阅（main 启动时调用一次）
 // 标签字典随启动 upsert，保证消费端可写标签
 func StartIngestConsumer() {

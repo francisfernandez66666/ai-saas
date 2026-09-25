@@ -111,6 +111,8 @@ func generateAIReplyInner(ctx context.Context, customer *model.Customer, convers
 		// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
 		if !billing.CheckTokenAvailability(tenantID) {
 			log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
+			// G-5(2026-09-24)：降级同步进 /metrics 计数器，回归断言不再 grep 日志文件
+			metrics.IncAIFallback("quota_exhausted")
 			return ai.BuildFallbackReply(strategyOutput, canPromote)
 		}
 	}
@@ -131,6 +133,7 @@ func generateAIReplyInner(ctx context.Context, customer *model.Customer, convers
 	}
 	if !hasAnyAI {
 		log.Printf("[AI] 无可用AI模型，使用模板兜底")
+		metrics.IncAIFallback("no_ai_model") // G-5(2026-09-24)：同上，降级原因走指标不走日志
 		return ai.BuildFallbackReply(strategyOutput, canPromote)
 	}
 

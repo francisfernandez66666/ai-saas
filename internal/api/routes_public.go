@@ -80,9 +80,11 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	// C6 前端异常上报：登录态可带租户/user_id，匿名按 Host/企业码落当前租户；只入库，不发群避免刷爆。
 	v1.POST("/client-errors", middleware.OptionalJWTAuth(), middleware.IPRateLimit("client_error", 20, time.Minute), ClientErrorReport)
 	// Turnstile 站点键下发（免登录公开；enabled=false 时前端不渲染组件）
+	// G-13：改走 RespOK 统一出口——裸写 {"code":0} 的 handler 是错误码链路上的盲区
+	// （error_code/脱敏/日志三点都不经过这里），响应体只多一个 message 键，前端只读 data。
 	v1.GET("/turnstile/sitekey", func(c *gin.Context) {
 		enabled, siteKey := middleware.GetTurnstileSiteKey()
-		c.JSON(200, gin.H{"code": 0, "data": gin.H{"enabled": enabled, "site_key": siteKey}})
+		RespOK(c, "ok", gin.H{"enabled": enabled, "site_key": siteKey})
 	})
 	// 会话欢迎接口（免登录，独立秒回，无AI处理）：IP 限流堵 DB 写放大
 	v1.POST("/chat/welcome", middleware.IPRateLimit("chat_welcome", 30, time.Minute), Welcome)

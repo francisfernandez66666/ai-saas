@@ -45,5 +45,9 @@ func registerAdvisor(v1 *gin.RouterGroup) {
 		advisorGroup.GET("/referral/info", GetReferralInfo)
 		advisorGroup.GET("/referral/records", GetReferralRecords)
 		advisorGroup.GET("/referral/qrcode", GetReferralQRCode)
+		// 企业知识库只读（G-23，2026-09-25）：移动端成员要看得到公司沉淀的知识，但上传/删除
+		// 仍只在 /admin/kb/*（AdminRequired）。处理函数按 tenant_id 取数、不依赖管理岗上下文，
+		// 直接复用即可——开放的是同一租户同一份列表，不是新数据面。
+		advisorGroup.GET("/kb/my", TenantKBMy)
 	}
 }

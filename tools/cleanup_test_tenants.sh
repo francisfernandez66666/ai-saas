@@ -28,6 +28,10 @@ PATTERNS=(
   # 下划线形态的 dbg3_66924「调试租户」；p11_66861「P11复现租户」是短进程号形态，
   # 泛化式 ^p[0-9]{6}... 也追不上）。两者均 0 用户/0 客户，纯复现现场。
   "dbg%" "~^p[0-9]+_[0-9]+$"
+  # 2026-09-25 G-22c：冒烟换包段与档位段的合成租户。两段脚本结尾都自清理，这里兜的是
+  # "跑到一半被 Ctrl-C / 服务崩了"留下的半截现场——smoke_pk_* 带物化内容、smoke_tier_* 带
+  # 档位判定靶子，两者都不该长期占着租户列表。
+  "smoke_pk%" "smoke_tier%"
   "单元测试租户-%"
   "~^p[0-9]{6}(x[0-9a-f]+)?_[a-z0-9_]+$"
   "~^(ind|edu|dup|rec|man|inv[0-9]*|px|pp|pw|id[ab]|nt|t)[0-9]+$"
@@ -176,12 +180,12 @@ if [ "$APPLY" = "1" ]; then
   echo "已回收陈旧 ut_* 测试包 $STALE_PKGS 个。"
   STALE_IPACKS=$(psql "$DBURL" -tAc "
     DELETE FROM industry_packs ip
-    WHERE ip.code IN ('rls_ind','education')
+    WHERE (ip.code IN ('rls_ind','education') OR ip.code LIKE 'smoke\_tk\_%')
       AND ip.id NOT IN (SELECT pack_id FROM tenant_pack_bindings WHERE pack_id IS NOT NULL)
       AND ip.id NOT IN (SELECT pack_id FROM dept_pack_bindings WHERE pack_id IS NOT NULL)
       AND NOT (ip.code='education' AND ip.id = (SELECT max(id) FROM industry_packs WHERE code='education'))
     RETURNING ip.id;" 2>/dev/null | grep -c . || true)
-  echo "已回收残留行业包 $STALE_IPACKS 个（rls_ind/education 未引用重复行）。"
+  echo "已回收残留行业包 $STALE_IPACKS 个（rls_ind/education 未引用重复行 + 冒烟档位段 smoke_tk_* 合成包）。"
 fi
 
 # ---------- C2. 获客活码残留回收（获客批，2026-09-23 新增）----------

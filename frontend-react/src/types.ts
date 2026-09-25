@@ -437,8 +437,18 @@ export interface KbMaterial {
   status?: number // 1启用 0禁用
   sort?: number
   embedding_json?: string
+  vectorized?: boolean // 向量状态（后端 gorm:"-" 实时算出，供管理端/成员列表展示"已向量化"）
   created_at?: string
   updated_at?: string
+}
+
+// 企业知识库分页列表 —— GET /admin/kb/my（管理岗）与 GET /advisor/kb/my（移动端成员只读，G-23）
+// 两端共用同一处理函数与同一份取数口径（按 tenant_id 过滤、只认「企业知识」类别）。
+export interface KbListResp {
+  list: KbMaterial[]
+  total: number
+  page: number
+  page_size: number
 }
 
 // ============================================================
@@ -1376,4 +1386,84 @@ export interface WecomAgentConfigResp {
   timestamp: string
   noncestr: string
   signature: string
+}
+
+// ============================================================
+// G-22a 超管换包 / 重物化（2026-09-24）
+// 字段与 internal/api/super_pack_bind.go 两个 RespOK 的 gin.H 键一一对应。
+// templates/features 是**物化条数**，不是包内声明条数——内容为空壳时这里就是 0，
+// 所以前端拿到 0 要能显示"这个包没出内容"，而不是当成成功。
+// ============================================================
+
+/** POST /super/tenants/:id/pack/bind 出参（代客换包并即时物化） */
+export interface SuperPackBindResp {
+  tenant_id: number
+  pack_code: string
+  pack_version: string
+  enterprise_code: string
+  enterprise_version: string
+  templates: number
+  features: number
+  /** 本次换包清掉的旧包个数（换行业≠加行业，旧包话术不得留在召回池） */
+  purged_old_packs: number
+}
+
+/** POST /super/tenants/:id/pack/reapply 出参（按最新版重物化，from→to 即审计口径） */
+export interface SuperPackReapplyResp {
+  tenant_id: number
+  pack_code: string
+  from_version: string
+  to_version: string
+  templates: number
+  features: number
+  enterprise: string
+  /** 重物化时一并清掉的、不在绑定集合里的旧包个数 */
+  purged_old_packs: number
+}
+
+// ============================================================
+// G-22c（2026-09-24）包档位门槛：哪一档客户能绑哪个包
+// 判据单点在后端 industrypack.PackAllowedForTier，列表侧与写侧共用同一函数，
+// 因此**不会出现"界面说可绑、接口回 403"的错位**；前端只读判定结果，不自己比档位。
+// ============================================================
+
+/**
+ * GET /admin/packs 一行：包目录字段原样摊平 + 两个档位判定结果。
+ * 后端刻意**标注而非隐藏**不够档位的包（让租户知道企业版还有这套内容是一句升级引导，
+ * 悄悄从下拉里消失只会让人以为产品没这个能力），所以界面对 tier_locked 的行
+ * 要置灰 + 给升级提示，而不是从列表里过滤掉。
+ */
+export interface AdminPackRow {
+  id: number
+  code: string
+  name: string
+  industry: string
+  version: string
+  /** industry / enterprise / department 三级树 */
+  pack_level: string
+  parent_code: string
+  share_cross_dept: number
+  /** 最低可绑档位；空串 = 不设门槛（存量包的现状） */
+  min_tier: string
+  file_name: string
+  file_size: number
+  content_sha256: string
+  status: string
+  uploaded_by: number
+  created_at: string
+  updated_at: string
+  /** 当前租户档位不够，界面应置灰并提示升级（写侧一定会 403，这里只是提前如实说） */
+  tier_locked: boolean
+  /** 稳定原因码，空串表示可绑：pack_tier_required / pack_min_tier_invalid / tenant_tier_unknown */
+  tier_reason: string
+}
+
+/** GET /admin/packs 出参（data 直接是数组，不是包一层的对象） */
+export type AdminPackListView = AdminPackRow[]
+
+/** PUT /super/packs/:id/tier 出参（设档回显，min_tier 空串即清除门槛） */
+export interface SuperPackTierResp {
+  id: number
+  code: string
+  min_tier: string
 }

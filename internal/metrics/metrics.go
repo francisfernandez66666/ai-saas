@@ -313,6 +313,29 @@ func SetChannelDeadLetterPending(n int64) { atomic.StoreInt64(&channelDeadLetter
 // GetChannelDeadLetterPending 读取当前出站死信积压数（供 /status 健康检查）。
 func GetChannelDeadLetterPending() int64 { return atomic.LoadInt64(&channelDeadLetterPending) }
 
+// ============================================================
+// G-5 观测收口(2026-09-24)：AI 降级原因计数
+// 降级分支此前只写日志，回归断言只能 grep 日志文件（uat.sh 第七节旧写法）——
+// 日志路径/格式一变就假红，线上也没有可告警的面。改成 /metrics 计数器后，
+// 断言走 HTTP 接口，与其余观测位同一口径。
+// reason 只有有限几类（quota_exhausted / no_ai_model），**不带租户标签**：
+// 租户数会直接变成 series 基数，这类"按原因看速率"的指标不需要归因到租户。
+// ============================================================
+
+// aiFallbackTotal reason -> 走规则话术（没调模型）的次数
+var aiFallbackTotal sync.Map
+
+// IncAIFallback 记一次"本轮 AI 回复没走模型、由规则兜底"（reason 维度）。
+func IncAIFallback(reason string) {
+	if p, ok := aiFallbackTotal.Load(reason); ok {
+		atomic.AddUint64(p.(*uint64), 1)
+		return
+	}
+	p := new(uint64)
+	actual, _ := aiFallbackTotal.LoadOrStore(reason, p)
+	atomic.AddUint64(actual.(*uint64), 1)
+}
+
 // renderLabeledCounter 渲染单标签(reason)计数器（供死信指标复用）。
 func renderLabeledCounter(b *[]byte, name, help, label string, m *sync.Map) {
 	type entry struct {
@@ -591,6 +614,7 @@ func RenderPrometheus() string {
 
 	// ---- F6 指标：通道死信速率 + 积压水位 ----
 	renderLabeledCounter(&b, "ai_scrm_channel_dead_letter_total", "Outbound/inbound messages moved to dead-letter by reason", "reason", &channelDeadLetterTotal)
+	renderLabeledCounter(&b, "ai_scrm_ai_fallback_total", "AI replies served by rule fallback (no model call) by reason", "reason", &aiFallbackTotal)
 	b = append(b, "# HELP ai_scrm_channel_dead_letter_pending Current failed outbound messages (dead-letter backlog)\n"...)
 	b = append(b, "# TYPE ai_scrm_channel_dead_letter_pending gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_channel_dead_letter_pending %d\n", atomic.LoadInt64(&channelDeadLetterPending))...)

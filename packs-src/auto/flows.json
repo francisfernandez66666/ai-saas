@@ -1,10 +1,35 @@
-{
-  "stages": [
-    {"name": "认知期", "description": "了解客户基本信息和需求"},
-    {"name": "兴趣期", "description": "深入沟通需求，推荐合适车型"},
-    {"name": "考虑期", "description": "解答疑虑，对比方案"},
-    {"name": "评估期", "description": "提供详细报价和金融方案"},
-    {"name": "决策期", "description": "促成到店体验和成交"},
-    {"name": "成交期", "description": "交车和售后服务引导"}
-  ]
-}
+[
+  {
+    "code": "auto_lead_nurture",
+    "name": "购车线索培育流程",
+    "description": "汽车基包动线：AI 摸底 → 策略分流（继续对话/询价/转人工/养鱼）→ 询价落「价格探询」标记或转人工到店。节点类型取 model.NodeType* 枚举，分支条件取 strategy.Route* 路由值，顺序与 next_nodes 一一对应。",
+    "nodes": [
+      {"id": "start", "type": "start", "name": "开始", "next_nodes": ["ai_intake"]},
+      {"id": "ai_intake", "type": "ai", "name": "AI接待与用车需求摸底", "next_nodes": ["route"]},
+      {"id": "route", "type": "strategy", "name": "策略分流",
+       "config": {"conditions": ["ai", "price", "human", "fish"]},
+       "next_nodes": ["ai_deep", "price_quote", "handoff", "nurture_wait"]},
+      {"id": "ai_deep", "type": "ai", "name": "继续确认用途与预算", "next_nodes": ["route"]},
+      {"id": "price_quote", "type": "ai", "name": "拆解落地价并邀约到店", "next_nodes": ["tag_price"]},
+      {"id": "tag_price", "type": "tag_update", "name": "标记价格探询",
+       "config": {"add_tags": ["beh_price_inquiry"], "remove_tags": []},
+       "next_nodes": ["end"]},
+      {"id": "handoff", "type": "human", "name": "转顾问跟进到店", "next_nodes": ["end"]},
+      {"id": "nurture_wait", "type": "wait", "name": "转入低打扰培育", "next_nodes": ["end"]},
+      {"id": "end", "type": "end", "name": "结束"}
+    ],
+    "edges": [
+      {"from": "start", "to": "ai_intake"},
+      {"from": "ai_intake", "to": "route"},
+      {"from": "route", "to": "ai_deep", "condition": "ai"},
+      {"from": "route", "to": "price_quote", "condition": "price"},
+      {"from": "route", "to": "handoff", "condition": "human"},
+      {"from": "route", "to": "nurture_wait", "condition": "fish"},
+      {"from": "price_quote", "to": "tag_price"},
+      {"from": "tag_price", "to": "end"},
+      {"from": "handoff", "to": "end"},
+      {"from": "nurture_wait", "to": "end"}
+    ],
+    "start_node_id": "start"
+  }
+]

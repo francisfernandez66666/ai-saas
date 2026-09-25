@@ -1,7 +1,37 @@
 [
-  {"id": "tag_new_customer", "name": "新客户", "category": "客户阶段", "color": "#1890ff"},
-  {"id": "tag_test_drive", "name": "已试驾", "category": "客户阶段", "color": "#52c41a"},
-  {"id": "tag_price_sensitive", "name": "价格敏感", "category": "客户特征", "color": "#faad14"},
-  {"id": "tag_first_buyer", "name": "首次购车", "category": "客户特征", "color": "#722ed1"},
-  {"id": "tag_replace_buyer", "name": "换车升级", "category": "客户特征", "color": "#13c2c2"}
+  {
+    "code": "tag_new_customer",
+    "name": "新客户",
+    "category": "客户阶段",
+    "weight": 1.0,
+    "description": "首次接触、尚未留资的到店/在线咨询客户"
+  },
+  {
+    "code": "tag_test_drive",
+    "name": "已试驾",
+    "category": "客户阶段",
+    "weight": 1.4,
+    "description": "完成到店试驾，进入报价与促单阶段"
+  },
+  {
+    "code": "tag_price_sensitive",
+    "name": "价格敏感",
+    "category": "客户特征",
+    "weight": 1.2,
+    "description": "反复确认价格、要求拆分落地价或给出预算区间"
+  },
+  {
+    "code": "tag_first_buyer",
+    "name": "首次购车",
+    "category": "客户特征",
+    "weight": 1.0,
+    "description": "没有购车经验，需要解释配置差异与上牌/保险流程"
+  },
+  {
+    "code": "tag_replace_buyer",
+    "name": "换车升级",
+    "category": "客户特征",
+    "weight": 1.1,
+    "description": "已有车辆，关注置换补贴与旧车残值"
+  }
 ]
