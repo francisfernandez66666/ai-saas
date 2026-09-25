@@ -25,6 +25,7 @@ package api
 // ============================================================
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -34,6 +35,7 @@ import (
 	"strings"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/industrypack"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
@@ -177,6 +179,14 @@ func SuperPackList(c *gin.Context) {
 
 // SuperPackStatus PUT /api/v1/super/packs/:id/status
 // SuperPackStatus 查询行业包发布状态。
+//
+// 2026-09-25 残项收口（残项5）：上架不再是"只改自己那一行"。
+// 此前同一 code 的多个版本可以同时 active（启动期批量落包是主因），于是租户侧
+// "汽车"在下拉里出现三行、继承链只能靠 id 倒序猜哪版是新版本。现在上架走
+// industrypack.ActivatePackExclusive：同 code 兄弟行在同一事务里让位，
+// 与迁移 027 的部分唯一索引 ux_pack_one_active_per_code 同口径（代码先满足、索引兜底）。
+// 被顺带下架的行必须写进审计和回执文案——超管要能看见"我上架 1.2.0，1.1.0 因此下架"，
+// 而不是回头以为系统自己动了别的包。
 func SuperPackStatus(c *gin.Context) {
 	var req struct {
 		Status string `json:"status" binding:"required"`
@@ -191,13 +201,58 @@ func SuperPackStatus(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if req.Status == industrypack.StatusActive {
+		demoted, err := industrypack.ActivatePackExclusive(db.DB, pid)
+		if errors.Is(err, industrypack.ErrPackNotFound) {
+			RespErr(c, http.StatusNotFound, 404, "包不存在")
+			return
+		}
+		if err != nil {
+			// 唯一索引冲突理论上不该到这（兄弟行已在同事务里让位）；真到了说明有并发上架，
+			// 回 409 让超管重试，而不是把数据库错误码原样摊出去
+			log.Printf("[行业包] 上架包%d 失败: %v", pid, err)
+			RespErr(c, http.StatusConflict, 409, "同编码包正在被并发上下架，请刷新后重试")
+			return
+		}
+		msg := "已更新"
+		if len(demoted) > 0 {
+			names := make([]string, 0, len(demoted))
+			for _, d := range demoted {
+				names = append(names, fmt.Sprintf("%s %s", d.Code, d.Version))
+			}
+			msg = "已上架，同编码旧版本自动下架：" + strings.Join(names, "、")
+			log.Printf("[行业包] 包%d 上架，同编码 %d 行自动下架: %s", pid, len(demoted), msg)
+		}
+		packStatusAudit(c, pid, req.Status, msg)
+		RespOK(c, msg, nil)
+		return
+	}
 	res := db.DB.Model(&model.IndustryPack{}).Where("id = ?", pid).
 		Update("status", req.Status)
 	if res.Error != nil || res.RowsAffected == 0 {
 		RespErr(c, http.StatusNotFound, 404, "包不存在")
 		return
 	}
+	packStatusAudit(c, pid, req.Status, "已下架")
 	RespOK(c, "已更新", nil)
+}
+
+// packStatusAudit 记一条行业包上下架审计（平台级操作，tenant_id=0）。
+// 为什么必须留痕：上下架直接决定"哪些租户下次换包能拿到什么内容"，
+// 而残项5 之后一次上架还会连带下架兄弟版本——没有审计行的话，
+// 事后只看得到"1.1.0 是 disabled"，看不出它是被谁、在哪一次上架里顺带下掉的。
+// 操作人取 c.Get("user_id")（JWT 中间件写入），与 super.go 其余平台级审计同一口径；
+// 邻座 SuperPackTier 当年把租户 ID 写进了 UserID，那是错的，此处不照抄。
+func packStatusAudit(c *gin.Context, packID uint, status, note string) {
+	uidV, _ := c.Get("user_id")
+	db.DB.Create(&model.TenantAuditLog{
+		TenantID: 0, // g12:platform 平台目录动作，非租户会话
+		UserID:   toUintSafe(uidV),
+		Action:   "super_pack_status",
+		Resource: fmt.Sprintf("industry_pack:%d", packID),
+		Detail:   fmt.Sprintf(`{"status":"%s","note":"%s"}`, status, note),
+		IP:       c.ClientIP(), UserAgent: c.Request.UserAgent(),
+	})
 }
 
 // SuperPackTier PUT /api/v1/super/packs/:id/tier  {"min_tier":"enterprise"}
@@ -357,7 +412,7 @@ func packTierBlocked(packID uint, tenantTier string) (bool, string) {
 // 403 而非 402：与"个人版子部门超配额 403"同一套权益口径，前端已有 403 分流。
 func respPackTierDenied(c *gin.Context, reason string) {
 	c.JSON(http.StatusForbidden, gin.H{
-		"code": 403, "message": "该行业包对当前套餐档位未开放", "error_code": "pack_tier_denied", "reason": reason,
+		"code": 403, "message": "该行业包对当前套餐档位未开放", "error_code": errcodes.PackTierDenied, "reason": reason,
 	})
 }
 
@@ -913,10 +968,19 @@ func SuperPackShare(c *gin.Context) {
 	RespOK(c, fmt.Sprintf("跨部门共享已置为 %d", *req.Share), nil)
 }
 
-// AutoRegisterLocalPacks 启动期自动上架 data/packs 目录下的预置行业包（泛行业化 P4）
-// 目标：data/packs/*.aipack 随代码分发，注册即入库 active——resolveIndustry 依赖 industry_packs
-// 的 code 命中，否则新行业（realty/b2b/...）注册时全部回落 general。
-// 幂等：按 code+version 查重，已存在则只补 status=active 不回写内容。
+// AutoRegisterLocalPacks 启动期登记 data/packs 目录下的预置行业包（泛行业化 P4）。
+//
+// 目标没变：data/packs/*.aipack 随代码分发，库里必须认得这些 code，
+// 否则 resolveIndustry 对新行业（realty/b2b/...）取不到包，注册即回落默认包。
+// 变的是**上架语义**（2026-09-25 残项5）：
+//   - 全新 code（库里此前一行都没有）→ 自动上架本轮扫描到的最高版本，保证首次部署开箱可用；
+//   - 已存在的 code → 只刷新目录字段（文件路径/摘要/层级），**状态一律不动**：
+//     哪个版本现役是运营决定，旧实现每次重启无条件写 active，
+//     既会把超管手动下架的包悄悄放回去，也是"同 code 多版本同时上架"的直接来源；
+//   - 收尾再跑一次 ReconcileActiveVersions，把本修复之前遗留的多版本并存收拢回不变式
+//     （迁移 027 的部分唯一索引是同一件事的 DB 兜底，两侧都要在，见 industrypack/version.go）。
+//
+// 幂等：按 code+version 查重，重复执行零副作用。
 // 依赖：keys 目录存在（打包-分发共用同一对密钥）；解包失败仅告警跳过，不影响启动。
 func AutoRegisterLocalPacks() {
 	entries, err := os.ReadDir(packStoreDir)
@@ -934,6 +998,10 @@ func AutoRegisterLocalPacks() {
 		return
 	}
 	registered := 0
+	// 本轮"库里此前一行都没有"的全新 code。只记集合不记版本：
+	// 定夺留到扫描结束后按 NewerPackID 统一做——data/packs 的文件名是字典序，
+	// 1.10.0 会排在 1.9.0 前面，边扫边比必选错新版本。
+	newCodes := map[string]bool{}
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(strings.ToLower(e.Name()), ".aipack") {
 			continue
@@ -950,6 +1018,10 @@ func AutoRegisterLocalPacks() {
 			continue
 		}
 		m := pc.Manifest
+		// 该 code 此前在库里是否已有任何行（不限版本、不限状态）——
+		// 这是"新 code 才自动上架"的判据：老 code 的上架状态属于运营决定，重启不许覆盖。
+		var preCnt int64
+		db.DB.Model(&model.IndustryPack{}).Where("code = ?", m.Code).Count(&preCnt)
 		var row model.IndustryPack
 		isNew := db.DB.Where("code = ? AND version = ?", m.Code, m.Version).First(&row).Error != nil
 		row.Code = m.Code
@@ -962,19 +1034,55 @@ func AutoRegisterLocalPacks() {
 		row.FilePath = path
 		row.FileSize = int64(len(raw))
 		row.ContentSHA256 = m.ContentSHA256
-		row.Status = "active"
 		row.UploadedBy = 0 // 存储种子，平台级
 		if isNew {
+			// 新版本行落库时是**下架态**（与超管手动上传同一口径）：
+			// 把 1.3.0 丢进 data/packs 不等于宣布它是现役版本，那一下得有人在超管台上点。
+			// 旧实现在这里直接写 active，正是"同 code 多版本同时上架"的现场。
+			row.Status = industrypack.StatusDisabled
 			if err := db.DB.Create(&row).Error; err != nil {
 				log.Printf("[行业包] 注册 %s v%s 失败: %v", m.Code, m.Version, err)
 				continue
 			}
-		} else if err := db.DB.Model(&row).Update("status", "active").Error; err != nil {
-			log.Printf("[行业包] 激活 %s v%s 失败: %v", m.Code, m.Version, err)
+		}
+		// 已存在的行：内容字段（文件路径/摘要）随包文件更新，**状态一律不动**。
+		// 旧实现这里无条件 Update("status","active")——超管手动下架的包会被下一次重启悄悄放回去。
+		if err := db.DB.Model(&row).Updates(map[string]any{
+			"name": row.Name, "industry": row.Industry, "pack_level": row.PackLevel,
+			"parent_code": row.ParentCode, "file_name": row.FileName,
+			"file_path": row.FilePath, "file_size": row.FileSize,
+			"content_sha256": row.ContentSHA256,
+		}).Error; err != nil {
+			log.Printf("[行业包] 刷新 %s v%s 目录字段失败: %v", m.Code, m.Version, err)
 			continue
 		}
 		registered++
-		log.Printf("[行业包] 自动上架: code=%s name=%s v%s level=%s", m.Code, m.Name, m.Version, m.PackLevel)
+		if preCnt == 0 {
+			newCodes[m.Code] = true
+		}
+		log.Printf("[行业包] 预置包入库/刷新: code=%s name=%s v%s level=%s（现役状态不变，当前 %s）",
+			m.Code, m.Name, m.Version, m.PackLevel, row.Status)
 	}
-	log.Printf("[行业包] 自动上架完成，共注册 %d 个包", registered)
+	// 全新 code：没有"运营已经选过版本"这回事，直接把版本最高的一版上架，
+	// 否则 resolveIndustry 对这个行业取不到 active 包，新租户注册会全体回落默认包（旧注释里的那条依赖）。
+	// 择新交给 industrypack.NewerPackID（与启动日志、超管手动上架同一条规则），
+	// 上架本身交给 ActivatePackExclusive（保证"一次动作后该 code 只剩这一行 active"）。
+	activated := 0
+	for code := range newCodes {
+		var rows []model.IndustryPack
+		// 独立会话句柄：本函数在一个循环里对同一逻辑句柄跑多条查询，
+		// db.RQ/db.PQ 那种 clone=0 句柄会把上一条 Where 条件累加进下一条（GORM 句柄红线）
+		if err := db.DB.Model(&model.IndustryPack{}).Where("code = ?", code).Find(&rows).Error; err != nil || len(rows) == 0 {
+			log.Printf("[行业包] 新 code %s 取不到包行，跳过自动上架: %v", code, err)
+			continue
+		}
+		pick := industrypack.NewerPackID(rows)
+		if _, err := industrypack.ActivatePackExclusive(db.DB, pick); err != nil {
+			log.Printf("[行业包] 新 code %s 自动上架包%d 失败: %v", code, pick, err)
+			continue
+		}
+		activated++
+		log.Printf("[行业包] 新 code %s 首次落包，自动上架最高版本（包行 %d，共 %d 个版本在册）", code, pick, len(rows))
+	}
+	log.Printf("[行业包] 预置包登记完成：注册/刷新 %d 个文件，新编码自动上架 %d 个", registered, activated)
 }

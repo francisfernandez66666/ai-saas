@@ -87,6 +87,41 @@ func SweepSubscriptionRenewals() int {
 	return n
 }
 
+// reconcileUngrantedQuery 「paid 但缺发放台账」的取单查询唯一构造点。
+//
+// 抽成单点是为了让**排序**这件事可被 DryRun 断言钉住：2026-09-25 之前这里只有
+// `Limit(200)` 没有 `ORDER BY`，而 Postgres 的"无排序 + LIMIT"取哪 200 行由执行计划决定。
+// 一旦未落地行数长期超过 200（DB 抖动、批量导入、对账被反复打断都可能），
+// 每轮扫到的都是同一批"计划偏爱"的订单——**另一些单会被永久饿死**：客户钱付了、
+// 权益永远不发，而且日志每轮都写"对账完成"，看不出任何异常。这属于"错了也不响"的一类，
+// 只能用结构防（排序进谓词单点），不能靠每个调用方自觉。
+// 口径：**id ASC = 最老的先补**（先付钱的先拿到权益，且任何时刻取到的集合唯一确定）。
+func reconcileUngrantedQuery(gdb *gorm.DB) *gorm.DB {
+	return gdb.Where("status = 'paid' AND package_id > 0 AND tenant_id IS NOT NULL").
+		Where("created_at < NOW() - INTERVAL '10 minutes'").
+		Where("id NOT IN (SELECT ref_id FROM reward_claims WHERE grant_type = ? AND ref_id IS NOT NULL)",
+			model.RewardOrderEntitlement).
+		Order("id ASC").
+		Limit(reconcileUngrantedBatch)
+}
+
+// reconcileUngrantedBatch / reconcilePayoutBatch 单轮扫描上限。
+// 上限存在是为了让对账一轮别跑太久（每笔都要开事务发放），但**必须配确定性排序**，
+// 否则上限就变成"谁运气好谁被补"。
+const (
+	reconcileUngrantedBatch = 200
+	reconcilePayoutBatch    = 100
+)
+
+// reconcilePayoutMissingQuery 「已退款但出款意图未落库」的取单查询唯一构造点（同上排序口径）。
+func reconcilePayoutMissingQuery(gdb *gorm.DB) *gorm.DB {
+	return gdb.Where("status = 'refunded' AND refund_amount_cents > 0 AND channel NOT IN ('', 'mock', 'manual')").
+		Where("(refund_psp_status IS NULL OR refund_psp_status = '')").
+		Where("updated_at < NOW() - INTERVAL '10 minutes'"). // 避让在途退款
+		Order("id ASC").
+		Limit(reconcilePayoutBatch)
+}
+
 // ReconcileBilling 对账（P2）：发现「已支付但发放未落地」的异常单并按台账幂等补发。
 // R2 修复(2026-09-11)：旧判定"paid 且租户 expired_at IS NULL"对 increment/free 订单
 // 恒为假阳性（增量包根本不改 expired_at），每轮把已正常发放的增量单再发一遍——
@@ -96,11 +131,7 @@ func SweepSubscriptionRenewals() int {
 // 返回本次补救发放数。
 func ReconcileBilling() int {
 	var orders []model.BillingOrder
-	if err := db.DB.Where("status = 'paid' AND package_id > 0 AND tenant_id IS NOT NULL").
-		Where("created_at < NOW() - INTERVAL '10 minutes'").
-		Where("id NOT IN (SELECT ref_id FROM reward_claims WHERE grant_type = ? AND ref_id IS NOT NULL)",
-			model.RewardOrderEntitlement).
-		Limit(200).Find(&orders).Error; err != nil {
+	if err := reconcileUngrantedQuery(db.DB).Find(&orders).Error; err != nil {
 		log.Printf("[Billing] 对账列举订单失败: %v", err)
 		return 0
 	}
@@ -128,10 +159,7 @@ func ReconcileBilling() int {
 	// 订单停在 refunded 且 refund_psp_status 为空：客户"账面上退了钱"，资金侧永不流出
 	// 且无告警（旧实现对账只管 paid 缺台账）。按 out_refund_no 幂等补呼出款。
 	var pspMissing []model.BillingOrder
-	if err := db.DB.Where("status = 'refunded' AND refund_amount_cents > 0 AND channel NOT IN ('', 'mock', 'manual')").
-		Where("(refund_psp_status IS NULL OR refund_psp_status = '')").
-		Where("updated_at < NOW() - INTERVAL '10 minutes'"). // 避让在途退款
-		Limit(100).Find(&pspMissing).Error; err == nil && len(pspMissing) > 0 {
+	if err := reconcilePayoutMissingQuery(db.DB).Find(&pspMissing).Error; err == nil && len(pspMissing) > 0 {
 		for _, o := range pspMissing {
 			order := o
 			log.Printf("[Billing][对账] 订单%d(%s) 已退款但出款意图未落库，补呼 PSP", order.ID, order.OrderNo)

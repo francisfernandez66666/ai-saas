@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -94,7 +95,7 @@ func MustChangePasswordGuard() gin.HandlerFunc {
 			// P2-8 修复(2026-09-09)：DB 错误 fail-open→fail-closed。原实现 err 忽略、
 			// 以 flag 默认 false 放行——DB 故障时所有人绕过强改密。改为 500 拒绝。
 			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-				"code": 500, "error_code": "internal_error",
+				"code": 500, "error_code": errcodes.InternalError,
 				"message": "身份校验失败，请稍后再试", "data": nil,
 			})
 			return
@@ -103,7 +104,7 @@ func MustChangePasswordGuard() gin.HandlerFunc {
 		claimsTV := toUint(tvV)
 		if row.TokenVersion > claimsTV {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code": 401, "error_code": "token_revoked",
+				"code": 401, "error_code": errcodes.TokenRevoked,
 				"message": "账号凭据已更新，请重新登录", "data": nil,
 			})
 			return
@@ -118,7 +119,7 @@ func MustChangePasswordGuard() gin.HandlerFunc {
 			// P1-43(2026-09-09)：补 error_code——前端按此区分"必须改密"与普通 403(权限/配额)，
 			// 否则前端把 AdminRequired/配额拦截的 403 一律当改密跳转（误甩+丢当前页）
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"code": 403, "error_code": "must_change_password",
+				"code": 403, "error_code": errcodes.MustChangePassword,
 				"message": "首次登录请先修改密码（安全策略）", "data": nil,
 			})
 			return

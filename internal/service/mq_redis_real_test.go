@@ -210,15 +210,17 @@ func TestRedisHandlerDeathTakeoverNoLossNoDup(t *testing.T) {
 	if n := redisclient.LLen("mq:pending:" + k); n != 0 {
 		t.Errorf("接管实例的 Redis 待合并列表残留 %d 条（这批收完就没人认领了）", n)
 	}
-	// DEFECT-G7-TAKEOVER-MERGECOUNT（登记，本批不改生产码）：
-	// 接管分支先无条件 `q.mergeCount = 1`，而 appendOwn=false 时本条消息其实还没进 pending，
+	// DEFECT-G7-TAKEOVER-MERGECOUNT（2026-09-24 登记 → 2026-09-25 残项2 修）：
+	// 接管分支曾无条件 `q.mergeCount = 1`，而 appendOwn=false 时本条消息其实还没进 pending，
 	// 要靠窗口收账那次 absorb 才捡回来——于是 mergeCount 比批次真实条数多 1（这里 2 vs 1）。
 	// 影响面：internal/channel/inbound.go 的 D7 相似抑制前置条件是 `mergeCount <= 1`，
-	// 虚高会让"接管批次里唯一一条通道消息"跳过抑制判定，极端下重复回复一条。
-	// 不丢消息、不双烧 token，故不阻塞本批；修法要把 mergeCount 的赋值挪到实际入批计数处
-	// （与同文件积压接管分支的 `mergeCount=0 后按 pending 实数累加` 同款写法对齐）。
+	// 虚高会让"接管批次里唯一一条通道消息"跳过抑制判定，极端下重复回复一条通道消息；
+	// 另一路下游是 CalcHumanlikeDelay 的条次口径。
+	// 修法：处理者返回值不再读窗口计数器 q.mergeCount，改为 waitForMerge 收账时真正进批
+	// 的行数（与积压接管分支"先 0 再按 pending 实数累加"的口径统一到同一个真相源）。
+	// 这里从 t.Logf 升级为硬断言：接管批的 count 必须与实际行数逐字相等。
 	if r.count != len(lines) {
-		t.Logf("已知缺陷 DEFECT-G7-TAKEOVER-MERGECOUNT：接管批 mergeCount=%d 但批次实际 %d 条", r.count, len(lines))
+		t.Errorf("接管批 mergeCount=%d 但批次实际 %d 条——计数口径又和行数分家了（D7 抑制前置读的正是它）", r.count, len(lines))
 	}
 	svc.SetReply(tid, cid, r.epoch, "已安排周六两点")
 }

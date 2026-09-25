@@ -12,6 +12,9 @@ vi.mock('tdesign-react', () => ({
 
 import { MessagePlugin } from 'tdesign-react'
 import { AUTH, ERROR_CODE_MESSAGES, clearToken, getToken, redirectByRole, setToken, toastError } from '../api'
+// 后端码清单的**生成物**（go run ./cmd/apidump -format errorcodes），不是本文件手抄的清单——
+// 手抄那份与后端源码之间没有机制约束，后端加码而前端没登记时它会跟着一起漏，护栏就在最该响的时候沉默。
+import { BACKEND_ERROR_CODES } from '../../types/error_codes.generated'
 
 const warningMock = MessagePlugin.warning as ReturnType<typeof vi.fn>
 const errorMock = MessagePlugin.error as ReturnType<typeof vi.fn>
@@ -113,16 +116,25 @@ describe('业务错误码文案', () => {
     expect(warningMock).toHaveBeenCalledWith('后端新加的文案')
   })
 
-  it('码集覆盖后端实际发出的全部 error_code', () => {
-    // 这份清单是从后端源码镜像来的（internal/api/code.go 的 codeName + 各处显式字面量），
-    // 后端加码而忘了同步这里时本例会红——比"线上遇到才发现文案是英文/空白"便宜得多
-    const BACKEND_CODES = [
-      'param_error', 'unauthorized', 'forbidden', 'not_found', 'rate_limited', 'biz_error', 'internal_error',
-      'token_revoked', 'must_change_password', 'invalid_api_key', 'channel_config_incomplete',
-      'deal_rejected', 'outreach_rejected', 'acquisition_rejected', 'pack_tier_denied',
-    ]
-    // 注意不含 code.go 里的 "ok"：成功响应根本不走 toastError，登记它只会多一格死码
-    expect(Object.keys(ERROR_CODE_MESSAGES).sort()).toEqual(BACKEND_CODES.slice().sort())
+  it('码集与后端生成的清单双向对齐：漏登记红、留死码也红', () => {
+    // 残项3(2026-09-25)：比对对象从"本文件手抄的清单"换成生成物，并补齐反向半边。
+    //   正向（后端有 → 前端必须登记）：漏登记的新码会静默走未登记分支（只回传 message、
+    //     分级恒为 warning），正是这张表存在的意义；
+    //   反向（前端有 → 后端必须真发）：后端删码而前端留着，那格文案永远命中不了，
+    //     还会在下一次改文案时被当成"仍在用的码"一起改错。
+    const frontendCodes = Object.keys(ERROR_CODE_MESSAGES).sort()
+    const backendCodes = [...BACKEND_ERROR_CODES].sort()
+    expect(frontendCodes).toEqual(backendCodes)
+    // 自证（反证前置）：生成物若因命令失败而变成空数组，上面的等式会在 []==[] 上假绿，
+    // 故先钉"清单确实非空且含已知码"——这一条红说明生成物坏了，不是码集漂移。
+    expect(backendCodes.length).toBeGreaterThanOrEqual(15)
+    expect(backendCodes).toContain('param_error')
+    expect(backendCodes).toContain('token_revoked')
+  })
+
+  it('生成物不含成功码 ok（成功响应不带 error_code，登记它是留一格死码）', () => {
+    expect([...BACKEND_ERROR_CODES]).not.toContain('ok')
+    expect(ERROR_CODE_MESSAGES).not.toHaveProperty('ok')
   })
 })
 

@@ -71,11 +71,19 @@ func RunMain(m *testing.M) int {
 //     依赖 DefaultSystemConfigService 的测试（如计费/配额）需在 SetupTestDB 后自行
 //     调用 runtimecfg.InitSystemConfigService()（同包测试可直接调用）。
 //   - 两个分支都进包级计数（见 SkipStats/RunMain），配 TestMain 即可显式暴露跳过量
+//   - **已连接即复用**（2026-09-26）：旧写法每条用例都调一次 db.Init()，而一次 Init 会
+//     重连新池 + 重跑 AutoMigrate 与全部版本化迁移。一个 30 条 DB 用例的包就是 30 次
+//     重建：旧池连接在服务端累积（SQLSTATE 53300 的真身，见 db.Init 注释），且每轮迁移
+//     把单测层耗时成倍拉长。迁移是一次性动作，用例之间不需要"再迁一遍"，故复用。
 func SetupTestDB(t *testing.T) {
 	t.Helper()
 	loadRootEnv()
 	config.LoadConfig()
+	if db.DB != nil {
+		return // 本测试二进制已建好连接：复用，不重连也不重跑迁移
+	}
 	if err := db.Init(); err != nil {
+
 		// P2-82 修复(2026-09-09)：CI 环境下 DB 不可用必须 Fatal——
 		// 原 t.Skipf 会让 DB 依赖测试"静默绿"（无脑跳过），CI 里无法暴露真缺陷。
 		// 本地开发保留 Skip 哲学（无 DB 也能跑纯逻辑测试）。GitHub Actions 会设 CI=true。

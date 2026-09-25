@@ -66,6 +66,14 @@ func TestRegisterConfigIndustries(t *testing.T) {
 		{Code: "testent", Name: "企业级包", Industry: "testent", Version: "1.0.0", PackLevel: "enterprise", Status: "active"},
 	}
 	var ids []uint
+	// 先按 code 清一次再建：迁移 027 之后同 code 只允许一条 active，
+	// 上一轮异常退出留下的残行会让本轮 Create 撞 23505（测试自造的脏，不是被测行为）。
+	// 只删这三个合成编码，dev 库既有行业包数据一行不动。
+	for _, p := range seedPacks {
+		if err := db.DB.Where("code = ?", p.Code).Delete(&model.IndustryPack{}).Error; err != nil {
+			t.Fatalf("预清理 industry_packs(%s) 失败: %v", p.Code, err)
+		}
+	}
 	for _, p := range seedPacks {
 		if err := db.DB.Create(p).Error; err != nil {
 			t.Fatalf("seed industry_packs 失败: %v", err)

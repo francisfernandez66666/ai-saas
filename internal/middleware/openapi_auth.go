@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -144,11 +145,11 @@ func RequirePerm(perm string) gin.HandlerFunc {
 
 // abortOpenAPI 统一错误响应（M4 规范化：error_code 独立出参，借鉴翻译助手四期 §2.3）
 func abortOpenAPI(c *gin.Context, status int, msg string) {
-	errCode := "invalid_api_key"
+	errCode := errcodes.InvalidAPIKey
 	if status == http.StatusForbidden {
-		errCode = "forbidden"
+		errCode = errcodes.Forbidden
 	} else if status == http.StatusTooManyRequests {
-		errCode = "rate_limited"
+		errCode = errcodes.RateLimited
 	}
 	c.AbortWithStatusJSON(status, gin.H{"code": status, "error_code": errCode, "message": msg, "data": nil})
 }

@@ -39,13 +39,51 @@ export PGDATABASE="${PGDATABASE:-ai_scrm}"
 
 mkdir -p "$BACKUP_DIR"
 
-# L8修复(2026-08-27)：flock 互斥，防止 cron 重叠并发 dump 互相冲掉（同实例串行）
+# L8修复(2026-08-27)：互斥锁，防止 cron 重叠并发 dump 互相冲掉（同实例串行）
+#
+# ⚠ 2026-09-26 修：原来这里只有一句 `flock -n 9`，而 **macOS/BSD 默认没有 flock**（它是
+# util-linux 的东西）。命令不存在时 flock 返回 127，正好落进"没抢到锁"分支——脚本于是
+# 每次都打一行 WARN「已有备份进程在运行」再 `exit 0`。cron 看到的是**退出码 0**，
+# 于是"每日备份"在这类机器上一次都没真的跑过，而且看起来一切正常。
+# 备份是数据丢失时唯一的兜底，"没跑"必须比"跑了"更响，所以改成两级：
+#   ① 有 flock 就照旧用（Linux 生产机口径不变）；
+#   ② 没有就用 POSIX 的 mkdir 原子锁 + 锁内 PID 活性判定（进程死了留下的陈旧锁要能接管，
+#      否则一次崩溃会让此后所有备份永久跳过——那是同一个缺陷换个形态）。
+# 两种实现都拿不到锁（真有并发在跑）仍按原口径跳过并 exit 0。
 LOCK_FILE="$BACKUP_DIR/.backup.lock"
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-  echo "[$(date '+%F %T')] [WARN] 已有备份进程在运行（锁 $LOCK_FILE 被占用），本次跳过" >&2
+LOCK_DIR="$BACKUP_DIR/.backup.lock.d"
+acquire_lock() {
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -n 9
+    return $?
+  fi
+  # 无 flock：mkdir 原子锁。抢到就把自己的 PID 写进去；抢不到先看持有者是否还活着。
+  if mkdir "$LOCK_DIR" 2>/dev/null; then
+    echo $$ > "$LOCK_DIR/pid"
+    # 退出时释放（含 ERR/INT：trap 在函数外统一挂，见下）
+    return 0
+  fi
+  holder=$(cat "$LOCK_DIR/pid" 2>/dev/null || true)
+  if [ -n "${holder:-}" ] && kill -0 "$holder" 2>/dev/null; then
+    return 1 # 真有人在跑
+  fi
+  echo "[$(date '+%F %T')] [WARN] 发现陈旧锁 $LOCK_DIR（持有者 ${holder:-未知} 已不在），接管后继续" >&2
+  rm -rf "$LOCK_DIR"
+  mkdir "$LOCK_DIR" 2>/dev/null || return 1
+  echo $$ > "$LOCK_DIR/pid"
+  return 0
+}
+release_lock() {
+  if [ -d "$LOCK_DIR" ]; then rm -rf "$LOCK_DIR"; fi
+}
+if ! acquire_lock; then
+  echo "[$(date '+%F %T')] [WARN] 已有备份进程在运行（锁 $LOCK_FILE / $LOCK_DIR 被占用），本次跳过" >&2
   exit 0
 fi
+# 锁必须随任何退出路径释放；漏放会让后续每次备份都走进"陈旧锁接管"，虽然不至于永久卡住，
+# 但每一次都要靠 PID 活性判定救场，等于把互斥降级成碰运气。
+trap release_lock EXIT
 
 # 企微通知（可选）：BACKUP_NOTIFY_WEBHOOK 配置后，成败均推送
 notify() {

@@ -16,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/outreach"
@@ -138,7 +139,7 @@ func CreateOutreachTask(c *gin.Context) {
 			// smoke 断言用的字面量（两者都可能改文案，但码不能改）。
 			c.JSON(http.StatusBadRequest, gin.H{
 				"code": 400, "message": err.Error(),
-				"error_code": "outreach_rejected", "reason": reason,
+				"error_code": errcodes.OutreachRejected, "reason": reason,
 			})
 			return
 		}

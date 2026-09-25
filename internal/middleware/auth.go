@@ -15,6 +15,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 )
 
 // ============================================================
@@ -217,7 +218,7 @@ func TokenRevocationCheck() gin.HandlerFunc {
 		}
 		if TokenRevoked(uid, claimsTV) {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
-				"code": 401, "error_code": "token_revoked",
+				"code": 401, "error_code": errcodes.TokenRevoked,
 				"message": "账号凭据已更新，请重新登录", "data": nil,
 			})
 			return

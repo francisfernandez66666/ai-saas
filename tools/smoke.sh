@@ -79,10 +79,21 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         超管代客换包故意不受档位拦（钉口径防后人补门禁）、两侧同源结构断言（locked 行数==403 次数，
 #         并先自检参与比对行数=2/1 防 0==0 假绿）、自清理；真实上架包上的越档审计
 #         super_pack_tier_override 需要开包成功才写得进，故归 §十一 6.5（keys 门内）+9 断言）
-#       / 2026-09-24 残项收口：超管租户检索 10 断言（三十八：/super/tenants 补 q——纯数字按 ID
+#       / 2026-09-24 残项收口：超管租户检索 12 断言（三十八：/super/tenants 补 q——纯数字按 ID
 #         直达、名称/编码模糊、total 只算命中数、无命中回 [] 不是 null、% 与 _ 按字面量不被
-#         当成通配符放大成全表、超整型范围数字不 5xx、未登录 401、自清理；含"page_size=1 时
-#         最旧租户看不见"的对照前提，缺它本段会在一家本来看得见的租户上假绿）
+#         当成通配符放大成全表、超整型范围数字不 5xx、未登录 401、自清理；含"目标租户不在首页"
+#         的对照前提，缺它本段会在一家本来看得见的租户上假绿。**前提 2026-09-25 改为自造**：
+#         旧写法取"库里最小的四位数 ID"，隐含"租户数 > 20"这一环境状态，清库后只剩几家种子时
+#         首页＝全表、前提恒假而红过一次；现显式插 22 家对照租户并把目标定为 id 倒序第 21 家）
+#       / 2026-09-25 残项5：行业包同编码单上架版本 27 断言（四十一：迁移 027 记账与部分唯一索引
+#         ux_pack_one_active_per_code 实存、索引定义带 status=active 条件（只禁同时上架不禁历史）、
+#         全表不变式"同 code 多 active"=0 且先自检库里确有在架行、三个合成版本先建后比、
+#         首次上架只动自己、绕过应用直插第二条 active 被 23505 拒且零半成品行、
+#         换版本=原子换位（旧版自动下架、在架那条恰是刚上架的、回执文案点明连带了谁）、
+#         历史两行仍在（回滚能力没被删）、换位可重复、超管包列表本 code 在架行数=1 而总行数=3、
+#         三次上下架各留一条 super_pack_status 审计且详情带"自动下架"、单独下架不牵连兄弟、
+#         零在架态不变式同样成立、自清理。纯函数侧（版本号数值序 1.10.0>1.9.0、同版本比 id）
+#         交 internal/industrypack/version_test.go，启动期落包"老 code 状态不被重启覆盖"见启动日志）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -912,6 +923,12 @@ echo "---- 二十六、2026-09-20 审计批 P1-3：公开面 IP/Key 限流护栏
 #   正确判据是"这一串里 429 出现过且不止一次"——限流器真生效就必然累计到，
 #   跨不跨边界都不影响结论；阈值取 4（配额 60、连打 65，同窗满打是 5 次，留一次抖动余量）。
 #   与 smoke_chat_identity §10 同一口径（那里连打 35 次断"429 累计 ≥4 次"）。
+# ⚠ 2026-09-25 二次自伤修正：光把阈值放到 ≥4 还不够。65 发只能保证"在同一个窗口里
+#   超配 5 次"，若循环**跨过一次窗口重置**（前一节刚开过桶、重置点落在循环中段），
+#   则旧窗口只剩几发、新窗口又没打满 60，429 可以合法地只出现 0~3 次——本段实跑又红一次。
+#   与 smoke_chat_identity §10 同一个修法：**先 sleep 61 把窗口归零**，再让 65 发锁进同一窗口，
+#   此时 429 必为 5 次，阈值 ≥4 只是给单次抖动留余量，不再承担"补偿窗口漂移"的职责。
+sleep 61
 know429=0
 for i in $(seq 1 65); do
   [ "$(curl -s -o /dev/null -w '%{http_code}' "$B/api/v1/knowledge/brands?tenant_id=1")" = "429" ] && know429=$((know429+1))
@@ -2523,7 +2540,21 @@ QS_A=$($PSQL "SELECT id FROM tenants WHERE code='${QS_CA}'" 2>/dev/null | tr -d 
 # 而目标那家最老、排在 id DESC 末尾，page_size 硬顶 100 → 目标**被分页切在第 101 名之后**，
 # 断言就在"搜得回来"和"这一页装得下"之间混了两件事。四位数以上 ID 几乎不会出现在
 # 名称/编码里（本机实测 13049 命中恰 1 家），模糊腿不再放大结果集，断言只测 ID 腿。
-QS_OLD=$($PSQL "SELECT min(id) FROM tenants WHERE id >= 1000" 2>/dev/null | tr -d '[:space:]')
+#
+# ⚠ 前提必须**自己造**（2026-09-25 清库后二次自伤修正）：上面那套"四位数 ID"隐含了
+# "库里有几百上千家租户"这个环境状态。清理脚本把测试租户删干净后本机只剩几家种子，
+# page_size=20 的首页＝全表，"目标不在首页"这条前提恒假——实跑表现为本段第一行
+# 「首页20家看不见最老那几家」红（期望 0 实际 1），而不是产品搜索功能坏了。
+# 改法：显式插 22 家对照租户把目标顶出首页，测完一起清掉。目标改成按 id 倒序取第 21 家，
+# 这样"不在 page_size=20 首页"是**构造出来的**，与库里租户多少无关。
+# 模糊腿的放大靠对照租户的名称/编码一律不含数字来封堵（qsdecoy + 单个字母）。
+for DK in a b c d e f g h i j k l m n o p q r s t u v; do
+  $PSQL "INSERT INTO tenants (name, code, tier, status, created_at, updated_at)
+         VALUES ('检索对照租户${DK}', 'qsdecoy${DK}', 'personal', 'active', NOW(), NOW());" >/dev/null 2>&1
+done
+check "对照租户 22 家已建（前提自检：不足 22 家时首页＝全表，本段 ID 腿断言失去意义）" 22 \
+  "$($PSQL "SELECT count(*) FROM tenants WHERE code LIKE 'qsdecoy%'" | tr -d '[:space:]')"
+QS_OLD=$($PSQL "SELECT id FROM tenants ORDER BY id DESC LIMIT 1 OFFSET 20" 2>/dev/null | tr -d '[:space:]')
 
 QS_PAGE1=$(curl -s "$B/api/v1/super/tenants?page_size=20" -H "Authorization: Bearer $TOKEN")
 check "首页20家看不见最老那几家(本段对照前提)" 0 "$(printf '%s' "$QS_PAGE1" | grep -c "\"id\":${QS_OLD}," 2>/dev/null)"
@@ -2544,8 +2575,10 @@ check "通配符 % 按字面量搜(不放大成全表)" 0 "$(curl -sG "$B/api/v1
 check "q=超出整型范围的数字不报5xx" 200 "$(curl -s -o /dev/null -w '%{http_code}' -G "$B/api/v1/super/tenants" --data-urlencode "q=99999999999999999999999" -H "Authorization: Bearer $TOKEN")"
 # 未登录与 sales 一律进不来（检索面不改变端点的鉴权边界）
 check "未登录搜租户判 401" 401 "$(curl -s -o /dev/null -w '%{http_code}' -G "$B/api/v1/super/tenants" --data-urlencode "q=${QS_CA}")"
-$PSQL "DELETE FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}');" >/dev/null 2>&1
+$PSQL "DELETE FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}') OR code LIKE 'qsdecoy%';" >/dev/null 2>&1
 check "本段靶子租户已清零" 0 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${QS_CA}','${QS_CB}')" 2>/dev/null | tr -d '[:space:]')"
+check "本段 22 家对照租户已清零（给下一段留干净首页，也不把测试租户留给清理脚本兜底）" 0 \
+  "$($PSQL "SELECT count(*) FROM tenants WHERE code LIKE 'qsdecoy%'" 2>/dev/null | tr -d '[:space:]')"
 
 echo "---- 三十九、MQ 事件审计两段台账：发布腿与消费腿必须落在同一行（G-15 观测面真实性）----"
 # 起因（2026-09-24 欠账批二）：`message_event_records` 过去只有**发布腿**写库（status='sent'），
@@ -2828,6 +2861,101 @@ $PSQL "DELETE FROM tenant_pack_bindings WHERE tenant_id IN (${TID_P},${TID_E});
 check "本段合成包行已清零" 0 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code IN ('${TIER_P0}','${TIER_P1}','${TIER_P2}','${TIER_P3}','${TIER_P4}','smoke_tk_dfl_${TIER_SUF}')" | tr -d '[:space:]')"
 check "本段合成租户已清零" 0 "$($PSQL "SELECT count(*) FROM tenants WHERE code IN ('${TIER_TP}','${TIER_TE}','${TIER_TU}')" | tr -d '[:space:]')"
 check "本段设档审计已清零（不给租户审计面留垃圾行）" 0 "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE resource IN ('industry_pack:${TP0}','industry_pack:${TP1}','industry_pack:${TP2}','industry_pack:${TP3}','industry_pack:${TP4}')" | tr -d '[:space:]')"
+
+echo "---- 四十一、行业包同编码单上架版本：上架=原子换位，历史版本仍可共存（残项5）----"
+# 起因（2026-09-25 欠账批收口）：同一 code 的多个版本可以同时 active，主因是启动期批量落包
+# 每次都把"当前版本"标成上架。现场表现是租户侧「汽车」在下拉里出现三行、继承链只能靠 id
+# 倒序猜哪版才是新版本、D9 包质量归因的样本被同一个包拆成三份。
+# 修法两侧同时到位，缺一侧都不算修好：
+#   ① 写侧单点 industrypack.ActivatePackExclusive——上架时同 code 兄弟行在**同一事务**里让位；
+#   ② DB 侧兜底 迁移 027 的部分唯一索引 ux_pack_one_active_per_code——人工 SQL、旧二进制、
+#      任何没走应用层的写入都只能靠它挡（口径与 013 会话单活跃一致）。
+# 本段还钉"部分"这半边：同 code 的历史下架版本必须能共存。若把索引写成 code 全表唯一，
+# 版本历史与回滚能力会被一起删掉，而那种实现下"第二行 active 建不上"照样全绿——所以
+# 正向用例（多行 disabled 建得上）与反向用例（第二行 active 建不上）必须同时在场。
+VER_SUF="$$"
+VER_CODE="smoke_ver_${VER_SUF}"
+VER_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='027_pack_single_active_version'" 2>/dev/null | tr -d '[:space:]')
+check "迁移 027 已记账（回填 + 建索引在迁移账本里，不是靠启动期补跑）" 1 "${VER_MIG:-0}"
+VER_IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='industry_packs' AND indexname='ux_pack_one_active_per_code'" | tr -d '[:space:]')
+check "部分唯一索引 ux_pack_one_active_per_code 实存" 1 "${VER_IDX:-0}"
+# 索引必须是**部分的**（带 WHERE status='active'）：整表 code 唯一是把历史一起删掉的过强实现
+VER_PARTIAL=$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='industry_packs' AND indexname='ux_pack_one_active_per_code' AND indexdef LIKE '%active%'" | tr -d '[:space:]')
+check "索引定义带 status=active 条件（只禁同时上架，不禁版本历史）" 1 "${VER_PARTIAL:-0}"
+# 全表不变式：任何 code 都至多一条 active。前置自检先证明库里确有在架包行——
+# 缺这一步，本条会在"整库零 active"上假绿（清库后或迁移被跳过时正是这种状态）。
+VER_TOTAL_ACTIVE=$($PSQL "SELECT count(*) FROM industry_packs WHERE status='active'" | tr -d '[:space:]')
+check "全表不变式前提：库里确有在架包行（缺它下面的 0==0 假绿）" y "$([ "${VER_TOTAL_ACTIVE:-0}" -ge 1 ] && echo y || echo n)"
+VER_DIRTY=$($PSQL "SELECT count(*) FROM (SELECT code FROM industry_packs WHERE status='active' GROUP BY code HAVING count(*)>1) t" | tr -d '[:space:]')
+check "同编码多版本并存的 code 数=0（迁移 027 回填真把历史脏数据收拢了）" 0 "${VER_DIRTY:-0}"
+# 三个合成版本一律**下架**落库：上架动作必须经 PUT 走应用层，才测得到"上架顺带挤下兄弟"
+for VV in 1.0.0 1.9.0 1.10.0; do
+  $PSQL "INSERT INTO industry_packs (code,name,industry,version,pack_level,status,file_path)
+         VALUES ('${VER_CODE}','版本冒烟包','smoke','${VV}','industry','disabled','/nonexistent/${VER_CODE}.aipack');" >/dev/null 2>&1
+done
+VA_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='${VER_CODE}' AND version='1.0.0'" | tr -d '[:space:]')
+VB_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='${VER_CODE}' AND version='1.9.0'" | tr -d '[:space:]')
+VC_ID=$($PSQL "SELECT id FROM industry_packs WHERE code='${VER_CODE}' AND version='1.10.0'" | tr -d '[:space:]')
+check "版本段三个合成版本行已建（前提自检）" 3 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}'" | tr -d '[:space:]')"
+{ [ -n "$VA_ID" ] && [ -n "$VB_ID" ] && [ -n "$VC_ID" ]; } \
+  && check "三个版本 ID 全部取到（取不到会把 PUT 打成 404 假绿）" y y \
+  || check "三个版本 ID 全部取到（A=${VA_ID:-空} B=${VB_ID:-空} C=${VC_ID:-空}）" y n
+# 1) 首次上架：只动自己那一行，兄弟仍在
+VER_ACT1=$(curl -s -m 15 -X PUT "$B/api/v1/super/packs/${VA_ID}/status" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"status":"active"}')
+check "首次上架 1.0.0→code=0" 0 "$(printf '%s' "$VER_ACT1" | jsonget "['code']" 2>/dev/null)"
+check "首次上架后本 code active=1" 1 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='active'" | tr -d '[:space:]')"
+# 2) 绕过应用直插第二条 active：必须被索引拒，且报错出自这条约束（不是连接断了之类的别的失败）
+VER_DUP_ERR=$($PSQL "INSERT INTO industry_packs (code,name,version,pack_level,status) VALUES ('${VER_CODE}','直插第二版','9.9.9','industry','active');" 2>&1 | tr -d '\r')
+check "直插同 code 第二条 active 被唯一索引拒（23505，人工 SQL 也绕不过）" y \
+  "$(printf '%s' "$VER_DUP_ERR" | grep -Eq 'ux_pack_one_active_per_code|23505' && echo y || echo n)"
+check "被拒的直插没留下半成品行（active 仍只有 1.0.0 那一条）" 1 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='active'" | tr -d '[:space:]')"
+# 3) 换版本=原子换位：上架 1.9.0 必须把 1.0.0 挤下，且回执要说清动了谁（超管别以为系统自己改了别的包）
+VER_ACT2=$(curl -s -m 15 -X PUT "$B/api/v1/super/packs/${VB_ID}/status" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"status":"active"}')
+check "上架 1.9.0→code=0" 0 "$(printf '%s' "$VER_ACT2" | jsonget "['code']" 2>/dev/null)"
+check "换版本后本 code active 仍恰 1（不是 0 也不是 2）" 1 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='active'" | tr -d '[:space:]')"
+check "在架那一条确实是刚上架的 1.9.0（上架目标赢，不是按 id 猜）" 1.9.0 \
+  "$($PSQL "SELECT version FROM industry_packs WHERE code='${VER_CODE}' AND status='active'" | tr -d '[:space:]')"
+check "旧版本 1.0.0 被自动下架（同一事务内让位）" disabled \
+  "$($PSQL "SELECT status FROM industry_packs WHERE id=${VA_ID}" | tr -d '[:space:]')"
+check "回执文案点明被顺带下架的 code+版本（只回\"已更新\"等于瞒住一次连带动作）" y \
+  "$(printf '%s' "$VER_ACT2" | grep -q '自动下架' && echo y || echo n)"
+# 4) 历史不删：换版本之后同 code 仍有两条下架行可回滚上架（全表唯一索引会在这一条上炸）
+check "同 code 历史下架版本行数=2（版本历史与回滚能力还在）" 2 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='disabled'" | tr -d '[:space:]')"
+# 5) 换位可重复：再上架 1.10.0（1.10.0 与 1.9.0 的比较是纯函数侧的数值序用例，本段只测"还能再换一次"）
+VER_ACT3=$(curl -s -m 15 -X PUT "$B/api/v1/super/packs/${VC_ID}/status" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"status":"active"}')
+check "再上架 1.10.0→code=0（换位不是只许做一次）" 0 "$(printf '%s' "$VER_ACT3" | jsonget "['code']" 2>/dev/null)"
+check "三次上架后 active 仍恰 1、且是最后上架的那条" 1 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='active' AND version='1.10.0'" | tr -d '[:space:]')"
+# 6) 读侧同源：超管包列表里本 code 只出现一条在架行——租户/超管界面看到的不是三行"汽车"
+VER_LIST=$(curl -s -m 20 "$B/api/v1/super/packs" -H "Authorization: Bearer $TOKEN")
+check "包列表中本 code 的在架行数=1（界面不再重复摊同一行业的多个版本）" 1 \
+  "$(printf '%s' "$VER_LIST" | python3 -c "import sys,json;d=json.load(sys.stdin);rows=d.get('data') or [];print(sum(1 for r in rows if r.get('code')=='${VER_CODE}' and r.get('status')=='active'))" 2>/dev/null)"
+check "包列表中本 code 总行数=3（列表仍给全历史，档位/下架是另一列的事）" 3 \
+  "$(printf '%s' "$VER_LIST" | python3 -c "import sys,json;d=json.load(sys.stdin);rows=d.get('data') or [];print(sum(1 for r in rows if r.get('code')=='${VER_CODE}'))" 2>/dev/null)"
+# 7) 上下架留痕：每次动作一条 super_pack_status 审计（连带下架的兄弟只在这里能被事后追认）
+check "三次上下架动作各留一条 super_pack_status 审计" 3 \
+  "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE action='super_pack_status' AND resource IN ('industry_pack:${VA_ID}','industry_pack:${VB_ID}','industry_pack:${VC_ID}')" | tr -d '[:space:]')"
+check "审计里能看到\"同编码旧版本自动下架\"的连带说明" y \
+  "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE action='super_pack_status' AND detail LIKE '%自动下架%'" 2>/dev/null | tr -d '[:space:]' | grep -v '^0$' >/dev/null && echo y || echo n)"
+# 8) 下架不牵连：只把手上那条下掉，其余历史行状态不得被动
+curl -s -m 15 -o /dev/null -X PUT "$B/api/v1/super/packs/${VC_ID}/status" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"status":"disabled"}'
+check "单独下架只动目标行（1.9.0/1.0.0 仍是被上架时置的 disabled，未被二次改写）" 3 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='disabled'" | tr -d '[:space:]')"
+check "下架后本 code active=0（不变式在零在架态同样成立）" 0 \
+  "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}' AND status='active'" | tr -d '[:space:]')"
+# 9) 现场回收：合成版本行 + 本段审计清零，不给包目录与审计面留垃圾
+$PSQL "DELETE FROM industry_packs WHERE code='${VER_CODE}';
+       DELETE FROM tenant_audit_logs WHERE action='super_pack_status' AND resource IN ('industry_pack:${VA_ID}','industry_pack:${VB_ID}','industry_pack:${VC_ID}');" >/dev/null 2>&1
+check "本段合成版本行已清零" 0 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}'" | tr -d '[:space:]')"
+check "本段上下架审计已清零" 0 \
+  "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE action='super_pack_status' AND resource IN ('industry_pack:${VA_ID}','industry_pack:${VB_ID}','industry_pack:${VC_ID}')" | tr -d '[:space:]')"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

@@ -2,6 +2,7 @@
 # T7 契约检查：
 #   1. golden 文件与代码一致（apidump --check）
 #   2. 前端类型生成无漂移（gen_api_types 重生成 diff）
+#   2.5 后端错误码清单生成物无漂移（apidump -format errorcodes，真源 internal/errcodes）
 #   3. 前端调用路径与后端路由清单孤儿检测（FE 调了不存在的路由即红）
 # 用法：tools/check_api_contract.sh
 set -u
@@ -49,6 +50,24 @@ if ! node scripts/gen_api_types.mjs api.schema.json "$TMP_API_TS" > /dev/null; t
   FAIL=1
 elif ! diff -q "$TMP_API_TS" frontend-react/src/types/api.d.ts > /dev/null; then
   echo "  FAIL  frontend-react/src/types/api.d.ts 与 api.schema.json 不一致（请跑 npm run gen:api）"
+  FAIL=1
+fi
+
+# ---- 2.5 后端错误码清单漂移（残项3，2026-09-25）----
+# frontend-react/src/types/error_codes.generated.ts 是 cmd/apidump -format errorcodes 的生成物，
+# 真源在 internal/errcodes（后端每一处 error_code 发射点都引用那里的常量）。
+# 这一条钉的是"前端那份码表是不是后端现状"：后端加码而未重生成 → 这里红；
+# 前端文案表跟着抄件的节奏走，抄件又与源码无机制约束，就是残项3 的原始现场。
+ERRCODES_TS=frontend-react/src/types/error_codes.generated.ts
+if ! go run ./cmd/apidump -format errorcodes -out "$ERRCODES_TS" -check > /dev/null; then
+  echo "  FAIL  $ERRCODES_TS 与 internal/errcodes 清单不一致（请跑 go run ./cmd/apidump -format errorcodes -out $ERRCODES_TS）"
+  FAIL=1
+fi
+# 生成物自证：码数下限。零码/半截生成物与"后端真发不出几个码"在 diff 上看不出区别，
+# 一旦生成器解析面失配，前端文案表会在一张空清单上"全部对齐"。
+ERRCODE_COUNT=$($GREP -cE '^  "[a-z_]+"' "$ERRCODES_TS" || true)
+if [ "${ERRCODE_COUNT:-0}" -lt 15 ]; then
+  echo "  FAIL  $ERRCODES_TS 只解析出 $ERRCODE_COUNT 个码，低于下限 15——生成面本身失配"
   FAIL=1
 fi
 

@@ -20,6 +20,7 @@
 package service
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -226,9 +227,9 @@ func TestRealConcurrentMergeSingleProcessor(t *testing.T) {
 // （15s 超时，点名甲/乙/丙 中未返回的那几路）。修法=回复按代际各占一格，故这里断言
 // 等待者拿到的必须是**逐字的"批1回复"**（不是"非空"也不是"任一批次的回复"）。
 //
-// 为什么只打到第 4 条而不是 5 条：本批用 5 条探到一处**已登记待决策的重复回复缺陷**
-// （见文件末 DEFECT-G7-DUP-TAKEOVER 注释）。缺陷修好前，"5 条=2 批"这条断言必红，
-// 故这里锁住 4 条这段无争议语义，不替缺陷背书。
+// 为什么只打到第 4 条：这条锁的是"批次边界 + 等待者取回本批回复"这段无争议语义，
+// 4 条以内不会触发积压双唤醒竞态。5 条那条路（连发 5 条只回 2 条）由
+// TestRealMergeFiveMessagesTwoReplies 单独锁，两用例分工不重叠。
 func TestRealMergeOverflowTwoBatchesNoLoss(t *testing.T) {
 	defer queueTestConfig(t, 3, nil)()
 	svc := NewMessageQueueService()
@@ -329,6 +330,149 @@ func TestRealMergeOverflowTwoBatchesNoLoss(t *testing.T) {
 	}
 }
 
+// TestRealMergeFiveMessagesTwoReplies 上限 3、同客户连发 5 条：**只许回两条**，
+// 且 5 句话在两个批次里各出现恰好一次（不多不少）。
+//
+// 这条锁住的是 DEFECT-G7-DUP-TAKEOVER（2026-09-24 登记，2026-09-25 本批修）：
+// 批1 关账后第 4、5 条双双停在积压等待里，批1 交卷那一次 Broadcast 同时唤醒两路。
+// 先抢到锁的那路开批2，收账循环把**两条**积压消息一起标进批2；后醒的那路过去会
+// 无条件把自己立成"下一批第一个"，发现自己的行已被收走后又把同一句话**再补进**
+// pending 一遍 → 批3 诞生，客户为第 5 条收到两条内容重叠的回复，AI token 双烧。
+// 实测（窗口 1s / 上限 3，修复前）：批2 merged="四号\n五号"，批3 merged="五号"。
+//
+// 判据为什么这样设计（三处都不是可有可无）：
+//   - 「处理者恰好 2 个」是"回几条"的直接口径，比断内容更能抓住双答；
+//   - 「每句 marker 在全部批次里各出现 1 次」同时封堵重复入批（>1）与静默丢消息（0），
+//     只看总条数会被"一条重复 + 一条丢失"抵消掉；
+//   - 四、五两路必须**都**在批1 交卷前落进 pending（中间那次 sleep），否则两只唤醒
+//     不会发生在同一次 Broadcast 上，这条用例就退化成上一条 4 条用例，抓不到缺陷。
+func TestRealMergeFiveMessagesTwoReplies(t *testing.T) {
+	defer queueTestConfig(t, 3, nil)()
+	svc := NewMessageQueueService()
+	tid, cid := uint(34), uint(94704)
+
+	res := make(chan taggedResult, 8)
+	enqueueTagged(svc, tid, cid, "一", "连发测试第一句，想了解全系配置差异", res)
+	enqueueTagged(svc, tid, cid, "二", "连发测试第二句，另外想知道保养周期", res)
+	enqueueTagged(svc, tid, cid, "三", "连发测试第三句，还有保险方案怎么算", res)
+
+	// 批1：三路里先抢到锁的那路是处理者，另外两路把批次撑到上限
+	var b1 taggedResult
+	for b1.who == "" {
+		select {
+		case r := <-res:
+			if r.process {
+				b1 = r
+			} else {
+				t.Fatalf("批1 尚未关账就有等待者带回复返回（who=%s reply=%q）——被提前唤醒", r.who, r.reply)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("10s 内没有任何一路成为批1 处理者")
+		}
+	}
+	if got := strings.Count(strings.TrimSpace(b1.merged), "连发测试"); got != 3 {
+		t.Errorf("批1应含 3 条，实际合并结果 %q", b1.merged)
+	}
+
+	// 批1 已关账且仍被持有（模拟 AI 生成中）：这两条只能进积压等待
+	enqueueTagged(svc, tid, cid, "四", "连发测试第四句，麻烦一并报价", res)
+	enqueueTagged(svc, tid, cid, "五", "连发测试第五句，周末有空的话安排试驾", res)
+	time.Sleep(500 * time.Millisecond) // 确保两路都已落进 pending 并停在积压等待里
+
+	svc.SetReply(tid, cid, b1.epoch, "批1回复")
+
+	// 余下四路（批1 的两个等待者 + 四 + 五）陆续回来；
+	// 谁成为批2 处理者由调度决定，因此对每一个"自称处理者"的结果立刻按其代际交卷。
+	seen := map[string]taggedResult{}
+	procs := []taggedResult{b1}
+	published := map[uint64]string{b1.epoch: "批1回复"}
+	deadline := time.After(20 * time.Second)
+	for len(seen) < 4 {
+		select {
+		case r := <-res:
+			seen[r.who] = r
+			if r.process {
+				reply := "后续批回复"
+				procs = append(procs, r)
+				published[r.epoch] = reply
+				svc.SetReply(tid, cid, r.epoch, reply)
+			}
+		case <-deadline:
+			var missing []string
+			for _, w := range []string{"一", "二", "三", "四", "五"} {
+				if _, ok := seen[w]; !ok && w != b1.who {
+					missing = append(missing, w)
+				}
+			}
+			t.Fatalf("20s 内只收到 %d/4 路后续结果，未返回：%v（处理者=%d 个）", len(seen), missing, len(procs))
+		}
+	}
+
+	// ① 回几条：五条消息只许两个处理者（三个即双答）
+	if len(procs) != 2 {
+		var desc []string
+		for _, p := range procs {
+			desc = append(desc, fmt.Sprintf("%s(代%d)=%q", p.who, p.epoch, p.merged))
+		}
+		t.Errorf("连发 5 条出现 %d 个处理者（期望 2，即只回 2 条）：%s", len(procs), strings.Join(desc, " | "))
+	}
+
+	// ② 守恒：五句各出现恰好一次——重复入批（双答的另一种形态）与丢消息一起封
+	all := ""
+	for _, p := range procs {
+		all += p.merged + "\n"
+	}
+	for _, mark := range []string{"第一句", "第二句", "第三句", "第四句", "第五句"} {
+		if n := strings.Count(all, mark); n != 1 {
+			t.Errorf("「%s」在全部批次里出现 %d 次，期望恰好 1 次（0=丢消息，≥2=同一句被答两遍）：%q", mark, n, all)
+		}
+	}
+
+	// ③ 等待者必须拿到"含自己那句话的那一批"的回复，且不空
+	for _, w := range []string{"一", "二", "三"} {
+		if w == b1.who {
+			continue
+		}
+		r := seen[w]
+		if r.process {
+			t.Errorf("批1 等待者 %s 二次接管处理权（merged=%q）——处理者唯一性被破坏", w, r.merged)
+		}
+		if r.reply != "批1回复" {
+			t.Errorf("%s 拿到的回复=%q，期望逐字 %q", w, r.reply, "批1回复")
+		}
+	}
+	for _, w := range []string{"四", "五"} {
+		r := seen[w]
+		if r.process {
+			continue
+		}
+		if r.reply == "" {
+			t.Errorf("%s 作为等待者拿到空回复（消息没被任何批次答走）", w)
+			continue
+		}
+		if _, ok := published[r.epoch]; !ok {
+			t.Errorf("%s 拿到代%d 的回复 %q，但没有任何批次以该代际交卷", w, r.epoch, r.reply)
+		}
+	}
+
+	// ④ 交卷后不残留：pending 清空，代际回复槽不单调增长
+	q := svc.getQueue(queueKey(tid, cid))
+	q.mu.Lock()
+	residue := len(q.pending)
+	claims := len(q.claimedByReq)
+	slots := len(q.replyByEpoch)
+	q.mu.Unlock()
+	if residue != 0 {
+		t.Errorf("全部批次交卷后 pending 残留 %d 条（孤儿消息会污染下一批）", residue)
+	}
+	if claims != 0 {
+		t.Errorf("归属登记表残留 %d 项，期望 0（每条消息的归属都该被消费或剪枝）", claims)
+	}
+	if slots > 2 {
+		t.Errorf("replyByEpoch 残留 %d 格，期望 ≤2 格", slots)
+	}
+}
+
 // TestRealSelfHealThenStaleReplyDiscarded processing 锁超时自愈放行新处理者后，
 // 慢死的旧处理者回来交卷必须被真实代际 fencing 丢弃——旧回复既不落 lastReply，
 // 也不许释放新处理者的锁（否则客户收到两条不相关回复，且第二批的等待者被提前唤醒）。
@@ -426,24 +570,24 @@ func TestRealSimpleMessageSerializesPerCustomer(t *testing.T) {
 	}
 }
 
-// DEFECT-G7-DUP-TAKEOVER（2026-09-24 欠账批一探到，已登记待决策，本批未动生产代码）
+// DEFECT-G7-DUP-TAKEOVER（2026-09-24 欠账批一探到并登记 → 2026-09-25 残项批修掉）
 //
-// 现象：合并上限 3、同客户连发 5 条时，第 5 条会被答两次——它既进了批2 的合并结果
-// （批2 merged = 第四句\n第五句），又在批2 交卷后被唤醒、自己接管成批3
-// （shouldProcess=true，merged = 第五句）。客户收到两条内容重叠的回复，AI token 双烧。
-// 实测证据（窗口 1s / 上限 3，本批探针跑出的真实返回）：
+// 现象：合并上限 3、同客户连发 5 条时，第 4/5 条里有且只有一条会被答两次——它既进了批2
+// 的合并结果（批2 merged = 第四句\n第五句），又在批2 交卷后被唤醒、自己接管成批3
+// （shouldProcess=true，merged = 其中那一句）。客户收到两条内容重叠的回复，AI token 双烧。
+// 修复前后各跑一次的真实返回（窗口 1s / 上限 3，TestRealMergeFiveMessagesTwoReplies）：
 //
-//	返回1: idx=0 process=true merged="一号\n二号\n三号" epoch=1
-//	返回2: idx=3 process=true merged="四号\n五号"       epoch=2  ← 批2 已含第 5 条
-//	返回3: idx=4 process=true merged="五号"             epoch=3  ← 第 5 条又被单独处理一次
+//	修复前: 三(代1)="一\n二\n三" | 五(代2)="四\n五" | 四(代3)="四"   ← 三个处理者、四被答两遍
+//	修复后: 三(代1)="一\n二\n三" | 四(代2)="四\n五"                  ← 两个处理者、五随批取回复
 //
 // 根因：processLocally 的积压分支 `for q.processing { Wait }` 醒来后**无条件**把自己立成
-// 新批的第一个（message_queue.go:533-564）。第 5 条的 pending 行早被批2 的收账循环改成了
-// 批2 的 BatchID，于是 `inBatch == false` 那段防御分支把它**再补进** pending 一遍。
+// 新批的第一个。批1 交卷那一次 Broadcast 同时唤醒停在积压里的两路，先抢到锁的那路开批2 时
+// 按"所有 BatchID==0 的行"收账（把对手那句也收走了），后醒的那路发现自己的行已不在积压集合
+// 里，`inBatch == false` 那段防御分支又把同一句话补进 pending 一遍。
 //
-// 为何不在本批直接修：修法要新增"这条 pending 属于哪个请求"的归属标识（当前只有 BatchID，
-// 反查不到请求本身），属队列核心状态机改动，且与 D5 投递认领 / epoch fencing 联动，
-// 必须配双实例 Redis 回归，塞进"补单测"这批做等于蒙着改。
-//
-// 修法前置：pending 行带请求侧 msgID 随返回值传出，或醒来时按"我的行已被并入某批且该批
-// 尚未交卷"改走等回复分支；两条路都要补冒烟断言"连发 5 条只回 2 条"。
+// 修法（2026-09-25）：pending 行新增**请求归属号 ReqID**，被别人的批次收走时在
+// claimedByReq[ReqID] 登记那一代的代际；积压等待者醒来先查这张表——命中就改等那一批的回复
+// （与 D8 的 replyByEpoch 同判据），只有在"那一批被超时自愈清掉且从未交卷"这种极端时序下
+// 才回落到接管路径，靠原防御分支把消息补进新批，保证不丢。归属表用完即删、随 SetReply
+// 与 replyByEpoch 同窗剪枝。回归锁 = TestRealMergeFiveMessagesTwoReplies（处理者个数、
+// 五句各出现恰好一次、等待者逐字回复、归属表零残留四条）。

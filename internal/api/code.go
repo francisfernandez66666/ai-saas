@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/schema"
 	"github.com/gin-gonic/gin"
 )
@@ -38,13 +39,13 @@ const (
 // codeName 机器可读错误码映射（与 schema.Response.Error_code 对应，前端按此 toast）
 var codeName = map[RespCode]string{
 	CodeOK:           "ok",
-	CodeParamErr:     "param_error",
-	CodeUnauthorized: "unauthorized",
-	CodeForbidden:    "forbidden",
-	CodeNotFound:     "not_found",
-	CodeRateLimited:  "rate_limited",
-	CodeBizErr:       "biz_error",
-	CodeInternal:     "internal_error",
+	CodeParamErr:     errcodes.ParamError,
+	CodeUnauthorized: errcodes.Unauthorized,
+	CodeForbidden:    errcodes.Forbidden,
+	CodeNotFound:     errcodes.NotFound,
+	CodeRateLimited:  errcodes.RateLimited,
+	CodeBizErr:       errcodes.BizError,
+	CodeInternal:     errcodes.InternalError,
 }
 
 // codeNameFromCode 由业务码（含存量魔数）推导机器可读错误码

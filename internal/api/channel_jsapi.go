@@ -12,6 +12,7 @@ import (
 
 	"ai-scrm/internal/channel"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/model"
 )
 
@@ -90,7 +91,7 @@ func ChannelWecomAgentConfig(c *gin.Context) {
 			// 400 + 稳定原因码：配置缺失不是服务端故障，前端按 reason 分支出引导文案。
 			c.JSON(http.StatusBadRequest, gin.H{
 				"code": 400, "message": err.Error(),
-				"error_code": "channel_config_incomplete", "reason": "agentid_missing",
+				"error_code": errcodes.ChannelConfigIncomplete, "reason": "agentid_missing",
 			})
 			return
 		}

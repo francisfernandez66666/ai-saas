@@ -42,19 +42,33 @@ type PendingMessage struct {
 	Content    string    // 消息内容
 	ReceivedAt time.Time // 接收时间
 	BatchID    uint64    // 批次ID，区分不同合并批次，防止跨批消息混合
+	// ReqID 请求归属号（2026-09-25 残项1）：本行由哪一路 EnqueueAndWait 请求放进队列的。
+	// 之前只有 BatchID，"这条消息被谁收走了"反查不到请求本身——积压等待者被唤醒后
+	// 无法知道自己其实已被别人开的新批收走，只能无条件再开一批，于是同一条消息回两遍
+	// （DEFECT-G7-DUP-TAKEOVER）。BatchID 回答"进了哪一批"，ReqID 回答"是谁的那一句"。
+	// 0 = 无本地等待者认领本行（跨实例 absorb 进来的远端消息、自愈后的补写行）。
+	ReqID uint64
 }
 
 // CustomerQueue 单客户消息队列
 type CustomerQueue struct {
-	mu               sync.Mutex
-	cond             *sync.Cond
-	pending          []PendingMessage // 待合并消息
-	processed        int              // 已处理的消息数（积压队列的偏移）
-	processing       bool             // 是否正在处理中
-	lastReply        string           // 最近一次生成的回复（用于后续请求直接取）
-	lastReplyAt      time.Time        // 最近回复时间（判断是否是本次合并的回复）
-	mergeCount       int              // 当前合并批次已合并几条
-	simpleProcessing bool             // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
+	mu      sync.Mutex
+	cond    *sync.Cond
+	pending []PendingMessage // 待合并消息
+	// nextReqID 请求归属号发号器（2026-09-25 残项1）：本地入队的每条消息领一个递增号，
+	// 与 PendingMessage.ReqID 配对使用。
+	nextReqID uint64
+	// claimedByReq 归属登记表（2026-09-25 残项1）：key=请求归属号，value=把这条消息收进
+	// 批次的那个代际。只有"自己那条还停在积压里(BatchID==0)、却被别人开的新批收走"的请求
+	// 会被登记——它醒来后读到这一格就该改等那一批的回复，而不是再开一批把同一句话答第二遍。
+	// 消费即删；SetReply 里随 replyByEpoch 一同剪枝（活跃客户长跑不清就是内存泄漏）。
+	claimedByReq     map[uint64]uint64
+	processed        int       // 已处理的消息数（积压队列的偏移）
+	processing       bool      // 是否正在处理中
+	lastReply        string    // 最近一次生成的回复（用于后续请求直接取）
+	lastReplyAt      time.Time // 最近回复时间（判断是否是本次合并的回复）
+	mergeCount       int       // 当前合并批次已合并几条（窗口判据，不等于批次实际条数——实际数以 waitForMerge 收账结果为准）
+	simpleProcessing bool      // 简单消息是否正在处理（H7：实例内同客户串行，防并发乱序/重复回复）
 	// P1-4 配套(2026-09-20 审计批)：simple 锁的持有时点与代次令牌。
 	// simpleSince 供看门狗判定持锁时长；simpleToken 每次接管递增，看门狗只复位
 	// "自己那次接管"（防误伤后续正常持有者），SimpleMessageDone 语义不变。
@@ -468,11 +482,17 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	}
 
 	var msgIdx = -1
+	// myReqID 本请求那条 pending 行的归属号（0=没有自己的行，接管场景由 absorb 捡回）。
+	// 残项1(2026-09-25)：积压等待者醒来后要靠它确认"我这句话是不是已被别人开的新批收走"。
+	var myReqID uint64
 	if appendOwn {
 		// 消息入队（带批次ID）
+		q.nextReqID++
+		myReqID = q.nextReqID
 		msg := PendingMessage{
 			Content:    content,
 			ReceivedAt: time.Now(),
+			ReqID:      myReqID,
 		}
 		q.pending = append(q.pending, msg)
 		msgIdx = len(q.pending) - 1 // 记录消息索引，用于后续设置BatchID
@@ -485,7 +505,17 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 		q.currentBatch++                   // 新批次，递增batchID
 		q.epoch++                          // P1-19：代际递增，本批次持代返回给调用方做 SetReply 校验
 		q.processingStartedAt = time.Now() // 记录处理开始时间，用于超时检测
-		q.mergeCount = 1
+		// 残项2(2026-09-25，DEFECT-G7-TAKEOVER-MERGECOUNT)：mergeCount 此前无条件置 1，
+		// 而 appendOwn=false（跨实例接管：自己的消息还在 Redis 待合并列表里，等窗口收账那次
+		// absorb 捡回）时批内一条都没有，虚高 1。虚高会顺着返回值流到两处下游：
+		// internal/channel/inbound.go 的 D7 相似抑制前置 `mergeCount <= 1`（该抑制的批次
+		// 跳过判定，极端下重复回复一条通道消息）与 CalcHumanlikeDelay 的条次口径。
+		// 与下面积压接管分支"先 0 再按 pending 实数累加"的同款写法对齐。
+		if appendOwn {
+			q.mergeCount = 1
+		} else {
+			q.mergeCount = 0
+		}
 		q.lastReply = ""
 		q.deadlineExpired = false
 		if msgIdx >= 0 {
@@ -498,15 +528,15 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 
 		log.Printf("[合并队列] 客户%s 拿到处理权(批次%d,代%d)，开始合并窗口等待: %q%s", k, completedBatch, myEpoch, logx.Safe(content, 40), traceTag(traceID))
 
-		// 事件驱动合并等待（滑动窗口），返回合并内容+实际等待时长
-		merged, waitDuration := s.waitForMerge(q, k)
-		// P2-36 修复(2026-09-09)：waitForMerge 解耦后 q.currentBatch/q.mergeCount 可能已被并发写入，
+		// 事件驱动合并等待（滑动窗口），返回合并内容+实际等待时长+本批实际条数
+		merged, waitDuration, batchCount := s.waitForMerge(q, k)
+		// P2-36 修复(2026-09-09)：waitForMerge 解耦后 q.currentBatch 可能已被并发写入，
 		// 读取需重新加锁快照——否则 -race 报数据竞争（解锁后读受锁保护字段）。
 		q.mu.Lock()
-		finalBatch, finalCount := q.currentBatch, q.mergeCount
+		finalBatch := q.currentBatch
 		q.mu.Unlock()
-		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, finalBatch, finalCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
-		return merged, true, "", waitDuration, false, finalCount, myEpoch
+		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, finalBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
+		return merged, true, "", waitDuration, false, batchCount, myEpoch
 	}
 
 	// 已经在处理中了，检查是否还能合并进当前批次
@@ -546,10 +576,43 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 		return "", false, reply, 0, false, waitedCount, waitEpoch
 	}
 
-	// 超过合并上限，积压队列——这是下一批的第一个
-	// 先挂起等待当前批次完成
-	for q.processing {
-		q.cond.Wait()
+	// 超过合并上限，积压队列——本消息要么由别人开的新批带上，要么自己成为下一批的第一个。
+	//
+	// 残项1(2026-09-25，DEFECT-G7-DUP-TAKEOVER)：这里原来是"醒来就无条件把自己立成新批第一个"。
+	// 批1 交卷那一次 Broadcast 同时唤醒停在本处的第 4、5 条，谁先抢到锁由调度决定：先醒的那路
+	// 开批2，收账循环把**所有** BatchID==0 的行（连同对手那一句）一起标进批2；后醒的那路发现
+	// 自己的行已不在积压集合里（inBatch=false），走下面的防御分支把同一句话**再补进** pending
+	// 一遍 → 批3 诞生，客户为同一句收到两条内容重叠的回复，AI token 双烧。
+	// 修法：pending 行带请求归属号 ReqID，被别人的批次收走时登记 claimedByReq[ReqID]=那一批的
+	// 代际；醒来先查这张表——命中即说明"我这句已经在某一批里被答了/正被答"，改等那一批的回复。
+	for {
+		for q.processing {
+			q.cond.Wait()
+		}
+		// 查归属登记表：ReqID==0（跨实例接管场景）与"从未被别人收走"两种情况都拿不到格，
+		// 表里也从不写 key=0 的行，故这里无需额外分支判空。
+		claimEpoch, claimed := q.claimedByReq[myReqID]
+		if !claimed {
+			break // 没人收走我这句：本请求自己开下一批
+		}
+		delete(q.claimedByReq, myReqID)
+		// D8 同款判据：只等自己那一格，代际推进或 processing 释放都不再干等
+		for q.processing && q.replyByEpoch[claimEpoch] == "" && q.epoch == claimEpoch {
+			q.cond.Wait()
+		}
+		reply = q.replyByEpoch[claimEpoch]
+		if reply == "" {
+			reply = q.lastReply
+		}
+		if reply != "" {
+			waitedCount := q.mergeCount
+			locked = false
+			q.mu.Unlock()
+			log.Printf("[合并队列] 客户%s 消息已被代%d那一批收走，随批取回回复: %q%s", k, claimEpoch, logx.Safe(content, 40), traceTag(traceID))
+			return "", false, reply, 0, false, waitedCount, claimEpoch
+		}
+		// 极端时序：收走我这句的那一批被超时自愈清掉且从未交卷——消息不能就此蒸发。
+		// 回到循环顶部重新争处理权，走下面的接管路径把自己补进新批（防御分支兜住）。
 	}
 
 	// 当前批次完成了，本消息成为下一批的第一个
@@ -567,12 +630,24 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	for i := range q.pending {
 		if q.pending[i].BatchID == 0 {
 			q.pending[i].BatchID = q.currentBatch
+			// 残项1(2026-09-25)：这一行若属于**另一路**仍停在积压等待里的请求（ReqID>0 且
+			// 不是自己），登记归属代际——它醒来据此改等本批回复。两种行不登记：
+			//   · ReqID==0：来自跨实例 absorb 或自愈补写，本地没有对应等待者；
+			//   · ReqID==myReqID：本请求自己就是本批处理者，登记了没人消费（残留项要等
+			//     两次 SetReply 才被剪掉，把"归属表用完即空"这条不变式弄脏）。
+			if rid := q.pending[i].ReqID; rid != 0 && rid != myReqID {
+				if q.claimedByReq == nil {
+					q.claimedByReq = map[uint64]uint64{}
+				}
+				q.claimedByReq[rid] = q.epoch
+			}
 			q.mergeCount++
 			inBatch = true
 		}
 	}
 	if !inBatch {
-		// 防御：本消息理论上已在 pending 中，若因极端自愈时序丢失则补入
+		// 防御：本消息理论上已在 pending 中，若因极端自愈时序丢失则补入。
+		// ReqID 留 0——这行由本请求以处理者身份补写，没有等待回查归属的另一路。
 		q.pending = append(q.pending, PendingMessage{
 			Content:    content,
 			ReceivedAt: time.Now(),
@@ -587,14 +662,9 @@ func (s *MessageQueueService) processLocally(k string, content string, appendOwn
 	q.mu.Unlock()
 
 	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q%s", k, myBatch, myEpoch, startCount, logx.Safe(content, 40), traceTag(traceID))
-	merged, waitDuration := s.waitForMerge(q, k)
-	// D5 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：q.mergeCount 在窗口期由
-	// absorbRemotePending/新消息累加在锁内写、这里无锁读——数据竞争（go test -race 可炸，
-	// 读半值致 mergeCount 决策失真）。解锁后重取快照。
-	q.mu.Lock()
-	finalCount := q.mergeCount
-	q.mu.Unlock()
-	return merged, true, "", waitDuration, false, finalCount, myEpoch
+	merged, waitDuration, batchCount := s.waitForMerge(q, k)
+	log.Printf("[合并队列] 客户%s 积压批合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, myBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
+	return merged, true, "", waitDuration, false, batchCount, myEpoch
 }
 
 // waitRemotely 远程等待路径（本实例未抢到锁，消息转交处理者实例）
@@ -805,7 +875,10 @@ func (s *MessageQueueService) absorbRemotePending(k string, q *CustomerQueue) {
 //   - 每次被新消息唤醒后 Reset 定时器（滑动窗口：新消息重置25秒deadline）
 //   - 返回实际等待时长 mergeWaitDuration，供AI延迟偏移使用
 //     （AI延迟 = 基础延迟 - 合并等待时间，最小为0，不会叠加）
-func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedContent string, mergeWaitDuration time.Duration) {
+//     返回的 batchCount 是**本批实际收进几句**（收账时的行数），不是窗口计数器 mergeCount：
+//     后者还要承担滑动窗口的"够不够条数"判据，接管场景下会与本批真实行数不一致（残项2）。
+//     下游（D7 相似抑制前置、CalcHumanlikeDelay）要的是"这批几句话"，必须用这个返回值。
+func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedContent string, mergeWaitDuration time.Duration, batchCount int) {
 	// 修复：合并窗口从25秒合并窗口，fallback值同步更新
 	// 用户明确要求：客户连发消息时，30秒滑动窗口合并，最多3条
 	mergeWindow := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(tidFromKey(k), "merge_window_seconds", 25)) * time.Second
@@ -899,6 +972,9 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 	q.pending = remaining
 	// P0-7 修复(2026-09-15)：批次关账——本批收集到此为止，后续到达的消息改投下一批
 	q.batchClosed = true
+	// 残项2(2026-09-25)：本批真实条数以收账到的行数为数（mergeCount 是窗口计数器，
+	// 接管/自愈场景下与行数不等，见函数头注释）
+	batchCount = len(mergedBuilder)
 	q.mu.Unlock()
 
 	// 用换行连接多条消息（AI能看出来是连发的）
@@ -910,7 +986,7 @@ func (s *MessageQueueService) waitForMerge(q *CustomerQueue, k string) (mergedCo
 		merged += c
 	}
 
-	return merged, mergeWaitDuration
+	return merged, mergeWaitDuration, batchCount
 }
 
 // SetReply 设置回复结果，并唤醒所有等待的请求
@@ -947,6 +1023,13 @@ func (s *MessageQueueService) SetReply(tenantID uint, customerID uint, epoch uin
 		for e := range q.replyByEpoch {
 			if e < pubEpoch-1 {
 				delete(q.replyByEpoch, e)
+			}
+		}
+		// 残项1(2026-09-25)：归属登记表与回复槽同窗剪枝——比"上一代"更早的批次，其等待者
+		// 要么已经取回复离场，要么判据（q.epoch==claimEpoch）已不成立，留着只会单调增长。
+		for rid, e := range q.claimedByReq {
+			if e < pubEpoch-1 {
+				delete(q.claimedByReq, rid)
 			}
 		}
 	}

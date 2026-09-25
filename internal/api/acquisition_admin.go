@@ -23,6 +23,7 @@ import (
 
 	"ai-scrm/internal/acquisition"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/middleware"
 	"ai-scrm/internal/model"
 )
@@ -153,7 +154,7 @@ func CreateAcquisitionCode(c *gin.Context) {
 		if reason := acquisition.RejectReason(err); reason != "" {
 			// 与触达批同一形态：msg 给人读，reason 给前端分支与冒烟断言（文案可改，码不可改）
 			c.JSON(http.StatusBadRequest, gin.H{
-				"code": 400, "message": err.Error(), "error_code": "acquisition_rejected", "reason": reason,
+				"code": 400, "message": err.Error(), "error_code": errcodes.AcquisitionRejected, "reason": reason,
 			})
 			return
 		}

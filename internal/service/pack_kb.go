@@ -12,6 +12,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -157,6 +158,15 @@ func GetBoundPackMindset(tenantID uint) []string {
 
 // flattenJSONLines 将 JSON 值扁平化为 "k: v" 行（嵌套以 parent.k 表达）
 // 递归解析JSON，将嵌套结构展平为可读的键值对
+//
+// 2026-09-25 残项收口：**map 分支的键必须先排序再递归**。这里的排序不是美观问题——
+// 扁平化的产物会被 prompt_builder 逐行拼进【行业包参数约束】段，Go 的 map 迭代序
+// 每进程每轮随机，同一份 params.json 于是每次输出的行序都在漂：
+// ① 系统提示词前缀不稳定，模型侧/prompt cache 白烧；
+// ② 同一租户同一份包参数在两次请求里长得不一样，排查"回复为什么变了"时无从比对。
+// 键值配对本身没错（键名随递归下传），错的是**行序**——所以修法就是让序确定。
+// 对照 internal/industrypack/format.go 的 sortStrings：打包侧早就按这个口径做确定性输出，
+// 只是读侧的 flatten 路径漏了。
 func flattenJSONLines(raw, prefix string) []string {
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
@@ -171,12 +181,17 @@ func flattenJSONLines(raw, prefix string) []string {
 	walk = func(val any, p string) {
 		switch t := val.(type) {
 		case map[string]any:
-			for k, sub := range t {
+			keys := make([]string, 0, len(t))
+			for k := range t {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys) // 确定性行序：同输入必同输出（见函数头注释）
+			for _, k := range keys {
 				key := k
 				if p != "" {
 					key = p + "." + k
 				}
-				walk(sub, key)
+				walk(t[k], key)
 			}
 		case []any:
 			for i, sub := range t {

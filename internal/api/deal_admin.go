@@ -27,6 +27,7 @@ import (
 
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/deal"
+	"ai-scrm/internal/errcodes"
 	"ai-scrm/internal/model"
 )
 
@@ -75,7 +76,7 @@ func dealWriteErr(c *gin.Context, err error, safeMsg string) {
 		return
 	case deal.RejectReason(err) != "":
 		c.JSON(http.StatusBadRequest, gin.H{
-			"code": 400, "message": err.Error(), "error_code": "deal_rejected", "reason": deal.RejectReason(err),
+			"code": 400, "message": err.Error(), "error_code": errcodes.DealRejected, "reason": deal.RejectReason(err),
 		})
 	case errors.Is(err, deal.ErrConflict):
 		RespErr(c, http.StatusConflict, 409, err.Error())

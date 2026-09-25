@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"ai-scrm/internal/api"
+	"ai-scrm/internal/errcodes"
 )
 
 // Route 单条 API 路由元数据（T7 契约 golden 的最小单元）：
@@ -43,7 +44,7 @@ type Schema struct {
 func main() {
 	out := flag.String("out", "api.schema.json", "输出文件，- 表示 stdout")
 	check := flag.Bool("check", false, "与已有文件做字节级 diff，不一致则退出码 1")
-	format := flag.String("format", "schema", "schema|paths|openapi")
+	format := flag.String("format", "schema", "schema|paths|openapi|errorcodes")
 	flag.Parse()
 
 	mismatches := new([]string)
@@ -79,8 +80,39 @@ func main() {
 	}
 }
 
+// errorCodesTS 渲染前端消费的"后端错误码清单"生成物（TypeScript 模块文本）。
+//
+// 为什么直接生成 .ts 而不是 .json：前端测试要 import 一个常量，而 tsconfig 没开
+// resolveJsonModule；生成 .ts 也顺带让 api.d.ts 那套"生成物不手改"的既有约定延续过来。
+// 文本里写明生成命令与真源位置——契约门禁 diff 失败时，运维照着注释就能重生成。
+func errorCodesTS() string {
+	var b strings.Builder
+	b.WriteString("// 后端机器可读错误码清单 —— 生成物，请勿手工修改。\n")
+	b.WriteString("// 生成命令：go run ./cmd/apidump -format errorcodes -out frontend-react/src/types/error_codes.generated.ts\n")
+	b.WriteString("// 单点真源：internal/errcodes/errcodes.go（后端每一处 error_code 发射点都引用那里的常量）。\n")
+	b.WriteString("//\n")
+	b.WriteString("// 为什么要把它生成到前端（2026-09-25 残项3）：前端文案表 lib/api.ts 的 ERROR_CODE_MESSAGES\n")
+	b.WriteString("// 此前靠单测里**手抄**的一份码清单做对齐，那份抄件与后端源码之间没有任何机制约束——\n")
+	b.WriteString("// 后端加码而前端忘登记时测试仍然全绿，漂移方向恰好是这张表要防的那件事。\n")
+	b.WriteString("// 现在测试比对的是生成物：后端加一个码就必须改 internal/errcodes 并重生成，\n")
+	b.WriteString("// 前端没同步登记文案即红；前端登记了后端从不发的码也红。\n\n")
+	b.WriteString("// BACKEND_ERROR_CODES 后端当前会发出的全部 error_code（不含成功码 \"ok\"，已按字典序排列）\n")
+	b.WriteString("export const BACKEND_ERROR_CODES: readonly string[] = [\n")
+	for _, code := range errcodes.All() {
+		fmt.Fprintf(&b, "  %q,\n", code)
+	}
+	b.WriteString("];\n")
+	return b.String()
+}
+
 // buildContent 按指定格式生成 apidump 输出文本。mismatches 收集 -check 对账不一致项。
 func buildContent(format string, mismatches *[]string) (string, error) {
+	// 残项3(2026-09-25)：错误码清单取自叶子包 internal/errcodes 的单点真源，
+	// 不需要路由表——collectRoutes 会建整棵 gin 路由树，对码集毫无用处。
+	// 因此这个分支必须排在 collectRoutes 之前。
+	if format == "errorcodes" {
+		return errorCodesTS(), nil
+	}
 	routes, err := collectRoutes(mismatches)
 	if err != nil {
 		return "", err

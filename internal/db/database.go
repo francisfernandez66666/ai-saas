@@ -25,7 +25,18 @@ var DB *gorm.DB
 
 // Init 初始化数据库
 // 步骤：1.连接PostgreSQL  2.自动迁移表结构  3.配置连接池
+//
+// ⚠ 重复调用必须**关掉上一个池**（2026-09-26 根因修）：旧写法 `DB, err = gorm.Open(...)`
+// 直接把包级句柄换掉，旧 `*sql.DB` 再没人 Close，于是它的连接一直挂在服务端
+// （MaxIdleConns 会让空闲连接长期存活）。这不是"测试环境问题"而是真实资源泄漏：
+// testutil.SetupTestDB 每条用例都调一次 Init，一个 30 条 DB 用例的包就会留下 30 个池
+// ——本机 PG max_connections=100，于是 SQLSTATE 53300「remaining connection slots are
+// reserved…」。表现成"谁先跑到谁红、复跑即绿"，这正是这条链路长期被当环境噪声的原因。
+// 语义保持"真正的重新初始化"（仍会重跑迁移），只补上"旧的先关掉"这一半。
+// 顺序上必须先开新、成功之后再关旧：新连接没建立就把旧的关掉，会把调用方打成
+// "新旧句柄都没有"的更坏状态（启动期 Init 失败即退出可以接受，测试复用期不行）。
 func Init() error {
+	prev := DB // 旧句柄（首次调用为 nil）；新池建立后关掉它，防连接数按 Init 调用次数线性累积
 	var err error
 	// 连接PostgreSQL数据库
 	// SaaS 化改造：从 SQLite 单文件切换为 PostgreSQL，支持多租户 + 并发写入
@@ -37,14 +48,17 @@ func Init() error {
 	if config.IsDevModeConfirmed() {
 		dbLogLevel = logger.Info
 	}
-	DB, err = gorm.Open(postgres.Open(config.GlobalConfig.Database.DSN()), &gorm.Config{
+	newDB, err := gorm.Open(postgres.Open(config.GlobalConfig.Database.DSN()), &gorm.Config{
 		// C3(2026-09-12)：包一层脱敏 logger，Info 态 SQL 参数(手机号/身份证/邮箱)掩码后再落盘
 		Logger: logx.NewGormLogger(logger.Default.LogMode(dbLogLevel)),
 	})
 	if err != nil {
+		// 打开失败：旧句柄**原样留回**（不制造"新旧都没了"的更坏状态，行为与修前一致）
+		DB = prev
 		log.Printf("数据库连接失败: %v", err)
 		return err
 	}
+	DB = newDB
 
 	log.Println("数据库连接成功")
 
@@ -61,6 +75,16 @@ func Init() error {
 	sqlDB.SetMaxOpenConns(config.GlobalConfig.Database.MaxOpenConns)
 	sqlDB.SetMaxIdleConns(config.GlobalConfig.Database.MaxIdleConns)
 	sqlDB.SetConnMaxLifetime(time.Duration(config.GlobalConfig.Database.ConnMaxLifetime) * time.Second)
+
+	// 新池已可用 → 关掉旧池（本函数头注释详述为何这是必修项）。
+	// 放在这里而不是函数开头：此刻新句柄已建立且池参数已收，关旧的不会造成"无池可用"的空窗。
+	if prev != nil {
+		if prevSQL, e := prev.DB(); e == nil && prevSQL != nil && prevSQL != sqlDB {
+			if e := prevSQL.Close(); e != nil {
+				log.Printf("[db] 关闭旧连接池失败(不影响新池，旧连接会随进程退出回收): %v", e)
+			}
+		}
+	}
 
 	// 自动迁移表结构
 	// GORM的AutoMigrate会自动创建表、添加缺失的字段和索引

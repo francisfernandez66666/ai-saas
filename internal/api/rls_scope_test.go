@@ -83,9 +83,16 @@ func TestTenantPackCurrentCrossTenant(t *testing.T) {
 	defer testutil.CleanupTenant(t, tenantB)
 
 	pack := &model.IndustryPack{Code: "rls_ind", Name: "RLS行业包", Industry: "auto", Version: "1.0.0", PackLevel: "industry", Status: "active"}
+	// 迁移 027 之后"同 code 至多一条 active"是 DB 约束（部分唯一索引），
+	// 上一轮跑挂/进程被杀留下的残行会让本轮 Create 直接 23505——那是**测试自己造的脏**，
+	// 不是被测行为。故先按 code 清一次（只碰这个合成编码，不动真实包），再建再清。
+	if err := db.DB.Where("code = ?", "rls_ind").Delete(&model.IndustryPack{}).Error; err != nil {
+		t.Fatalf("预清理 rls_ind 残行失败: %v", err)
+	}
 	if err := db.DB.Create(pack).Error; err != nil {
 		t.Fatalf("建行业包失败: %v", err)
 	}
+	t.Cleanup(func() { db.DB.Where("code = ?", "rls_ind").Delete(&model.IndustryPack{}) })
 	bind := &model.TenantPackBinding{TenantID: tenantA, PackID: pack.ID, PackCode: pack.Code}
 	if err := db.DB.Create(bind).Error; err != nil {
 		t.Fatalf("建绑定失败: %v", err)
