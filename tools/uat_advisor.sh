@@ -336,10 +336,13 @@ p "GET /api/v1/conversations/:id/messages" 200 GET "/api/v1/conversations/$CONV/
 p "POST /api/v1/feedback/rating" 200 POST "/api/v1/feedback/rating" "$S1H" "{\"customer_id\":$CID,\"rating\":5,\"comment\":\"uat\"}"
 p "POST /api/v1/chat/transfer/ai" 200 POST "/api/v1/chat/transfer/ai" "$S1H" "{\"conversation_id\":$CONV}"
 p "POST /api/v1/chat/clear-delay" 200 POST "/api/v1/chat/clear-delay" "$S1H" "{\"customer_id\":$CID}"
-# 每日额度前置（2026-09-25 欠账批）：反馈限流是「单用户每日 20 条」（internal/api/feedback.go:feedbackDailyLimit，
-# 按 created_at >= CURRENT_DATE 查表计数）。本用例断 200 的隐含前提是 sales1 当天还有额度——
-# 而额度按自然日累计，同一天里跑到第 20 次必吃 429（实测当天已累计 21 行、本段真红过一次）。
-# 这是断言前提被脚本自己写的探针行污染，不是产品缺陷；故只删本脚本自己那条（content 精确匹配），不动真实用户反馈。
+# 幂等前置（2026-09-25 欠账批，归因已更正）：删除本脚本自己写过的那条反馈，使本用例同一天可重复跑。
+# 真因链：上一轮这里恒 429，我先归因成"脚本探针行耗尽 20 条/天额度"，加删除后单跑绿、
+# 再跑全量又红——查库发现 sales1 当天 21 行**全是 target_type='rating'**、feature 零行。
+# 也就是**产品缺陷**：满意度评分与反馈共用 feedbacks 表，旧限流把评分一并计进"反馈 20 条"，
+# 于是一个从没提交过反馈的顾问只给七个客户各评三次，就被提示"今日反馈已达上限"。
+# 已在 internal/api/feedback.go 收口（计数排除 rating），判别力单测见 internal/api/feedback_quota_test.go。
+# 本行 DELETE 保留，但它清的是另一件事：feature 行按自然日累计，同一用户跑满 20 次本脚本仍会 429。
 $PSQL "DELETE FROM feedbacks WHERE user_id=$U1 AND content='uat建议' AND created_at >= CURRENT_DATE" >/dev/null 2>&1
 p "POST /api/v1/feedback" 200 POST "/api/v1/feedback" "$S1H" "{\"content\":\"uat建议\",\"target_type\":\"feature\"}"
 p "GET /api/v1/chat/history(匿名无 key)" 403 GET "/api/v1/chat/history?customer_id=$CID" "X-None: 1"

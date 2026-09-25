@@ -72,9 +72,14 @@ func CreateFeedback(c *gin.Context) {
 	tid := tenantIDOf(c)
 
 	// 限流：同用户每日 20 条（查表实现，免新表）
+	// 2026-09-25 欠账批口径修正：**计数必须排除满意度评分行**。评分与反馈共用 feedbacks 表
+	// （target_type='rating'），而评分自带另一套额度「同用户同客户每日 5 次」（见 CreateFeedbackRating）。
+	// 旧写法把评分一并计进"反馈 20 条"：一天给七个客户各评三次，就会在**从未提交过一条反馈**的情况下
+	// 收到「今日反馈已达上限（20条），请明日再试」——这句话是假的，且用户无从解释自己哪里超限
+	// （现场：顾问台回归连跑七轮即恒 429，库里 21 行全是 rating、feature 零行）。
 	var today int64
 	db.RQ(c).Model(&model.Feedback{}).
-		Where("user_id = ? AND created_at >= CURRENT_DATE", uid).
+		Where("user_id = ? AND created_at >= CURRENT_DATE AND (target_type IS NULL OR target_type <> 'rating')", uid).
 		Count(&today)
 	if today >= feedbackDailyLimit {
 		RespErr(c, http.StatusTooManyRequests, 429, "今日反馈已达上限（20条），请明日再试")

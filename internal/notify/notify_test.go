@@ -123,9 +123,15 @@ func TestDefaultResetSender(t *testing.T) {
 	}
 
 	// 3) smtp + 双凭据齐 → SMTPSender（真实通道）
+	//    ⚠ 必须显式钉住 SMTP_FROM：From 的取值是 SMTP_FROM ?? SMTP_USER，而本机能 .env 里
+	//    导出 SMTP_FROM=noreply@... 时，这一路读到的就是它——旧写法没设这个键，
+	//    断言"From 缺省回落 User"在 shell 导过 .env 的机器上恒红（在 CI 干净环境下恒绿），
+	//    是同一条断言在两种环境下给出相反结论的测试自伤。收口：把输入全部钉住，
+	//    另加 3b 显式断"SMTP_FROM 配置时优先于 User"（那才是它真正的语义）。
 	t.Setenv("SMTP_HOST", "smtp.example.com")
 	t.Setenv("SMTP_USER", "someone@example.com")
 	t.Setenv("SMTP_PORT", "465")
+	t.Setenv("SMTP_FROM", "")
 	s := DefaultResetSender()
 	smtp, ok := s.(*SMTPSender)
 	if !ok {
@@ -134,6 +140,14 @@ func TestDefaultResetSender(t *testing.T) {
 	if smtp.Port != 465 || smtp.From != "someone@example.com" {
 		t.Errorf("SMTPSender 装配异常: port=%d from=%q（465 应为隐式TLS、From 缺省回落 User）", smtp.Port, smtp.From)
 	}
+
+	// 3b) SMTP_FROM 显式配置 → 对外发件地址用它，不用登录账号
+	//     （企业邮箱"登录账号 ≠ 发件人名义地址"是常态，优先级反了会把邮件发成别名）
+	t.Setenv("SMTP_FROM", "service@example.com")
+	if got := NewSMTPSenderFromEnv().From; got != "service@example.com" {
+		t.Errorf("SMTP_FROM 配置时应优先，实际 From=%q", got)
+	}
+	t.Setenv("SMTP_FROM", "")
 
 	// 4) log 通道 + 未配置（DefaultSystemConfigService=nil）→ LogSender，不 panic
 	restore2 := runtimecfg.SetDefaultForTest(runtimecfg.NewStaticService(

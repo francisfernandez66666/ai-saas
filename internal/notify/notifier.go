@@ -85,6 +85,8 @@ type SMTPSender struct {
 }
 
 // NewSMTPSenderFromEnv 从环境变量装配；Host 为空表示未配置
+// From 的取值优先级：SMTP_FROM（发件人名义地址）> SMTP_USER（登录账号）。
+// 企业邮箱常要求"登录账号 ≠ 对外发件地址"，两者必须能分开配。
 func NewSMTPSenderFromEnv() *SMTPSender {
 	port, _ := strconv.Atoi(os.Getenv("SMTP_PORT"))
 	if port <= 0 {
