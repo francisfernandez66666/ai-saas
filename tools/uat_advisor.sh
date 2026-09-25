@@ -336,14 +336,27 @@ p "GET /api/v1/conversations/:id/messages" 200 GET "/api/v1/conversations/$CONV/
 p "POST /api/v1/feedback/rating" 200 POST "/api/v1/feedback/rating" "$S1H" "{\"customer_id\":$CID,\"rating\":5,\"comment\":\"uat\"}"
 p "POST /api/v1/chat/transfer/ai" 200 POST "/api/v1/chat/transfer/ai" "$S1H" "{\"conversation_id\":$CONV}"
 p "POST /api/v1/chat/clear-delay" 200 POST "/api/v1/chat/clear-delay" "$S1H" "{\"customer_id\":$CID}"
-# 幂等前置（2026-09-25 欠账批，归因已更正）：删除本脚本自己写过的那条反馈，使本用例同一天可重复跑。
-# 真因链：上一轮这里恒 429，我先归因成"脚本探针行耗尽 20 条/天额度"，加删除后单跑绿、
-# 再跑全量又红——查库发现 sales1 当天 21 行**全是 target_type='rating'**、feature 零行。
-# 也就是**产品缺陷**：满意度评分与反馈共用 feedbacks 表，旧限流把评分一并计进"反馈 20 条"，
-# 于是一个从没提交过反馈的顾问只给七个客户各评三次，就被提示"今日反馈已达上限"。
-# 已在 internal/api/feedback.go 收口（计数排除 rating），判别力单测见 internal/api/feedback_quota_test.go。
-# 本行 DELETE 保留，但它清的是另一件事：feature 行按自然日累计，同一用户跑满 20 次本脚本仍会 429。
-$PSQL "DELETE FROM feedbacks WHERE user_id=$U1 AND content='uat建议' AND created_at >= CURRENT_DATE" >/dev/null 2>&1
+# ---------- 反馈额度口径护栏（2026-09-25 欠账批：满意度评分不得侵占「每日 20 条反馈」额度）----------
+# 现场：顾问台回归连跑七轮后 /feedback 恒 429，查库发现 sales1 当天 21 行**全是 target_type='rating'**、
+# feature 零行。评分与反馈共用 feedbacks 表，旧限流把评分一并计进"反馈 20 条"，于是一个从没提交过
+# 反馈的顾问只给七个客户各评三次，就被提示"今日反馈已达上限（20条）"——这句话是假的且无从解释。
+# 已在 internal/api/feedback.go 收口（计数排除 rating），包内判别力单测见 feedback_quota_test.go；
+# 这里补的是**真接口**这一层：单测传的是干净句柄，端点侧的中间件/租户盖章链只有冒烟能覆盖。
+# 两条断言是一对判别力：只留第一条，把过滤整个删掉也能过（那是回滚到缺陷）；只留第二条，
+# "干脆不限流"也能过。合成行跑完就地清掉，不给真实用户留额度污染。
+FBQ_CLEAN="DELETE FROM feedbacks WHERE user_id=$U1 AND content IN ('额度护栏评分','额度护栏反馈','额度护栏占位','uat建议')"
+FBQ_COLS="tenant_id,user_id,customer_id,target_type,ref_id,context,content,status,handle_note,handled_by,created_at,handled_at"
+$PSQL "$FBQ_CLEAN" >/dev/null 2>&1
+# 前置自检：先证明 20 行真在库里，再比等式——缺这一步，下面两条断言会在"零行 + 额度本来就够"上空转
+$PSQL "INSERT INTO feedbacks ($FBQ_COLS) SELECT 1,$U1,$CID,'rating',0,'','额度护栏评分','open','',0,NOW(),NULL FROM generate_series(1,20)" >/dev/null 2>&1
+FBQ_SEED=$($PSQL "SELECT count(*) FROM feedbacks WHERE user_id=$U1 AND content='额度护栏评分' AND created_at >= CURRENT_DATE" | tr -d '[:space:]')
+check "额度护栏前置：20 条评分行确已落库" 20 "$FBQ_SEED"
+p "20 条评分行不吃反馈额度（提交反馈仍 200）" 200 POST "/api/v1/feedback" "$S1H" "{\"content\":\"额度护栏反馈\",\"target_type\":\"feature\"}"
+$PSQL "$FBQ_CLEAN" >/dev/null 2>&1
+# 反证：排除评分不等于取消限流——20 条真反馈之后第 21 条必须还是 429
+$PSQL "INSERT INTO feedbacks ($FBQ_COLS) SELECT 1,$U1,$CID,'feature',0,'','额度护栏占位','open','',0,NOW(),NULL FROM generate_series(1,20)" >/dev/null 2>&1
+p "20 条真反馈仍挡得住（第 21 条 429）" 429 POST "/api/v1/feedback" "$S1H" "{\"content\":\"额度护栏反馈\",\"target_type\":\"feature\"}"
+$PSQL "$FBQ_CLEAN" >/dev/null 2>&1
 p "POST /api/v1/feedback" 200 POST "/api/v1/feedback" "$S1H" "{\"content\":\"uat建议\",\"target_type\":\"feature\"}"
 p "GET /api/v1/chat/history(匿名无 key)" 403 GET "/api/v1/chat/history?customer_id=$CID" "X-None: 1"
 p "PUT /api/v1/advisor/customer/:id/info(未登录)" 401 PUT "/api/v1/advisor/customer/$CID/info" "X-None: 1" '{"name":"x"}'

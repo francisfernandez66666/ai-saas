@@ -443,7 +443,7 @@ step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+
 step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 55 项，含侧边栏双签名 §十，自建 9091+mockwx）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
-step "E2E 层：uat_advisor.sh（顾问工作台字节级 85 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 文档对齐：实测 PASS=85）"
+step "E2E 层：uat_advisor.sh（顾问工作台字节级 88 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 欠账批 +3：反馈额度口径护栏——20 条评分行不吃「每日 20 条反馈」额度、20 条真反馈仍挡得住第 21 条，配落库前置自检防零行空转）"
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
 
