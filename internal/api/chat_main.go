@@ -25,7 +25,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/rand"
 	"net/http"
 	"time"
 
@@ -55,6 +54,13 @@ import (
 // 对话相关API
 // 这是系统的核心交互接口，C端客户和B端销售共用
 // 核心流程：客户发消息 → 策略中心决策 → AI生成回复 → 返回结果
+// ============================================================
+
+// ============================================================
+// ⚠️ 本文件的每一处写库都必须接错误（FIX-5，2026-09-27）
+// 分类表与两个收口口子在 chat_persist.go（persistRequired / persistBypass），
+// 与 C7 红线同级：必查类失败回 500，旁路类失败留痕 + 计数，两者都不许静默。
+// 结构守卫见 chat_persist_guard_test.go——本文件内不得再出现裸 `db.RQ(s.c)…` 语句行。
 // ============================================================
 
 // Chat 对话接口（客户发消息，获取AI回复）
@@ -164,7 +170,7 @@ func (s *chatSessionCtx) chatResolveCustomer() bool {
 	// C3：懒下发访客密钥（历史客户可能没有），供客户端持久化并在 history/welcome 携带
 	if customer.VisitorKey == "" {
 		customer.VisitorKey = model.GenerateVisitorKey()
-		db.RQ(s.c).Model(&customer).Update("visitor_key", customer.VisitorKey)
+		persistBypass("visitor_key_backfill", customer.ID, 0, db.RQ(s.c).Model(&customer).Update("visitor_key", customer.VisitorKey))
 	}
 
 	s.customer = customer
@@ -197,74 +203,14 @@ func (s *chatSessionCtx) chatEnsureConversation() bool {
 			}
 		}
 	} else {
-		// 前端没传会话ID → 需要查找或创建，加锁防止并发竞态
-		convMu := chatflow.GetConversationMutex(s.customer.ID)
-		convMu.Lock()
-
-		// 先查该客户是否已有活跃会话（复用，不重复创建，加入租户隔离）
-		result := db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
-			Order("updated_at DESC").
-			First(&conversation)
-
-		// D8 修复(2026-09-14)：进程内 convMu 跨实例无效——多实例并发首条消息会各建一个
-		// active 会话。Redis 短锁裁决：持锁者复查后创建；拿不到锁=他实例在途，等 500ms 复查；
-		// 仍未命中才兜底自建（Redis 关闭时维持旧单机语义）。
-		if result.Error != nil {
-			h := redisclient.TryLock(fmt.Sprintf("conv:create:%d", s.customer.ID), 8*time.Second)
-			if h != nil {
-				defer h.Unlock()
-				result = db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
-					Order("updated_at DESC").First(&conversation) // 持锁复查，防双查皆空
-			} else if redisclient.IsEnabled() {
-				time.Sleep(500 * time.Millisecond)
-				result = db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
-					Order("updated_at DESC").First(&conversation)
-			}
+		// 前端没传会话ID → 需要查找或创建。
+		// FIX-3(2026-09-27)：整段临界区收进 ensureConversationLocked（加锁与 defer 解锁同函数相邻），
+		// 本处不再手递锁——早退分支不可能再把分片互斥锁永久留在持有态。
+		conv, replied := s.ensureConversationLocked()
+		if replied {
+			return true
 		}
-
-		if result.Error != nil {
-			// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
-			conversation = model.Conversation{
-				CustomerID:     s.customer.ID,
-				AssignedUserID: s.customer.AssignedUserID,
-				Status:         "active",
-				Mode:           "ai",
-				Channel:        "web",
-			}
-			// G1 收口(2026-09-16C)：013 唯一索引兜底后，Redis 关闭/他路直插撞车时创建会报约束冲突——复查复用对方那条，
-			if cerr := db.RQ(s.c).Create(&conversation).Error; cerr != nil {
-				if rerr := db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
-					Order("updated_at DESC").First(&conversation).Error; rerr != nil {
-					log.Printf("[对话-告警] 冷启动创建失败且复查无果: 客户%d err=%v recheck=%v", s.customer.ID, cerr, rerr)
-					RespErr(s.c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
-					return true
-				}
-				log.Printf("[对话] 冷启动撞唯一约束，复用并发方会话%d（客户%d）", conversation.ID, s.customer.ID)
-			} else {
-				log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, s.customer.ID)
-			}
-
-			// 首次对话自动推进线索状态：→ AI建联
-			if s.customer.JourneyStage == "" || s.customer.JourneyStage == model.JourneyAIConnected {
-				s.customer.JourneyStage = model.JourneyAIConnected
-				db.RQ(s.c).Model(&s.customer).Update("journey_stage", model.JourneyAIConnected)
-				log.Printf("[对话] 客户%d自动推进到AI建联状态", s.customer.ID)
-			}
-
-			// 启动默认流程（新会话的初始流程引擎）
-			flowCtx := &flow.FlowContext{
-				TenantID:       s.tenantID,
-				CustomerID:     s.customer.ID,
-				ConversationID: conversation.ID,
-				RouteResult:    "ai",
-			}
-			flow.DefaultEngine.StartFlow("default_chat_flow", flowCtx)
-		} else {
-			// 已有活跃会话，直接复用（不触发冷启动秒回）
-			log.Printf("[对话] 复用已有会话 %d, 客户 %d", conversation.ID, s.customer.ID)
-		}
-
-		convMu.Unlock()
+		conversation = conv
 	}
 
 	s.conversation = conversation
@@ -280,6 +226,110 @@ func (s *chatSessionCtx) chatEnsureConversation() bool {
 	}
 	s.takeover = chatflow.HumanTakeoverDecide(&s.conversation)
 	return false
+}
+
+// ensureConversationLocked 无会话ID分支的临界区：在该客户的分片互斥锁内「查活跃会话 → 没有则创建」。
+// 返回 (会话, 是否已应答)——已应答=true 表示本函数已把 500 写给客户端，调用方直接 return true。
+//
+// FIX-3(2026-09-27) 结构修（不选"给某个 return 前补一句 Unlock"的补丁式写法）：
+// 旧实现把 加锁 → 查/建 → 解锁 摊在 chatEnsureConversation 的中段，而中段里
+// 「Create 失败且复查也无果」那条 `RespErr(500); return true` 是从 Unlock **之前**返回的——
+// 分片锁就此永久持有。锁是按 customerID%128 分的（chatflow.GetConversationMutex），
+// 一把锁罩住 1/128 的客户，且这把锁没有超时自愈（对比 processing_lock_timeout 那套是有的）。
+// 于是一次数据库抖动（本仓 2026-09-26 刚实测抓到过 SQLSTATE 53300 连接槽打满）之后，
+// 同分片的客户在 Web 端发消息会永久卡在 convMu.Lock() 上，直到重启服务——用户视角是"聊天突然再也不回"。
+// 现在 Lock() 与 defer Unlock() 相邻在同一个函数头，任何新增早退分支都自动被释放覆盖。
+//
+// 为什么没收进 chatflow.EnsureActiveConversation（G1 那个统一入口）：本路径的创建必须走
+// 请求态句柄 db.RQ(s.c)（带租户 context 与 RLS 作用域），且创建成功后还要在**同一临界区内**
+// 推进线索状态、启动默认流程；统一入口走的是无请求 ctx 的 db.DB，换过去等于改隔离语义。
+// 两条路径的 Redis 短锁键式一致（conv:create:{customerID}），跨实例互斥仍然成立。
+func (s *chatSessionCtx) ensureConversationLocked() (model.Conversation, bool) {
+	convMu := chatflow.GetConversationMutex(s.customer.ID)
+	convMu.Lock()
+	defer convMu.Unlock() // 唯一解锁点：临界区内任何 return 都必须经过这里
+
+	var conversation model.Conversation
+
+	// 先查该客户是否已有活跃会话（复用，不重复创建，加入租户隔离）
+	result := db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
+		Order("updated_at DESC").
+		First(&conversation)
+
+	// D8 修复(2026-09-14)：进程内 convMu 跨实例无效——多实例并发首条消息会各建一个
+	// active 会话。Redis 短锁裁决：持锁者复查后创建；拿不到锁=他实例在途，等 500ms 复查；
+	// 仍未命中才兜底自建（Redis 关闭时维持旧单机语义）。
+	// FIX-3 顺带：这句 defer 原本挂在 chatEnsureConversation 上，等于把分布式锁攥到整个阶段方法
+	// 结束（含后续落库/推理/AI 等待）；现在随临界区一起收口，锁只在"查+建"这段持有。
+	if result.Error != nil {
+		h := redisclient.TryLock(fmt.Sprintf("conv:create:%d", s.customer.ID), 8*time.Second)
+		if h != nil {
+			defer h.Unlock()
+			result = db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
+				Order("updated_at DESC").First(&conversation) // 持锁复查，防双查皆空
+		} else if redisclient.IsEnabled() {
+			time.Sleep(500 * time.Millisecond)
+			result = db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
+				Order("updated_at DESC").First(&conversation)
+		}
+	}
+
+	if result.Error != nil {
+		// 没有活跃会话 → 冷启动，创建新会话 + 秒回消息
+		conversation = model.Conversation{
+			CustomerID:     s.customer.ID,
+			AssignedUserID: s.customer.AssignedUserID,
+			Status:         "active",
+			Mode:           "ai",
+			Channel:        "web",
+		}
+		// G1 收口(2026-09-16C)：013 唯一索引兜底后，Redis 关闭/他路直插撞车时创建会报约束冲突——复查复用对方那条。
+		// 这一条 return true 就是 FIX-3 的现场：旧写法在这里返回会跳过 Unlock，锁永久泄漏。
+		if cerr := createConversationForChat(s, &conversation); cerr != nil {
+			if rerr := db.RQ(s.c).Scopes(db.T(s.c)).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
+				Order("updated_at DESC").First(&conversation).Error; rerr != nil {
+				log.Printf("[对话-告警] 冷启动创建失败且复查无果: 客户%d err=%v recheck=%v", s.customer.ID, cerr, rerr)
+				RespErr(s.c, http.StatusInternalServerError, 500, "会话初始化失败，请重试")
+				return conversation, true
+			}
+			log.Printf("[对话] 冷启动撞唯一约束，复用并发方会话%d（客户%d）", conversation.ID, s.customer.ID)
+		} else {
+			log.Printf("[对话] 冷启动: 创建新会话 %d, 客户 %d", conversation.ID, s.customer.ID)
+		}
+
+		// 首次对话自动推进线索状态：→ AI建联
+		if s.customer.JourneyStage == "" || s.customer.JourneyStage == model.JourneyAIConnected {
+			s.customer.JourneyStage = model.JourneyAIConnected
+			persistBypass("journey_stage", s.customer.ID, conversation.ID, db.RQ(s.c).Model(&s.customer).Update("journey_stage", model.JourneyAIConnected))
+			log.Printf("[对话] 客户%d自动推进到AI建联状态", s.customer.ID)
+		}
+
+		// 启动默认流程（新会话的初始流程引擎）
+		flowCtx := &flow.FlowContext{
+			TenantID:       s.tenantID,
+			CustomerID:     s.customer.ID,
+			ConversationID: conversation.ID,
+			RouteResult:    "ai",
+		}
+		// FIX-5：StartFlow 的 error 此前整个丢掉——流程没起来等于这个客户后续
+		// 走不到任何编排动作，而线上没有任何痕迹能看出"这个会话没流程"。归旁路口径：
+		// 客户这句已经答上了，流程缺失只留痕不打断。
+		if _, ferr := flow.DefaultEngine.StartFlow("default_chat_flow", flowCtx); ferr != nil {
+			persistBypassErr("flow_start", s.customer.ID, conversation.ID, ferr)
+		}
+	} else {
+		// 已有活跃会话，直接复用（不触发冷启动秒回）
+		log.Printf("[对话] 复用已有会话 %d, 客户 %d", conversation.ID, s.customer.ID)
+	}
+
+	return conversation, false
+}
+
+// createConversationForChat 冷启动写会话那一笔，单独留一个可注错的口子（FIX-3 反证用例用）。
+// 生产实现就是 db.RQ 建会话；测试里替换成恒错，才能真的走到"创建失败且复查无果"那条早退。
+// 替换只在单测里发生，且必须成对还原（见 chat_conv_lock_leak_test.go 的 defer）。
+var createConversationForChat = func(s *chatSessionCtx, conv *model.Conversation) error {
+	return db.RQ(s.c).Create(conv).Error
 }
 
 // chatMergeSuppress 步骤3前：相似消息合并为一次回答（合并时间窗 + 在途批次护栏）。
@@ -307,7 +357,9 @@ func (s *chatSessionCtx) chatMergeSuppress() bool {
 		Emotion:        strategy.DetectEmotion(s.req.Content),
 		CreatedAt:      time.Now(),
 	}
-	db.RQ(s.c).Create(&suppressedMsg)
+	if persistRequired(s.c, "suppressed_inbound", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&suppressedMsg)) {
+		return true
+	}
 
 	RespOK(s.c, "success", schema.ChatResponse{
 		ConversationID: s.conversation.ID,
@@ -331,7 +383,9 @@ func (s *chatSessionCtx) chatSaveInbound() bool {
 		Emotion:        strategy.DetectEmotion(s.req.Content),
 		CreatedAt:      now,
 	}
-	db.RQ(s.c).Create(&customerMsg)
+	if persistRequired(s.c, "customer_inbound", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&customerMsg)) {
+		return true
+	}
 	// D9：客户消息到达即回填上一轮 AI 回复的接钩归因。
 	_ = attribution.MarkHookedBeforeMessage(s.tenantID, s.conversation.ID, customerMsg.ID)
 	// P1-1 实时推送：客户新消息通知本租户顾问端（推送消息内容，前端即时更新）
@@ -348,7 +402,7 @@ func (s *chatSessionCtx) chatSaveInbound() bool {
 		var updatedCustomerForTag model.Customer
 		if err := db.RQ(s.c).First(&updatedCustomerForTag, s.customer.ID).Error; err == nil {
 			_ = service.DefaultTagService.ApplyTagWeightsToTVector(s.customer.TenantID, &updatedCustomerForTag, updatedCustomerForTag.BuildBaseTVector())
-			db.RQ(s.c).Model(&updatedCustomerForTag).Update("t_vector", updatedCustomerForTag.TVectorJSON)
+			persistBypass("t_vector", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&updatedCustomerForTag).Update("t_vector", updatedCustomerForTag.TVectorJSON))
 			s.customer = updatedCustomerForTag
 		}
 	}
@@ -363,11 +417,10 @@ func (s *chatSessionCtx) chatSaveInbound() bool {
 	// 走到这里说明确实该等人；路由标记与免登录链取同一字面量（归因口径对齐），
 	// 文案沿用正式链既有话术（客户无感，不需改口径）。
 	if s.takeover.Action == chatflow.TakeoverSkipAI {
-		db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
-			Update("last_message_at", now)
+		persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).
+			Update("last_message_at", now))
 		// 与免登录链同款：锁定期客户甩手机号也要即时留资，不能因为"等人"而漏接
-		if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
-			s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
+		if !chatflow.CapturedStage(s.customer.JourneyStage) {
 			if leadResult := chatflow.DetectLeadCapture(s.req.Content, &s.customer); leadResult != 0 {
 				log.Printf("[对话-留资检测-human_locked] 客户 %d 已留资+分配顾问", s.customer.ID)
 			}
@@ -389,10 +442,20 @@ func (s *chatSessionCtx) chatSaveInbound() bool {
 
 // chatInferRoute 入队前三层分流（硬边界 / 到店快速通道 / 合并队列）。
 // 命中硬边界/分支B/分支C/简单消息/合并等待时直接响应并 return true；否则进入处理权流程。
+//
+// FIX-9(2026-09-27)：前两层**不再在此内联判据**，改问 chatflow.DecidePreRoute 要结论——
+// 判据此前只有 web 一份，通道入站拿不到，于是同一个客户在同一句话上网页走 0 延迟硬边界、
+// 微信走完整 AI 链。本函数只保留 web 特有的执行段（HTTP 响应 / WS 推送 / 落库口径）。
 func (s *chatSessionCtx) chatInferRoute() bool {
+	pre := chatflow.DecidePreRoute(s.tenantID, s.req.Content, s.customer.JourneyStage)
+	if pre.CapturedSkipped {
+		log.Printf("[到店倾向] 客户%d 已是%s阶段，跳过到店快速通道，走正常流程",
+			s.customer.ID, s.customer.JourneyStage)
+	}
+
 	// 第一层：硬边界拦截（0延迟，不走AI，不进队列）
-	if service.IsOffTopicForTenant(s.tenantID, s.req.Content) {
-		reply := service.GetOffTopicReplyForTenant(s.tenantID, s.req.Content)
+	if pre.Kind == chatflow.PreRouteOffTopic {
+		reply := pre.Reply
 		log.Printf("[硬边界][trace=%s] 客户%d 拦截无关话题(入队前): %q → %q", s.trace, s.customer.ID, pii.MaskPhoneInText(s.req.Content), pii.MaskPhoneInText(reply))
 		// 保存AI拦截回复消息到DB
 		offTopicMsg := model.Message{
@@ -404,7 +467,9 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 			RouteResult:    "offtopic_hardbound",
 			CreatedAt:      time.Now(),
 		}
-		db.RQ(s.c).Create(&offTopicMsg)
+		if persistRequired(s.c, "offtopic_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&offTopicMsg)) {
+			return true
+		}
 		// 旁路直答，不污染在途批次（见原注释 D5/P0-9）。
 		RespOK(s.c, "success", gin.H{
 			"conversation_id": s.conversation.ID,
@@ -415,11 +480,11 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 	}
 
 	// 第二层：到店倾向快速通道（不进合并队列，直接快速回复）
-	if service.IsStoreVisitIntentForTenant(s.tenantID, s.req.Content) {
-		if done := s.chatStoreVisitFast(); done {
-			return true
-		}
-		// 已留资客户跳过本层，继续走下面的合并队列正常流程（等价原 goto skipStoreVisitFast）
+	switch pre.Kind {
+	case chatflow.PreRouteLeadConfirm:
+		return s.chatLeadCapture(pre)
+	case chatflow.PreRouteStoreVisit:
+		return s.chatStoreVisitFast(pre)
 	}
 
 	// 6. 消息入队 + 合并窗口等待
@@ -450,11 +515,12 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 			RouteResult:    "simple_fast",
 			CreatedAt:      time.Now(),
 		}
-		db.RQ(s.c).Create(&simpleMsg)
+		if persistRequired(s.c, "simple_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&simpleMsg)) {
+			return true
+		}
 
 		// 简单消息路径也做留资检测（防漏）
-		if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
-			s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
+		if !chatflow.CapturedStage(s.customer.JourneyStage) {
 			leadResult := chatflow.DetectLeadCapture(s.req.Content, &s.customer)
 			if leadResult != 0 {
 				log.Printf("[留资检测-简单消息] 客户 %d 已留资", s.customer.ID)
@@ -486,36 +552,21 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 	return s.chatProcessAndReply()
 }
 
-// chatStoreVisitFast 到店倾向快速通道（第二层）。
-// 已留资客户返回 false 跳过本层；含手机号走分支B(留资)返回 true；未留资走分支C(两段式)返回 true。
-func (s *chatSessionCtx) chatStoreVisitFast() bool {
-	// 前置拦截：已留资客户不再走到店快速通道
-	if s.customer.JourneyStage == model.JourneyLeadCaptured ||
-		s.customer.JourneyStage == model.JourneyArrived ||
-		s.customer.JourneyStage == model.JourneyOrdered ||
-		s.customer.JourneyStage == model.JourneyDelivered {
-		log.Printf("[到店倾向] 客户%d 已是%s阶段，跳过到店快速通道，走正常流程",
-			s.customer.ID, s.customer.JourneyStage)
-		return false
-	}
-
-	// 留资前置检测：当前消息是否包含手机号
-	phoneMatch := chatflow.PhoneRegex.FindString(s.req.Content)
-
-	if phoneMatch != "" {
-		// ====== 分支B：已留资线索（硬编码） ======
-		return s.chatLeadCapture(phoneMatch)
-	}
-
+// chatStoreVisitFast 到店倾向快速通道·分支C（未留资：关闭引导 + 两段式快速回复，推迟分配顾问）。
+//
+// FIX-9(2026-09-27)：本函数原先自己再判一遍"已留资就跳过 / 有手机号走分支B"——那两层判据
+// 现已收在 chatflow.DecidePreRoute（web 与通道共用），此处只留 web 特有的执行段。
+// 传入的 pre 必为 PreRouteStoreVisit，第一段话术取 pre.Reply（与通道侧同一份行业键文案）。
+func (s *chatSessionCtx) chatStoreVisitFast(pre chatflow.PreRoute) bool {
 	// ====== 分支C：未留资线索（关闭引导+两段式AI快速回复，推迟分配顾问） ======
-	firstReply := service.GetStoreVisitFirstReply(s.tenantID, s.req.Content)
+	firstReply := pre.Reply
 	firstDelay := service.GetStoreVisitFirstDelay() // 10-15秒
 
 	log.Printf("[到店倾向-未留资线索] 客户%d 关闭引导+两段式回复, 推迟分配顾问", s.customer.ID)
 
 	// 关闭引导式反问
 	s.conversation.GuidedDisabled = true
-	db.RQ(s.c).Model(&s.conversation).Update("guided_disabled", true)
+	persistBypass("guided_disabled", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&s.conversation).Update("guided_disabled", true))
 
 	// 第一段AI快速回复（接住意向）
 	chatflow.CancellableSleep(s.customer.ID, firstDelay)
@@ -529,7 +580,9 @@ func (s *chatSessionCtx) chatStoreVisitFast() bool {
 		RouteResult:    "store_visit_fast",
 		CreatedAt:      time.Now(),
 	}
-	db.RQ(s.c).Create(&storeVisitMsg)
+	if persistRequired(s.c, "store_visit_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&storeVisitMsg)) {
+		return true
+	}
 
 	// P1-1 实时推送：客户消息 + 第一段快速回复
 	notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "customer", s.customerMsgID, s.req.Content, s.customer.Name, s.customerMsgCreatedAt.Format("2006-01-02T15:04:05Z"))
@@ -541,6 +594,12 @@ func (s *chatSessionCtx) chatStoreVisitFast() bool {
 	go func(cid, convID uint, content string, tid uint) {
 		sd := service.GetStoreVisitSecondDelay()
 		chatflow.CancellableSleep(cid, sd)
+		// 醒来先复核"AI 还有没有说话权"（25-45s 里顾问可能已接管、客户可能已留资）。
+		// 判据与通道侧共用 chatflow 单点，两条入口不会再一套语义。
+		if reason := chatflow.StoreVisitSecondSkipReason(convID); reason != "" {
+			log.Printf("[到店倾向-未留资线索] 客户%d 到店第二段已跳过(%s)", cid, reason)
+			return
+		}
 		secondMsg := model.Message{
 			TenantID:       tid, // 显式盖章，不依赖请求上下文
 			ConversationID: convID,
@@ -571,8 +630,12 @@ func (s *chatSessionCtx) chatStoreVisitFast() bool {
 }
 
 // chatLeadCapture 到店倾向快速通道「分支B：已留资线索」。手机号命中即标记留资+分配顾问(+OneID合并)
-// + pending_handoff，并发硬编码确认回复，不走AI。等价原 Chat() 分支B。返回 true 表示已响应客户端。
-func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
+// + pending_handoff，并发确认回复（行业键单点），不走AI。等价原 Chat() 分支B。返回 true 表示已响应客户端。
+//
+// FIX-9(2026-09-27)：手机号与确认话术都改由 chatflow.DecidePreRoute 的裁决结果带入——
+// 判据（哪一层、哪个分支）与文案（哪一句）都只剩一份，通道入站补同一条分支时不必再抄。
+func (s *chatSessionCtx) chatLeadCapture(pre chatflow.PreRoute) bool {
+	phoneMatch := pre.Phone
 	log.Printf("[到店倾向-已留资线索] 客户%d 消息含手机号%s，走已留资硬编码路径",
 		s.customer.ID, pii.MaskPhone(phoneMatch))
 
@@ -580,9 +643,9 @@ func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
 	mergedTargetID := chatflow.MergeCustomerByPhone(&s.customer, phoneMatch)
 	if mergedTargetID > 0 {
 		// 合并完成，重新加载老客户数据，会话也跟着迁过去了
-		db.RQ(s.c).First(&s.customer, mergedTargetID)
-		db.RQ(s.c).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
-			Order("updated_at DESC").First(&s.conversation)
+		persistBypass("oneid_reload", s.customer.ID, s.conversation.ID, db.RQ(s.c).First(&s.customer, mergedTargetID))
+		persistBypass("oneid_conversation_reload", s.customer.ID, s.conversation.ID, db.RQ(s.c).Where("customer_id = ? AND status = ?", s.customer.ID, "active").
+			Order("updated_at DESC").First(&s.conversation))
 		log.Printf("[到店倾向-已留资-OneID] 合并到老客户%d，前端需切换customer_id", mergedTargetID)
 	}
 
@@ -596,13 +659,13 @@ func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
 	// 到店倾向已留资分支也要用轮询选顾问，不能硬编码1
 	if s.customer.AssignedUserID == 0 {
 		var salesUsers []model.User
-		db.RQ(s.c).Where("role = ? AND status = 1", model.RoleSales).Find(&salesUsers)
+		persistBypass("assignee_lookup", s.customer.ID, s.conversation.ID, db.RQ(s.c).Where("role = ? AND status = 1", model.RoleSales).Find(&salesUsers))
 		if len(salesUsers) > 0 {
 			minCount := -1
 			var bestUserID uint = salesUsers[0].ID
 			for _, u := range salesUsers {
 				var count int64
-				db.RQ(s.c).Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count)
+				persistBypass("assignee_load", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count))
 				if minCount < 0 || int(count) < minCount {
 					minCount = int(count)
 					bestUserID = u.ID
@@ -662,7 +725,7 @@ func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
 		Content:        fmt.Sprintf("客户到店意向+已留资，手机号:%s，原始消息:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(s.req.Content)),
 		Result:         "lead_captured", // 已留资线索
 	}
-	db.RQ(s.c).Create(&followUp)
+	persistBypass("lead_followup", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&followUp))
 	log.Printf("[到店倾向-已留资线索] 客户%d 线索已生成(FollowUp ID=%d)，分配顾问%d",
 		s.customer.ID, followUp.ID, s.customer.AssignedUserID)
 
@@ -678,23 +741,22 @@ func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
 	now := time.Now()
 	conversation.HandoffNotifiedAt = &now
 	// 到店快速通道同样只写本分支推进的 4 列，勿整行 Save
-	db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]interface{}{
+	persistBypass("conversation_state", s.customer.ID, conversation.ID, db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", conversation.ID).Updates(map[string]interface{}{
 		"pending_handoff":         true,
 		"guided_remaining_rounds": 0,
 		"guided_disabled":         false,
 		"handoff_notified_at":     now,
-	})
+	}))
 
-	// 5. 固定引导式反问（硬编码，不走AI避免延迟）
+	// 5. 固定引导式反问（硬编码文案，不走AI避免延迟）
 	firstDelay := service.GetStoreVisitFirstDelay()
 	chatflow.CancellableSleep(s.customer.ID, firstDelay)
 
-	leadCapturedReplies := []string{
-		"好呀，要不你再详细跟我说说你的用车需求，关注哪些方面，有没有老车要置换，大概什么时候想用车吧",
-		"好嘞，你方便详细聊聊你的用车需求吗？关注什么方面比较多？有没有老车考虑置换，大概啥时候想用车呢",
-		"好的，你要不跟我说说你的用车场景和需求？关注哪些地方比较多，有没有老车要换，大概打算啥时候用车",
-	}
-	leadCapturedReply := leadCapturedReplies[rand.Intn(len(leadCapturedReplies))]
+	// FIX-9(2026-09-27)：这三句原先内联在此处（汽车口径"有没有老车要置换"），非 auto 行业租户
+	// 的客户一留手机号就被问置换，且通道入站补同一条分支时只能再抄一遍。
+	// 现已收进 service.GetLeadCapturedConfirmReply（行业键 industry.lead_captured_confirm，
+	// 兜底数组与旧内联逐字一致），由分流裁决带进来。
+	leadCapturedReply := pre.Reply
 
 	leadMsg := model.Message{
 		ConversationID: s.conversation.ID,
@@ -705,7 +767,9 @@ func (s *chatSessionCtx) chatLeadCapture(phoneMatch string) bool {
 		RouteResult:    "lead_captured_confirmed", // 已留资确认路由标记
 		CreatedAt:      time.Now(),
 	}
-	db.RQ(s.c).Create(&leadMsg)
+	if persistRequired(s.c, "lead_captured_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&leadMsg)) {
+		return true
+	}
 
 	RespOK(s.c, "success", gin.H{
 		"conversation_id":    s.conversation.ID,
@@ -738,7 +802,12 @@ func (s *chatSessionCtx) chatProcessAndReply() bool {
 	// ---- 调用策略引擎（用合并后的内容推理） ----
 	s.chatRunStrategyAndRoute()
 
-	aiReply, aiMsg := s.chatSaveReplyAndUpdate()
+	aiReply, aiMsg, answered := s.chatSaveReplyAndUpdate()
+	if answered {
+		// FIX-5：AI 回复落库失败，500 已经写出。批次交给下面的 defer 空回复释放，
+		// 同批被合并的那几条不会拿到一份"库里没有的答复"。
+		return true
+	}
 
 	// 12. 唤醒消息队列中等待的其他请求（携带本请求持有的处理代际）
 	releaseBatch(aiReply)
@@ -763,8 +832,7 @@ func (s *chatSessionCtx) chatProcessAndReply() bool {
 // 副作用：命中时重载客户、置 guided 轮数，并填充 s.leadCapturedResult 供返回的 MergedCustomerID 使用。
 func (s *chatSessionCtx) chatLeadCaptureHardIntercept() {
 	leadCapturedResult := 0
-	if s.customer.JourneyStage != model.JourneyLeadCaptured && s.customer.JourneyStage != model.JourneyArrived &&
-		s.customer.JourneyStage != model.JourneyOrdered && s.customer.JourneyStage != model.JourneyDelivered {
+	if !chatflow.CapturedStage(s.customer.JourneyStage) {
 		leadCapturedResult = chatflow.DetectLeadCapture(s.mergedContent, &s.customer)
 		if leadCapturedResult != 0 {
 			log.Printf("[留资检测-硬拦截] 客户 %d 已留资，自动分配顾问", s.customer.ID)
@@ -776,10 +844,10 @@ func (s *chatSessionCtx) chatLeadCaptureHardIntercept() {
 				log.Printf("[留资检测-硬拦截] 客户 %d 重新加载成功, journey_stage=%s", s.customer.ID, s.customer.JourneyStage)
 			}
 			// 硬编码：留资后设置1轮引导式反问
-			db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).Updates(map[string]interface{}{
+			persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).Updates(map[string]interface{}{
 				"guided_remaining_rounds": 1,
 				"guided_disabled":         false,
-			})
+			}))
 			s.conversation.GuidedRemainingRounds = 1
 			s.conversation.GuidedDisabled = false
 		}
@@ -828,12 +896,12 @@ func (s *chatSessionCtx) chatRunStrategyAndRoute() {
 				s.conversation.IsHumanLocked = false
 				s.conversation.Mode = "ai"
 				s.conversation.PendingHandoff = false
-				db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
+				persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
 					"is_ai_reply_enabled": true,
 					"is_human_locked":     false,
 					"mode":                "ai",
 					"pending_handoff":     false,
-				})
+				}))
 				log.Printf("[Chat] 会话%d 顾问超时，自动重开AI回复", s.conversation.ID)
 				aiReply = flow.DefaultEngine.OrchestrateReply(middleware.CtxWithTrace(s.c), &s.customer, s.conversation.ID, s.mergedContent, &s.strategyOutput, service.DeptChainForUser(s.conversation.AssignedUserID))
 			} else {
@@ -852,11 +920,11 @@ func (s *chatSessionCtx) chatRunStrategyAndRoute() {
 		s.conversation.Mode = "human"
 		s.conversation.IsHumanLocked = true
 		s.conversation.IsAiReplyEnabled = false
-		db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
+		persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
 			"mode":                "human",
 			"is_human_locked":     true,
 			"is_ai_reply_enabled": false,
-		})
+		}))
 		log.Printf("[对话] 会话 %d AI接不住，已关闭AI回复等待顾问，推迟分配顾问，原因: %s", s.conversation.ID, s.strategyOutput.RouteReason)
 
 	case strategy.RoutePrice:
@@ -874,11 +942,11 @@ func (s *chatSessionCtx) chatRunStrategyAndRoute() {
 		s.conversation.Mode = "human"
 		s.conversation.IsHumanLocked = true
 		s.conversation.IsAiReplyEnabled = false
-		db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
+		persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
 			"mode":                "human",
 			"is_human_locked":     true,
 			"is_ai_reply_enabled": false,
-		})
+		}))
 		log.Printf("[对话] 会话 %d AI接不住硬切人工，已关闭AI回复等待顾问，推迟分配顾问，原因: %s", s.conversation.ID, s.strategyOutput.RouteReason)
 
 	case strategy.RouteFish:
@@ -911,11 +979,11 @@ func (s *chatSessionCtx) applyContentsafetyGate(aiReply string, action GateActio
 		s.conversation.Mode = "human"
 		s.conversation.IsHumanLocked = true
 		s.conversation.IsAiReplyEnabled = false
-		db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
+		persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&s.conversation).Updates(map[string]interface{}{
 			"mode":                "human",
 			"is_human_locked":     true,
 			"is_ai_reply_enabled": false,
-		})
+		}))
 		log.Printf("[对话] 会话%d 内容安全拦截，已转人工等待顾问", s.conversation.ID)
 		return SafetyHandoffReply()
 	}
@@ -924,7 +992,9 @@ func (s *chatSessionCtx) applyContentsafetyGate(aiReply string, action GateActio
 
 // chatSaveReplyAndUpdate 落库 AI 回复、更新会话状态(字段级)与客户画像(意向分反哺)、写归因、
 // 构造策略信息并施加"模拟真人延迟"后返回最终 aiReply 与落库消息。等价原 Chat() 步骤8-13。
-func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
+// 第三个返回值 replied=true：AI 回复这条消息行没能落库，本函数已回 500，调用方必须直接结束请求
+// （FIX-5：不许把库里不存在的 aiMsg 当本次答复拼进成功响应，见 chat_persist.go 口径表）。
+func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message, bool) {
 	state := s.conversation.GetState()
 
 	// 8. 保存AI回复消息
@@ -943,7 +1013,9 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
 			Emotion:        state.Emotion,
 			CreatedAt:      time.Now(),
 		}
-		db.RQ(s.c).Create(&aiMsg)
+		if persistRequired(s.c, "ai_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&aiMsg)) {
+			return s.aiReply, aiMsg, true
+		}
 		publishConversationMsg(s.tenantID, s.customer.ID, s.routeResult, state.Emotion)
 		// P1-1 实时推送：AI 新回复通知客户端与顾问端
 		notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "ai",
@@ -958,7 +1030,7 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
 	s.conversation.Emotion = strategy.DetectEmotion(s.mergedContent)
 
 	// 只写本请求负责推进的列（不含 mode/customer_id/guided_*）
-	db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).Updates(map[string]interface{}{
+	persistBypass("conversation_state", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&model.Conversation{}).Where("id = ?", s.conversation.ID).Updates(map[string]interface{}{
 		"attempts":           s.conversation.Attempts,
 		"hook_count":         s.conversation.HookCount,
 		"last_tid":           s.conversation.LastTid,
@@ -969,7 +1041,7 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
 		"current_stage":      s.conversation.CurrentStage,
 		"state_json":         s.conversation.StateJSON,
 		"last_message_at":    s.conversation.LastMessageAt,
-	})
+	}))
 
 	// 10. 更新客户画像（意向分反哺）
 	newIntent := s.tVector[0] + s.strategyOutput.IntentDelta
@@ -985,10 +1057,10 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
 	newTVector := s.customer.GetTVector()
 	newTVector[0] = newIntent // 更新意向分
 	s.customer.SaveTVector(newTVector)
-	db.RQ(s.c).Model(&model.Customer{}).Where("id = ?", s.customer.ID).Updates(map[string]interface{}{
+	persistBypass("customer_profile", s.customer.ID, s.conversation.ID, db.RQ(s.c).Model(&model.Customer{}).Where("id = ?", s.customer.ID).Updates(map[string]interface{}{
 		"intent_score": s.customer.IntentScore,
 		"t_vector":     s.customer.TVectorJSON,
-	})
+	}))
 
 	// D9：AI 回复落包/模板/意向变化快照，供包效果归因。
 	if aiMsg.ID > 0 {
@@ -1067,7 +1139,7 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message) {
 	}
 	log.Printf("[Chat] 客户%d 延迟结束，返回回复", s.customer.ID)
 
-	return s.aiReply, aiMsg
+	return s.aiReply, aiMsg, false
 }
 
 // mergedCustomerIDFor G5：把 DetectLeadCapture 的 int 结果安全转成回传前端的合并目标 ID——

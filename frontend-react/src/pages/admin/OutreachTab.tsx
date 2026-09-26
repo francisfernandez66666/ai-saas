@@ -12,6 +12,9 @@ import type { CellProps, OutreachConfig, OutreachListResp, OutreachTaskRow } fro
 // 行/列表/配置三类形状统一从 ../../types 取（与后端 outreachTaskView 同源，
 // 由 cmd/apidump 的 apidump:ts 注解进契约，前端不再自持一份会漂移的副本）
 type ApiResp<T> = { code: number; message?: string; data?: T }
+// 顾问客户列表的分页信封：page_size 是**服务端钳制后的生效值**，
+// 前端据它判断"这一页是否已经装满"，而不是按自己请求里写的数字猜。
+type CustomerPage = { list: { id: number; name?: string; phone?: string }[]; total?: number; page_size?: number }
 type Form = { customer_id: number | null; content: string; scheduled_at: string }
 
 const STATUS_META: Record<string, { label: string; theme: 'primary' | 'success' | 'warning' | 'danger' | 'default' }> = {
@@ -50,7 +53,7 @@ export function OutreachTab() {
   const [loading, setLoading] = useState(false)
   const [form, setForm] = useState<Form | null>(null)
   const [saving, setSaving] = useState(false)
-  // 客户下拉：复用顾问侧客户列表（一次拉 200 条足够选人，超出靠可搜索过滤）
+  // 客户下拉：复用顾问侧客户列表（按回显页长逐页续拉，见 ensureCustomers）
   const [custOptions, setCustOptions] = useState<{ label: string; value: number }[]>([])
 
   const load = useCallback(async () => {
@@ -66,13 +69,23 @@ export function OutreachTab() {
 
   useEffect(() => { void load() }, [load])
 
-  // 客户下拉懒加载：点"新建触达"才拉（一次 200 条够选人，超出靠可搜索过滤）。
+  // 客户下拉懒加载：点"新建触达"才拉，按服务端回显的 page_size 逐页续拉到 total 为止。
   // 刻意不放 useEffect——列表页首屏不必为一个还没打开的弹窗多打一次请求。
   async function ensureCustomers() {
     if (custOptions.length > 0) return
-    const j = (await AUTH('/api/v1/advisor/customers?page_size=200&assigned=all')) as ApiResp<{ list: { id: number; name?: string; phone?: string }[] }> | null
-    const list = j?.code === 0 ? (j.data?.list || []) : []
-    setCustOptions(list.map((x) => ({ label: x.name || x.phone || `客户 #${x.id}`, value: x.id })))
+    const collected: { id: number; name?: string; phone?: string }[] = []
+    // 最多 5 页：下拉是"选人"用的，不是导数用的。服务端硬顶 100/页（FIX-4 收口），
+    // 旧写法一次 `page_size=200` 会被静默截成 100——租户客户多于 100 位时，
+    // 第 101 位之后的客户在界面上根本选不到，且没有任何"还有更多"的提示。
+    for (let page = 1; page <= 5; page++) {
+      const j = (await AUTH(`/api/v1/advisor/customers?page=${page}&page_size=100&assigned=all`)) as ApiResp<CustomerPage> | null
+      if (j?.code !== 0) break
+      const list = j.data?.list || []
+      collected.push(...list)
+      const size = Number(j.data?.page_size || list.length || 100)
+      if (list.length < size || collected.length >= Number(j.data?.total || 0)) break
+    }
+    setCustOptions(collected.map((x) => ({ label: x.name || x.phone || `客户 #${x.id}`, value: x.id })))
   }
 
   // 提交排期：空正文本地先拦（后端还会过内容安全与长度上限）；时间留空=立即排期（落在静默段自动顺延）

@@ -75,7 +75,7 @@ while IFS='|' read -r src code name ver level parent industry; do
     FAIL=1
     continue
   fi
-  echo "ok   $code v$ver → $out（$(wc -c < "$out" | tr -d ' ') 字节）"
+  echo "ok   $code v$ver → ${out}（$(wc -c < "$out" | tr -d ' ') 字节）"
 done <<< "$PACKS"
 
 if [ "$FAIL" -ne 0 ]; then

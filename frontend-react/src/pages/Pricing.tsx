@@ -6,6 +6,9 @@
 import { useState, useEffect } from 'react'
 import { useBrand } from '../lib/branding'
 import { apiFetch } from '../lib/api'
+// FIX-8(2026-09-27)：金额口径单点。旧写法 `(cents / 100).toFixed(0)` 把 ¥99.50 显示成 ¥100，
+// 而下单按分实扣——页面价与扣款额不一致是投诉源，且舍掉的那几毛在页面上完全看不出来。
+import { fenToYuanCompact } from '../lib/money'
 
 // 租户套餐类型（定价页展示）
 type Plan = { name: string; price_monthly_cents: number; highlights?: string; max_users: number; max_customers: number; max_departments: number }
@@ -60,7 +63,7 @@ export default function Pricing() {
           // 套餐亮点为 JSON 字符串，解析失败时降级为空数组
           let hl: string[] = []
           try { hl = JSON.parse(p.highlights || '[]') } catch { /* 非法 JSON 降级空数组 */ }
-          const m = (p.price_monthly_cents / 100).toFixed(0)
+          const m = fenToYuanCompact(p.price_monthly_cents)
           const hasPrice = p.price_monthly_cents > 0
           return (
             <div key={i} style={{ background: '#fff', borderRadius: 12, padding: 26, boxShadow: '0 4px 18px rgba(0,0,0,.07)', position: 'relative' }} className={i === 1 ? 'ring-2 ring-indigo-500' : ''}>
@@ -86,7 +89,7 @@ export default function Pricing() {
       <p style={{ textAlign: 'center', color: '#718096', marginBottom: 24 }}>注册即送试用包 · 增量包买断不过期</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(240px,1fr))', gap: 20, maxWidth: 1080, margin: '0 auto' }}>
         {pkgs.map((p, i) => {
-          const price = Number(p.price_cents) > 0 ? '¥' + (Number(p.price_cents) / 100).toFixed(0) : '免费'
+          const price = Number(p.price_cents) > 0 ? '¥' + fenToYuanCompact(Number(p.price_cents)) : '免费'
           return (
             <div key={i} style={{ background: '#fff', borderRadius: 12, padding: 26, boxShadow: '0 4px 18px rgba(0,0,0,.07)', position: 'relative' }} className={i === 2 ? 'ring-2 ring-indigo-500' : ''}>
               <b>{p.name}</b>

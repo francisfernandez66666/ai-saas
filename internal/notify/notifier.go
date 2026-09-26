@@ -9,8 +9,10 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/smtp"
 	"os"
@@ -73,6 +75,18 @@ func (LogSender) SendRaw(to []string, subject, body string) error {
 	return nil
 }
 
+// sendToLogChannel 把"只能落日志"的邮件正文集中到这一个函数里打。
+//
+// 为什么再包一层、不让调用方直接用 LogSender{}.SendRaw：LogSender.SendRaw **恒返回 nil**，
+// 也就是"永远成功"。它作为 ResetCodeSender 的实现是对的（通道未就绪时开发态确实要能拿到码），
+// 但一旦外呼方图省事写 `if err := sender.SendRaw(...); err != nil {...}`，
+// 拿到的就是"发送成功"——这正是本仓反复根除的"只会打日志并返回成功的守卫等于没有守卫"。
+// 本函数不返回 error，签名上就**不给任何人把它当投递成功依据**的机会；
+// 谁要判投递结果，必须回到通道选择那一层去如实记（见 invoice_notify.go 的 log_only 档）。
+func sendToLogChannel(to []string, subject, body string) {
+	_ = LogSender{}.SendRaw(to, subject, body)
+}
+
 // SMTPSender SMTP邮件通道（2026-08-23 代码就绪，填环境变量即启用）
 // 环境变量：SMTP_HOST / SMTP_PORT / SMTP_USER / SMTP_PASS / SMTP_FROM(缺省用SMTP_USER)
 // 批次三只需在 .env 填密钥 + system_config 设 reset_code_channel=smtp，零代码切换
@@ -106,7 +120,9 @@ func NewSMTPSenderFromEnv() *SMTPSender {
 }
 
 // SendResetCode 实现：发验证码邮件
-// 双通道：587 STARTTLS（net/smtp 自动升级）/ 465 隐式TLS（tls.Dial 先握手）
+// 双通道：587 STARTTLS（自实现会话，带时间墙）/ 465 隐式TLS（先握手再走同一场会话）
+// ⚠ 587 一支在 2026-09-27 之前是 smtp.SendMail，那条 API 无法设任何超时；
+// 现在改由 runSMTPSession 自己持有连接，才拿得到 SetDeadline 的控制权（详见 smtpSessionTimeout 注释）。
 func (s *SMTPSender) SendResetCode(to string, code string) error {
 	subject := "跨山 LexCross 密码重置验证码"
 	body := fmt.Sprintf(
@@ -120,50 +136,115 @@ func (s *SMTPSender) SendRaw(to []string, subject, body string) error {
 	return sendMailTLS(s, to, subject, body)
 }
 
+// SMTP 外呼的时间预算（FIX-9 发票触达批，2026-09-27）。
+//
+// 为什么要单独管：旧实现 465 走 tls.Dial、587 走 smtp.SendMail，**两条路都没有任何超时**。
+// tcp.Dial 的默认超时来自 OS（Linux 上是 SYN 重试那么久，几十秒起步），而连上之后
+// 一个不回复的服务器能让 Read 挂到进程结束——落在这个调用点上的 HTTP 请求就永远不返回。
+// 此前这条链只在"重置码/验证码"里同步调用，没人把它当问题；FIX-9 要在超管点「开具」时
+// 同步给客户发一封交付邮件并**如实记录结果码**，一旦挂住，"结果码"这个字段就永远停在上一次的值，
+// 于是"发不出去"又变回只有日志知道的静默故障——正是本批一直在根除的那一类。
+// 所以这里给拨号与整场会话各一道墙：拨号 8s（够跨区 DNS+TCP+TLS），整场 15s（覆盖 AUTH+MAIL+RCPT+DATA）。
+// 会话截止用 SetDeadline 挂在裸 conn 上：TLS 读写都从它过，因此 STARTTLS 升级后的会话同样受管。
+//
+// 两个值是 var 而不是 const：唯一区别是**超时这一档因此可测**。
+// 写成 const 15s 时，"服务器连上了但一言不发"这条分支要吃满 15 秒才出结果，
+// 没有单测会在合理时间内覆盖它——于是一个只会打日志并返回成功的守卫换个形态回来了：
+// 分支存在、没人验过、真出事时才第一次跑。单测里临时调小即可确定性触发（见 invoice_notify_test.go）。
+var (
+	smtpDialTimeout    = 8 * time.Second
+	smtpSessionTimeout = 15 * time.Second
+)
+
 // sendMailTLS 统一发送入口：按端口自动选择 465 隐式 TLS 或 587 STARTTLS
 func sendMailTLS(s *SMTPSender, to []string, subject, body string) error {
-	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
+	// JoinHostPort 而不是 "%s:%d"：SMTP_HOST 可以是 IPv6 字面量（::1 或 fd00::1），
+	// 裸拼出来的 "::1:465" 是坏地址（vet 亦按此判），而 SMTPSender 的调用点全在 SMTPSender.SendRaw 之后，
+	// 一旦配了 IPv6 就是所有外发邮件 100% 失败且只在日志里留一行"连接失败"。
+	addr := net.JoinHostPort(s.Host, strconv.Itoa(s.Port))
 	msg := buildMailMessage(s.From, to[0], subject, body)
 	auth := smtp.PlainAuth("", s.User, s.Pass, s.Host)
 
+	d := net.Dialer{Timeout: smtpDialTimeout}
+	conn, err := d.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("SMTP连接失败: %w", err)
+	}
+	// 整场会话一个绝对截止：拨号已完成，从这里起 TLS 握手、逐条命令、正文传输共用这 15s。
+	if err = conn.SetDeadline(time.Now().Add(smtpSessionTimeout)); err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("设置发送超时失败: %w", err)
+	}
+	defer conn.Close()
+
 	if s.Port == 465 {
 		// 465 隐式TLS：先建立TLS连接再走SMTP会话（net/smtp.SendMail 不支持此模式）
-		conn, err := tls.Dial("tcp", addr, &tls.Config{ServerName: s.Host})
-		if err != nil {
+		tconn := tls.Client(conn, &tls.Config{ServerName: s.Host})
+		if err = tconn.Handshake(); err != nil {
 			return fmt.Errorf("TLS连接失败: %w", err)
 		}
-		defer conn.Close()
-		cli, err := smtp.NewClient(conn, s.Host)
-		if err != nil {
-			return fmt.Errorf("SMTP会话失败: %w", err)
-		}
-		defer cli.Close()
-		if err = cli.Auth(auth); err != nil {
-			return fmt.Errorf("认证失败: %w", err)
-		}
-		if err = cli.Mail(s.From); err != nil {
-			return fmt.Errorf("设置发件人失败: %w", err)
-		}
-		for _, rcpt := range to {
-			if err = cli.Rcpt(rcpt); err != nil {
-				return fmt.Errorf("收件人被拒(%s): %w", maskEmail(rcpt), err)
-			}
-		}
-		w, err := cli.Data()
-		if err != nil {
-			return fmt.Errorf("写入正文失败: %w", err)
-		}
-		if _, err = w.Write(msg); err != nil {
-			return fmt.Errorf("传输失败: %w", err)
-		}
-		if err = w.Close(); err != nil {
-			return fmt.Errorf("结束数据失败: %w", err)
-		}
-		return cli.Quit()
+		return runSMTPSession(tconn, s, to, msg, auth, false)
 	}
 
-	// 587/25：STARTTLS 明文起连自动升级
-	return smtp.SendMail(addr, auth, s.From, to, msg)
+	// 587/25：明文起连，会话内 STARTTLS 自动升级（与 smtp.SendMail 内部动作一致，
+	// 只是换成自己持有 conn，才拿得到上面那道 SetDeadline 的控制权）
+	return runSMTPSession(conn, s, to, msg, auth, true)
+}
+
+// runSMTPSession 走完一场 SMTP 会话（AUTH→MAIL→RCPT→DATA→QUIT）。
+// startTLS=true 时先探测服务器是否支持 STARTTLS：支持则升级，**不支持则如实报错而不是明文发出去**
+// ——旧路径 smtp.SendMail 在服务器不声明 STARTTLS 时同样拒发（"server refused STARTTLS"），
+// 这里保持同一个判定，避免"改成自实现顺手放宽了加密要求"这种隐性安全回归。
+func runSMTPSession(conn net.Conn, s *SMTPSender, to []string, msg []byte, auth smtp.Auth, startTLS bool) error {
+	cli, err := smtp.NewClient(conn, s.Host)
+	if err != nil {
+		return fmt.Errorf("SMTP会话失败: %w", err)
+	}
+	defer cli.Close()
+	if startTLS {
+		if ok, _ := cli.Extension("STARTTLS"); !ok {
+			return fmt.Errorf("服务器不支持 STARTTLS，拒绝明文发送")
+		}
+		if err = cli.StartTLS(&tls.Config{ServerName: s.Host}); err != nil {
+			return fmt.Errorf("STARTTLS失败: %w", err)
+		}
+	}
+	if err = cli.Auth(auth); err != nil {
+		return fmt.Errorf("认证失败: %w", err)
+	}
+	if err = cli.Mail(s.From); err != nil {
+		return fmt.Errorf("设置发件人失败: %w", err)
+	}
+	for _, rcpt := range to {
+		if err = cli.Rcpt(rcpt); err != nil {
+			return fmt.Errorf("收件人被拒(%s): %w", maskEmail(rcpt), err)
+		}
+	}
+	w, err := cli.Data()
+	if err != nil {
+		return fmt.Errorf("写入正文失败: %w", err)
+	}
+	if _, err = w.Write(msg); err != nil {
+		return fmt.Errorf("传输失败: %w", err)
+	}
+	if err = w.Close(); err != nil {
+		return fmt.Errorf("结束数据失败: %w", err)
+	}
+	return cli.Quit()
+}
+
+// IsTimeoutErr 判定一个错误是不是"超时导致"（FIX-9 触达结果码要区分 send_failed 与 send_timeout）。
+// 必须顺着错误链找：拨号超时包在 *net.OpError 里、会话截止（SetDeadline 触发）被 fmt.Errorf
+// 的 %w 包在更外层，只看最外层字符串会把"连不上"和"发不出去"混成一类——
+// 而这两类在运维上是完全不同的动作（前者多半是网络/防火墙，后者是服务器不回复）。
+func IsTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	// 拨号超时与会话截止（SetDeadline 触发的 os.ErrDeadlineExceeded）都会以 net.Error
+	// 出现在错误链上，errors.As 会穿过 fmt.Errorf 的 %w 包装找到它。
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // buildMailMessage 组装 RFC 5322 报文（Subject/Base64 处理中文标题乱码）

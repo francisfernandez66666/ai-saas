@@ -3,6 +3,8 @@
 import { Button, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { Section, TYPE_NAMES, type Pkg } from './shared'
+// FIX-8(2026-09-27)：售价展示走单点（整元省掉小数，有分才带两位）。
+import { fenToYuanCompact } from '../../lib/money'
 
 // PackagesTab 平台后台「套餐管理」页：套餐列表、上下架与新建入口。
 export default function PackagesTab({ pkgs, onToggle, onCreate }: {
@@ -15,7 +17,7 @@ export default function PackagesTab({ pkgs, onToggle, onCreate }: {
     { colKey: 'id', title: 'ID', width: 50 }, { colKey: 'code', title: '标识', width: 120 }, { colKey: 'name', title: '名称', width: 120 },
     { colKey: 'p_type', title: '类型', width: 90, cell: (p: CellProps) => TYPE_NAMES[p.row.p_type] || p.row.p_type },
     { colKey: 'ai_calls', title: 'AI次数', width: 80 },
-    { colKey: 'price_cents', title: '售价', width: 90, cell: (p: CellProps) => '¥' + (p.row.price_cents / 100).toFixed(p.row.price_cents % 100 ? 2 : 0) },
+    { colKey: 'price_cents', title: '售价', width: 90, cell: (p: CellProps) => '¥' + fenToYuanCompact(p.row.price_cents) },
     { colKey: 'duration_days', title: '有效期', width: 90, cell: (p: CellProps) => p.row.duration_days ? p.row.duration_days + '天' : '—' },
     { colKey: 'enabled', title: '状态', width: 80, cell: (p: CellProps) => <Tag theme={p.row.enabled ? 'success' : 'default'}>{p.row.enabled ? '上架' : '下架'}</Tag> },
     { colKey: 'op', title: '操作', width: 90, cell: (p: CellProps) => <Button size="small" theme={p.row.enabled ? 'danger' : 'success'} variant="outline" onClick={() => onToggle(p.row.id, !p.row.enabled)}>{p.row.enabled ? '下架' : '上架'}</Button> },

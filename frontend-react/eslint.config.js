@@ -53,4 +53,24 @@ export default tseslint.config(
       'no-irregular-whitespace': ['error', { skipComments: true, skipJSXText: true }],
     },
   },
+  {
+    // FIX-8(2026-09-27)：金额口径单点的**负向闸**。
+    // 规则只有一条——界面输入框里是元、中间步骤与提交体里全是分（整数），换算只认 lib/money。
+    // 为什么用 AST 选择器而不是 grep `/ 100`：本批给每处替换都留了中文说明注释
+    // （"旧写法 (cents/100).toFixed(0) 把 ¥99.50 显示成 ¥100"），粗 grep 会把这些注释当成
+    // 违规命中、逼人去删说明或把闸放宽——本仓已有"负向 grep 锁误伤注释"的教训。
+    // 走 no-restricted-syntax 只看真实代码节点：注释、字符串里的 `/ 100` 一律不打。
+    // 范围限定页面/组件层：lib/money.ts 自己当然要除 100，那是单点本体。
+    files: ['src/pages/**/*.{ts,tsx}', 'src/components/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        {
+          selector: 'BinaryExpression[operator="/"] > Literal[value=100]',
+          message:
+            '金额换算请走 lib/money（fenToYuan / fenToYuanCompact / yuanToFen），不要写裸 `x / 100`（FIX-8：两处浮点往返 + toFixed(0) 会把 ¥99.50 显示成 ¥100，页面价与扣款额不一致）',
+        },
+      ],
+    },
+  },
 )

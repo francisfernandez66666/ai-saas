@@ -11,7 +11,7 @@ vi.mock('tdesign-react', () => ({
 }))
 
 import { MessagePlugin } from 'tdesign-react'
-import { AUTH, ERROR_CODE_MESSAGES, clearToken, getToken, redirectByRole, setToken, toastError } from '../api'
+import { AUTH, ERROR_CODE_MESSAGES, IMPERSONATE_TENANT_KEY, VISITOR_KEY, clearToken, getImpersonateTenant, getToken, invalidateSession, logoutAndRedirect, redirectByRole, setImpersonateTenant, setToken, toastError, verifySession } from '../api'
 // 后端码清单的**生成物**（go run ./cmd/apidump -format errorcodes），不是本文件手抄的清单——
 // 手抄那份与后端源码之间没有机制约束，后端加码而前端没登记时它会跟着一起漏，护栏就在最该响的时候沉默。
 import { BACKEND_ERROR_CODES } from '../../types/error_codes.generated'
@@ -173,5 +173,103 @@ describe('apiFetch 超时闸门', () => {
     void AUTH('/api/v1/long-chat', { timeoutMs: 0 })
     await vi.advanceTimersByTimeAsync(120_000)
     expect(aborted).toBe(false)
+  })
+})
+
+// ===== FIX-6（2026-09-27）：会话校验必须"失败形态不同 → 返回值不同" =====
+// 旧签名 Promise<MeInfo | null> 把三种完全不同的失败（服务端判死会话 / 服务端要求改密 /
+// 请求根本没发出去）压成同一个 null，调用方只好拿"本地还有没有 token"反推原因，
+// 于是断网被推成"必须改密"。本段钉的是返回值这一层；UI 落点另见
+// src/pages/__tests__/ProtectedRoute.test.tsx（两层分开才防住"改了返回值忘了改分支"）。
+describe('verifySession 失败形态分形（FIX-6）', () => {
+  afterEach(() => {
+    invalidateSession() // 模块级 60s 缓存：不清则下一条用例命中上一条身份，打的不是本例分支
+    vi.unstubAllGlobals()
+  })
+
+  // 只给 verifySession 真正读的东西：status / json() / clone().json()（jsdom 不保证有 Response 类）
+  function meResp(status: number, body: unknown) {
+    return {
+      status,
+      json: () => Promise.resolve(body),
+      clone: () => ({ json: () => Promise.resolve(body) }),
+    } as unknown as Response
+  }
+  const okBody = { code: 0, data: { id: 1, username: 'admin', role: 'admin', tenant_id: 1 } }
+
+  it('本地无 token → anonymous，且一次请求都不发', async () => {
+    const f = vi.fn()
+    vi.stubGlobal('fetch', f)
+    expect(await verifySession()).toEqual({ state: 'anonymous' })
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('fetch reject → network_error，token 原样保留（断网不是会话被判死）', async () => {
+    setToken('jwt-online-lost')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new TypeError('Failed to fetch'))))
+    expect(await verifySession()).toEqual({ state: 'network_error' })
+    expect(getToken()).toBe('jwt-online-lost')
+  })
+
+  it('401 → revoked 并清 token', async () => {
+    setToken('jwt-expired')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResp(401, { code: 401, error_code: 'token_expired' }))))
+    expect(await verifySession()).toEqual({ state: 'revoked' })
+    expect(getToken()).toBe('')
+  })
+
+  it('403 must_change_password → 单独一态且保留 token（改密接口要用它）', async () => {
+    setToken('jwt-first-login')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResp(403, { code: 403, error_code: 'must_change_password' }))))
+    expect(await verifySession()).toEqual({ state: 'must_change_password' })
+    expect(getToken()).toBe('jwt-first-login')
+  })
+
+  it('403 其它原因 → forbidden 且不动 token（重登也还是 403，销毁会话是过度反应）', async () => {
+    setToken('jwt-suspended')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResp(403, { code: 403, error_code: 'tenant_suspended' }))))
+    expect(await verifySession()).toEqual({ state: 'forbidden' })
+    expect(getToken()).toBe('jwt-suspended')
+  })
+
+  it('HTTP 200 但信封非 0 → revoked（服务端确实否了这次会话）', async () => {
+    setToken('jwt-weird-envelope')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResp(200, { code: 500, message: 'boom' }))))
+    expect(await verifySession()).toEqual({ state: 'revoked' })
+    expect(getToken()).toBe('')
+  })
+
+  it('成功态以服务端角色为准并纠偏 localStorage（localStorage 造假role 不再有效）', async () => {
+    setToken('jwt-forged-role')
+    localStorage.setItem('role', 'super_admin') // 篡改值
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResp(200, okBody))))
+    const r = await verifySession()
+    expect(r.state).toBe('ok')
+    expect(localStorage.getItem('role')).toBe('admin')
+  })
+})
+
+// FIX-6 第二条验收：登出的键白名单必须"两键给两个答案"。
+// 只断代管键为空是不够的——一句 localStorage.clear() 也能过；
+// 同段断 visitor_key 仍在，才同时守住 P2-85（访客身份不许被登出顺带清掉）不回归。
+describe('logoutAndRedirect 键白名单（FIX-6 + P2-85）', () => {
+  it('清登录态键（token/记住的用户名/代管租户），保访客身份键', () => {
+    // jsdom 的 location.href 只读，整体换成可写对象再断跳转
+    const href = { href: '' } as Location
+    Object.defineProperty(window, 'location', { value: href, configurable: true })
+    setToken('jwt-active')
+    localStorage.setItem('remember_username', 'admin')
+    setImpersonateTenant('42') // 超管此刻代管着的租户
+    localStorage.setItem(VISITOR_KEY, 'vk-c-visitor')
+
+    logoutAndRedirect()
+
+    expect(getToken()).toBe('')
+    expect(localStorage.getItem('remember_username')).toBeNull()
+    expect(getImpersonateTenant()).toBe('')
+    expect(localStorage.getItem(IMPERSONATE_TENANT_KEY)).toBeNull()
+    // 反向半边：访客身份必须活着
+    expect(localStorage.getItem(VISITOR_KEY)).toBe('vk-c-visitor')
+    expect(href.href).toBe('/login')
   })
 })

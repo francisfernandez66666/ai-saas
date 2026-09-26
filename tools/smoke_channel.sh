@@ -30,8 +30,13 @@ cleanup() {
   [ -n "$SRV_PID" ] && kill "$SRV_PID" 2>/dev/null
   [ -n "$MOCK_PID" ] && kill "$MOCK_PID" 2>/dev/null
   # 清测试通道及其派生数据（按 corpid 标记），避免污染 dev 库
+  # 十一段起分支B 会经 DetectLeadCapture 写 follow_ups/customer_tags 与 OneID 身份行，
+  # 这些都得在 channel_identities 删除**之前**按同一批客户清掉（删完就找不到归属了）。
   psql "$DBURL" -c "DELETE FROM channel_outbound WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke');
                     DELETE FROM messages WHERE conversation_id IN (SELECT c.id FROM conversations c JOIN channel_identities ci ON ci.customer_id=c.customer_id JOIN channels ch ON ch.id=ci.channel_id WHERE ch.corpid='ww_chan_smoke');
+                    DELETE FROM follow_ups WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke'));
+                    DELETE FROM customer_tags WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke'));
+                    DELETE FROM customer_identities WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke'));
                     DELETE FROM conversations WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke'));
                     DELETE FROM channel_identities WHERE channel_id IN (SELECT id FROM channels WHERE corpid='ww_chan_smoke');
                     DELETE FROM customers WHERE source LIKE 'channel:%' AND source IN (SELECT 'channel:'||id FROM channels WHERE corpid='ww_chan_smoke');
@@ -155,9 +160,12 @@ check "出站行置 sent" "sent" "$OB"
 
 # ---- 四b、D5 合并队列并入断言：连发 3 条只回 1 条（与网页端同语义）----
 echo "---- 四b、通道连发合并只回一条（D5） ----"
-send_cb() { # $1=urlencode content
+send_cb() { # $1=urlencode content  $2=渠道外部号（省略即沿用四b/四c 的 wm_smoke_user_1）
   local GC BODY SIG TS NC
-  GC=$(curl -s "$MOCK/__gen_callback?token=tk_smoke_001&aeskey=jWmYm7qr5nMoAUwZRjGtBxmz3KA1tkAj3ykkR6q2B2C&corpid=ww_chan_smoke&content=$1&from=wm_smoke_user_1")
+  # 十一段起每层分流各用**自己的外部号**：新客户旅程阶段为空，才能证明"未留资"这条路真的被走到
+  # （复用 wm_smoke_user_1 会被前面段落留下的 lead_captured 阶段直接放行到正常流程）。
+  local FROM="${2:-wm_smoke_user_1}"
+  GC=$(curl -s "$MOCK/__gen_callback?token=tk_smoke_001&aeskey=jWmYm7qr5nMoAUwZRjGtBxmz3KA1tkAj3ykkR6q2B2C&corpid=ww_chan_smoke&content=$1&from=${FROM}")
   BODY=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['body'])" 2>/dev/null)
   SIG=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['msg_signature'])" 2>/dev/null)
   TS=$(echo "$GC" | python3 -c "import sys,json;print(json.load(sys.stdin)['timestamp'])" 2>/dev/null)
@@ -188,21 +196,37 @@ check "连发3条恰好只落1条AI消息" 1 "$([ "$got" = 1 ] && echo "$AI_DELT
 CUST_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
 check "3条客户消息全部落库(历史不丢)" y "$([ "${CUST_NOW:-0}" -ge 4 ] && echo y || echo n)"
 
-# ---- 四c、连发 5 条只回 2 条（残项1+2 通道侧护栏，2026-09-26）----
+# ---- 四c、连发 5 条只回 2 条（残项1+2 通道侧护栏，2026-09-26；文案集 2026-09-27 重写）----
 # 为什么单开一段：四b 的 3 条正好一批，走不到"批次上限被顶满 + 积压接管"那条路径，
 # 而用户报的"连发五条偶发双答"恰恰只在那条路径上出现（ DEFECT-G7-DUP-TAKEOVER / 接管双份归属）。
 # 本租户合并上限按配置默认 3 条，所以 5 条的真值只有两个：**两批、两条回复**。
 # 出现 3 条即回归（同一句被两个批次各答一遍），出现 1 条即丢消息。
 # 与四b 一样按"增量"计数，不动全局配置；结束由本套件既有 cleanup 统一清通道数据。
+#
+# ⚠ 2026-09-27 重写文案集的原因（这一段曾经"绿着测错了东西"）：
+# 旧五条里的「门店什么时候可以看车」「能安排周六试驾吗」在 FIX-9 之后会被**入队前两层分流**
+# 截走（到店快速通道），根本不进合并批次。结果是当时的 2 条 AI = 1 条快速通道第一段
+# + 1 条合并批次回复，"两批接管"这条路一次都没被测到——等式成立纯属数字撞对，
+# 而那两句到店话术的第二段（25-45s 后异步补发）还会跨过本段、在五段的"人工锁定不新增出站"
+# 窗口里凭空多投一条出站，把下一段判红。两个毛病同一个根：**计数点在一个还在增长的瞬间上**。
+# 所以这次同时收两处：① 文案全部换成确定走合并链的产品问题（快速通道一条都不碰，
+#    并由下面第 4 条断言显式证明这一点，将来谁再往这批里塞一句到店话术就会红在本段而不是红在下段）；
+#    ② 计数前先等"批次彻底静默"（连续 20s 出站与 AI 都不再增长才取值），
+#    等式不再依赖"轮询刚好抓到 2 条"这个时机运气。
 echo "---- 四c、通道连发5条只回两批（残项1+2） ----"
 OB5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
 AI5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
 CUS5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
-send_cb "%E9%97%A8%E5%BA%97%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E5%8F%AF%E4%BB%A5%E7%9C%8B%E8%BD%A6"   # 门店什么时候可以看车
+# 「两条回复都出自合并链」的前置计数（判据单点在 messages.route_result）：
+# 快速通道三条标记 offtopic_hardbound / lead_captured_confirmed / store_visit_fast 与合并链的
+# channel_ai / channel_simple 互斥，所以这条增量等式=2 既证明两条都是批次回复，也证明
+# **这一批里没有任何一句被入队前分流截走**（被截走时它红在本段，不会挪去红下一段）。
+MRG5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai' AND m.route_result IN ('channel_ai','channel_simple')" | tr -d '[:space:]')
 send_cb "%E7%8E%B0%E5%9C%A8%E6%9C%89%E4%BB%80%E4%B9%88%E9%A2%9D%E5%A4%96%E6%9D%83%E7%9B%8A"          # 现在有什么额外权益
 send_cb "%E7%BD%AE%E6%8D%A2%E8%A1%94%E8%B4%B4%E6%80%8E%E4%B9%88%E7%AE%97"                            # 置换补贴怎么算
 send_cb "%E4%BF%9D%E5%85%BB%E5%91%A8%E6%9C%9F%E5%A4%9A%E4%B9%85"                                     # 保养周期多久
-send_cb "%E8%83%BD%E5%AE%89%E6%8E%92%E5%91%A8%E5%85%AD%E8%AF%95%E9%A9%BE%E5%90%97"                   # 能安排周六试驾吗
+send_cb "%E7%BB%AD%E8%88%AA%E5%AE%9E%E9%99%85%E8%83%BD%E8%B7%91%E5%A4%9A%E5%B0%91"                   # 续航实际能跑多少
+send_cb "%E8%BD%A6%E9%87%8C%E9%9A%94%E9%9F%B3%E6%95%88%E6%9E%9C%E6%80%8E%E4%B9%88%E6%A0%B7"          # 车里隔音效果怎么样
 # 第二批要等第一批"生成 + 人类化延迟"整段走完，轮询上限放到 120s（mock 模式延迟仍是真的）
 got5=0
 for i in $(seq 1 120); do
@@ -211,7 +235,26 @@ for i in $(seq 1 120); do
   sleep 1
 done
 check "连发5条两批回复都到达" y "$([ "$got5" = 1 ] && echo y || echo n)"
-sleep 5 # 让潜在的"第三批/重复投递"尾巴露出来（双答回归时这一等就见分晓）
+# ---- 计数前置：等批次彻底静默，再取值 ----
+# 稳定判据用"出站 + AI 两个计数同时 20s 不变"，而不是固定 sleep：
+# 20s > 合并窗口(本租户临时降到 3s) + 一次生成 + 人类化延迟，够让"第三批尾巴"露出来；
+# 上限 150s 兜底，防止某条链路挂住时本段永远等不到（等不到也照样往下取值，
+# 由下面三条等式断言把"没停"这件事判成红——比卡死在这条循环上更好排查）。
+PREV_SIG=""
+STABLE_RUNS=0
+for i in $(seq 1 30); do
+  OB5_S=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+  AI5_S=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+  SIG5="${OB5_S}:${AI5_S}"
+  if [ "$SIG5" = "$PREV_SIG" ]; then
+    STABLE_RUNS=$((STABLE_RUNS + 1))
+  else
+    STABLE_RUNS=0
+  fi
+  PREV_SIG="$SIG5"
+  [ "$STABLE_RUNS" -ge 4 ] && break # 4 次 × 5s = 连续 20s 无增长
+  sleep 5
+done
 AI5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
 OB5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
 CUS5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
@@ -221,6 +264,9 @@ CUS5_DELTA=$(( ${CUS5_NOW:-0} - ${CUS5_BASE:-0} ))
 check "连发5条恰好落2条AI消息(3=双答/1=丢消息)" 2 "$AI5_DELTA"
 check "连发5条恰好投2条出站(客户侧不收到重叠回复)" 2 "$OB5_DELTA"
 check "连发5条客户消息全部落库(历史不丢)" 5 "$CUS5_DELTA"
+MRG5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai' AND m.route_result IN ('channel_ai','channel_simple')" | tr -d '[:space:]')
+MRG5_DELTA=$(( ${MRG5_NOW:-0} - ${MRG5_BASE:-0} ))
+check "连发5条那两条回复都出自合并链(被快速通道截走=本段测错东西)" 2 "$MRG5_DELTA"
 
 # ---- 五、人工锁定：AI 不出声（转人工无感知）----
 echo "---- 五、人工锁定态不自动回复 ----"
@@ -419,6 +465,131 @@ $PSQL "UPDATE channels SET config_json='{\"mock_base_url\":\"http://127.0.0.1:${
 NA_FIX=$(curl -s "$B/api/v1/channel/wecom/agentconfig?url=https%3A%2F%2Fa.com&corpid=ww_chan_noagent" \
   -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
 check "补录 agentid 后同通道可签" "1000009" "$(echo "$NA_FIX" | jsonget "['data']['agentid']")"
+
+# ---- 十一、入队前两层分流（FIX-9 通道侧，2026-09-27）----
+# 这一段守的是"同一个租户、同一句话，网页与微信两套语义"：
+# 补之前通道只有"简单消息 + 合并队列"两层，客户在网页问无关话题得到 0 延迟引导话术，
+# 在同一家企微里问同一句会被塞进合并窗口、25s 后收到一段真 AI 生成（还可能带幻觉）；
+# 到店意图在网页侧走两段式预约追问，在通道侧等于线索收集主线直接断掉。
+#
+# 判据本身在 chatflow.DecidePreRoute（web/通道共用一份，已有单测 internal/chatflow/preroute_test.go
+# 钉顺序铁律/分支选择/阶段放行）；**本段钉的是通道侧执行段**：命中后话术要真落库、真投递、
+# 状态列要真写——判据统一不代表投递统一。
+#
+# 反证形态（为什么这些断言不会在"层没了"的时候照样绿）：
+# 合并队列那条路写的是 route_result='channel_ai' / 'channel_simple'，
+# 快速通道写的是 'offtopic_hardbound' / 'lead_captured_confirmed' / 'store_visit_fast'，
+# 三组标记互斥。层一旦回归（消息被塞进批次），这三条标记一条都不会出现，段内断言必红。
+echo "---- 十一、通道入队前两层分流（硬边界 + 到店快速通道） ----"
+# 等九段的停用态从进程缓存里过期：九段把 status 改回 active 后只往下走，没有再等——
+# 而 TenantResolver 有 30s 进程缓存。本段三条入站若落在那 30s 里，会被"停用租户丢弃"分支
+# 整条吃掉（2026-09-27 首跑实测：连客户行都没建，报出来是"手机号没落到档案"这种误导性红）。
+# 这不是产品缺陷，反而是 P1-7 那道闸在起作用；但它会让本段的失败归因指向错误的方向。
+sleep 31
+
+# cid_of <external_id> → 该渠道客户在本租户下的 customer_id
+cid_of() { $PSQL "SELECT customer_id FROM channel_identities WHERE channel_id=$CID AND external_id='$1' LIMIT 1" | tr -d '[:space:]'; }
+# ai_route_count <customer_id> <route_result> → 该客户带此路由标记的 AI 回复条数
+ai_route_count() { $PSQL "SELECT count(*) FROM messages WHERE customer_id=$1 AND sender_type='ai' AND route_result='$2'" | tr -d '[:space:]'; }
+# ai_route_count_excl <customer_id> → 该客户走正常 AI 链（含简单消息）的回复条数：层若失效会落在这里
+ai_chain_count() { $PSQL "SELECT count(*) FROM messages WHERE customer_id=$1 AND sender_type='ai' AND route_result IN ('channel_ai','channel_simple')" | tr -d '[:space:]'; }
+# wait_route <customer_id> <route> <min_rows> <max_wait_s> → 轮询等快速通道那条回复落地
+wait_route() { # $1=cid $2=route $3=期望最少条数 $4=轮询秒数
+  local n
+  for _ in $(seq 1 "$4"); do
+    n=$(ai_route_count "$1" "$2")
+    [ "${n:-0}" -ge "$3" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# 每层各用一个新外部号：新客户落在 ai_connected 阶段（identity.go 建客默认），
+# "未留资"这条路才是真的被走到；复用 wm_smoke_user_1 会带着前面段落留下的阶段，
+# 一旦被推进过 lead_captured 就会被阶段闸放行回正常流程，测的就不再是这一层。
+# （复用 wm_smoke_user_1 会带着前面段落留下的阶段，直接被阶段闸放行回正常流程）。
+OFF_UID="wm_pr_off_${RANDOM}"
+LEAD_UID="wm_pr_lead_${RANDOM}"
+VISIT_UID="wm_pr_visit_${RANDOM}"
+LEAD_PHONE="13588887777" # 库内不存在该号，OneID 合并不会把这条测试数据并到别的客户身上
+
+# ① 硬边界：无关话题 0 延迟直答，不入批次、不烧 AI
+send_cb "%E5%B8%AE%E6%88%91%E5%81%9A%E4%B8%80%E9%81%93%E9%AB%98%E6%95%B0%E9%A2%98" "$OFF_UID" # 帮我做一道高数题
+OFF_CID="$(cid_of "$OFF_UID")"
+if wait_route "${OFF_CID:-0}" "offtopic_hardbound" 1 10; then
+  check "硬边界：通道侧 0 延迟引导话术已落库" y y
+else
+  check "硬边界：通道侧 0 延迟引导话术已落库" y n
+fi
+check "硬边界：那句话没被塞进合并队列(无 channel_ai/simple 回复)" 0 "$(ai_chain_count "${OFF_CID:-0}")"
+check "硬边界：客户原话仍落库(拦截不等于丢历史)" 1 "$($PSQL "SELECT count(*) FROM messages WHERE customer_id=${OFF_CID:-0} AND sender_type='customer'" | tr -d '[:space:]')"
+check "硬边界：回复已投出站(客户真收得到)" y "$([ "$($PSQL "SELECT count(*) FROM channel_outbound WHERE customer_id=${OFF_CID:-0}" | tr -d '[:space:]')" -ge 1 ] && echo y || echo n)"
+
+# ② 分支B：到店意图 + 句中带手机号 → 当场留资 + 会话置待接管 + 罐头确认（不走 AI）
+send_cb "%E6%88%91%E5%91%A8%E6%9C%AB%E6%83%B3%E5%88%B0%E5%BA%97%E7%9C%8B%E7%9C%8B%EF%BC%8C%E7%94%B5%E8%AF%9D${LEAD_PHONE}" "$LEAD_UID"
+LEAD_CID="$(cid_of "$LEAD_UID")"
+# 第一段有 10-15s 人类化延迟（这段刻意不关秒回模式：延迟本身是通道侧真实节奏的一部分）
+if wait_route "${LEAD_CID:-0}" "lead_captured_confirmed" 1 30; then
+  check "分支B：留资确认话术已落库并投递" y y
+else
+  check "分支B：留资确认话术已落库并投递" y n
+fi
+check "分支B：手机号已落到客户档案" "$LEAD_PHONE" "$($PSQL "SELECT phone FROM customers WHERE id=${LEAD_CID:-0}" | tr -d '[:space:]')"
+check "分支B：旅程阶段推进到 lead_captured" "lead_captured" "$($PSQL "SELECT journey_stage FROM customers WHERE id=${LEAD_CID:-0}" | tr -d '[:space:]')"
+check "分支B：会话置待接管(顾问端取数依据)" "t" "$($PSQL "SELECT pending_handoff FROM conversations WHERE customer_id=${LEAD_CID:-0} ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')"
+check "分支B：线索台账已建(FollowUp)" y "$([ "$($PSQL "SELECT count(*) FROM follow_ups WHERE customer_id=${LEAD_CID:-0}" | tr -d '[:space:]')" -ge 1 ] && echo y || echo n)"
+check "分支B：没有被合并队列再答一遍" 0 "$(ai_chain_count "${LEAD_CID:-0}")"
+
+# ③ 分支C：到店意图 + 未留资 → 两段式（第一段接住意向，第二段收预约信息）
+send_cb "%E6%88%91%E5%91%A8%E6%9C%AB%E6%83%B3%E5%88%B0%E5%BA%97%E7%9C%8B%E7%9C%8B" "$VISIT_UID" # 我周末想到店看看
+VISIT_CID="$(cid_of "$VISIT_UID")"
+if wait_route "${VISIT_CID:-0}" "store_visit_fast" 1 30; then
+  check "分支C：第一段接住意向已落库" y y
+else
+  check "分支C：第一段接住意向已落库" y n
+fi
+check "分支C：罐头两段不叠 AI 反问(guided_disabled 已置)" "t" "$($PSQL "SELECT guided_disabled FROM conversations WHERE customer_id=${VISIT_CID:-0} ORDER BY id DESC LIMIT 1" | tr -d '[:space:]')"
+# 第二段 25-45s 后补：等到 2 条为止（=1 即"通道侧只落库不追问"的老缺口，>2 即双答）
+if wait_route "${VISIT_CID:-0}" "store_visit_fast" 2 100; then
+  check "分支C：第二段预约追问已补发" y y
+else
+  check "分支C：第二段预约追问已补发" y n
+fi
+sleep 3 # 让潜在的"第三批重复补发"尾巴露出来
+VISIT_ROUTES="$(ai_route_count "${VISIT_CID:-0}" "store_visit_fast")"
+check "分支C：两段恰好各一条(3=双答/1=第二段丢)" 2 "${VISIT_ROUTES:-0}"
+# 这一条是通道侧独有的：web 第二段只落库 + WS 推送，微信里没有"客户自己刷新页面"这回事，
+# 只落库不投递等于客户永远等不到第二句 → 出站条数必须与落库条数相等。
+VISIT_OB="$($PSQL "SELECT count(*) FROM channel_outbound WHERE customer_id=${VISIT_CID:-0}" | tr -d '[:space:]')"
+check "分支C：两条都真投出站(不只落库)" 2 "${VISIT_OB:-0}"
+check "分支C：未留资阶段没被误推进" y "$([ "$($PSQL "SELECT journey_stage FROM customers WHERE id=${VISIT_CID:-0}" | tr -d '[:space:]')" != "lead_captured" ] && echo y || echo n)"
+check "分支C：没有被合并队列再答一遍" 0 "$(ai_chain_count "${VISIT_CID:-0}")"
+
+# ④ 分支D：第一段已发、第二段还排在 25-45s 延迟里时顾问接手 → 第二段必须闭嘴
+# （2026-09-27 由四c 的跨段尾巴抓出来的真实缺陷：旧实现 goroutine 醒来**无条件**投递，
+#  等于"客户刚把话交给顾问，微信里又冒出一句罐头预约追问"，直接违背「转人工无感知」，
+#  也与入站处 `is_human_locked || !is_ai_reply_enabled` 那道闸自相矛盾——同一条
+#  "AI 还有没有说话权"的判据只能有一份，现在收在 chatflow.StoreVisitSecondLegDecision，
+#  纯函数四条腿由 internal/chatflow/preroute_second_leg_test.go 钉，本腿钉通道侧执行段：
+#  真接口、真延迟、真出站。）
+LOCK_UID="wm_pr_lock_${RANDOM}"
+send_cb "%E6%88%91%E5%91%A8%E6%9C%AB%E6%83%B3%E5%88%B0%E5%BA%97%E7%9C%8B%E7%9C%8B" "$LOCK_UID" # 我周末想到店看看
+LOCK_CID="$(cid_of "$LOCK_UID")"
+if wait_route "${LOCK_CID:-0}" "store_visit_fast" 1 30; then
+  check "分支D：接管前第一段照常接住意向" y y
+else
+  check "分支D：接管前第一段照常接住意向" y n
+fi
+# 就在第二段还在排队时把会话交给顾问（三列一起置，与顾问台「接管」写的字段一致）
+psql "$DBURL" -c "UPDATE conversations SET is_human_locked=true, is_ai_reply_enabled=false, mode='human' WHERE customer_id=${LOCK_CID:-0};" >/dev/null 2>&1
+LOCK_OB_BEFORE="$($PSQL "SELECT count(*) FROM channel_outbound WHERE customer_id=${LOCK_CID:-0}" | tr -d '[:space:]')"
+sleep 48 # 覆盖 store_visit_second_delay 上限 45s：等待期内没有任何理由再出一条
+LOCK_ROUTES="$(ai_route_count "${LOCK_CID:-0}" "store_visit_fast")"
+LOCK_OB_AFTER="$($PSQL "SELECT count(*) FROM channel_outbound WHERE customer_id=${LOCK_CID:-0}" | tr -d '[:space:]')"
+LOCK_AI_ALL="$($PSQL "SELECT count(*) FROM messages WHERE customer_id=${LOCK_CID:-0} AND sender_type='ai'" | tr -d '[:space:]')"
+check "分支D：接管后第二段没有补发(2=AI 抢在顾问前面说话)" 1 "${LOCK_ROUTES:-0}"
+check "分支D：接管后该客户出站零新增" 0 "$(( ${LOCK_OB_AFTER:-0} - ${LOCK_OB_BEFORE:-0} ))"
+check "分支D：跳过的第二段没有留下半句(只落库不投递=客户等不到第二句)" 1 "${LOCK_AI_ALL:-0}"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

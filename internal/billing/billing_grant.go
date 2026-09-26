@@ -158,6 +158,11 @@ func ReconcileBilling() int {
 	// refunded+权益回收）与 PSP 出款/落 refund_psp_status 跨事务——窗口内进程崩溃，
 	// 订单停在 refunded 且 refund_psp_status 为空：客户"账面上退了钱"，资金侧永不流出
 	// 且无告警（旧实现对账只管 paid 缺台账）。按 out_refund_no 幂等补呼出款。
+	//
+	// FIX-1(2026-09-26) 收口"幂等"这个词在这里的真实含义：上面那句注释此前是**愿望**
+	// 不是事实——三家 provider 的退款单号都带秒级时间戳，补呼一次换一个新号，
+	// PSP 侧根本看不见"同一笔"。现在单号取自 billing_orders.refund_out_no（稳定、
+	// 部分唯一索引 ux_order_refund_out_no 兜底），补呼才真的等价于"重发同一笔请求"。
 	var pspMissing []model.BillingOrder
 	if err := reconcilePayoutMissingQuery(db.DB).Find(&pspMissing).Error; err == nil && len(pspMissing) > 0 {
 		for _, o := range pspMissing {
@@ -166,6 +171,17 @@ func ReconcileBilling() int {
 			executeRefundPayout(&order, int64(order.RefundAmountCents))
 			n++
 		}
+	}
+
+	// FIX-1 第四步(2026-09-26)：受理态收敛。上面两条腿都管"没发出去/没落地"，
+	// 这一条管"发出去了但结果没写回"——主动查单把 psp_ok（仅受理）推向
+	// psp_success/psp_failed，否则账面会永远停在"已出款"这个未经证实的说法上。
+	//
+	// 刻意**不**并入返回值 n：n 的既有语义是"本轮补了几笔账"（补发权益/补呼出款），
+	// billing_ledger_test 与调用方按它断言；查单改写的是**状态**不是**账**，
+	// 混进去会让"补发数=0"这条资金护栏的口径随渠道是否支持查单而漂移。
+	if c := ReconcileRefundResults(); c > 0 {
+		log.Printf("[Billing][对账] 退款终态收敛 %d 笔（不计入补发数）", c)
 	}
 
 	return n

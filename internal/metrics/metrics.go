@@ -314,6 +314,26 @@ func SetChannelDeadLetterPending(n int64) { atomic.StoreInt64(&channelDeadLetter
 func GetChannelDeadLetterPending() int64 { return atomic.LoadInt64(&channelDeadLetterPending) }
 
 // ============================================================
+// FIX-1 观测位（2026-09-26）：退款"已受理、终态未证实"积压水位
+// ============================================================
+//
+// 为什么要有这一枚 gauge：微信/支付宝退款是**异步**的，psp_ok 只代表"平台收下了这笔请求"，
+// 不代表钱已经到了客户账上。主动查单能收敛绝大多数，但有三类单会合法地停在 psp_ok：
+// 通用 HMAC 网关没有查单协议、渠道密钥轮换中装配失败、查单一直超时。
+// 这些单既不能判成功（骗财务）也不能判失败（会把真退款从人工核销队列里摘掉），
+// 唯一正确的处理是**让积压看得见**——水位长期不为零就说明有一批退款没人收尾。
+//
+// 判级 warn 不判 crit：它不烧钱、不泄数据，crit 会为一件客户已经收到钱的事刷群。
+var refundOutcomeUnverified int64
+
+// SetRefundOutcomeUnverified 回填"账面 refunded 且 psp_ok（受理未证实）"的订单数。
+// 由 billing 小时对账器每轮调用（口径单点在 billing.refundResultQueryQuery 的谓词族）。
+func SetRefundOutcomeUnverified(n int64) { atomic.StoreInt64(&refundOutcomeUnverified, n) }
+
+// GetRefundOutcomeUnverified 读取当前退款受理未证实积压数。
+func GetRefundOutcomeUnverified() int64 { return atomic.LoadInt64(&refundOutcomeUnverified) }
+
+// ============================================================
 // G-5 观测收口(2026-09-24)：AI 降级原因计数
 // 降级分支此前只写日志，回归断言只能 grep 日志文件（uat.sh 第七节旧写法）——
 // 日志路径/格式一变就假红，线上也没有可告警的面。改成 /metrics 计数器后，
@@ -333,6 +353,31 @@ func IncAIFallback(reason string) {
 	}
 	p := new(uint64)
 	actual, _ := aiFallbackTotal.LoadOrStore(reason, p)
+	atomic.AddUint64(actual.(*uint64), 1)
+}
+
+// ============================================================
+// FIX-5 观测位（2026-09-27）：对话主链落库失败计数
+// ============================================================
+//
+// 计划原话是"一个只会打日志并返回成功的守卫，等于没有守卫"。这批改完，
+// 必查类落库失败会回 500（客户看得见），旁路类落库失败仍然只告警不打断对话——
+// **不打断不等于不数**：旁路那条如果没有计数器，线上就只能靠 grep 日志文件断言
+// （本仓 G-5 批已经为同样的形态换过一次口径），于是"消息在静默丢"这件事又一次无人知晓。
+//
+// kind 是有限集合（suppressed / offtopic_reply / simple_reply / store_visit_reply /
+// second_reply / journey_stage / conversation_state / flow_start），不带租户标签，
+// 理由与 ai_fallback 相同：租户数直接决定 series 基数，而按原因看速率不需要归因到租户。
+var chatPersistErrorTotal sync.Map
+
+// IncChatPersistError 记一次对话主链落库失败（kind 维度，旁路类只计数不打断客户端）。
+func IncChatPersistError(kind string) {
+	if p, ok := chatPersistErrorTotal.Load(kind); ok {
+		atomic.AddUint64(p.(*uint64), 1)
+		return
+	}
+	p := new(uint64)
+	actual, _ := chatPersistErrorTotal.LoadOrStore(kind, p)
 	atomic.AddUint64(actual.(*uint64), 1)
 }
 
@@ -615,9 +660,15 @@ func RenderPrometheus() string {
 	// ---- F6 指标：通道死信速率 + 积压水位 ----
 	renderLabeledCounter(&b, "ai_scrm_channel_dead_letter_total", "Outbound/inbound messages moved to dead-letter by reason", "reason", &channelDeadLetterTotal)
 	renderLabeledCounter(&b, "ai_scrm_ai_fallback_total", "AI replies served by rule fallback (no model call) by reason", "reason", &aiFallbackTotal)
+	renderLabeledCounter(&b, "ai_scrm_chat_persist_error_total", "FIX-5 chat main-chain DB write failures by kind (bypass paths counted, not surfaced to client)", "kind", &chatPersistErrorTotal)
 	b = append(b, "# HELP ai_scrm_channel_dead_letter_pending Current failed outbound messages (dead-letter backlog)\n"...)
 	b = append(b, "# TYPE ai_scrm_channel_dead_letter_pending gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_channel_dead_letter_pending %d\n", atomic.LoadInt64(&channelDeadLetterPending))...)
+
+	// ---- FIX-1 观测位（2026-09-26）：退款受理未证实积压 ----
+	b = append(b, "# HELP ai_scrm_refund_outcome_unverified Refunded orders accepted by PSP but not yet confirmed terminal\n"...)
+	b = append(b, "# TYPE ai_scrm_refund_outcome_unverified gauge\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_refund_outcome_unverified %d\n", atomic.LoadInt64(&refundOutcomeUnverified))...)
 
 	return string(b)
 }

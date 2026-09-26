@@ -154,6 +154,13 @@ export function logoutAndRedirect() {
   clearToken()
   // 按需清理其它登录态相关键（如有），绝不碰 visitor_key
   localStorage.removeItem('remember_username')
+  // FIX-6(2026-09-27)：代管租户必须一起清。它是**登录态键**（"我这个超管此刻正以哪家租户的身份看后台"），
+  // 不是访客身份键——P2-85 那份"白名单清理"的初衷是保住 visitor_key，从没打算保住它。
+  // 留着不换的后果很具体：同一浏览器下次登录超管，第一个 /admin/* 请求就带着**上一世**的
+  // X-Tenant-ID，而界面显示的是平台视图；若那家租户已被换/停用，就是"请求往一个界面上没选的租户发"
+  // 这种最危险的错位形态（本仓 2026-09-24 代管检索批已因同族问题改过一次 UI 侧）。
+  setImpersonateTenant('')
+  invalidateSession()
   location.href = '/login'
 }
 
@@ -337,53 +344,91 @@ let meCache: { info: MeInfo; ts: number } | null = null
 const ME_CACHE_TTL = 60 // 秒
 
 /**
- * 校验当前登录态并返回服务端权威身份（含角色）
- * - token 缺失 → 直接返回 null（由调用方决定跳登录）
- * - /auth/me 409/403/401 → 清 token 返回 null
- * - must_change_password 为 true → 返回 null（调用方跳改密页）
- * @returns 权威身份，未登录/失效/需改密返回 null
+ * 会话校验结果（FIX-6，2026-09-27）。
+ *
+ * 为什么不再用 `MeInfo | null`：三种完全不同的失败——① 服务端明说"令牌作废了"、
+ * ② 服务端明说"必须先改初始密码"、③ **网络压根没通**——过去都返回同一个 null。
+ * 调用方（App.tsx 的路由守卫）只能靠"token 还在不在"反推是哪一种，而网络异常那一支
+ * 不清 token，于是被推成"服务端要求改密"：用户在地铁上刷一下后台，就被甩进强制改密表单，
+ * 以为自己号出问题或被安全策略踢了，而真相反倒没人能解释（"网络异常，点击重试"这句话从来没人说过）。
+ * 失败形态不同的东西，返回值就必须不同形——这是本仓一贯的"把约定收进结构"口径。
+ *
+ * - ok：拿到权威身份（调用方放行，角色/用户名已纠偏回写 localStorage）
+ * - anonymous：本地根本没有 token
+ * - revoked：服务端判定登录态失效（401，或响应体不是成功信封）——已清 token，调用方跳登录
+ * - must_change_password：服务端要求先改初始密码——**保留 token**（改密接口要用它），调用方跳 /login?mcp=1
+ * - forbidden：已登录但 403 且不是改密原因（租户停用/配额/权限），不该销毁会话，调用方原地提示
+ * - network_error：请求没发出去或没回来（离线/断网/服务未起）——**保留 token**，调用方显示重试条
  */
-/** 校验本地会话是否有效，并返回当前登录用户资料。 */
-export async function verifySession(): Promise<MeInfo | null> {
+export type SessionCheck =
+  | { state: 'ok'; info: MeInfo }
+  | { state: 'anonymous' }
+  | { state: 'revoked' }
+  | { state: 'must_change_password' }
+  | { state: 'forbidden' }
+  | { state: 'network_error' }
+
+/**
+ * 校验当前登录态并返回服务端权威身份（含角色）。
+ * 见 SessionCheck 注释：六态各自分明，调用方不再靠"token 还在不在"猜失败原因。
+ */
+/** 校验本地会话是否有效，并返回当前登录用户资料与失败归类。 */
+export async function verifySession(): Promise<SessionCheck> {
   const tk = getToken()
-  if (!tk) return null
+  if (!tk) return { state: 'anonymous' }
   const now = Math.floor(Date.now() / 1000)
   if (meCache && now - meCache.ts < ME_CACHE_TTL) {
     // 命中缓存：顺便把篡改的 localStorage role/username 纠偏回权威值
     localStorage.setItem('role', meCache.info.role)
     localStorage.setItem('username', meCache.info.username)
-    return meCache.info
+    return { state: 'ok', info: meCache.info }
   }
+  let res: Response
   try {
-    const res = await fetch('/api/v1/auth/me', {
+    res = await fetch('/api/v1/auth/me', {
       headers: { Authorization: 'Bearer ' + tk },
     })
-    if (res.status === 401 || res.status === 403) {
-      clearToken()
-      meCache = null
-      return null
-    }
-    const json = await res.json().catch(() => null)
-    if (!json || json.code !== 0 || !json.data) {
-      clearToken()
-      meCache = null
-      return null
-    }
-    const info = json.data as MeInfo
-    if (info.must_change_password) {
-      meCache = null
-      return null // 调用方跳 /login?mcp=1
-    }
-    // 角色/用户名以服务端为准（纠偏 localStorage）
-    localStorage.setItem('role', info.role)
-    localStorage.setItem('username', info.username)
-    meCache = { info, ts: now }
-    return info
   } catch {
-    // 网络异常：保守返回 null（用户可能离网），交由调用方跳登录
+    // FIX-6：网络异常单独一态，且**绝不 clearToken**——会话本身没有被服务端否定过，
+    // 清掉等于把一次断网升级成"你得重新登录"。
     meCache = null
-    return null
+    return { state: 'network_error' }
   }
+  if (res.status === 401) {
+    clearToken()
+    meCache = null
+    return { state: 'revoked' }
+  }
+  if (res.status === 403) {
+    // 403 有两种意思，过去被并成一种（一律 clearToken → 回登录页）：
+    //   must_change_password：跳改密表单，**token 必须留着**（change-password 要带它）；
+    //   其它（租户停用/配额/权限）：销毁会话是过度反应，用户重新登录也还是 403。
+    meCache = null
+    // 读 error_code 只为区分"改密"这一种 403；读不出来（非 JSON/网络截断）就按普通 403 处理，
+    // 绝不能因为解析失败就把用户踹去改密表单。
+    const code = await res
+      .clone()
+      .json()
+      .then((j) => (j && (j.error_code as string)) || '')
+      .catch(() => '')
+    return code === 'must_change_password' ? { state: 'must_change_password' } : { state: 'forbidden' }
+  }
+  const json = await res.json().catch(() => null)
+  if (!json || json.code !== 0 || !json.data) {
+    clearToken()
+    meCache = null
+    return { state: 'revoked' }
+  }
+  const info = json.data as MeInfo
+  if (info.must_change_password) {
+    meCache = null
+    return { state: 'must_change_password' } // 调用方跳 /login?mcp=1（token 保留）
+  }
+  // 角色/用户名以服务端为准（纠偏 localStorage）
+  localStorage.setItem('role', info.role)
+  localStorage.setItem('username', info.username)
+  meCache = { info, ts: now }
+  return { state: 'ok', info }
 }
 
 /** 使 /auth/me 缓存失效（登录/登出/改密后应调用） */

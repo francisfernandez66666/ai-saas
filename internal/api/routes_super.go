@@ -34,6 +34,10 @@ func registerSuper(v1 *gin.RouterGroup) {
 		super.GET("/invoices", SuperListInvoices)
 		super.POST("/invoices/:id/issue", SuperIssueInvoice)
 		super.POST("/invoices/:id/void", SuperVoidInvoice)
+		// FIX-9（2026-09-27）：开具只是"票开出来了"，还得告诉客户。issue 当场同步发一封交付邮件，
+		// 发不出去（无邮箱 / SMTP 未配 / 超时）不阻塞开具，但结果码落库并进列表，
+		// 运营据此点 notify-resend 补发——没有这一条，失败的那批单就只能作废重开两张票来补一封邮件。
+		super.POST("/invoices/:id/notify-resend", SuperResendInvoiceNotice)
 		super.GET("/packages", SuperPackageList)
 		super.POST("/packages", SuperPackageCreate)
 		super.PUT("/packages/:id", SuperPackageUpdate)

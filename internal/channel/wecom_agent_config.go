@@ -173,11 +173,13 @@ func BuildAgentConfig(ctx context.Context, cred *Credential, rawURL string) (*Ag
 func getJSON(ctx context.Context, u string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return nil, redactErr(err)
 	}
 	resp, err := chanHTTP.Do(req)
 	if err != nil {
-		return nil, err
+		// FIX-2(2026-09-26)：u 带 access_token，url.Error 会把完整 URL 打进错误串（侧边栏 JS-SDK
+		// 的错误会经接口回给顾问端），必须在返回处脱敏
+		return nil, redactErr(err)
 	}
 	defer resp.Body.Close()
 	return io.ReadAll(resp.Body)

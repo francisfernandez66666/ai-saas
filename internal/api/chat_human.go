@@ -104,14 +104,21 @@ func HumanReply(c *gin.Context) {
 	now := time.Now()
 	conversation.LastHumanReplyAt = &now
 	conversation.LastMessageAt = &now
-	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
-		"mode":                "human",
-		"is_human_locked":     true,
-		"pending_handoff":     false,
-		"handoff_notified_at": nil,
-		"last_human_reply_at": &now,
-		"last_message_at":     &now,
-	})
+	// 必查（FIX-5，2026-09-27，human_takeover_lock）：这条 Updates 是"顾问接管"这件事本身——
+	// 写失败却回 200，会话仍是 ai 态，下一句客户话会被 AI 又答一遍（顾问刚回的那条还在上面），
+	// 就是本仓反复收口的"双答"。宁可让顾问重试，也不能让状态没变而界面说变了。
+	// 顺序也刻意放在消息落库**之前**：这里失败时一条人工消息都没写出去，不留半条状态。
+	if persistRequiredMsg(c, "human_takeover_lock", conversation.CustomerID, conversation.ID,
+		db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+			"mode":                "human",
+			"is_human_locked":     true,
+			"pending_handoff":     false,
+			"handoff_notified_at": nil,
+			"last_human_reply_at": &now,
+			"last_message_at":     &now,
+		}), "接管状态更新失败，请重试") {
+		return
+	}
 
 	// 保存人工消息
 	// P1-6 修复：写 SenderID（记录哪位顾问发的，对齐 AdvisorSendMessage 语义）
@@ -128,7 +135,13 @@ func HumanReply(c *gin.Context) {
 		MessageType:    "text",
 		CreatedAt:      now,
 	}
-	db.RQ(c).Create(&humanMsg)
+	// 必查（FIX-5，human_reply）：这一行的 ID 就是本接口回给顾问的整条消息（apidump:ts ChatMessage），
+	// 前端拿它渲染气泡、后续按它做已读回执。写失败却回 200 = 顾问以为发出去了、客户那边根本没收到，
+	// 而接管态已经在前一步翻成 human——AI 也不会补这一句，于是这句彻底消失（本次缺陷的原形）。
+	if persistRequiredMsg(c, "human_reply", conversation.CustomerID, conversation.ID,
+		db.RQ(c).Create(&humanMsg), "人工消息发送失败，请重试") {
+		return
+	}
 
 	RespOK(c, "发送成功", humanMsg)
 }
@@ -156,10 +169,15 @@ func GetMessages(c *gin.Context) {
 		return
 	}
 	var messages []model.Message
-	db.RQ(c).Where("conversation_id = ?", conversationID).
-		Order("created_at ASC").
-		Limit(200).
-		Find(&messages)
+	// 必查（FIX-5，chat_history_read）：读失败回 200 + 空列表，界面渲染成"这个客户一条消息都没发过"，
+	// 顾问据此判断"没聊过"重新开始跟——与 /chat/history 上批收口的是同一个现象，这里补上另一扇门。
+	if persistRequiredMsg(c, "chat_history_read", conv.CustomerID, conversationID,
+		db.RQ(c).Where("conversation_id = ?", conversationID).
+			Order("created_at ASC").
+			Limit(200).
+			Find(&messages), "聊天记录读取失败，请重试") {
+		return
+	}
 
 	RespOK(c, "success", messages)
 }
@@ -261,12 +279,18 @@ func TransferToHuman(c *gin.Context) {
 	}
 
 	// P1-2 修复(2026-09-18)：字段级 Updates，只翻转接管态三列，不整行覆写
+	// 必查（FIX-5，transfer_to_human）：本接口把**整行会话**回给前端（含 mode），
+	// 写失败仍回 200 时界面显示"已转人工"、库里仍是 ai 态，下一句客户话直接被 AI 答掉——
+	// 顾问以为自己在跟，实际没人跟。宁可报错重点，不能给一个假的成功。
 	conversation.Mode = "human"
 	conversation.IsHumanLocked = true
-	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
-		"mode":            "human",
-		"is_human_locked": true,
-	})
+	if persistRequiredMsg(c, "transfer_to_human", conversation.CustomerID, conversation.ID,
+		db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+			"mode":            "human",
+			"is_human_locked": true,
+		}), "转人工失败，请重试") {
+		return
+	}
 
 	RespOK(c, "已转人工", conversation)
 }
@@ -300,11 +324,16 @@ func TransferToAI(c *gin.Context) {
 	conversation.IsHumanLocked = false
 	// P1-6 修复：切回 AI 同步复位 IsAiReplyEnabled=true（若此前被锁，恢复 AI 回复；对齐 ToggleAiReply 语义）
 	conversation.IsAiReplyEnabled = true
-	db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
-		"mode":                "ai",
-		"is_human_locked":     false,
-		"is_ai_reply_enabled": true,
-	})
+	// 必查（FIX-5，transfer_to_ai）：与转人工同理——库里没改成而接口回 200，
+	// 前端已经把这会话交给 AI 了，实际它仍锁在人工态，客户等的是再也不会来的顾问回复（丢答形态）。
+	if persistRequiredMsg(c, "transfer_to_ai", conversation.CustomerID, conversation.ID,
+		db.RQ(c).Model(&conversation).Updates(map[string]interface{}{
+			"mode":                "ai",
+			"is_human_locked":     false,
+			"is_ai_reply_enabled": true,
+		}), "切回AI失败，请重试") {
+		return
+	}
 
 	RespOK(c, "已切回AI", conversation)
 }

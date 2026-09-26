@@ -211,12 +211,18 @@ func (s *openAPIChatCtx) openAPIStoreInbound() bool {
 
 // openAPIHardBoundary 第一层：无关话题硬边界（0 延迟，不入队、不消耗配额）。
 // 副作用：命中时落库 AI 消息并响应 return true。
+//
+// FIX-9(2026-09-27)：判据与话术改取 chatflow.DecidePreRoute（与 web/C端/通道同一份）。
+// ⚠ 本链**只接第一层**：OpenAPI 是同步接口，第二层到店快速通道在这里等价于"多等 10-15s 才回包"，
+// 且到店线索已由 openAPIProcessAndReply 的处理段捕获（见 isCapturedStage 那段）——
+// 这是有意的入口差异，不是判据漂移：判据同源，各入口只挑自己该执行的那几层。
 func (s *openAPIChatCtx) openAPIHardBoundary() bool {
-	if !service.IsOffTopicForTenant(s.tenantID, s.userInput) {
+	pre := chatflow.DecidePreRoute(s.tenantID, s.userInput, s.customer.JourneyStage)
+	if pre.Kind != chatflow.PreRouteOffTopic {
 		return false
 	}
-	reply := service.GetOffTopicReplyForTenant(s.tenantID, s.userInput)
-	persistOpenAPIAIMessage(s.c, s.conversation, s.customer.ID, s.tenantID, s.channel, reply, 0, "", "offtopic_hardbound")
+	reply := pre.Reply
+	persistOpenAPIAIMessage(s.c, s.conversation, s.customer.ID, s.tenantID, s.channel, reply, 0, "", string(pre.Kind))
 	openAIRespond(s.c, s.req.Stream, s.req.Model, reply, estimateTokens(s.userInput), estimateTokens(reply))
 	return true
 }
@@ -626,13 +632,12 @@ func persistOpenAPIAIMessage(c *gin.Context, conv *model.Conversation, customerI
 	return msg.ID
 }
 
-// isCapturedStage 是否已过留资阶段（无需重复捕获）
+// isCapturedStage 是否已过留资阶段（无需重复捕获）。
+// FIX-9(2026-09-27)：本函数是那份四阶段白名单的第六处手抄（web/C端/OpenAPI/通道/IsLeadCaptured/这里），
+// 保留名字只为 OpenAPI 侧读起来顺；判定改走 chatflow.CapturedStage 单点——
+// 新增终局阶段时六处一起跟上，不再出现"OpenAPI 侧已认 arrived、通道侧还在追问留电话"这种分裂。
 func isCapturedStage(stage string) bool {
-	switch stage {
-	case model.JourneyLeadCaptured, model.JourneyArrived, model.JourneyOrdered, model.JourneyDelivered:
-		return true
-	}
-	return false
+	return chatflow.CapturedStage(stage)
 }
 
 // estimateTokens 粗略 token 估算（中文按字计，仅用于 OpenAI 兼容 usage 字段）

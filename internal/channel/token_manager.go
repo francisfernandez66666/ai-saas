@@ -148,11 +148,14 @@ func (tm *TokenManager) FetchMPWechatToken(ctx context.Context, baseURL, appid, 
 func (tm *TokenManager) doToken(ctx context.Context, u string) (string, int, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", 0, err
+		return "", 0, redactErr(err)
 	}
 	resp, err := tm.hc.Do(req)
 	if err != nil {
-		return "", 0, err
+		// FIX-2(2026-09-26)：网络层错误是 *url.Error，Error() 里含完整 URL（带 corpsecret/secret）
+		// ——必须先脱敏再返回，否则它会经 SendResult.Err 一路落进 channel_outbound.error 列并在
+		// 管理端死信列表明文回显。业务错误（tr.ErrCode!=0 的 *ErrTokenFailed）不经此处，类型保留。
+		return "", 0, redactErr(err)
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)

@@ -357,10 +357,127 @@ export interface BillingOrder {
   manual_confirm?: boolean
   invoice_requested?: boolean
   invoice_status?: string
+  // 发票四列（E9 起后端直出，前端不再硬编码抬头）：抬头/税号/收件邮箱/发票号。
+  // 发票号在人工开票前回录前是空串，页面据此区分"已受理"与"已出票"。
+  invoice_title?: string
+  invoice_tax_no?: string
+  invoice_email?: string
+  invoice_no?: string
+  // 退款出款与开票触达的状态字段（后端 model.BillingOrder 直出，勿在前端另立一套键名）：
+  // refund_psp_status 空/psp_pending/psp_ok/psp_success/psp_failed；
+  // invoice_notify_result 空/smtp_sent/log_only/no_recipient/send_failed/send_timeout。
+  // 两列都**不能只按成功态渲染**：log_only 意味着客户一封信都没收到，页面必须说"未收到"。
+  refund_psp_status?: string
+  refund_out_no?: string
+  refund_requested?: boolean // B7：租户侧只能"申请"，超管确认才执行出款+回收
+  refund_amount_cents?: number // 实际退款金额（分），按未消耗比例算；0=无剩余可退
+  invoice_notify_result?: string
+  invoice_notified_at?: string | null
+  // 换包升级三列：升级单带差额抵扣金额与被抵扣的旧订单 ID，非升级单恒 0/false。
+  // 少了这三列，超管确认收款时看不出"这笔只收了差价"，对账会按全额算收入。
+  replace_sub?: boolean
+  upgrade_offset_cents?: number
+  upgrade_base_order_id?: number
   qr_content?: string
   remark?: string
   created_at?: string
   updated_at?: string
+}
+
+// 超管台发票工作队列的一行（GET /super/invoices 的 gin.H 手工投影，**不是**整张 BillingOrder）
+// 口径：这张表要能挑出"已开具但客户没收到"的单，所以触达三键必须在这里声明——
+// 缺 invoice_notify_text 会让前端自己写一份码→文案映射（同一个 log_only 两处说法不一致）。
+export interface InvoiceRow {
+  order_id: number
+  tenant_id?: number | null
+  amount_cents?: number
+  invoice_status?: string // requested/issued/voided
+  invoice_title?: string
+  invoice_tax_no?: string
+  invoice_email?: string
+  invoice_no?: string
+  invoice_notify_result?: string // 空/smtp_sent/log_only/no_recipient/send_failed/send_timeout
+  invoice_notify_text?: string
+  invoice_notified_at?: string | null
+}
+
+// GET /super/invoices 的 data 信封（服务端恒回 list+total，空态是 [] 不是 null）
+export interface SuperInvoiceListResp {
+  list: InvoiceRow[]
+  total: number
+}
+
+// PIPL 可携带权副本（POST /api/v1/privacy/my-data）的 data 信封。
+// 键集与 internal/api/privacy_portability.go 的**手写投影清单**逐字对齐：
+// 那份清单是"点名制"，模型加列不会自动出现在副本里，所以这里的类型也不会自动跟着变——
+// 后端加了字段而这里没跟，等于前端少读一块数据且不报错。
+// 刻意没有的字段（判定过不给，不是漏写）：intent_score / t_vector / remark /
+// visitor_key / assigned_user_id / template_id / anchor_type / route_result / state_json。
+// 划法是"谁产生的"：客户自己提供或参与产生的（姓名、手机号、标签、旅程阶段、会话、消息原文）
+// 交；商家侧对他打的评分与内部路由凭证不交。
+export interface PrivacyPortableCustomer {
+  id: number
+  name?: string
+  phone?: string // 明文：数据主体本人的号码，本人副本不掩码
+  wechat_id?: string
+  gender?: number
+  age?: number
+  city?: string
+  region?: string
+  career?: string
+  customer_type?: string
+  interest_product?: string
+  source?: string
+  acquisition_code?: string
+  external_user_id?: string
+  journey_stage?: string
+  tags?: string // 标签列表的 JSON 数组文本，由后端原样交付
+  created_at?: string
+  updated_at?: string
+}
+
+// 副本里的会话行：只给会话自身的状态与时间，不给商家侧的内部流程状态（state_json 属内部产物）。
+export interface PrivacyPortableConversation {
+  id: number
+  status?: string
+  channel?: string
+  created_at?: string
+  updated_at?: string
+  last_message_at?: string | null
+}
+
+// 副本里的消息行：正文逐字交付（不脱敏、不截断），archived 标明这条来自冷数据归档表。
+export interface PrivacyPortableMessage {
+  id: number
+  conversation_id: number
+  sender_type?: string
+  content: string // 原文，不脱敏不截断（掩码会得到一份"我说的话被改掉"的假副本）
+  message_type?: string
+  archived: boolean // true=这条来自冷数据归档表，副本完整性靠它核对
+  created_at?: string
+}
+
+// PrivacyMyDataResp 是 PIPL「数据可携带权」副本的响应形态（FIX-9，2026-09-27）：
+// 访客以 visitor_key 自证身份后，拿回自己名下的档案 + 会话 + 消息，一份能直接带走的 JSON。
+// 三条边界都由服务端定，前端只是消费者：① 取数按"这个访客是谁"圈定，跨客户零可见；
+// ② 正文逐字回显、不脱敏不截断（掩码会得到一份"我说的话被改掉"的假副本），
+// 冷归档里的行也在内，靠每条的 archived 标记区分它来自热表还是归档表；
+// ③ 消息按游标分页，page.truncated=true 表示这一页被配额切过——必须带着
+// next_after_id 继续取，**绝不能把数组长度当成"我的全部数据"**（静默截断比不给更糟）。
+export interface PrivacyMyDataResp {
+  generated_at: string
+  customer: PrivacyPortableCustomer
+  conversations: PrivacyPortableConversation[]
+  messages: PrivacyPortableMessage[]
+  // 配额与游标：一次最多 row_cap 条，续取把 next_after_id 原样带回 after_id。
+  // truncated=true 说明本次被配额截断，必须继续翻页，不能把这一页当成全部。
+  page: {
+    row_cap: number
+    limit: number
+    after_id: number
+    next_after_id: number
+    truncated: boolean
+  }
 }
 
 // 支付下单响应 data（billing/subscribe 等返回 {order, pay_mode}）

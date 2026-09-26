@@ -1249,7 +1249,8 @@
       "auth": [
         "jwt",
         "super_required"
-      ]
+      ],
+      "data_ts": "SuperInvoiceListResp"
     },
     {
       "method": "GET",
@@ -2484,6 +2485,17 @@
     },
     {
       "method": "POST",
+      "path": "/api/v1/privacy/my-data",
+      "group": "privacy",
+      "handler": "PrivacyMyData",
+      "auth": [
+        "optional_jwt",
+        "ip_limit"
+      ],
+      "data_ts": "PrivacyMyDataResp"
+    },
+    {
+      "method": "POST",
       "path": "/api/v1/strategy/templates",
       "group": "strategy",
       "handler": "CreateTemplate",
@@ -2572,7 +2584,19 @@
       "auth": [
         "jwt",
         "super_required"
-      ]
+      ],
+      "data_ts": "BillingOrder"
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/super/invoices/:id/notify-resend",
+      "group": "super",
+      "handler": "SuperResendInvoiceNotice",
+      "auth": [
+        "jwt",
+        "super_required"
+      ],
+      "data_ts": "BillingOrder"
     },
     {
       "method": "POST",
@@ -2582,7 +2606,8 @@
       "auth": [
         "jwt",
         "super_required"
-      ]
+      ],
+      "data_ts": "BillingOrder"
     },
     {
       "method": "POST",

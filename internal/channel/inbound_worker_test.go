@@ -27,14 +27,20 @@ func TestProcessInboundSimpleAsyncDelivery(t *testing.T) {
 		AI:         config.AIConfig{MockMode: true},
 		ReplySpeed: config.ReplySpeedConfig{MaxMergeMessages: 5, MergeWindowSeconds: 1},
 	}
-	defer func() { config.GlobalConfig = oldCfg }()
 	oldRC := runtimecfg.DefaultSystemConfigService
 	runtimecfg.DefaultSystemConfigService = runtimecfg.NewStaticService(map[string]string{
 		"merge_window_seconds": "1",
 		"reply_delay_mode":     "instant",
 		"mock_mode":            "true",
 	}, nil)
-	defer func() { runtimecfg.DefaultSystemConfigService = oldRC }()
+	// 先排空后台协程再复原全局量（FIX-5/-race 收口批）：本用例正是"异步出站"那条路径，
+	// worker 在 ProcessInbound 返回后才开始读这两个全局量，旧写法换回原值时它还在跑。
+	// 合并成一个 defer 保证顺序，t.Fatalf 走 Goexit 时同样会执行。
+	defer func() {
+		drainInboundWorkers(t)
+		config.GlobalConfig = oldCfg
+		runtimecfg.DefaultSystemConfigService = oldRC
+	}()
 
 	ch := model.Channel{TenantID: tid, Type: "wecom_app", Name: "unit_d5", Status: "active"}
 	if err := db.DB.Create(&ch).Error; err != nil {

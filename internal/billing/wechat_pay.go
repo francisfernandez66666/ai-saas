@@ -5,8 +5,10 @@
 //
 //	CreatePayment：V3 Native 下单（/v3/pay/transactions/native），SHA256withRSA 签名，
 //	  返回 code_url 经 go-qrcode 转 data:image PNG（收银台 <img> 直接展示，用户即扫即付）。
-//	Refund：V3 退款（/v3/refund/domestic/refunds），受理成功即 psp_ok（与 GatewayProvider
-//	  语义一致；退款结果异步通知留平台侧人工核对）。
+//	Refund：V3 退款（/v3/refund/domestic/refunds），受理成功记 psp_ok（**受理不等于到账**）。
+//	QueryRefundStatus：V3 按商户退款单号查单（/v3/refund/domestic/refunds/{out_refund_no}），
+//	  把 psp_ok 收敛成 psp_success/psp_failed（FIX-1 第四步，2026-09-26）——微信退款结果是
+//	  异步的，旧实现"受理即终态 + 无人回查"会让账面长期停在未经证实的"已出款"上。
 //	DecryptWechatResource：回调 resource 字段（AES-256-GCM, APIv3Key）解密——供
 //	  api.BillingWebhook 的 wechat 渠道分支取 out_trade_no/trade_state 后走既有幂等到账链。
 //
@@ -29,6 +31,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"ai-scrm/internal/model"
@@ -82,8 +85,11 @@ func (w *WechatPayProvider) CreatePayment(order *model.BillingOrder) (string, er
 }
 
 // Refund V3 退款：受理成功（200/202）即返回 nil（账面 refund_psp_status=psp_ok）。
-// 微信退款结果异步通知（退款成功/失败）走平台侧人工核对，本批不自动改账——
-// 与既有 MarkOrderRefunded 的"账面回收先行、PSP 出款显式分离"语义一致。
+//
+// FIX-1（2026-09-26）：退款单号取 refundOutNo(order)——**稳定号**（已落库则用库里的，
+// 未落库则 "RF"+订单号）。旧实现按秒拼时间戳，重试一次换一个号，微信侧视作两笔
+// 独立退款请求 → 同一订单可出两次款（金额相同、单号不同，微信不去重）。
+// 现在号恒定，微信按 out_refund_no 幂等：重复请求返回原单，不产生第二笔资金动作。
 func (w *WechatPayProvider) Refund(order *model.BillingOrder, refundCents int) error {
 	if w.PrivateKey == nil || w.MchID == "" {
 		return ErrRefundNotWired
@@ -91,7 +97,7 @@ func (w *WechatPayProvider) Refund(order *model.BillingOrder, refundCents int) e
 	urlPath := "/v3/refund/domestic/refunds"
 	body := map[string]interface{}{
 		"out_trade_no":  order.OrderNo,
-		"out_refund_no": fmt.Sprintf("RF%s%s", time.Now().Format("20060102150405"), order.OrderNo),
+		"out_refund_no": refundOutNo(order),
 		"amount": map[string]interface{}{
 			"refund":   refundCents,
 			"total":    order.AmountCents,
@@ -100,6 +106,45 @@ func (w *WechatPayProvider) Refund(order *model.BillingOrder, refundCents int) e
 	}
 	_, err := w.doV3(urlPath, body)
 	return err
+}
+
+// QueryRefundStatus 实现 RefundResultQuerier（FIX-1 第四步，2026-09-26）：
+// GET /v3/refund/domestic/refunds/{out_refund_no} 按**商户退款单号**查这笔退款的终态。
+//
+// 微信退款是异步的：受理接口回 200/202 只表示"受理成功"，钱可能在几小时后才真出去，
+// 也可能最终失败（ABNORMAL/CLOSED）。旧实现把受理当终态记 psp_ok 后就再无人过问，
+// 财务看到的"已出款"里混着"其实没出"——本函数就是把它收敛成 psp_success/psp_failed。
+//
+// 映射只认微信 status 枚举；未知值一律按 processing 处理（不动状态、下轮再查），
+// 因为"判错成 failed"会把一笔可能成功的退款从人工队列里摘掉，比"多查一轮"坏得多。
+func (w *WechatPayProvider) QueryRefundStatus(order *model.BillingOrder, outRefundNo string) (string, error) {
+	if w.PrivateKey == nil || w.MchID == "" {
+		return "", ErrRefundNotWired
+	}
+	if outRefundNo == "" {
+		return "", errors.New("退款单号为空，无法查单")
+	}
+	data, err := w.doV3Get(context.Background(), "/v3/refund/domestic/refunds/"+url.PathEscape(outRefundNo))
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("微信退款查单响应解析失败: %w", err)
+	}
+	switch out.Status {
+	case "SUCCESS":
+		return "success", nil
+	case "ABNORMAL", "CLOSED":
+		return "failed", nil
+	case "PROCESSING", "":
+		// 空串＝微信没给 status 字段（协议变化/异常响应），按未知处理，不动账面
+		return "processing", nil
+	default:
+		return "processing", nil
+	}
 }
 
 // buildAuthHeader 构造 V3 请求签名头（下单/退款共用）。

@@ -143,7 +143,7 @@ func (g GatewayProvider) Refund(order *model.BillingOrder, refundCents int) erro
 		"out_trade_no":  order.OrderNo,
 		"refund_fee":    strconv.Itoa(refundCents),
 		"app_id":        g.AppID,
-		"out_refund_no": fmt.Sprintf("RF%s%s", time.Now().Format("20060102150405"), order.OrderNo),
+		"out_refund_no": refundOutNo(order),
 		"timestamp":     strconv.FormatInt(time.Now().Unix(), 10),
 	}
 	params["sign"] = signParams(params, g.Key)

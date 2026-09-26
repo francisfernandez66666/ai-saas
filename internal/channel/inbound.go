@@ -32,6 +32,9 @@ import (
 
 // ProcessInbound 处理一条已解密的入站消息（适配器解析后调用）。
 // ch：来源通道；in：归一化入站。返回错误仅用于回调侧决定是否重试，业务落库失败已尽量降级。
+// **例外（FIX-5，2026-09-27）：客户入站那句话本身写不进库不再降级**——那一行是这轮对话唯一的
+// 存在证明，丢了却回 success 等于把消息静默蒸发（网页/顾问端/E8 三处都查不到）。
+// 辅助状态列（会话 last_message_at、归因回填）仍按旁路只留痕。
 // D4 修复(2026-09-14)：以 (channel_id, msg_id) 幂等抢占——微信/企微超时重推不再产生双份 AI 回复。
 // 命名返回值承载 done 回调标记 processed/failed（D2：失败计数支撑游标安全推进）。
 //
@@ -42,9 +45,11 @@ import (
 // 随后把"入队等待合并 →（处理者）策略/生成/（被合并者）领取批次唯一回复 → 闸门 → 落库 → 出站"
 // 交给 headless worker goroutine，与 web 共用同一批次、同一 epoch fencing、同一 CalcHumanlikeDelay 节奏。
 // 已知保留差异（残项更新 2026-09-16C，AUDIT_GAP_REALITY_2026-09-16）：留资硬拦截已由
-// D3 批（2026-09-16B）在 worker 处理段实装（本文件 DetectLeadCapture 调用点）；仍缺的是
-// 到店快速通道与硬边界第一层——这些属 web handler 内联逻辑，抽取属 §7 计划的
-// 后续"chat 管线抽函数"手术。
+// D3 批（2026-09-16B）在 worker 处理段实装（本文件 DetectLeadCapture 调用点）；
+// 到店快速通道与话题硬边界这两层由 **FIX-9 批（2026-09-27）** 补上——判据收在
+// chatflow.DecidePreRoute（web/通道同一份），执行段在 inbound_preroute.go。
+// 当初"属 web handler 内联逻辑、要等 chat 管线抽函数手术"的前提已经不成立：需要抽的只有判据，
+// 执行段本来就各写各的（web 写 HTTP 响应，通道写出站队列）。
 func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	// 系统事件（change_contact/add_external_contact 等）→ CDP 摄入，不进对话
 	if in.IsEvent {
@@ -95,11 +100,26 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 		SenderType: "customer", Content: in.Content, MessageType: "text",
 		RouteResult: "channel_inbound",
 	}
-	db.DB.Create(&inMsg)
+	// FIX-5(2026-09-27)：这一处与主链的 customer_inbound 是同一个缺陷的通道侧分身。
+	// 旧写法 `db.DB.Create(&inMsg)` 把 GORM 的 error 就地丢掉，于是：这句话写没写进库没人知道，
+	// 回调照样 ack success、worker 照样带着 inMsg.ID=0 往下跑，客户在微信里说的话
+	// 在网页/顾问端/E8 会话存档三处**永远不存在**——事后没人能解释"他到底说过什么"。
+	// 判失败的出口是现成的：台账写 failed 后，同 msgid 的重推在 attempts<5 时会被重新认领
+	// （微信侧自有重试），认领锚保证不会二次处理、不会双答。
+	if cerr := db.DB.Create(&inMsg).Error; cerr != nil {
+		log.Printf("[通道-告警] 入站消息落库失败 channel=%d 客户%d 会话%d: %v", ch.ID, customerID, conv.ID, cerr)
+		metrics.IncChatPersistError("channel_inbound")
+		err = cerr
+		return err
+	}
 	// D9：渠道入站同样回填上一轮 AI 接钩归因。
 	_ = attribution.MarkHookedBeforeMessage(ch.TenantID, conv.ID, inMsg.ID)
 
-	db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Update("last_message_at", time.Now())
+	// 最后消息时间是排序用状态列，写不上不影响这一句已经被收账：只留痕，不判失败。
+	if uerr := db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Update("last_message_at", time.Now()).Error; uerr != nil {
+		log.Printf("[通道-告警] 会话最后消息时间回写失败 会话%d: %v", conv.ID, uerr)
+		metrics.IncChatPersistError("channel_conversation_touch")
+	}
 
 	// 2. 人工接管态 / AI 关闭：不出声，等顾问手动回复（顾问回复经出站桥回渠道）。
 	//    不入队——避免白白占用一个合并窗口把后续真 AI 消息卷进静默批次。
@@ -109,7 +129,13 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 	}
 
 	// 3. 移交 headless worker（D5）：入队 → 生成/领取批次回复 → 出站。回调段即刻 ack success。
-	go runInboundWorker(ch, in, customerID, conv, inMsg.ID, done, time.Now())
+	//    FIX-5/-race 收口批（2026-09-27）：派发前后各记一笔账——回调返回不等于这一轮做完了，
+	//    worker 还在读全局配置与数据库；不记账就没有任何人（测试或停机流程）知道还有活在跑。
+	bgDone := trackBackground("inbound worker")
+	go func() {
+		defer bgDone()
+		runInboundWorker(ch, in, customerID, conv, inMsg.ID, done, time.Now())
+	}()
 	handedOff = true
 	return nil
 }
@@ -145,6 +171,17 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		done(workErr) // 台账收尾随 worker——回调 ack 期间状态为 processing，重推被 claim 挡
 	}()
 
+	// FIX-9(2026-09-27)：入队前两层分流（话题硬边界 / 到店倾向快速通道）。
+	// 这两层自 D5 并入合并队列那天起就**只有 web 有**（本函数旧注释自认"仍缺的是到店快速通道与
+	// 硬边界第一层"），后果是同一个客户同一句话在两个入口两套语义：网页问"今天天气怎么样"
+	// 0 延迟收到引导话术，微信里同一句要等完 25s 合并窗口再吃一段真 AI 生成（还可能带幻觉）；
+	// 客户在微信里说"我周末过去看看"也不再有那两段预约信息追问——到店线索收集在通道里等于断了。
+	// 判据现在只剩一份（chatflow.DecidePreRoute），执行段见 inbound_preroute.go。
+	// 位置在 EnqueueAndWait **之前**：命中的轮次根本不该开批次，也就没有"释放处理权"这件事。
+	if runInboundPreRoute(ch, in, customerID, conv) {
+		return
+	}
+
 	mergedContent, shouldProcess, reply, mergeWaitDuration, isSimple, mergeCount, epoch :=
 		service.DefaultMessageQueueService.EnqueueAndWait(tid, customerID, in.Content, in.TraceID)
 
@@ -160,8 +197,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		// 手机号，但 2-gram 误判进快速通道时不能把留资吞掉）
 		var simpleCust model.Customer
 		if db.DB.First(&simpleCust, customerID).Error == nil &&
-			simpleCust.JourneyStage != model.JourneyLeadCaptured && simpleCust.JourneyStage != model.JourneyArrived &&
-			simpleCust.JourneyStage != model.JourneyOrdered && simpleCust.JourneyStage != model.JourneyDelivered {
+			!chatflow.CapturedStage(simpleCust.JourneyStage) {
 			if leadResult := chatflow.DetectLeadCapture(in.Content, &simpleCust); leadResult != 0 {
 				log.Printf("[通道] 客户%d 留资检测(简单消息防漏,OneID目标=%d)", customerID, leadResult)
 			}
@@ -210,8 +246,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	// D3 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：通道入站补留资硬拦截——旧实现
 	// 零引用 DetectLeadCapture，客户在企微/微信客服/公众号里发手机号不落 phone/阶段/顾问分配，
 	// 顾问端永远看不到线索。放在策略推理之前，与 web（chat_main 留资硬拦截）同口径。
-	if cust.JourneyStage != model.JourneyLeadCaptured && cust.JourneyStage != model.JourneyArrived &&
-		cust.JourneyStage != model.JourneyOrdered && cust.JourneyStage != model.JourneyDelivered {
+	if !chatflow.CapturedStage(cust.JourneyStage) {
 		if leadResult := chatflow.DetectLeadCapture(mergedContent, &cust); leadResult != 0 {
 			log.Printf("[通道] 客户%d 留资检测命中(OneID目标=%d)，重载客户并设1轮引导反问", customerID, leadResult)
 			db.DB.First(&cust, customerID) // 同步 journey_stage 等内存字段，供后续推理/延迟判定
@@ -322,19 +357,29 @@ func deliverText(ch *model.Channel, conv *model.Conversation, customerID uint, t
 
 // saveAndDeliver 通道简单消息快速通道回复：落库（历史双入口共享）+ 出站投递。
 func saveAndDeliver(ch *model.Channel, conv *model.Conversation, customerID uint, text, routeResult string) {
+	saveAndDeliverIDs(ch.TenantID, ch.ID, conv.ID, customerID, text, routeResult)
+}
+
+// saveAndDeliverIDs 与 saveAndDeliver 同一口径，但**只吃 id 不吃请求期对象**。
+//
+// 为什么要单独一个 id 形态：到店第二段追问是延迟 25–45s 的后台 goroutine，
+// 把 `*model.Channel` / `*model.Conversation` 指针带进去，等于让后台与请求期代码
+// 并发读写同一份结构体（`-race` 实测抓到过；请求期之后还会继续改写 conv）。
+// 只传值则没有任何共享状态，也就没有"这一轮改了什么后台不知道"的语义问题。
+func saveAndDeliverIDs(tid, channelID, convID, customerID uint, text, routeResult string) {
 	if text == "" {
 		return
 	}
 	aiMsg := model.Message{
-		TenantID: ch.TenantID, ConversationID: conv.ID, CustomerID: customerID,
+		TenantID: tid, ConversationID: convID, CustomerID: customerID,
 		SenderType: "ai", Content: text, MessageType: "text",
 		RouteResult: routeResult,
 	}
 	if err := db.DB.Create(&aiMsg).Error; err != nil {
-		log.Printf("[通道] 回复落库失败 conv=%d: %v", conv.ID, err)
+		log.Printf("[通道] 回复落库失败 conv=%d: %v", convID, err)
 	}
-	if _, err := Enqueue(ch.TenantID, ch.ID, customerID, conv.ID, text, "text"); err != nil {
-		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", ch.ID, conv.ID, err) // 出站队列自带死信/重发
+	if _, err := Enqueue(tid, channelID, customerID, convID, text, "text"); err != nil {
+		log.Printf("[通道] 出站投递失败 channel=%d conv=%d: %v", channelID, convID, err) // 出站队列自带死信/重发
 	}
 }
 

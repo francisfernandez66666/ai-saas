@@ -64,6 +64,7 @@ var openSurface = map[string]string{
 	"POST /api/v1/chat/clear-delay":          "匿名须 visitor_key 自证；登录态须为归属顾问",
 	"POST /api/v1/chat/request-human":        "C 端找人工，visitor_key 自证 + 限流",
 	"POST /api/v1/privacy/deletion-request":  "PIPL 删除权受理，visitor_key 自证（C 端入口）",
+	"POST /api/v1/privacy/my-data":           "PIPL 可携带权本人副本，visitor_key 自证 + 3/min 限流（OptionalJWTAuth 只用于登录态顾问代客户取）",
 	"POST /api/v1/client-errors":             "前端异常上报，只入库、采样、脱敏",
 	"GET /api/v1/turnstile/sitekey":          "人机验证站点键本就是公开展示用",
 	"GET /api/v1/knowledge/brands":           "公开产品目录（visibility=public 已在 SQL 层收敛）",

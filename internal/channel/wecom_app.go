@@ -181,12 +181,13 @@ func postJSON(ctx context.Context, url string, payload interface{}, out interfac
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(b))
 	if err != nil {
-		return -1, err
+		return -1, redactErr(err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := chanHTTP.Do(req)
 	if err != nil {
-		return -1, err
+		// FIX-2(2026-09-26)：url.Error 自带完整 URL（此处含 access_token），脱敏后再返回
+		return -1, redactErr(err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))

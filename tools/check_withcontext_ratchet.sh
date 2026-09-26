@@ -55,7 +55,7 @@ if [ "${1:-}" = "--selftest" ]; then
     exit 1
   fi
   rm -f "$tmp/internal/chat_main_copy.go.bak"
-  echo "SELFTEST PASS 透传点计数随删减下降（before=$before after=$after）"
+  echo "SELFTEST PASS 透传点计数随删减下降（before=$before after=${after}）"
   exit 0
 fi
 
@@ -82,4 +82,4 @@ if [ "$current" -lt "$base" ]; then
   echo "     确属合理重构请显式收紧基线：./tools/check_withcontext_ratchet.sh --update-baseline"
   exit 1
 fi
-echo "PASS 显式 DB ctx 透传棘轮：当前 $current >= 基线 $base（只升不降）"
+echo "PASS 显式 DB ctx 透传棘轮：当前 $current >= 基线 ${base}（只升不降）"

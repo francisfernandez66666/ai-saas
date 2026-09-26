@@ -6,6 +6,8 @@
 import { useState, useEffect } from 'react'
 import { Dialog, Button, Input, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
+// FIX-8(2026-09-27)：金额一律经 lib/money 换算（界面是元、提交体是分），不再各处 `x / 100`。
+import { fenToYuan, fenToYuanCompact } from '../lib/money'
 import { ConfirmDialog } from '../lib/ui'
 import { getToken, apiFetch } from '../lib/api'
 import { isStaff } from '../lib/roles'
@@ -228,7 +230,7 @@ export default function Billing() {
           <div key={p.id} style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 3px 14px rgba(0,0,0,.06)', position: 'relative', display: 'flex', flexDirection: 'column' }}>
             {p.p_type === 'increment' && <span style={{ position: 'absolute', top: -8, right: 10, background: 'var(--pri)', color: '#fff', fontSize: 11, padding: '2px 9px', borderRadius: 10 }}>热卖</span>}
             <b>{p.name}</b>
-            <div style={{ fontSize: 24, fontWeight: 800, margin: '8px 0' }}>{p.price_cents > 0 ? '¥' + (p.price_cents / 100).toFixed(0) : '免费'}<small style={{ fontSize: 12, color: '#718096', fontWeight: 400 }}>{p.p_type === 'paid' ? '/月' : ''}</small></div>
+            <div style={{ fontSize: 24, fontWeight: 800, margin: '8px 0' }}>{p.price_cents > 0 ? '¥' + fenToYuanCompact(p.price_cents) : '免费'}<small style={{ fontSize: 12, color: '#718096', fontWeight: 400 }}>{p.p_type === 'paid' ? '/月' : ''}</small></div>
             <p style={{ fontSize: 13, color: '#718096', margin: '8px 0 14px', flex: 1 }}>{p.description || ''}<br />含 {p.ai_calls} 次AI调用{p.duration_days ? ` · ${p.duration_days}天有效期` : ' · 永不过期'}</p>
             <button onClick={() => isAdmin ? subscribe(p.id) : undefined} disabled={!isAdmin} aria-label={'订阅' + p.name} style={{ background: 'linear-gradient(135deg,var(--pri),#764ba2)', color: '#fff', width: '100%', padding: '9px 14px', border: 'none', borderRadius: 8, cursor: isAdmin ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: isAdmin ? 1 : .6 }}>{isAdmin ? '立即订阅' : '订阅需管理员账号'}</button>
           </div>
@@ -247,11 +249,11 @@ export default function Billing() {
           {orders.map((o) => (
             <tr key={o.id}>
               <td style={td}>{o.order_no}</td>
-              <td style={td}>¥{(o.amount_cents / 100).toFixed(2)}<br /><span style={{ fontSize: 11, color: '#718096' }}>{o.package_name || ''}</span></td>
+              <td style={td}>¥{fenToYuan(o.amount_cents)}<br /><span style={{ fontSize: 11, color: '#718096' }}>{o.package_name || ''}</span></td>
               <td style={td}>{CH[o.channel as keyof typeof CH] || o.channel || '-'}</td>
               {/* F1(2026-09-15)：后端列表接口已补退款字段——已退款单显示中文态与实际退款金额，
                   旧版直接显示英文原值"refunded"且看不到退了多少钱 */}
-              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : o.status === 'refunded' ? '#fed7d7' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : o.status === 'refunded' ? '#9b2c2c' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status === 'refunded' ? `已退款${o.refund_amount_cents ? ' ¥' + (o.refund_amount_cents / 100).toFixed(2) : ''}` : o.status}</span></td>
+              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : o.status === 'refunded' ? '#fed7d7' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : o.status === 'refunded' ? '#9b2c2c' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status === 'refunded' ? `已退款${o.refund_amount_cents ? ' ¥' + fenToYuan(o.refund_amount_cents) : ''}` : o.status}</span></td>
               <td style={td}>{new Date(o.created_at).toLocaleString()}</td>
               <td style={td}>{o.status === 'pending' ? <button aria-label={'继续支付订单' + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
                 <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>
@@ -289,7 +291,7 @@ export default function Billing() {
       {/* 支付弹窗：展示订单信息与支付操作（仅管理员可用） */}
       <Dialog header="订单支付" visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>
         {cur && <>
-          <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{(cur.amount_cents / 100).toFixed(2)}{cur.amount_cents !== cur.original_amount_cents && cur.original_amount_cents ? `（原价 ¥{(cur.original_amount_cents / 100).toFixed(2)}，升级抵扣优惠）` : ''}</p>
+          <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{fenToYuan(cur.amount_cents)}{cur.amount_cents !== cur.original_amount_cents && cur.original_amount_cents ? `（原价 ¥{fenToYuan(cur.original_amount_cents)}，升级抵扣优惠）` : ''}</p>
           {/* E1 修复(2026-09-14)：渲染后端已下发的 qr_content 收款码——旧版只有一行提示文案，
               static_qr 模式下用户拿不到码只能"盲付"。图片 URL/data URI 直接 <img>，其它当链接给 */}
           <div style={{ background: '#f6f8ff', border: '1px dashed #b794f4', borderRadius: 10, padding: 18, textAlign: 'center', margin: '14px 0', fontSize: 13, wordBreak: 'break-all' }}>

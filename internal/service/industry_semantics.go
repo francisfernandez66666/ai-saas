@@ -29,11 +29,17 @@ const (
 	IndustryPriceKeywords    = "industry.price_keywords"     // 询价敏感词（触发到店引导）
 	IndustryStoreVisitFirst  = "industry.store_visit_first"  // 到店倾向第一段话术（JSON 数组）
 	IndustryStoreVisitSecond = "industry.store_visit_second" // 到店倾向第二段话术（JSON 数组）
-	IndustryPriceReplyLead   = "industry.price_reply_lead"   // 询价回复：已留资（体验后报价，不含"约试驾"）
-	IndustryPriceReplyNoLead = "industry.price_reply_nolead" // 询价回复：未留资（引导到店后报价）
-	IndustrySalesperson      = "industry.salesperson"        // 销售顾问人设（Prompt 人设兜底）
-	IndustryDomainConstraint = "industry.domain_constraint"  // 领域约束句子（Prompt 内"只聊X"指令）
-	IndustryHumanReply       = "industry.human_reply"        // 人工接管/待接管话术（JSON 数组；P2-21）
+	// IndustryLeadCapturedConfirm 到店倾向「已留资确认」话术（JSON 数组）。
+	// FIX-9(2026-09-27)：这三句原来硬编码在 internal/api/chat_main.go 的分支B里，
+	// 内容是汽车口径（"有没有老车要置换"）——edu/wedding 租户的客户留个手机号就收到置换询问，
+	// 与 P1-29（到店第一/二段改行业键）是同一类残量。而且通道入站补同一条快速通道时
+	// 只能把这三句再抄一遍：文案从此有两份，改一处漏一处。收成行业键单点。
+	IndustryLeadCapturedConfirm = "industry.lead_captured_confirm" // 到店倾向已留资确认话术（JSON 数组）
+	IndustryPriceReplyLead      = "industry.price_reply_lead"      // 询价回复：已留资（体验后报价，不含"约试驾"）
+	IndustryPriceReplyNoLead    = "industry.price_reply_nolead"    // 询价回复：未留资（引导到店后报价）
+	IndustrySalesperson         = "industry.salesperson"           // 销售顾问人设（Prompt 人设兜底）
+	IndustryDomainConstraint    = "industry.domain_constraint"     // 领域约束句子（Prompt 内"只聊X"指令）
+	IndustryHumanReply          = "industry.human_reply"           // 人工接管/待接管话术（JSON 数组；P2-21）
 )
 
 // industryKeywordList 解析行业关键词列表（JSON 数组）

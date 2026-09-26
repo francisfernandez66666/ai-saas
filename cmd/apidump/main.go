@@ -348,7 +348,11 @@ func authOf(path string) []string {
 	case path == "/api/v1/privacy/deletion-request",
 		path == "/api/v1/client-errors",
 		path == "/api/v1/chat/history",
-		path == "/api/v1/chat/clear-delay":
+		path == "/api/v1/chat/clear-delay",
+		// PIPL 可携带权副本（FIX-9）：匿名靠 visitor_key 自证、登录态靠数据范围，
+		// 所以链上是 OptionalJWTAuth 而非 JWTAuth——写成 jwt 等于声明"未登录进不来"，
+		// 那正是这个端点刻意不能有的口径（客户本人没有账号）。
+		path == "/api/v1/privacy/my-data":
 		add("optional_jwt")
 		add("ip_limit")
 		return out

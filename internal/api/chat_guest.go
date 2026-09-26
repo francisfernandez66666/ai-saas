@@ -89,10 +89,14 @@ func Welcome(c *gin.Context) {
 		return
 	}
 
-	// C3：懒下发访客密钥（历史客户可能没有），但匿名访问必须携带匹配密钥
+	// C3：懒下发访客密钥（历史客户可能没有），但匿名访问必须携带匹配密钥。
+	// 旁路（FIX-5）：这一行只是给老数据补签，写失败时刚生成的密钥只在本次请求内存活——
+	// 客户此刻仍能用它对话（下面 CheckVisitorKey 判的是内存里的值），不值得为此回 500；
+	// 但必须留痕，否则"下次进来又要重签一次"会变成永远看不见的抖动。
 	if customer.VisitorKey == "" {
 		customer.VisitorKey = model.GenerateVisitorKey()
-		db.RQ(c).Model(&customer).Update("visitor_key", customer.VisitorKey)
+		persistBypass("visitor_key_backfill", customer.ID, 0,
+			db.RQ(c).Model(&customer).Update("visitor_key", customer.VisitorKey))
 	}
 	// 横向越权校验：登录用户(顾问/管理员)放行；匿名必须 ?visitor_key= 与目标一致。
 	// 注意：Welcome 不向匿名返回 visitor_key（密钥只在 /chat/guest、/chat 创建/加载时下发），
@@ -129,7 +133,10 @@ func Welcome(c *gin.Context) {
 			ConversationID: conversation.ID,
 			RouteResult:    "ai",
 		}
-		flow.DefaultEngine.StartFlow("default_chat_flow", flowCtx)
+		// 旁路（flow_start）：流程引擎没起来不影响本次欢迎秒回，但会话就没有后续动作编排——
+		// 与正式链 chat_main.go 同一口径，失败留痕并计数。
+		_, ferr := flow.DefaultEngine.StartFlow("default_chat_flow", flowCtx)
+		persistBypassErr("flow_start", customer.ID, conversation.ID, ferr)
 	} else {
 		// 已有活跃会话，直接复用
 		log.Printf("[欢迎] 复用已有会话 %d, 客户 %d", conversation.ID, customer.ID)
@@ -142,10 +149,13 @@ func Welcome(c *gin.Context) {
 	if !utils.IsWorkTime() {
 		welcomeText += "由于现在是非工作时间，回复可能较慢，请见谅。"
 	}
-	// P2-22 去重判定锚点（前缀常量）
+	// P2-22 去重判定锚点（前缀常量）。
+	// 旁路（FIX-5，welcome_dedup_count）：这条 Count 读失败时 exist 保持 0，
+	// 后果是"多插一条欢迎消息"而不是丢客户的话——不打断秒回，但必须留痕计数，
+	// 否则会话里凭空多出两条欢迎也没人知道是读抖动造成的。
 	var exist int64
-	db.RQ(c).Model(&model.Message{}).
-		Where("conversation_id = ? AND sender_type = 'system' AND content LIKE ?", conversation.ID, welcomePrefix+"%").Count(&exist)
+	persistBypass("welcome_dedup_count", customer.ID, conversation.ID, db.RQ(c).Model(&model.Message{}).
+		Where("conversation_id = ? AND sender_type = 'system' AND content LIKE ?", conversation.ID, welcomePrefix+"%").Count(&exist))
 	if exist > 0 {
 		// 已插过欢迎：返回既有会话但不重复落库（复用最近一条欢迎消息回显）
 		var lastWelcome model.Message
@@ -166,7 +176,11 @@ func Welcome(c *gin.Context) {
 		MessageType:    "text",
 		CreatedAt:      time.Now(),
 	}
-	db.RQ(c).Create(&welcomeMsg)
+	// 必查（FIX-5，welcome_reply）：欢迎消息整行要回给前端渲染（含它的 ID），
+	// 落库失败却回 200 = 前端拿到一条库里不存在的消息，刷新即消失、且会话开局零条留言。
+	if persistRequired(c, "welcome_reply", customer.ID, conversation.ID, db.RQ(c).Create(&welcomeMsg)) {
+		return
+	}
 	log.Printf("[欢迎] 秒回消息已插入, 会话 %d", conversation.ID)
 
 	// 立刻返回（无AI处理，毫秒级响应）

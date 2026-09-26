@@ -153,20 +153,40 @@ type BillingOrder struct {
 	PaidAt              *time.Time `json:"paid_at"`                             // 支付时间（unpaid 为零值）
 	RefundedAt          *time.Time `json:"refunded_at"`                         // 退款时间
 	RefundAmountCents   int        `json:"refund_amount_cents"`                 // 实际退款金额（分）：按剩余比例计算，≤AmountCents；0=无剩余可退
-	RefundPspStatus     string     `gorm:"size:20" json:"refund_psp_status"`    // R8(2026-09-11) 出款状态：空=无需出款(mock/manual)，psp_ok=网关已出款，psp_pending=账面已退但出款失败待人工
-	ExpireAt            *time.Time `json:"expire_at"`                           // 订单超时未支付自动关闭
-	PaymentData         string     `json:"payment_data"`                        // 支付平台回调原始数据
-	ManualConfirm       bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）
-	InvoiceRequested    bool       `json:"invoice_requested"`                   // 是否申请发票
-	InvoiceStatus       string     `gorm:"size:20" json:"invoice_status"`       // 发票状态（§W 状态机：requested→issued→voided）
+	RefundPspStatus     string     `gorm:"size:20" json:"refund_psp_status"`    // R8(2026-09-11) 出款状态；FIX-1(2026-09-26) 状态字典收口为四态：空=无需出款(mock/manual)、psp_pending=意图已落库待出款或结果未知、psp_ok=PSP 已受理(尚未终态)、psp_success/psp_failed=查单回写出的终态
+	// RefundOutNo 实际发给 PSP 的退款单号（FIX-1，2026-09-26）。
+	// 为什么必须落库而不是每次现拼：出款这一步"发起"与"结果回写"跨事务、跨进程，
+	// 补呼与查单都要拿**同一个号**去问 PSP——旧实现用 "RF"+秒级时间戳+订单号现拼，
+	// 同一订单两次调用就是两个号，PSP 侧无从幂等（注释却写着"按 out_refund_no 去重"）。
+	// 号一经写入不再改（部分唯一索引 ux_order_refund_out_no 兜底，见迁移 028），
+	// 所以"这一单发过几次退款请求"在库里是可见的、可核对的。
+	// ⚠ 标签里必须自带 not null + default（2026-09-26 冒烟抓到）：db.Init 的口径是
+	// AutoMigrate **先跑**、版本化迁移后跑，而 GORM 会把列形态往 struct 标签上收敛——
+	// 只写 size:64 时，每次重启都会把迁移 028 辛苦加上的 NOT NULL 又扳回可空，
+	// 于是"DB 层一单一号"退化成"只有非空号才被约束"（NULL 行不受唯一索引管，
+	// 而 NULL <> '' 在 PG 里为真，补呼取单条件又读不到它）。约束要落地就得两边口径一致。
+	RefundOutNo      string     `gorm:"size:64;not null;default:''" json:"refund_out_no"`
+	ExpireAt         *time.Time `json:"expire_at"`                           // 订单超时未支付自动关闭
+	PaymentData      string     `json:"payment_data"`                        // 支付平台回调原始数据
+	ManualConfirm    bool       `gorm:"default:false" json:"manual_confirm"` // 「我已付费」人工确认标记（static_qr 模式）
+	InvoiceRequested bool       `json:"invoice_requested"`                   // 是否申请发票
+	InvoiceStatus    string     `gorm:"size:20" json:"invoice_status"`       // 发票状态（§W 状态机：requested→issued→voided）
 	// ---- B7 双轨退款 / §W 发票极限（2026-09-14）----
 	RefundRequested bool   `gorm:"default:false" json:"refund_requested"` // B7：租户侧只能"申请退款"，超管 confirm 才执行 clawback+出款
 	InvoiceTitle    string `gorm:"size:200" json:"invoice_title"`         // 发票抬头（E9：替代前端硬编码）
 	InvoiceTaxNo    string `gorm:"size:64" json:"invoice_tax_no"`         // 纳税人识别号
 	InvoiceEmail    string `gorm:"size:120" json:"invoice_email"`         // 接收邮箱
 	InvoiceNo       string `gorm:"size:64" json:"invoice_no"`             // 人工开票后回录的发票号
-	QRContent       string `gorm:"type:text" json:"qr_content"`           // 收款码内容（URL/base64，下单时从系统配置快照）
-	Remark          string `json:"remark"`                                // 备注
+	// ---- FIX-9 发票交付触达（2026-09-27）----
+	// 语义：开票这个财务动作"做完了"与"客户知道了"是两件事，旧链路只证明了前者。
+	// 结果码用字符串不用 bool（口径见迁移 029）：SMTP 未配置时 notify 走 log 通道
+	// **返回成功**，若落成 bool 就会留下一条"已通知客户"的假记录，运营据此不再人工补发。
+	// ⚠ 两列标签口径与 RefundOutNo 同源：AutoMigrate 先跑、版本化迁移后跑，
+	// 标签漏写 not null;default:'' 就会被 GORM 每次重启扳回可空，迁移 029 的约束形同虚设。
+	InvoiceNotifiedAt   *time.Time `json:"invoice_notified_at"`
+	InvoiceNotifyResult string     `gorm:"size:24;not null;default:''" json:"invoice_notify_result"`
+	QRContent           string     `gorm:"type:text" json:"qr_content"` // 收款码内容（URL/base64，下单时从系统配置快照）
+	Remark              string     `json:"remark"`                      // 备注
 	// ---- 换包升级差额抵扣（2026-09-09）----
 	// 语义：租户已有生效付费订阅且换订不同付费包 → 旧包剩余价值按比例抵扣新包金额，
 	// 新包从今天起算即时生效（GrantPackageUpgrade），旧单作废但保留退款闸门防双重回收。

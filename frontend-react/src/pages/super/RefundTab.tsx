@@ -6,6 +6,8 @@
 //   POST /api/v1/super/billing/orders/:id/refund/reject（驳回：仅清申请标记，留审计）
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Table, Tag, MessagePlugin } from 'tdesign-react'
+// FIX-8(2026-09-27)：退款金额是**要给超管看清楚的数**（二次确认弹窗里就写着它），口径必须与列表同源。
+import { fenToYuan } from '../../lib/money'
 import { AUTH } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
 import type { CellProps, TableRowData } from '../../types'
@@ -44,7 +46,7 @@ export function RefundTab() {
   // 执行退款：真钱场景，弹窗明示"按比例退款+权益回收"后果；已全消耗后端拒 409
   async function doRefund(r: RefundRow) {
     const ok = await confirmDialog(
-      `确认对订单 ${r.order_no}（租户 #${r.tenant_id ?? '-'}，¥${(r.amount_cents / 100).toFixed(2)}）执行退款？` +
+      `确认对订单 ${r.order_no}（租户 #${r.tenant_id ?? '-'}，¥${fenToYuan(r.amount_cents)}）执行退款？` +
       '将按未消耗比例退回并回收全部剩余权益，真钱渠道同步向 PSP 出款，操作不可逆。', '执行退款')
     if (!ok) return
     setBusyId(r.order_id)
@@ -65,7 +67,7 @@ export function RefundTab() {
   const cols = [
     { colKey: 'tenant_id', title: '租户ID', width: 90, cell: (p: CellProps) => p.row.tenant_id == null ? '-' : '#' + p.row.tenant_id },
     { colKey: 'order_no', title: '订单号', width: 190 },
-    { colKey: 'amount_cents', title: '金额(元)', width: 110, cell: (p: CellProps) => '¥' + (Number(p.row.amount_cents || 0) / 100).toFixed(2) },
+    { colKey: 'amount_cents', title: '金额(元)', width: 110, cell: (p: CellProps) => '¥' + fenToYuan(Number(p.row.amount_cents || 0)) },
     { colKey: 'channel', title: '渠道', width: 90, cell: (p: CellProps) => <Tag>{CHANNEL_LABELS[p.row.channel] || p.row.channel}</Tag> },
     { colKey: 'period', title: '周期', width: 90 },
     { colKey: 'paid_at', title: '支付时间', width: 170, cell: (p: CellProps) => p.row.paid_at ? String(p.row.paid_at).slice(0, 19).replace('T', ' ') : '-' },

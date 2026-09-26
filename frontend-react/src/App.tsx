@@ -3,7 +3,7 @@
 // D1：业务大页路由级 lazy，首屏只加载当前页；TDesign 由 vite 自动分块拆包（P2-16 纠偏：曾注释称 manualChunks 手工拆包而 vite.config 实无该配置，口径以 vite.config.ts 为准）
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
-import { getToken, verifySession } from './lib/api'
+import { logoutAndRedirect, verifySession, type SessionCheck } from './lib/api'
 import { RequireRole } from './components/RequireRole'
 import { ADMIN_ROLES } from './lib/roles'
 /** 导航落地页懒加载入口。 */
@@ -51,44 +51,72 @@ const AppLayout = lazy(() => import('./pages/AppLayout'))
 // ProtectedRoute 受保护路由守卫组件
 // P1-50(2026-09-09)：不再只查 token 存在——token 可被篡改/过期，角色可能被 localStorage
 // 造假。现在挂 /auth/me 会话校验（60s 缓存）：无效→登录页；需改密→改密页；有效→放行。
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+//
+// FIX-6(2026-09-27)：守卫改成**按会话校验返回的状态分支**，不再靠"info===null 且 token 还在"
+// 反推原因。旧推断把"网络压根没通"读成"服务端要求改密"——用户在地铁上刷新后台会被甩进
+// 强制改密表单（/login?mcp=1），既解释不了也回不去原来的页面。
+// 现在：network_error 留在原地给一条"网络异常，点击重试"；forbidden（非改密的 403，
+// 如租户停用/配额）也留在原地提示并给退出入口，不再顺手销毁一次没有被判死的会话。
+// 为何 export（FIX-6 验收，2026-09-27）：断网/403 这两条分支的验收要看"用户留在原地还是被甩去
+// /login?mcp=1"，这是守卫本身的分支逻辑，不该为了测它把整棵路由树搬进用例；导出后
+// `src/pages/__tests__/ProtectedRoute.test.tsx` 直接挂进 MemoryRouter 断言落点。
+export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const location = useLocation()
-  const [checking, setChecking] = useState(true)
-  const [mcp, setMcp] = useState(false)
+  // 校验结论**连同它属于哪条路径**一起存：`checking` 由"结论没落地 / 结论是别的路径留下的"派生，
+  // 不再在 effect 里同步 setChecking(true)（react-hooks/set-state-in-effect 会把这条刷成 warning，
+  // 而这里它本来就是多余的——一次校验只产出一个结论，结论没来就是"校验中"，无需第二个布尔位）。
+  // 带路径的另一层意思：切页时旧结论立刻失效，不会出现"上一条页的 ok 让新一页闪现内容"。
+  const [verdict, setVerdict] = useState<{ path: string; res: SessionCheck } | null>(null)
+  const [attempt, setAttempt] = useState(0) // 点"重试"自增，驱动下面 effect 重跑
 
   useEffect(() => {
     let alive = true
     ;(async () => {
-      if (!getToken()) {
-        if (alive) setChecking(false)
-        return
-      }
-      const info = await verifySession()
+      const res = await verifySession()
       if (!alive) return
-      if (info === null) {
-        // token 校验失败：token 被 verifySession 清掉(401)→走下方 !token 跳登录；
-        // 仍持有 token 则说明服务端要求改密（must_change_password）→ 跳改密页
-        if (getToken()) { if (alive) setMcp(true) }
-      }
-      if (alive) setChecking(false)
+      setVerdict({ path: location.pathname, res })
     })()
-    return () => { alive = false }
-  }, [location.pathname])
+    return () => {
+      alive = false
+    }
+    // location.pathname：切页重新校验；attempt：手动重试
+  }, [location.pathname, attempt])
 
-  if (checking) return null // 校验中：空白占位（避免闪现受保护内容）
+  if (!verdict || verdict.path !== location.pathname) return null // 校验中：空白占位（避免闪现受保护内容）
 
-  const token = getToken()
-
-  if (!token) {
-    // 无 token（含 401 被 verifySession 清除）：跳登录页，保留原路径供登录后跳回
-    return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
+  const st = verdict.res.state
+  if (st === 'ok') return <>{children}</>
+  if (st === 'network_error' || st === 'forbidden') {
+    // 不跳走：这两种情况下用户的会话没有被服务端否定（或否定的原因不是"该重新登录"），
+    // 跳登录页只会让他丢掉当前页面，而且登录后回不来同一条深链接的概率很高。
+    return (
+      <div style={{ padding: 24, maxWidth: 420, margin: '80px auto', textAlign: 'center' }}>
+        <div style={{ fontSize: 15, marginBottom: 12 }}>
+          {st === 'network_error'
+            ? '网络异常，暂时连不上服务器。你的登录状态没有丢，恢复网络后点重试即可。'
+            : '当前账号暂时无法访问该页面（可能是租户已停用、配额用尽或权限变更）。'}
+        </div>
+        {st === 'network_error' && (
+          <button
+            type="button"
+            onClick={() => setAttempt((a) => a + 1)}
+            style={{ marginRight: 8, padding: '6px 14px' }}
+          >
+            重试
+          </button>
+        )}
+        <button type="button" onClick={() => logoutAndRedirect()} style={{ padding: '6px 14px' }}>
+          退出登录
+        </button>
+      </div>
+    )
   }
-  if (mcp) {
-    // 首登需改密：跳改密表单（change-password 接口在白名单内可用）
+  if (st === 'must_change_password') {
+    // 首登需改密：跳改密表单（change-password 接口在白名单内可用，且 token 已被刻意保留）
     return <Navigate to="/login?mcp=1" replace />
   }
-
-  return <>{children}</>
+  // anonymous / revoked：跳登录页，保留原路径供登录后跳回
+  return <Navigate to={`/login?redirect=${encodeURIComponent(location.pathname)}`} replace />
 }
 
 // 全站根路由组件：声明路由表，区分公开页（登录/注册/协议）与业务页（/admin、/super、/advisor、/client、/billing 等）

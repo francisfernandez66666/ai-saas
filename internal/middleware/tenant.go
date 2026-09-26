@@ -346,9 +346,18 @@ func ResolveTenantFromHost(c *gin.Context) *model.Tenant {
 
 // skipTenantPaths 不需要租户上下文的路径（精确匹配）
 var skipTenantPaths = map[string]bool{
-	"/health":      true,
-	"/status":      true, // M4 状态页：免鉴权无敏感信息
-	"/metrics":     true, // P1-1 修复：Prometheus 指标端点自身已有 METRICS_TOKEN/loopback 鉴权（release 下不再被 Host 解析 403）
+	"/health": true,
+	// M4 状态页：免鉴权无敏感信息
+	"/status": true,
+	// FIX-7(2026-09-27)：全量体检清单与 /status 同属**平台级观测面**，响应里没有任何租户字段，
+	// 访问控制由 handler 内的 X-Health-Token 负责（未配置 HEALTH_TOKEN=恒 403，fail-closed 语义不变），
+	// 不该再叠加一层"按 Host 解析租户"。原写法漏了这一条，release 模式下探针按 IP/未绑定域名
+	// 打进来时 resolveTenant 返回 nil（debug 才有 localhost 兜底），于是运维拿到的是
+	// 403「无法识别访问租户」而不是配置红灯——和 /metrics 当初被 Host 解析拦成 403 是同一类错。
+	// 冒烟之所以从没抓到：9090 那台跑的是 debug，兜底把这条腿永远遮住了。
+	"/status/detail": true,
+	// P1-1 修复：Prometheus 指标端点自身已有 METRICS_TOKEN/loopback 鉴权（release 下不再被 Host 解析 403）
+	"/metrics":     true,
 	"/":            true,
 	"/pricing":     true,
 	"/register":    true,

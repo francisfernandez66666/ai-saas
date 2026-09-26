@@ -77,6 +77,10 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	v1.POST("/chat/guest", middleware.TurnstileGuard(), middleware.IPRateLimit("chat_guest", 10, time.Minute), CreateGuest)
 	// PIPL 删除权受理（C2，免登录 C 端 + OptionalJWTAuth 让登录态可撤回账号）：visitor_key 自证或登录放行
 	v1.POST("/privacy/deletion-request", middleware.OptionalJWTAuth(), middleware.IPRateLimit("privacy_del", 5, time.Minute), PrivacyDeletionRequest)
+	// PIPL 数据可携带权（FIX-9，2026-09-27）：本人副本。读的是全量个人数据，故限流比删除权更紧
+	// （3/min：一次拿完要靠游标续取，正常用户点一下就用不完；不给限流则匿名者可用一个 visitor_key
+	// 反复把几十万条聊天正文拖出内存）。鉴权同删除权：匿名 visitor_key 自证、登录态须在本人数据范围内。
+	v1.POST("/privacy/my-data", middleware.OptionalJWTAuth(), middleware.IPRateLimit("privacy_portable", 3, time.Minute), PrivacyMyData)
 	// C6 前端异常上报：登录态可带租户/user_id，匿名按 Host/企业码落当前租户；只入库，不发群避免刷爆。
 	v1.POST("/client-errors", middleware.OptionalJWTAuth(), middleware.IPRateLimit("client_error", 20, time.Minute), ClientErrorReport)
 	// Turnstile 站点键下发（免登录公开；enabled=false 时前端不渲染组件）
@@ -109,6 +113,7 @@ func registerChatPublic(v1 *gin.RouterGroup) {
 	RecordAuth("POST", "/api/v1/chat/test", "visitor_key", "ip_limit")
 	RecordAuth("POST", "/api/v1/chat/guest", "visitor_key", "ip_limit")
 	RecordAuth("POST", "/api/v1/privacy/deletion-request", "optional_jwt", "ip_limit")
+	RecordAuth("POST", "/api/v1/privacy/my-data", "optional_jwt", "ip_limit")
 	RecordAuth("POST", "/api/v1/client-errors", "optional_jwt", "ip_limit")
 	RecordAuth("GET", "/api/v1/turnstile/sitekey", "public")
 	RecordAuth("POST", "/api/v1/chat/welcome", "ip_limit")

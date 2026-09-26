@@ -112,7 +112,8 @@ func ProcessDueOutbound(ctx context.Context) (sent, retried, dead int) {
 			sent++
 		case res.Fatal:
 			db.DB.Model(ob).Updates(map[string]interface{}{"status": model.OutboundFailed, "error": truncateErr(res.Err)})
-			log.Printf("[出站队列] 不可重试错误转死信 id=%d: %v", ob.ID, res.Err)
+			// FIX-2(2026-09-26)：日志打脱敏后的串（与落库同一份），不再 %v 原样打 res.Err
+			log.Printf("[出站队列] 不可重试错误转死信 id=%d: %s", ob.ID, truncateErr(res.Err))
 			metrics.IncChannelDeadLetter("fatal") // F6：死信速率指标
 			dead++
 		default:
@@ -120,7 +121,7 @@ func ProcessDueOutbound(ctx context.Context) (sent, retried, dead int) {
 			ob.Retries++
 			if ob.Retries > maxRetries {
 				db.DB.Model(ob).Updates(map[string]interface{}{"status": model.OutboundFailed, "error": truncateErr(res.Err)})
-				log.Printf("[出站队列] 超过最大重试转死信 id=%d: %v", ob.ID, res.Err)
+				log.Printf("[出站队列] 超过最大重试转死信 id=%d: %s", ob.ID, truncateErr(res.Err))
 				metrics.IncChannelDeadLetter("exhausted") // F6：死信速率指标
 				dead++
 			} else {
@@ -171,11 +172,14 @@ func sendOne(ctx context.Context, ob *model.ChannelOutbound) SendResult {
 }
 
 // truncateErr 截断错误文本，避免出站队列记录超长异常。
+// FIX-2(2026-09-26)：这里**再兜一层脱敏**——错误产生处（doToken/postJSON/getJSON）已经脱过，
+// 但本列会经 /admin/channels/dead-letters 整行回显给界面，且后来人新增的 SendResult.Err 来源
+// 未必都过那三个出口；落库是密钥外泄的最后一道闸，宁可重复脱敏（幂等）也不依赖"上游都记得做"。
 func truncateErr(err error) string {
 	if err == nil {
 		return ""
 	}
-	s := err.Error()
+	s := redactText(err.Error())
 	if len(s) > 480 {
 		s = s[:480]
 	}
@@ -201,9 +205,14 @@ func RetryDeadLetter(tenantID, id uint) error {
 }
 
 // ListDeadLetters 死信列表（/admin）。
+// FIX-2(2026-09-26)：出接口前对 error 列再脱敏一次。落库侧已收口，但**存量行是修复前写进去的**
+// （清洗脚本要另行跑，且跑不跑不该决定接口是否泄露密钥）——界面这一侧必须无条件安全。
 func ListDeadLetters(tenantID uint) ([]model.ChannelOutbound, error) {
 	var list []model.ChannelOutbound
 	err := db.DB.Where("tenant_id = ? AND status = ?", tenantID, model.OutboundFailed).
 		Order("id DESC").Limit(200).Find(&list).Error
+	for i := range list {
+		list[i].Error = redactText(list[i].Error)
+	}
 	return list, err
 }

@@ -180,6 +180,31 @@ else
   check "A 存在活跃会话(§8.10 前置)" y n
 fi
 
+# ---- 8.11 FIX-5(2026-09-27) 归属门禁 fail-closed：读不到目标一律拒绝，不得回 200 空列表 ----
+# 旧写法是 `if 读客户.Error == nil { 两道路径校验 }`：读失败/读不到时整段校验被静默跳过，
+# 请求继续往下走，最后因为"找不到活跃会话"回一个 200 + []。
+# 对普通探测方这是"啥也看不见"，对攻击者这是一台能枚举客户 ID 的机器——
+# 200 空列表 = 这个 ID 不存在或不属于你，200 有内容 = 命中。安全校验恰好在库最抖的时候失效。
+FB=$(mktemp)
+FC=$(curl -s -o "$FB" -w "%{http_code}" "$B/api/v1/chat/history?customer_id=99999999&visitor_key=$VK_A")
+check "不存在的客户→403(旧写法回200空列表)" 403 "$FC"
+if grep -q '"code":0' "$FB"; then
+  check "不存在的客户不得带成功信封" y n
+else
+  check "不存在的客户不得带成功信封" y y
+fi
+FC=$(curl -s -o "$FB" -w "%{http_code}" "$B/api/v1/chat/history?conversation_id=99999999&visitor_key=$VK_A")
+check "不存在的会话→403" 403 "$FC"
+# 定位参数都不给必须是 400，不能被 fail-closed 门禁抢先判成 403：
+# 漏参是调用方写错了（前端应修请求），403 是"你不能看这个人"（前端应提示换客户），
+# 两者混码会让一个正常的漏参调用弹成"无权限"，用户无从自救。
+FC=$(curl -s -o "$FB" -w "%{http_code}" "$B/api/v1/chat/history?limit=5&visitor_key=$VK_A")
+check "定位参数全缺→400(不被门禁抢先判403)" 400 "$FC"
+# 对照腿：真实客户 + 正确 VK 仍须 200（防"为了 fail-closed 把正门也焊死"）
+FC=$(curl -s -o "$FB" -w "%{http_code}" "$B/api/v1/chat/history?customer_id=$CID_A&visitor_key=$VK_A")
+check "对照：真客户正确VK仍200" 200 "$FC"
+rm -f "$FB"
+
 # ---- 9. 清理：停用测试客户（数据保留供核查，对齐惯例）----
 $PSQL "UPDATE customers SET status=0 WHERE id IN ($CID_A,$CID_B)" >/dev/null 2>&1
 

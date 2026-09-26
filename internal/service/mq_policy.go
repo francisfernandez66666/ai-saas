@@ -260,6 +260,25 @@ func GetStoreVisitSecondReply(tenantID uint, content string) string {
 	return replies[idx]
 }
 
+// leadCapturedConfirmReplies 到店倾向「已留资确认」话术的代码兜底（行业键缺失时用）。
+//
+// ⚠ 内容按客户"要置换/什么时候用车"追问，是汽车口径；非 auto 行业必须经
+// industry.lead_captured_confirm 覆盖，否则 edu/realty 客户留个号就被问置换（P1-29 同族残量）。
+var leadCapturedConfirmReplies = []string{
+	"好呀，要不你再详细跟我说说你的用车需求，关注哪些方面，有没有老车要置换，大概什么时候想用车吧",
+	"好嘞，你方便详细聊聊你的用车需求吗？关注什么方面比较多？有没有老车考虑置换，大概啥时候想用车呢",
+	"好的，你要不跟我说说你的用车场景和需求？关注哪些地方比较多，有没有老车要换，大概打算啥时候用车",
+}
+
+// GetLeadCapturedConfirmReply 已留资确认回复（到店快速通道分支B，硬编码不走 AI 避免延迟）。
+// FIX-9(2026-09-27)：这三句原来内联在 internal/api/chat_main.go 的分支B里——通道入站要补同一条
+// 快速通道就只能再抄一遍，文案从此两份、改一处漏一处。收进行业键层做单点：
+// auto 族租户取值与旧实现逐字一致（兜底数组就是原数组），其它行业可覆盖。
+func GetLeadCapturedConfirmReply(tenantID uint) string {
+	replies := industryKeywordList(tenantID, IndustryLeadCapturedConfirm, leadCapturedConfirmReplies)
+	return replies[rand.Intn(len(replies))]
+}
+
 // GetStoreVisitFirstDelay 到店倾向第一段回复延迟
 // 修复：改为从后台配置读取(store_visit_first_delay)，[min,max]区间随机
 // 到店倾向必须快速接住，第一段延迟默认10-15秒

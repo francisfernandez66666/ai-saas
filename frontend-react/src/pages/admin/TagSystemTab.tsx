@@ -172,9 +172,13 @@ export function TagSystemTab() {
   const [tagOptions, setTagOptions] = useState<Option[]>([])
   const categoryOptions = useMemo(() => TAG_CATS.map((x) => ({ label: x.name, value: x.key })), [])
   const loadTags = useCallback(async () => {
-    const j = await AUTH('/api/v1/admin/tags?page_size=500')
+    // FIX-4(2026-09-27)：下拉取数改走标签字典模式（?all=1&status=1，上限 1000）。
+    // 旧写法 `page_size=500` 会被服务端硬顶 100 静默截断，标签多于 100 个时
+    // 多出来的那些在"打标规则/权重映射"里再也选不到，而且不报错。
+    // status=1 的筛选同时挪到服务端（单一判据），前端不再自己 filter。
+    const j = await AUTH('/api/v1/admin/tags?all=1&status=1')
     if (j?.code === 0) {
-      setTagOptions((j.data?.list || []).filter((t: any) => Number(t.status) === 1).map((t: any) => ({ label: `${t.name}(${t.code})`, value: t.id })))
+      setTagOptions((j.data?.list || []).map((t: any) => ({ label: `${t.name}(${t.code})`, value: t.id })))
     }
   }, [])
   useEffect(() => {

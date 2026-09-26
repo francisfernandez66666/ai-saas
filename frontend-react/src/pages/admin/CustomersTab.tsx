@@ -113,7 +113,10 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
   useEffect(() => {
     ;(async () => {
       // GET 收敛第二参：同路径 POST /admin/tags 返回单条 Tag，不指定方法会取到 Tag|Paginated<Tag> 联合
-      const [t, u] = await Promise.all([AUTH<ApiEnvelope<'/api/v1/admin/tags', 'GET'>>('/api/v1/admin/tags?page_size=200'), AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')])
+      // FIX-4(2026-09-27)：打标弹窗要的是**全量字典**不是"第一页"，改 ?all=1（上限 1000，只回 id/name/code）。
+      // 旧写法 page_size=200 被服务端硬顶 100 静默截断：标签多于 100 个时，界面里的可选标签就是缺的，
+      // 而且提交时后端按 tag_ids 认，用户根本不知道自己少打了哪几个。
+      const [t, u] = await Promise.all([AUTH<ApiEnvelope<'/api/v1/admin/tags', 'GET'>>('/api/v1/admin/tags?all=1'), AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')])
       // P1-9(2026-09-20)：选项 value 从标签名改为标签 ID——POST /customers/:id/tags 契约是 tag_ids，
       // 名称仍留在 label 里展示；旧的 PUT /advisor/customer/:id/tags（按名覆盖）保留给移动端工作台
       if (t?.code === 0) setTagOptions((t.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.id) })))

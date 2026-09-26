@@ -106,7 +106,7 @@ func ListBillingOrders(c *gin.Context) {
 	// Admin 订单列表与财务对账视图被误导（UAT 字节级复核实测复现）。
 	if err := db.DB.Where("tenant_id = ?", tid).
 		Select("id, order_no, package_id, amount_cents, original_amount_cents, period, channel, status," +
-			"manual_confirm, paid_at, created_at, refunded_at, refund_amount_cents, refund_psp_status," +
+			"manual_confirm, paid_at, created_at, refunded_at, refund_amount_cents, refund_psp_status, refund_out_no," +
 			"expire_at, invoice_requested, invoice_status, invoice_no, invoice_title," +
 			"upgrade_offset_cents, upgrade_base_order_id, qr_content, refund_requested").
 		Order("id DESC").Limit(limit).Find(&orders).Error; err != nil {
@@ -318,6 +318,10 @@ func SuperRefundOrder(c *gin.Context) {
 // SuperListRefundRequests GET /api/v1/super/billing/refund-requests —— 超管退款申请队列（B7 闭环，2026-09-19 残项收口）
 // 口径：refund_requested=true 且 status='paid'——MarkOrderRefunded 只从 paid 流转，
 // 其余状态（refunded/closed 等）的申请行不进工作队列，避免超管点了必 409。
+//
+// 队列一并回显 refund_out_no / refund_psp_status（FIX-1，2026-09-26）：正常态这两个字段是空的
+// （钱还没出、号还没发），**一旦不为空就是异常**——说明这单已经有出款意图却还留在待办队列里
+// （重复受理风险）。让财务在队列上直接看见，比"点了执行才发现退过"强。
 func SuperListRefundRequests(c *gin.Context) {
 	var rows []model.BillingOrder
 	if err := db.DB.Where("refund_requested = true AND status = 'paid'").Order("id DESC").Limit(200).Find(&rows).Error; err != nil {
@@ -330,6 +334,7 @@ func SuperListRefundRequests(c *gin.Context) {
 			"order_id": o.ID, "order_no": o.OrderNo, "tenant_id": o.TenantID,
 			"package_id": o.PackageID, "amount_cents": o.AmountCents,
 			"channel": o.Channel, "period": o.Period, "paid_at": o.PaidAt,
+			"refund_out_no": o.RefundOutNo, "refund_psp_status": o.RefundPspStatus,
 		})
 	}
 	RespOK(c, "ok", list)
@@ -369,6 +374,7 @@ func SuperRejectRefund(c *gin.Context) {
 // ============================================================
 
 // SuperListInvoices GET /api/v1/super/invoices?status=requested
+// apidump:ts SuperInvoiceListResp
 // 跨租户发票申请列表（默认看全部，status=requested 为待开具工作队列）。
 func SuperListInvoices(c *gin.Context) {
 	q := db.DB.Model(&model.BillingOrder{}).Where("invoice_status IS NOT NULL AND invoice_status <> ''")
@@ -387,13 +393,25 @@ func SuperListInvoices(c *gin.Context) {
 			"invoice_status": o.InvoiceStatus, "invoice_title": o.InvoiceTitle,
 			"invoice_tax_no": o.InvoiceTaxNo, "invoice_email": o.InvoiceEmail,
 			"invoice_no": o.InvoiceNo,
+			// FIX-9（2026-09-27）：这张表必须能挑出"已开具但客户没收到"那一批。
+			// 只回结果码不回文案会变成前端各自翻译一份（同一个 log_only 两处说法不一致）；
+			// 只回文案不回码又没法按码筛选/分支，所以两样一起下发（码是事实，话术是展示）。
+			"invoice_notify_result": o.InvoiceNotifyResult,
+			"invoice_notify_text":   notify.InvoiceNotifyText(o.InvoiceNotifyResult),
+			"invoice_notified_at":   o.InvoiceNotifiedAt,
 		})
 	}
 	RespOK(c, "ok", gin.H{"list": list, "total": len(list)})
 }
 
 // SuperIssueInvoice POST /api/v1/super/invoices/:id/issue {invoice_no}
-// 人工开票后回录发票号：requested→issued。
+// apidump:ts BillingOrder
+// 人工开票后回录发票号：requested→issued，并同步把交付邮件寄给客户（FIX-9）。
+//
+// message 必须如实反映触达结果：billing.IssueInvoice 现在同时完成"状态流转"和"告知客户"两件事，
+// 若这里继续硬编码"发票已开具"，超管点了按钮看到成功提示、实际一封都没寄出（SMTP 未配置时
+// 是 log_only），跟没做这个功能一样。data 仍是订单对象、形状不变——smoke 与前端都读
+// data.invoice_status，多出来的键只加不减，改形状会把已上线的断言一起打断。
 func SuperIssueInvoice(c *gin.Context) {
 	oid, ok := PathUintID(c)
 	if !ok {
@@ -412,10 +430,30 @@ func SuperIssueInvoice(c *gin.Context) {
 		return
 	}
 	writeOrderAudit(c, 0, "super_invoice_issue", o)
-	RespOK(c, "发票已开具", o)
+	RespOK(c, "发票已开具，"+notify.InvoiceNotifyText(o.InvoiceNotifyResult), o)
+}
+
+// SuperResendInvoiceNotice POST /api/v1/super/invoices/:id/notify-resend
+// apidump:ts BillingOrder
+// 重发开票交付邮件（FIX-9）：给"已开具但客户没收到"那批单一条不用重开发票的出路。
+// 只认 issued；结果码与时刻同样回写，所以连点两次会看到 invoice_notified_at 前进（幂等靠的是
+// "重复邮件由收件人自行判重"，而不是靠本端不重发——这一步不做静默拦截，否则真需要补发时没有入口）。
+func SuperResendInvoiceNotice(c *gin.Context) {
+	oid, ok := PathUintID(c)
+	if !ok {
+		return
+	}
+	o, code, err := billing.ResendInvoiceNotice(oid)
+	if err != nil {
+		RespErr(c, http.StatusBadRequest, int(CodeBizErr), err.Error())
+		return
+	}
+	writeOrderAudit(c, 0, "super_invoice_notify_resend", o)
+	RespOK(c, "重发完成："+notify.InvoiceNotifyText(code), o)
 }
 
 // SuperVoidInvoice POST /api/v1/super/invoices/:id/void
+// apidump:ts BillingOrder
 // 作废发票（开错/退票）：→voided，租户可重新申请。
 func SuperVoidInvoice(c *gin.Context) {
 	oid, ok := PathUintID(c)

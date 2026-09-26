@@ -69,7 +69,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.37.0"
+const appVersion = "v2.38.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -933,6 +933,12 @@ func main() {
 		// 重启后该客户新消息干等锁过期，部署窗口=客户静默黑屏）。
 		if service.DefaultMessageQueueService != nil {
 			service.DefaultMessageQueueService.ShutdownDrain(5 * time.Second)
+		}
+		// FIX-5/-race 收口批(2026-09-27)：队列排空后还要等**通道后台协程**收尾。
+		// worker 可能正卡在人类化延迟里等醒来投递出站；不等它，进程退出就把这一轮吃掉——
+		// 客户那句话已落库、回复永远不来（且台账停在 processing，重启后要等锁超时自愈）。
+		if !channel.DrainBackgroundFor(10 * time.Second) {
+			log.Println("[优雅停机] 通道后台协程未在 10s 内排空，剩余在途轮次由重启后的锁自愈接管")
 		}
 		log.Println("[优雅停机] 执行计量最终 flush...")
 		billing.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账

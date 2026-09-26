@@ -35,7 +35,7 @@ DEPT_ID=1
 mkuser(){ # mkuser <用户名> <密码> <角色>
   # P2-15：admin 为 super_admin 平台身份，写租户作用域路径必须显式 X-Tenant-ID
   curl -s -o /dev/null -X POST "$B/api/v1/org/users" -H "$AH" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
-    -d "{\"username\":\"$1\",\"password\":\"$2\",\"real_name\":\"$3测试\",\"role\":\"$3\",\"department_id\":$DEPT_ID}"
+    -d "{\"username\":\"$1\",\"password\":\"$2\",\"real_name\":\"${3}测试\",\"role\":\"$3\",\"department_id\":$DEPT_ID}"
   curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/json" \
     -d "{\"username\":\"$1\",\"password\":\"$2\"}" | jsonget "['data']['token']"
 }

@@ -240,7 +240,7 @@ CUST_B=$(echo "$CUST_RAW" | jget "d['data']['id']")
 [ -z "$CUST_B" ] && echo "    [debug] customers原始: $(echo "$CUST_RAW" | head -c 160)"
 [ -n "$CUST_B" ] && R=y || R=n
 check "C端建联" y "$R"
-# C7 租户盖章回归护栏(2026-09-15)：配额分支建客必须落到本租户（tenant_id=$UB_ID），
+# C7 租户盖章回归护栏(2026-09-15)：配额分支建客必须落到本租户（tenant_id=${UB_ID}），
 # 绝不能因事务丢 context 而盖成 tenant_id=0（跨租户泄露 + 本租户 chat 反查不到自己客户）。
 CUST_TID=$($PSQL "SELECT tenant_id FROM customers WHERE id=$CUST_B")
 check "建客租户归属正确(非tenant_id=0)" "$UB_ID" "$CUST_TID"
@@ -248,7 +248,7 @@ round(){ curl -s --max-time 170 -X POST "$B/api/v1/chat" -H "$BH" -H "Content-Ty
 round "极石01空间大吗"
 F1=$($PSQL "SELECT free_token_balance FROM tenants WHERE id=$UB_ID"); M1=$($PSQL "SELECT monthly_token_used FROM tenants WHERE id=$UB_ID"); B1=$($PSQL "SELECT token_balance FROM tenants WHERE id=$UB_ID")
 [ "$F1" -lt 6000 ] && [ "$F1" -ge 1000 ] && [ "$M1" -eq 0 ] && [ "$B1" -eq 25000 ] && R=y || R=n
-check "第一轮仅扣③(6000>$F1≥1000,①②未动)" y "$R"
+check "第一轮仅扣③(6000>${F1}≥1000,①②未动)" y "$R"
 $PSQL "UPDATE tenants SET free_token_expires_at=NOW()-INTERVAL '1 hour' WHERE id=$UB_ID" >/dev/null
 round "内饰配置怎么样"
 M2=$($PSQL "SELECT monthly_token_used FROM tenants WHERE id=$UB_ID"); F2=$($PSQL "SELECT free_token_balance FROM tenants WHERE id=$UB_ID")
@@ -276,7 +276,7 @@ FB_BEFORE=$(fbcount); FB_BEFORE=${FB_BEFORE:-0}
 round "全空降级测试"
 FB_AFTER=$(fbcount); FB_AFTER=${FB_AFTER:-0}
 awk -v a="$FB_BEFORE" -v b="$FB_AFTER" 'BEGIN{exit !(b>a)}' && R=y || R=n
-check "全空→降级规则话术(指标增量 $FB_BEFORE→$FB_AFTER)" y "$R"
+check "全空→降级规则话术(指标增量 ${FB_BEFORE}→$FB_AFTER)" y "$R"
 # M1(2026-09-22 批三)字节级护栏：三桶全空时旧实现"挂账行已 DELETE、扣减却没发生"=静默吞账。
 # 现口径是哨兵错误回滚整笔结算，欠账必须以挂账行形态**留在自己租户名下**。
 # 两条断言各守一侧：① 余额不得被扣成负数（负账与吞账同样是账目失真）；
@@ -542,6 +542,27 @@ RF_CLAIM_LEFT=$($PSQL "SELECT count(*) FROM reward_claims WHERE grant_type='refe
 RF_GATE=$($PSQL "SELECT referral_paid_rewarded FROM tenants WHERE id=$RF_ID" | tr -d '[:space:]')
 check "奖励台账行已删除" 0 "$RF_CLAIM_LEFT"
 check "回收后幂等闸门已重置" "f" "$RF_GATE"
+# 15.7 FIX-1(2026-09-26) 出款记账纪律在**真接口退款**上的分身。
+#     smoke §四十三钉的是全库不变式与合成行（一单一号 DB 层部分唯一兜底、状态字典、契约键），
+#     这一腿钉的是"用户真把四张单退完之后，这四行自己长什么样"——两者不重复：
+#     合成行能证明约束在，证明不了退款主流程写库时不越界。
+#     mock 渠道的钱从来没有发给任何 PSP，所以 refund_out_no / refund_psp_status **必须双双留空**：
+#     旧实现把 "RF"+秒级时间戳+订单号 现场拼出来即用即丢，账面看不出"这笔到底发没发过"；
+#     现在这两列就是那本账，往空位上写一个字符，等于凭空造一条"发起过出款"的假事实——
+#     小时对账器会拿这个号去问微信"这笔退款怎么没到账"，问不到就把一单好账标成 psp_failed。
+#     ⚠ 与下一条"退款事实已落账"必须成对读：只断空值会在"整笔退款根本没发生"上也绿，
+#     所以先用四张单的状态计数把"退款真的做完了"钉住，再要求两列为空（0 是**有事实支撑**的 0）。
+#     真实渠道(wechat/alipay)那条腿在这里跑不了（无商户凭据），由
+#     internal/billing/refund_payout_idempotency_test.go 用可注入假 PSP 覆盖：
+#     意图先落库(psp_pending + 稳定号) → 出款 → 回写 psp_ok → 主动查单收敛 psp_success，
+#     以及"同一单补呼两次拿的是同一个号"。
+RF_PSP_IDS="$RF_ORDER,$RF_SUB_ORDER,$RF_SUB2,$RF_SUB3"
+RF_PSP_DONE=$($PSQL "SELECT count(*) FROM billing_orders WHERE id IN ($RF_PSP_IDS) AND status='refunded'" | tr -d '[:space:]')
+check "前置自检：四张单真都退掉了(缺它下面两条在空集上假绿)" 4 "${RF_PSP_DONE:-0}"
+RF_PSP_CLEAN=$($PSQL "SELECT count(*) FROM billing_orders WHERE id IN ($RF_PSP_IDS) AND (refund_out_no <> '' OR refund_psp_status <> '')" | tr -d '[:space:]')
+check "mock 渠道退款不伪造出款事实(单号与状态两列双双留空)" 0 "${RF_PSP_CLEAN:-0}"
+RF_PSP_BOOK=$($PSQL "SELECT count(*) FROM billing_orders WHERE id IN ($RF_PSP_IDS) AND refund_amount_cents > 0 AND refunded_at IS NOT NULL" | tr -d '[:space:]')
+check "同一批单的退款事实确实落了账(金额>0 + 时刻非空，与上一条构成双向对照)" 4 "${RF_PSP_BOOK:-0}"
 # 收尾：挂账行会被 UsageSink 60s sweep 补扣，测试租户马上被清理，须就地撤掉避免残账
 $PSQL "DELETE FROM usage_flush_retry WHERE tenant_id=$RF_INVID" > /dev/null
 

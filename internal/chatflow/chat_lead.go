@@ -240,10 +240,8 @@ func IsLeadCaptured(customer *model.Customer) bool {
 	if customer == nil {
 		return false
 	}
-	if customer.JourneyStage == model.JourneyLeadCaptured ||
-		customer.JourneyStage == model.JourneyArrived ||
-		customer.JourneyStage == model.JourneyOrdered ||
-		customer.JourneyStage == model.JourneyDelivered {
+	// FIX-9(2026-09-27)：阶段腿改问 CapturedStage——同一个四阶段白名单此前在这里是第五份手抄。
+	if CapturedStage(customer.JourneyStage) {
 		return true
 	}
 	for _, tag := range customer.GetTags() {

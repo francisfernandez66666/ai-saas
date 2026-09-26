@@ -161,11 +161,12 @@ func FetchCorpJSAPITicket(ctx context.Context, cred *Credential) (string, error)
 	u := fmt.Sprintf("%s/cgi-bin/get_jsapi_ticket?access_token=%s", base, url.QueryEscape(tok))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return "", err
+		return "", redactErr(err)
 	}
 	resp, err := chanHTTP.Do(req)
 	if err != nil {
-		return "", err
+		// FIX-2(2026-09-26)：URL 带 access_token，url.Error 会把它原样带进错误串
+		return "", redactErr(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)

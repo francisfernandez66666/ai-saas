@@ -3,6 +3,8 @@
 import { Button, Dialog, Input, Table, Tag } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { type PlanOpt, type Tenant } from './shared'
+// FIX-8(2026-09-27)：套餐月费展示走单点，不再 toFixed(0) 舍掉分位。
+import { fenToYuanCompact } from '../../lib/money'
 
 // TenantsTab 平台后台「租户管理」页：租户列表、关键词检索、授权/状态/套餐调整。
 export default function TenantsTab({ tenants, kw, onKw, onGrant, onSetStatus, onOpenPlan,
@@ -64,7 +66,7 @@ export default function TenantsTab({ tenants, kw, onKw, onGrant, onSetStatus, on
         <select id="spPlan" defaultValue={String(planDlg?.plan_id || '')} style={{ width: '100%', padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }}>
           {planOpts.map((p) => (
             <option key={p.id} value={String(p.id)}>
-              {p.name} · 席位{p.max_users || '∞'} · 客户{p.max_customers || '∞'} · ¥{(p.price_monthly_cents / 100).toFixed(0)}/月
+              {p.name} · 席位{p.max_users || '∞'} · 客户{p.max_customers || '∞'} · ¥{fenToYuanCompact(p.price_monthly_cents)}/月
             </option>
           ))}
         </select>

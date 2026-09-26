@@ -23,6 +23,20 @@ export function fenToYuanInput(cents: number): string {
 }
 
 /**
+ * 分 → 价格展示用元字符串（整元不带小数，有分才带两位）。
+ *
+ * 为什么需要第三枚而不是直接 `toFixed(0)`：定价卡片过去就是 `(cents / 100).toFixed(0)`，
+ * ¥99.50 会被**四舍五入显示成 ¥100**，而下单按分实扣——页面价与扣款额不一致是投诉源，
+ * 且没人能从页面上看出被舍掉的那 5 毛。本函数不猜：整元就写整元，有分就把分写出来。
+ * 仍走字符串拆位，不做浮点除。
+ */
+export function fenToYuanCompact(cents: number): string {
+  const n = Number.isFinite(cents) ? Math.trunc(cents) : 0
+  const rest = Math.abs(n) % 100
+  return rest === 0 ? fenToYuan(n).replace(/\.00$/, '') : fenToYuan(n)
+}
+
+/**
  * 元 → 分。**用字符串拆位而不是 `* 100`**：`Number('0.29') * 100` 在浮点里是
  * 28.999999999999996，四舍五入救得回来，但截断就把客户的报价单少写一分钱。
  * 返回 null 表示形态非法（交给调用方拒提交，而不是静默当 0）。

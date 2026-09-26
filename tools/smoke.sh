@@ -94,6 +94,21 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         三次上下架各留一条 super_pack_status 审计且详情带"自动下架"、单独下架不牵连兄弟、
 #         零在架态不变式同样成立、自清理。纯函数侧（版本号数值序 1.10.0>1.9.0、同版本比 id）
 #         交 internal/industrypack/version_test.go，启动期落包"老 code 状态不被重启覆盖"见启动日志）
+#       / 2026-09-26~27 审计批五段：通道凭据不落明文（四十二：连通结果/日志/数据列/接口回显四路
+#         逐字扫密钥材料，存量脏行出接口时兜底掩码）、退款单号（四十三：一单一号 DB 层部分唯一兜底
+#         + 意图先落库的状态字典与契约面）、分页口径（四十四：页长硬顶统一到单点 + 标签字典
+#         all=1 双语义，上限 1000 只回 id/name/code）、发票交付触达（四十五：迁移 029 记账与两列
+#         扳正、结果码如实入库 no_recipient 不折成已发送、尝试时刻=最后一次尝试含没发出去那次、
+#         重复开具 400 且号码与时刻都不动、requested 态禁重发、issued 态重发时刻严格前进、
+#         sales 403、列表带 result/text 两键且本段合成单可见、自清理）、PIPL 数据可携带权
+#         （四十六：访客种子先自检落库 3 条、副本逐字回显含冷归档那条且手机号明文、
+#         内部字段负向清单 remark/visitor_key/t_vector_json/state_json/template_id/
+#         anchor_type/route_result/intent_score 零泄露、错密钥 403 且正文一条不回、
+#         跨租户 404、3/min 第4次 429、limit 天文数字被钳回 5000、游标第一页必须正是
+#         id 最小的冷行（等值锁，先砍尾巴再排序的实现会在这儿红）、续取不重复不跳号且该页恰 1 条、
+#         sales 代取非本人名下 403 + **同销售换归属后 200**（对照只动一个变量；超管打本端点回
+#         400 属 fail-closed 已知限制，如实登记在段内注释）、缺 customer_id 400、
+#         合成行清零）
 # ============================================================
 
 PORT="${1:-9090}"
@@ -110,6 +125,17 @@ check() { # check <名称> <期望码> <实际码>
 }
 
 jsonget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval('d'+sys.argv[1]))" "$1" 2>/dev/null; }
+
+# 段号唯一自检（2026-09-27 本批实踩）：新加的两段都写成"四十四"，日志里分页段与发票段各自
+# 的 PASS/FAIL 混在同一标号下，报表读不出"哪一段红了"，而 AGENTS.md 那种"按段号写口径"的
+# 索引也会同时指两处。这不是美观问题——**段号是本脚本里断言的归属地址**。
+# 故 fail-fast：宁可开头就退出，也不要跑完 670 项再让人去猜哪一段的账。
+# awk 按字节取"、"前的段号（中文段号 3 字节/字，index 命中第一个"、"的字节位即整段号末尾）。
+SMOKE_DUP_SECS=$(awk '/^echo "---- /{s=substr($0,12);p=index(s,"、");if(p>0)print substr(s,1,p-1)}' "${BASH_SOURCE[0]}" 2>/dev/null | sort | uniq -d | tr '\n' ' ')
+if [ -n "$SMOKE_DUP_SECS" ]; then
+  echo "FATAL  冒烟段号重复：[$SMOKE_DUP_SECS] —— 请给新段顺延编号（段号重复＝断言归属地址有二义）"
+  exit 1
+fi
 
 echo "==== AI-SCRM SaaS 安全冒烟测试 @ $B ===="
 
@@ -215,7 +241,7 @@ NTOKEN=$(curl -s -X POST "$B/api/v1/auth/login" -H "Content-Type: application/js
   -d '{"username":"admin","password":"admin123"}' | jsonget "['data']['token']")
 CODE=$(curl -s -o /dev/null -w "%{http_code}" "$B/api/v1/super/tenants" -H "Authorization: Bearer $NTOKEN")
 check "改密后重新登录→恢复放行200" 200 "$CODE"
-# 下游断言复用主 TOKEN：改密已吊销旧 $TOKEN，统一刷新为最新会话（保持"已改密"契约不变）
+# 下游断言复用主 TOKEN：改密已吊销旧 ${TOKEN}，统一刷新为最新会话（保持"已改密"契约不变）
 TOKEN="$NTOKEN"
 
 echo "---- 五、M1 收银台 mock 全链路 + 幂等 ----"
@@ -249,7 +275,7 @@ GRANT2=$(curl -s -X POST "$B/api/v1/billing/orders/mock-pay" \
 
 BALANCE2=$(psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "SELECT COALESCE(token_balance,0) FROM tenants WHERE id=${ACME_ID}" 2>/dev/null | tr -d '[:space:]')
-[ "$BALANCE2" = "$BALANCE" ] && check "幂等后余额未重复累计" y y || check "幂等后余额未重复累计($BALANCE→$BALANCE2)" y n
+[ "$BALANCE2" = "$BALANCE" ] && check "幂等后余额未重复累计" y y || check "幂等后余额未重复累计(${BALANCE}→$BALANCE2)" y n
 
 echo "---- 六、M4 OpenAPI 鉴权/隔离/计量 ----"
 SK=$(curl -s -X POST "$B/api/v1/admin/apikeys" \
@@ -1106,7 +1132,7 @@ AISC_LEAD=$(echo "$AISC_J" | jsonget "['data']['ai_leads']")
 [ "${AISC_AIMSG:-x}" = "1" ] && check "隔离租户AI消息恰为1(精确作用域)" y y || check "隔离租户AI消息恰为1(精确作用域)" 1 "${AISC_AIMSG:-x}"
 [ "${AISC_LEAD:-x}" = "1" ] && check "隔离租户AI留资归因恰为1(聚合确实生效)" y y || check "隔离租户AI留资归因恰为1(聚合确实生效)" 1 "${AISC_LEAD:-x}"
 # 现场回收（顺序：消息→会话→客户→租户，避免外键残留）。
-# 用 code 子查询而非 $AISC_TID：建租户若失败，AISC_TID 为空会让 "tenant_id=" 直接语法错，
+# 用 code 子查询而非 ${AISC_TID}：建租户若失败，AISC_TID 为空会让 "tenant_id=" 直接语法错，
 # 把一段本来只是"没造成污染"的收尾变成假红。
 $PSQL "DELETE FROM messages WHERE tenant_id=(SELECT id FROM tenants WHERE code='${AISC_CODE}');
        DELETE FROM conversations WHERE tenant_id=(SELECT id FROM tenants WHERE code='${AISC_CODE}');
@@ -1601,7 +1627,7 @@ miss=[k for k in need if k not in body]
 print('OK' if not miss else 'MISSING:'+','.join(miss))
 " 2>/dev/null)
 [ "$D3MET" = "OK" ] && check "D3四条计数器已在/metrics暴露(上线后能判有没有在发)" y y || check "D3四条计数器已在/metrics暴露(上线后能判有没有在发)" y "${D3MET:-PARSE_FAIL}"
-# 现场回收：留痕/序列/审计/租户按 code 子查询删除（不用 $D3TID：建租户失败时它会空，
+# 现场回收：留痕/序列/审计/租户按 code 子查询删除（不用 ${D3TID}：建租户失败时它会空，
 # 让 "tenant_id=" 直接语法错，把"没造成污染"的收尾变成假红——§二十九 同课）
 $PSQL "DELETE FROM usage_alerts WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}');
        DELETE FROM billing_dunning WHERE tenant_id=(SELECT id FROM tenants WHERE code='${D3CODE}');
@@ -2956,6 +2982,546 @@ $PSQL "DELETE FROM industry_packs WHERE code='${VER_CODE}';
 check "本段合成版本行已清零" 0 "$($PSQL "SELECT count(*) FROM industry_packs WHERE code='${VER_CODE}'" | tr -d '[:space:]')"
 check "本段上下架审计已清零" 0 \
   "$($PSQL "SELECT count(*) FROM tenant_audit_logs WHERE action='super_pack_status' AND resource IN ('industry_pack:${VA_ID}','industry_pack:${VB_ID}','industry_pack:${VC_ID}')" | tr -d '[:space:]')"
+
+# ---------- 第四十二节：通道凭据不落明文（FIX-2，2026-09-26 审计批）----------
+# 根因形态只有一句：Go 的 *url.Error 会把**完整 URL（含 query）拼进 Error()**，而通道取 token 的
+# URL 上就挂着 corpsecret / secret。于是这句错误顺着四条路出去过：
+#   1) 连通测试 data.detail  2) 出站重试错误落 channel_outbound.error（size:500）
+#   3) /admin/channels/dead-letters 整行回显（该列 json:"error"）  4) 死信/退避的 log.Printf
+# 任一条都等于把企业级密钥交进"租户可见界面 + 我方数据库 + 日志文件"——通道密钥泄露＝冒名发客户消息。
+# 修法在**产生处**统一过 pii.RedactSecretURL（按参数名精确替值，host/path/其余参数原样留），
+# 落库(truncateErr)、出接口(ListDeadLetters/errString)再各兜一道。
+# 本段因此四路全跑真链路，且每条"零明文"断言都配一条"打码确实出现了"的正向断言——
+# 只断"明文不出现"会在"错误串压根没进那格"的空集上假绿；同时断 host 仍在，防把排障线索一起抹掉。
+echo "---- 四十二、通道密钥不落明文：连通/落库/回显/日志四路逐字扫 + 存量脏行出接口兜底 ----"
+RD_MARK="SMOKEFIX2k7q2PLAINSECRET"
+RD_TID="$ACME_ID"
+# 日志区起点：本段之前先记字节位，只扫本段新增的行（全文件扫会把历史噪声算进来）
+if [ -f "$LOGFILE" ]; then RD_M0=$(wc -c < "$LOGFILE" | tr -d '[:space:]'); else RD_M0=0; fi
+# 1) 合成通道：mock_base_url 指向本机 closed port（debug 下 SSRF 放行环回），token 换取必以传输层
+#    错误失败，而那句错误自带 corpsecret=<明文> —— 这正是被测的泄露形态
+RD_CH=$(curl -s -m 15 -X POST "$B/api/v1/admin/channels" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TID}" \
+  -H "Content-Type: application/json" \
+  -d "{\"type\":\"wecom_app\",\"name\":\"脱敏冒烟通道\",\"corpid\":\"ww_smoke_fix2\",\"secret\":\"${RD_MARK}\",\"config_json\":\"{\\\"mock_base_url\\\":\\\"http://127.0.0.1:1\\\"}\"}" \
+  | jsonget "['data']['channel']['id']")
+RD_CH=${RD_CH:-0}
+check "合成通道已建（id>0，凭据经加密列）" y "$([ "$RD_CH" != "0" ] && echo y || echo n)"
+curl -s -m 15 -o /dev/null -X PUT "$B/api/v1/admin/channels/${RD_CH}/status?status=active" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TID}"
+check "通道已置 active（出站适配器只发 active 通道）" active \
+  "$($PSQL "SELECT status FROM channels WHERE id=${RD_CH}" 2>/dev/null | tr -d '[:space:]')"
+# 渠道身份映射：出站 sendOne 按 (channel_id,customer_id) 反查外部号，缺它错误会停在"未找到映射"、
+# 根本走不到 token 换取那一步 —— 所以这一步要单独自检，否则下面的"零明文"是在空集上比空集
+RD_CUST=$($PSQL "SELECT id FROM customers WHERE tenant_id=${RD_TID} ORDER BY id LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+RD_CUST_NEW=n
+if [ -z "$RD_CUST" ]; then
+  $PSQL "INSERT INTO customers (tenant_id,name,created_at,updated_at) VALUES (${RD_TID},'脱敏冒烟客户',NOW(),NOW());" >/dev/null 2>&1
+  RD_CUST=$($PSQL "SELECT id FROM customers WHERE tenant_id=${RD_TID} AND name='脱敏冒烟客户' ORDER BY id DESC LIMIT 1" 2>/dev/null | tr -d '[:space:]')
+  RD_CUST_NEW=y
+fi
+$PSQL "INSERT INTO channel_identities (tenant_id,channel_id,customer_id,external_id,created_at,updated_at)
+       VALUES (${RD_TID},${RD_CH},${RD_CUST:-0},'wm_smoke_fix2',NOW(),NOW());" >/dev/null 2>&1
+check "客户与渠道身份映射就位（本段错误确实出自 token 换取）" 2 \
+  "$($PSQL "SELECT (SELECT count(*) FROM customers WHERE id=${RD_CUST:-0}) + (SELECT count(*) FROM channel_identities WHERE channel_id=${RD_CH})" 2>/dev/null | tr -d '[:space:]')"
+# 2) 连通测试：出接口第一道（detail 字段曾直接回显 *url.Error）
+RD_VER=$(curl -s -m 25 -X POST "$B/api/v1/admin/channels/${RD_CH}/verify" \
+  -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TID}")
+check "连通失败回 HTTP200+ok=false（环境类失败不该被报成服务崩）" False "$(printf '%s' "$RD_VER" | jsonget "['data']['ok']")"
+check "连通详情里密钥只剩 corpsecret=***（脱敏真在这条串上跑过，不是查了个空值）" y \
+  "$(printf '%s' "$RD_VER" | grep -q 'corpsecret=\*\*\*' && echo y || echo n)"
+check "连通详情零明文密钥" n "$(printf '%s' "$RD_VER" | grep -q "$RD_MARK" && echo y || echo n)"
+check "排障线索未被顺手抹掉（host/端口仍在详情里）" y \
+  "$(printf '%s' "$RD_VER" | grep -q '127.0.0.1' && echo y || echo n)"
+RD_LIST=$(curl -s -m 15 "$B/api/v1/admin/channels" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TID}")
+check "通道列表整份响应零明文（掩码列没漏）" n "$(printf '%s' "$RD_LIST" | grep -q "$RD_MARK" && echo y || echo n)"
+# 3) 出站真链路落库：插一行 retries=5 的到期 pending，3s worker 跑一轮即 6>maxRetries 转死信，
+#    于是"适配器错误 → truncateErr → channel_outbound.error → 死信日志"整条真实走过一遍
+RD_OB=$($PSQL "INSERT INTO channel_outbound (tenant_id,channel_id,customer_id,conversation_id,content,msg_type,status,retries,next_retry_at,created_at,updated_at)
+       VALUES (${RD_TID},${RD_CH},${RD_CUST:-0},0,'脱敏冒烟出站','text','pending',5,NOW(),NOW(),NOW()) RETURNING id;" 2>/dev/null | grep -E '^[0-9]+$' | head -1)  # 注：psql -tA 会把命令尾迹"INSERT 0 1"一并吐进 stdout，只 tr 剥空白会粘成"608INSERT01"
+RD_ST=""
+RD_WAIT=0
+while [ "$RD_WAIT" -lt 24 ]; do
+  RD_ST=$($PSQL "SELECT status FROM channel_outbound WHERE id=${RD_OB:-0}" 2>/dev/null | tr -d '[:space:]')
+  if [ "$RD_ST" = "failed" ]; then break; fi
+  sleep 2
+  RD_WAIT=$((RD_WAIT + 2))
+done
+check "到期出站经真适配器发送失败转死信（status 由 worker 改写）" failed "$RD_ST"
+RD_ERR=$($PSQL "SELECT error FROM channel_outbound WHERE id=${RD_OB:-0}" 2>/dev/null | tr -d '\n')
+check "落库前置自检：error 列真写了东西（缺它下面两条会在空串上假绿）" y "$([ -n "$RD_ERR" ] && echo y || echo n)"
+check "出站错误落库零明文" n "$(printf '%s' "$RD_ERR" | grep -q "$RD_MARK" && echo y || echo n)"
+check "出站错误落库带打码痕迹" y "$(printf '%s' "$RD_ERR" | grep -q 'corpsecret=\*\*\*' && echo y || echo n)"
+# 4) 日志面：死信那两条 log.Printf 是本段唯一会写日志的错误出口
+if [ -f "$LOGFILE" ]; then
+  RD_NEWLOG=$(tail -c +$((RD_M0 + 1)) "$LOGFILE" 2>/dev/null)
+  check "日志扫描前置自检：本轮死信确实写过日志（能按本行 id 找到）" y \
+    "$(printf '%s' "$RD_NEWLOG" | grep -q "id=${RD_OB}" && echo y || echo n)"
+  check "本段新增日志零明文密钥" n "$(printf '%s' "$RD_NEWLOG" | grep -q "$RD_MARK" && echo y || echo n)"
+  # 正向对照：同一判据在"塞了明文"的副本上必须命中，否则上面那条"零命中"可能只是判据恒假
+  RD_CTRL=$(mktemp)
+  printf '%s\n' "$RD_NEWLOG" > "$RD_CTRL"
+  printf '[outbound] 对照样本 Get "https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=ww1&corpsecret=%s": dial tcp\n' "$RD_MARK" >> "$RD_CTRL"
+  check "对照样本能被同一判据抓到（判据不是空扫）" y "$(grep -q "$RD_MARK" "$RD_CTRL" && echo y || echo n)"
+  rm -f "$RD_CTRL"
+else
+  echo "  SKIP  ai-scrm.log 不在场（服务 stdout 未落到该文件），跳过日志面三条断言"
+fi
+# 5) 存量脏行兜底：库里直插一条**带明文**的 failed 行（模拟修复前已落库的历史死信），
+#    断"库里确实有明文"与"接口回显没有明文"同时成立——这一对才证明出接口那道闸在做事
+RD_DIRTY=$($PSQL "INSERT INTO channel_outbound (tenant_id,channel_id,customer_id,conversation_id,content,msg_type,status,retries,error,created_at,updated_at)
+       VALUES (${RD_TID},${RD_CH},${RD_CUST:-0},0,'存量脏死信','text','failed',6,'Get \"https://qyapi.weixin.qq.com/cgi-bin/gettoken?corpid=ww1&corpsecret=${RD_MARK}\": dial tcp',NOW(),NOW()) RETURNING id;" 2>/dev/null | grep -E '^[0-9]+$' | head -1)  # 注：psql -tA 会把命令尾迹"INSERT 0 1"一并吐进 stdout，只 tr 剥空白会粘成"608INSERT01"
+check "存量脏行已落库且库里就是明文（自检）" y \
+  "$($PSQL "SELECT count(*) FROM channel_outbound WHERE id=${RD_DIRTY:-0} AND error LIKE '%${RD_MARK}%'" 2>/dev/null | tr -d '[:space:]' | grep -v '^0$' >/dev/null && echo y || echo n)"
+RD_DL=$(curl -s -m 15 "$B/api/v1/admin/channel-dlq" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TID}")
+check "死信接口整行回显零明文（存量行也过一道）" n "$(printf '%s' "$RD_DL" | grep -q "$RD_MARK" && echo y || echo n)"
+check "死信接口把存量明文渲染成 corpsecret=***" y "$(printf '%s' "$RD_DL" | grep -q 'corpsecret=\*\*\*' && echo y || echo n)"
+# 跨租户：另一家拿不到本段这两行（脱敏改动不得吃掉隔离）
+RD_CB="smoke_rd_b_$$"
+$PSQL "INSERT INTO tenants (name,code,tier,status,created_at,updated_at)
+       VALUES ('脱敏乙租户','${RD_CB}','personal','active',NOW(),NOW());" >/dev/null 2>&1
+RD_TB=$($PSQL "SELECT id FROM tenants WHERE code='${RD_CB}'" 2>/dev/null | tr -d '[:space:]')
+RD_DLB=$(curl -s -m 15 "$B/api/v1/admin/channel-dlq" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${RD_TB}")
+check "别租户死信列表看不到本段两行（隔离未被脱敏改动破坏）" 0 \
+  "$(printf '%s' "$RD_DLB" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rows=(d.get('data') or {}).get('list') or []
+print(sum(1 for r in rows if r.get('id') in (${RD_OB:-0},${RD_DIRTY:-0})))" 2>/dev/null)"
+# 6) 现场回收：合成出站/身份/通道/乙租户清零（复用的既有客户仅在本段新建时才删）
+$PSQL "DELETE FROM channel_outbound WHERE channel_id=${RD_CH};
+       DELETE FROM channel_identities WHERE channel_id=${RD_CH};
+       DELETE FROM channels WHERE id=${RD_CH};
+       DELETE FROM tenants WHERE code='${RD_CB}';" >/dev/null 2>&1
+if [ "$RD_CUST_NEW" = "y" ]; then $PSQL "DELETE FROM customers WHERE id=${RD_CUST};" >/dev/null 2>&1; fi
+check "本段合成行已清零" 0 \
+  "$($PSQL "SELECT (SELECT count(*) FROM channel_outbound WHERE channel_id=${RD_CH}) + (SELECT count(*) FROM channel_identities WHERE channel_id=${RD_CH}) + (SELECT count(*) FROM channels WHERE id=${RD_CH}) + (SELECT count(*) FROM tenants WHERE code='${RD_CB}')" 2>/dev/null | tr -d '[:space:]')"
+
+# ---------- 第四十三节：退款单号稳定 + 一单一号（FIX-1，2026-09-26 审计批）----------
+# 根因三句话：① 退款单号原先是 "RF+秒级时间戳+订单号"，且在微信/支付宝/通用网关三处**各拼一遍**，
+# 于是同一订单的第二次请求（重试、双实例补呼、人工再点）在 PSP 侧是一个**全新的单子**——
+# 注释里写的"按 out_refund_no 幂等"在代码上从未成立，幂等只是愿望；② 全链路唯一的资金状态写
+# （出款结果回写）既不查 Error 也不看 RowsAffected，写失败即静默，对账器每轮当"没发过"再呼一次；
+# ③ 受理成功即标 psp_ok 并被当成终态——而微信/支付宝退款是异步的，"钱到底到没到"我们从不回查。
+# 修法：单号收进 refundOutNo() 单点并**落库 billing_orders.refund_out_no**（一经写入不再改）；
+# 出款前先把意图写进库（写不成就不发 PSP，宁可少发不可重发）；回写全部查错并群告警；
+# 新增 psp_success/psp_failed 两态，由小时对账器主动查单收敛。
+# 本段钉的是**结构**（DB 约束、迁移账本、契约键、模拟渠道不出号），
+# 因为这三条正是"只改应用写入点"挡不住的东西：人工 SQL、旧版本进程、上线前的存量行。
+echo "---- 四十三、退款单号：一单一号在 DB 层兜底 + 意图先落库的契约面与状态字典 ----"
+RFN_SUF="$$"
+RFN_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='028_order_refund_out_no'" 2>/dev/null | tr -d '[:space:]')
+check "迁移 028 已记账（列+扳正+索引在迁移账本里，不是靠启动期 AutoMigrate）" 1 "${RFN_MIG:-0}"
+# ⚠ 本条是本轮实测抓到的坑（2026-09-26）：internal/db 的口径是 AutoMigrate 先跑、版本化迁移后跑，
+# 所以 model 上新增字段会先被 GORM 建成"可空无默认"，迁移里的 ADD COLUMN IF NOT EXISTS 整句空转
+# ——索引照样建成、日志照样报成功，想要的不空约束一个都没落地。故迁移必须"扳正"而非只"建"，
+# 而这里查的是**现状**（information_schema），不是查 SQL 文件写了什么。
+# 期望值写字面常量 ''::charactervarying（不是从库里回读）：默认值是 PG 规范化输出的，
+# 我们只改这一列的形态、不改它的类型，所以这个字面量稳定；真变了（比如换成 uuid）就该红。
+# 取值统一过 tr -d '[:space:]'（本仓 PSQL 走 -tA，所有取值都这么剥空白）。
+RFN_COL=$($PSQL "SELECT is_nullable||'|'||COALESCE(column_default,'-') FROM information_schema.columns WHERE table_name='billing_orders' AND column_name='refund_out_no'" 2>/dev/null | tr -d '[:space:]')
+check "列实存（不存在则下面全部在空集上假绿）" y "$([ -n "$RFN_COL" ] && echo y || echo n)"
+check "refund_out_no 非空且带默认值（GORM 建歪的可空列已被扳正，且重启不再扳回去）" "NO|''::charactervarying" "$RFN_COL"
+RFN_IDX=$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='billing_orders' AND indexname='ux_order_refund_out_no'" | tr -d '[:space:]')
+check "部分唯一索引 ux_order_refund_out_no 实存" 1 "${RFN_IDX:-0}"
+# 必须是**部分的**（WHERE refund_out_no <> ”）：绝大多数订单从未退款、该列为空，
+# 写成全表唯一会让"第二笔未退款订单"直接建不上——那是比原缺陷更坏的回归。
+# 判据取 indexdef 里的 <> 符号即可：全表唯一的定义里没有任何 <>，带条件的定义必有。
+RFN_PARTIAL=$($PSQL "SELECT count(*) FROM pg_indexes WHERE tablename='billing_orders' AND indexname='ux_order_refund_out_no' AND indexdef LIKE '%<>%'" | tr -d '[:space:]')
+check "索引定义带 WHERE 非空条件（只禁重复号，不禁未退款订单）" 1 "${RFN_PARTIAL:-0}"
+# 1) 正向：两行空号必须能共存（全表唯一实现会在这里炸，而不是在"第二行同号被拒"上悄悄绿）
+RFN_E1="BORFE1${RFN_SUF}"
+RFN_E2="BORFE2${RFN_SUF}"
+RFN_EMPTY_OK=$($PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,refund_out_no,created_at,updated_at)
+  VALUES ('${RFN_E1}',1,1,9900,'monthly','manual','paid','',NOW(),NOW()),
+         ('${RFN_E2}',1,1,9900,'monthly','manual','paid','',NOW(),NOW());" 2>&1 | tr -d '\r')
+check "两笔从未退款的订单可共存（空号不占唯一位）" n "$(printf '%s' "$RFN_EMPTY_OK" | grep -qi 'error' && echo y || echo n)"
+check "正向自检：两行确实都落了库（否则上一条是在没插进去上假绿）" 2 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no IN ('${RFN_E1}','${RFN_E2}')" | tr -d '[:space:]')"
+# 2) 反向：同一非空号第二行必被拒，且报错出自这条约束（不是别的失败）
+RFN_NO1="BORFN1${RFN_SUF}"
+RFN_OUT="RFSMOKEX${RFN_SUF}"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,refund_out_no,created_at,updated_at)
+  VALUES ('${RFN_NO1}',1,1,9900,'monthly','wechat','refunded','${RFN_OUT}',NOW(),NOW());" >/dev/null 2>&1
+check "反向自检：带号那行确实落了库" 1 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no='${RFN_NO1}' AND refund_out_no='${RFN_OUT}'" | tr -d '[:space:]')"
+RFN_DUP_ERR=$($PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,refund_out_no,created_at,updated_at)
+  VALUES ('BORFDUP${RFN_SUF}',1,1,9900,'monthly','wechat','refunded','${RFN_OUT}',NOW(),NOW());" 2>&1 | tr -d '\r')
+check "直插第二行同退款号被唯一索引拒（23505，人工 SQL 也绕不过一单一号）" y \
+  "$(printf '%s' "$RFN_DUP_ERR" | grep -Eq 'ux_order_refund_out_no|23505' && echo y || echo n)"
+check "被拒的直插没留下半成品行" 1 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE refund_out_no='${RFN_OUT}'" | tr -d '[:space:]')"
+# 3) 全表不变式：一个退款号至多对应一单（前提自检在上面那条带号行——缺它整段在 0==0 上假绿）
+RFN_DUPCODE=$($PSQL "SELECT count(*) FROM (SELECT refund_out_no FROM billing_orders WHERE refund_out_no <> '' GROUP BY refund_out_no HAVING count(*)>1) t" | tr -d '[:space:]')
+check "全库重复退款号=0（对账拿号去 PSP 核，同号多单等于账对不上）" 0 "${RFN_DUPCODE:-0}"
+# 4) 契约键（值级，不是键级）：单号是 model 上的非指针 string，键名恒在响应里——
+#    只 grep '"refund_out_no"' 会在 Select 白名单漏列时照样绿（F1 那种"接口恒为空串"的坑正是漏列）。
+#    故这里断"库里那个值逐字回到接口里"，同时断未出款的申请单回空串。
+RFN_LIST=$(curl -s -m 20 "$B/api/v1/billing/orders?limit=50" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: 1")
+check "订单列表把库里的退款单号逐字回显（Select 白名单没漏列）" "${RFN_OUT}" \
+  "$(printf '%s' "$RFN_LIST" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rows=d.get('data') or []
+print(next((r.get('refund_out_no') or '' for r in rows if r.get('order_no')=='${RFN_NO1}'),'缺失'))" 2>/dev/null)"
+RFN_RQ="BORFRQ${RFN_SUF}"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,refund_requested,created_at,updated_at)
+  VALUES ('${RFN_RQ}',1,1,9900,'monthly','wechat','paid',true,NOW(),NOW());" >/dev/null 2>&1
+RFN_QLIST=$(curl -s -m 20 "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $TOKEN")
+check "退款队列含 refund_out_no/refund_psp_status 契约键" y \
+  "$(printf '%s' "$RFN_QLIST" | grep -q '"refund_out_no"' && printf '%s' "$RFN_QLIST" | grep -q '"refund_psp_status"' && echo y || echo n)"
+check "待受理的申请单尚未出过款：单号为空串（有号却还在队列里＝重复受理风险，故必须回显）" "" \
+  "$(printf '%s' "$RFN_QLIST" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rows=d.get('data') or []
+print(next((r.get('refund_out_no') if r.get('order_no')=='${RFN_RQ}' else None for r in rows),'缺失'))" 2>/dev/null)"
+# 5) 异常态可见：库里造一行"已出号却仍停在待受理队列"的订单（正是上面那句话要暴露的错位），
+#    队列必须把号原样带出来——这条与上一条互为对照，缺它就分不清"接口回空串"与"接口根本没读那一列"。
+$PSQL "UPDATE billing_orders SET refund_out_no='RFNYC${RFN_SUF}' WHERE order_no='${RFN_RQ}'" >/dev/null 2>&1
+RFN_QLIST2=$(curl -s -m 20 "$B/api/v1/super/billing/refund-requests" -H "Authorization: Bearer $TOKEN")
+check "已带号的异常单在队列里逐字回显该号（异常态看得见，不是永远空串）" "RFNYC${RFN_SUF}" \
+  "$(printf '%s' "$RFN_QLIST2" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+rows=d.get('data') or []
+print(next((r.get('refund_out_no') or '' for r in rows if r.get('order_no')=='${RFN_RQ}'),'缺失'))" 2>/dev/null)"
+# 6) 模拟/人工渠道不出资金动作：库里 mock/manual 渠道的已退款单**一律没有退款号**
+#    （executeRefundPayout 对空/mock/manual 早退）。前提自检：库里确有 mock 渠道已退款单，
+#    否则这条会在"根本没有这类订单"上空转。
+RFN_MOCK_N=$($PSQL "SELECT count(*) FROM billing_orders WHERE channel IN ('','mock','manual') AND status='refunded'" | tr -d '[:space:]')
+check "状态字典前提：库里确有模拟/人工渠道的已退款单（缺它下面那条 0==0 假绿）" y \
+  "$([ "${RFN_MOCK_N:-0}" -ge 1 ] && echo y || echo n)"
+RFN_MOCK_BAD=$($PSQL "SELECT count(*) FROM billing_orders WHERE channel IN ('','mock','manual') AND status='refunded' AND refund_out_no <> ''" | tr -d '[:space:]')
+check "模拟/人工渠道零退款号（无真实 PSP 调用就不该留下发过的号）" 0 "${RFN_MOCK_BAD:-0}"
+# 7) 观测位：受理未证实（psp_ok）的单必须能在 /metrics 上数出来——
+#    这是"退款到底到没到账"唯一的日常可见性，缺它 psp_ok 会永远安静地躺着。
+RFN_GAUGE=$(curl -s -m 15 "$B/metrics" | grep -c '^ai_scrm_refund_outcome_unverified ' || true)
+check "/metrics 暴露 ai_scrm_refund_outcome_unverified（未核销退款可数）" 1 "${RFN_GAUGE:-0}"
+# 8) 状态字典：库里不得出现字典外的 refund_psp_status（拼错的态会让对账器取不到单，静默漏核销）
+RFN_BADSTATE=$($PSQL "SELECT count(*) FROM billing_orders WHERE refund_psp_status NOT IN ('','psp_pending','psp_ok','psp_success','psp_failed')" | tr -d '[:space:]')
+check "退款出款状态全部落在字典内（''/psp_pending/psp_ok/psp_success/psp_failed）" 0 "${RFN_BADSTATE:-0}"
+# 9) 现场回收
+$PSQL "DELETE FROM billing_orders WHERE order_no IN ('${RFN_E1}','${RFN_E2}','${RFN_NO1}','BORFDUP${RFN_SUF}','${RFN_RQ}');" >/dev/null 2>&1
+check "本段合成订单已清零" 0 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no LIKE 'BORF%${RFN_SUF}' OR refund_out_no LIKE 'RF%${RFN_SUF}'" | tr -d '[:space:]')"
+
+# ---------- 第四十四节：分页上限口径统一 + 标签字典 all=1（FIX-4，2026-09-27 审计批）----------
+# 两条各自的现场：
+#  A) /advisor/customers 旧实现只兜 page_size<=0，**没有上限**——?page_size=50000 原样回显 50000，
+#     等于把 P2-9 的防拖库红线在这一个端点上单独绕过（一个登录用户即可让服务端单次拉全量客户行）。
+#     断的是**生效值**（等值），不是状态码：200 在修复前后一模一样。
+#  B) 租户标签 >100 时，前端把 page_size 写成 500 也只是被静默截断成 100——多出来的标签
+#     在界面上再也选不到且不报错，用户只会以为"标签丢了"。修法不是放宽分页上限，
+#     而是给"字典全量"另开一个有上限的语义口（?all=1，只回 id/name/code）。
+# 反证设计：合成 105 条标签**先自证在库里**（否则下面"分页只回 100 条 < total"会在
+# total=0 的空租户上假绿），再让分页模式与 all=1 模式对同一份数据各跑一次——
+# 一个截断、一个给全，两条必须同时在场，只留一条都防不住"把 all=1 也写成 limit 100"。
+echo "---- 四十四、分页口径：页长硬顶与标签字典 all=1 双语义（FIX-4）----"
+PG_SUF="pg$RANDOM$$"
+TAG_PREFIX="tagdict_${PG_SUF}_"
+$PSQL "DELETE FROM tags WHERE code LIKE '${TAG_PREFIX}%'" >/dev/null 2>&1
+# 合成 105 条：跨过 100 这个硬顶，"截断"与"不截断"才有可观测的差
+$PSQL "INSERT INTO tags (tenant_id,name,code,category,weight,description,status,created_at,updated_at)
+  SELECT ${ACME_ID}, '${TAG_PREFIX}n'||g, '${TAG_PREFIX}'||g, 'smoke', 1.0, '', 1, NOW(), NOW()
+  FROM generate_series(1,105) g" >/dev/null 2>&1
+TAG_SEED=$($PSQL "SELECT count(*) FROM tags WHERE code LIKE '${TAG_PREFIX}%'" | tr -d '[:space:]')
+check "合成 105 条标签已落库（前置自检：缺它整段在 0==0 上假绿）" 105 "${TAG_SEED:-0}"
+
+# A-1：超大页长必须被钳到 100（等值断生效值）
+PG_ECHO=$(curl -s -m 15 "$B/api/v1/admin/tags?page=1&page_size=500" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['page_size']")
+check "标签列表 page_size=500 回显生效值 100" 100 "${PG_ECHO:-缺失}"
+# A-2：total 如实（含刚合成的 105 条 + 该租户原有 + 系统预置），且这一页确实装不下
+PG_TOTAL=$(curl -s -m 15 "$B/api/v1/admin/tags?page=1&page_size=500" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['total']")
+PG_LEN=$(curl -s -m 15 "$B/api/v1/admin/tags?page=1&page_size=500" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['list'].__len__()")
+check "标签列表 total 如实（>100，不被页长硬顶改写）" y \
+  "$([ "${PG_TOTAL:-0}" -gt 100 ] && echo y || echo "n($PG_TOTAL)")"
+check "分页模式这一页确实截断（len=100 < total，测的是现象不是口号）" y \
+  "$([ "${PG_LEN:-0}" = "100" ] && [ "${PG_LEN:-0}" -lt "${PG_TOTAL:-0}" ] && echo y || echo "n(len=$PG_LEN,total=$PG_TOTAL)")"
+
+# B-1：all=1 给全——条数必须等于 total（本租户可见的全部）
+DICT=$(curl -s -m 15 "$B/api/v1/admin/tags?all=1" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}")
+DICT_LEN=$(echo "$DICT" | jsonget "['data']['list'].__len__()")
+DICT_TOTAL=$(echo "$DICT" | jsonget "['data']['total']")
+check "all=1 给全可见标签（len == total）" y \
+  "$([ "${DICT_LEN:-0}" -gt 100 ] && [ "${DICT_LEN:-0}" = "${DICT_TOTAL:-0}" ] && echo y || echo "n(len=$DICT_LEN,total=$DICT_TOTAL)")"
+check "all=1 覆盖到刚合成的 105 条（下拉里那些选不到的标签回来了）" 105 \
+  "$(echo "$DICT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(sum(1 for x in d['data']['list'] if str(x.get('code','')).startswith('${TAG_PREFIX}')))" 2>/dev/null)"
+# B-2：字典模式只回三列（不带 description/时间戳等冗余列，也不带 tenant_id）
+DICT_KEYS=$(echo "$DICT" | python3 -c "import sys,json;d=json.load(sys.stdin);print(','.join(sorted(d['data']['list'][0].keys())))" 2>/dev/null)
+check "all=1 列表项只含 id/name/code 三列" "code,id,name" "$DICT_KEYS"
+# B-3：all=1 是显式开关，不是默认——不带 all 时仍是分页硬顶口径（防"顺手把上限放宽到 1000"）
+ALL0_ECHO=$(curl -s -m 15 "$B/api/v1/admin/tags?page_size=500&all=0" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['page_size']")
+check "all=0（显式关）仍走分页硬顶 100，字典口不是放宽后的后门" 100 "${ALL0_ECHO:-缺失}"
+
+# A-3：/advisor/customers 补钳制（本批的原始缺陷点）
+ADV_BIG=$(curl -s -m 15 "$B/api/v1/advisor/customers?page_size=50000" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['page_size']")
+check "顾问客户列表 page_size=50000 钳到 100（防拖库红线并入单点）" 100 "${ADV_BIG:-缺失}"
+# A-4：反向对照——窗口内的值不得被顺手改成 100，缺省仍是本端点的 20
+ADV_50=$(curl -s -m 15 "$B/api/v1/advisor/customers?page_size=50" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['page_size']")
+check "顾问客户列表 page_size=50 原样生效（钳制不误伤）" 50 "${ADV_50:-缺失}"
+ADV_DEF=$(curl -s -m 15 "$B/api/v1/advisor/customers" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" \
+  | jsonget "['data']['page_size']")
+check "顾问客户列表缺省仍为 20（没被通用默认的 10 顶掉）" 20 "${ADV_DEF:-缺失}"
+# A-5：钳制不改口径——这一页的行数必须正好等于 min(total, 生效页长)
+#     （只断"不超过"会在空列表上假绿；等值才同时挡住"钳过头"和"limit 没生效"）
+ADV_ALL=$(curl -s -m 15 "$B/api/v1/advisor/customers?page_size=50000" -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}")
+ADV_ROWS=$(echo "$ADV_ALL" | jsonget "['data']['list'].__len__()")
+ADV_TOTAL=$(echo "$ADV_ALL" | jsonget "['data']['total']")
+check "钳制后行数 = min(total, 100)（limit 真生效且没钳过头）" \
+  "$(python3 -c "print(min(${ADV_TOTAL:-0},100))" 2>/dev/null)" "${ADV_ROWS:-缺失}"
+
+# 现场回收
+$PSQL "DELETE FROM tags WHERE code LIKE '${TAG_PREFIX}%'" >/dev/null 2>&1
+check "本段合成标签已清零" 0 \
+  "$($PSQL "SELECT count(*) FROM tags WHERE code LIKE '${TAG_PREFIX}%'" | tr -d '[:space:]')"
+
+# ============================================================
+# 四十五、发票交付触达（FIX-9，2026-09-27）
+# 开票这个财务动作过去只到"库里置 issued"为止：客户在申请时当场填了 invoice_email，
+# 而全仓没有任何一处给那个地址寄过信（IssueInvoice 只 Updates 两列）。
+# 本批补上"寄出去 + 把寄没寄如实记下来"，并给"开了票客户没收到"那批单一条重发入口。
+#
+# ⚠ 本段所有合成订单**一律不带接收邮箱**：本机 .env 里 SMTP 是真凭证，
+# 只要邮箱非空、结果码就不是 no_recipient，而是往一个外部地址真投一封邮件。
+# 因此接口层这一腿钉的是"结构 + 判定次序"（码如实入库、时刻刷新、闸门不误放、迁移约束落地），
+# 而 smtp_sent / log_only / send_failed / send_timeout 四档的**发信函数本身**由
+# internal/notify/invoice_notify_test.go 覆盖（拨 127.0.0.1:1 与本机自起监听器，零外网）。
+# 反证方向记在各条注释里：把 no_recipient 折成 smtp_sent、或摘掉状态闸门，本段必红。
+echo "---- 四十五、发票交付触达：结果码如实入库 + 重发闸门 + 迁移 029 约束落地 ----"
+INV_SUF="$$"
+INV_MIG=$($PSQL "SELECT count(*) FROM schema_migrations WHERE version='029_invoice_notify'" 2>/dev/null | tr -d '[:space:]')
+check "迁移 029 已记账（两列与扳正在迁移账本里，不是靠启动期 AutoMigrate）" 1 "${INV_MIG:-0}"
+# 口径与四十三的 refund_out_no 完全同源：AutoMigrate 先跑会把新字段建成"可空无默认"，
+# 迁移的 ADD COLUMN IF NOT EXISTS 整句空转——索引/列看着都在，约束其实一条没落。
+INV_COL=$($PSQL "SELECT is_nullable||'|'||COALESCE(column_default,'-') FROM information_schema.columns WHERE table_name='billing_orders' AND column_name='invoice_notify_result'" 2>/dev/null | tr -d '[:space:]')
+check "列实存（不存在则下面全部在空集上假绿）" y "$([ -n "$INV_COL" ] && echo y || echo n)"
+check "invoice_notify_result 非空且带默认值（GORM 建歪的可空列已被扳正，重启不再扳回去）" "NO|''::charactervarying" "$INV_COL"
+INV_TS=$($PSQL "SELECT is_nullable FROM information_schema.columns WHERE table_name='billing_orders' AND column_name='invoice_notified_at'" 2>/dev/null | tr -d '[:space:]')
+check "invoice_notified_at 允许为空（空=从未尝试，与空结果码同义，不该被误上 NOT NULL）" "YES" "$INV_TS"
+
+# 1) 有邮箱与否决定结果码：这张单没填邮箱，必须判 no_recipient，且**时刻照样落库**
+#    （时刻描述的是"最后一次尝试"，包括没发出去的尝试——否则列表上"试过了但没人可收"
+#     与"从来没试过"两种状态无法区分）
+INV_NO_MAIL="BONM${INV_SUF}"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,invoice_status,invoice_requested,invoice_title,invoice_email,created_at,updated_at)
+  VALUES ('${INV_NO_MAIL}',1,1,9900,'once','manual','paid','requested',true,'冒烟无邮箱公司','',NOW(),NOW()) RETURNING id" >/tmp/smoke_inv_nm.txt 2>/dev/null
+INV_NMOID=$(grep -Eo '^[0-9]+$' /tmp/smoke_inv_nm.txt | head -1)
+INV_ISSUE_NM=$(curl -s -X POST "$B/api/v1/super/invoices/${INV_NMOID:-0}/issue" -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{"invoice_no":"SMOKE-FP-001"}')
+check "无邮箱单开具仍成功（触达失败不许回滚开具：票已经在税务侧开出来了）" issued \
+  "$(echo "$INV_ISSUE_NM" | jsonget "['data']['invoice_status']")"
+check "无邮箱单结果码=no_recipient（若实现折成 smtp_sent，这条红——库里会留下一条客户没收到的'已通知'）" no_recipient \
+  "$(echo "$INV_ISSUE_NM" | jsonget "['data']['invoice_notify_result']")"
+# 存在性用 count 比、期望值就必须写 count：这里先前写成"期望 y"，$PSQL -tA 回的是行数 1，
+# 于是断言在**实现正确**的情况下恒红（本批首跑实测）。要么写 1，要么把查询改成布尔回 'y'。
+check "无邮箱单也刷新了尝试时刻（时刻=最后一次尝试，包括没发出去的那次）" 1 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no='${INV_NO_MAIL}' AND invoice_notified_at IS NOT NULL" | tr -d '[:space:]')"
+check "无邮箱单未产生任何投递事实（库里没有邮箱可投，代码也没去探通道）" no_recipient \
+  "$($PSQL "SELECT invoice_notify_result FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')"
+
+# 2) 重复开具必须被状态机挡住，且**不得再触发一次触达**
+INV_TS1=$($PSQL "SELECT extract(epoch from invoice_notified_at)::bigint FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')
+INV_DUP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/invoices/${INV_NMOID:-0}/issue" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"invoice_no":"SMOKE-FP-002"}')
+check "第二次开具→400（只有 requested 能进，这是'不给客户发两封'的结构保证）" 400 "$INV_DUP_CODE"
+INV_TS2=$($PSQL "SELECT extract(epoch from invoice_notified_at)::bigint FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')
+INV_DUP_NO=$($PSQL "SELECT invoice_no FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')
+check "被拒的第二次没有覆盖发票号" SMOKE-FP-001 "$INV_DUP_NO"
+check "被拒的第二次没有刷新时刻（等于没发第二封）" "${INV_TS1}" "${INV_TS2}"
+
+# 3) 重发入口：闸门只认 issued——requested 态重发必须 400。
+#    ⚠ 这一条**必须拿那张带旧发票号的单来测**：VoidInvoice 只把状态置 voided、号留在行上，
+#    重新申请又回到 requested，于是库里真有"旧号 + 待开具"这种形态。
+#    若用一张从未开出的裸单测，拦截会来自"尚无发票号"而不是状态判定——
+#    把状态闸门摘掉用例照样全绿（本轮实测抓到过这个假绿，已按此改写）。
+INV_STALE="BOSL${INV_SUF}"
+$PSQL "INSERT INTO billing_orders (order_no,tenant_id,package_id,amount_cents,period,channel,status,invoice_status,invoice_requested,invoice_title,invoice_no,invoice_email,created_at,updated_at)
+  VALUES ('${INV_STALE}',1,1,9900,'once','manual','paid','requested',true,'冒烟旧号公司','SMOKE-FP-STALE','',NOW(),NOW()) RETURNING id" >/tmp/smoke_inv_sl.txt 2>/dev/null
+INV_SLOID=$(grep -Eo '^[0-9]+$' /tmp/smoke_inv_sl.txt | head -1)
+INV_STALE_PRE=$($PSQL "SELECT invoice_status||'|'||(CASE WHEN invoice_no<>'' THEN 'has_no' ELSE 'no_no' END) FROM billing_orders WHERE order_no='${INV_STALE}'" | tr -d '[:space:]')
+check "前置形态成立：requested + 残留旧号（缺它本条会在错误的理由上假绿）" "requested|has_no" "$INV_STALE_PRE"
+INV_RESEND_400=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/invoices/${INV_SLOID:-0}/notify-resend" \
+  -H "Authorization: Bearer $TOKEN")
+check "未开具的单不许重发→400（否则客户会收到一张已作废发票的'已开具'邮件）" 400 "$INV_RESEND_400"
+# 4) issued 态可重发，且时刻前进（列表据此判断"这次补发到底发生过没有"）
+#    先睡一秒再用**严格大于**判：invoice_notified_at 只到秒级，用 -ge 会在
+#    "重发根本没刷新时刻"时也通过——那是等值锁写成了单向锁的经典形态，必须比出增量。
+sleep 1
+INV_RESEND_OK=$(curl -s -X POST "$B/api/v1/super/invoices/${INV_NMOID:-0}/notify-resend" -H "Authorization: Bearer $TOKEN")
+check "已开具的单可重发→code=0" 0 "$(echo "$INV_RESEND_OK" | jsonget "['code']")"
+INV_TS3=$($PSQL "SELECT extract(epoch from invoice_notified_at)::bigint FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')
+check "重发刷新了时刻（严格大于；不刷新就等于'补发'这件事没有留痕）" y \
+  "$([ "${INV_TS3:-0}" -gt "${INV_TS2:-0}" ] && echo y || echo n)"
+check "重发结果码仍如实（无邮箱单重发后依然是 no_recipient，不会因'又试了一次'变成已发送）" no_recipient \
+  "$($PSQL "SELECT invoice_notify_result FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]')"
+# 5) 越权与契约面：sales 打重发必须 403（新端点挂在 super 组，别只测正向路径）
+INV_RESEND_403=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/super/invoices/${INV_NMOID:-0}/notify-resend" \
+  -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1")
+check "sales打重发→403" 403 "$INV_RESEND_403"
+# 6) 列表必须把触达状态带出来：超管要能在页面上挑出"开了票客户没收到"那批单
+INV_LIST_KEYS=$(curl -s "$B/api/v1/super/invoices" -H "Authorization: Bearer $TOKEN")
+check "发票列表含 invoice_notify_result 契约键" y "$(echo "$INV_LIST_KEYS" | grep -q '"invoice_notify_result"' && echo y || echo n)"
+check "发票列表含 invoice_notify_text（文案由后端下发，前端不再各翻译一份）" y \
+  "$(echo "$INV_LIST_KEYS" | grep -q '"invoice_notify_text"' && echo y || echo n)"
+# 本段可见性前置：结果码必须**在这张单所属的那一行上**读到，而不是在全表 200 行里随便 grep 到
+check "本段合成单已进列表（缺它上面两条键存在断言会在别的单上假绿）" y \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no='${INV_NO_MAIL}'" | tr -d '[:space:]' | sed 's/^0$/n/;s/^[1-9].*$/y/')"
+
+# 现场回收（发票触达两列跟着合成单一起走，不在库里留"已通知"痕迹）
+$PSQL "DELETE FROM billing_orders WHERE order_no IN ('${INV_NO_MAIL}','${INV_STALE}')" >/dev/null 2>&1
+check "本段合成订单已清零" 0 \
+  "$($PSQL "SELECT count(*) FROM billing_orders WHERE order_no LIKE 'BONM${INV_SUF}' OR order_no LIKE 'BOSL${INV_SUF}'" | tr -d '[:space:]')"
+
+echo "---- 四十六、PIPL 数据可携带权：本人副本逐字回显 + 身份闸 + 游标不重不漏（FIX-9）----"
+# 这一段的判别力全在"静默"两个字上：副本少了冷归档那半截、游标走到一半自称取完、
+# 内部字段（销售备注/策略中间产物/凭证）跟着一起交出去——**三种都不会报错**。
+# 限流口径 privacy_portable=3/min，故本段刻意分成三个窗口打（每窗口 ≤3 次），
+# 中间用 sleep 61 把窗口锁进同一段（IPRateLimit 的窗口是"首请求+TTL"，不是自然分钟）。
+PP_SUF="$$"
+PP_BODY="/tmp/smoke_pp_${PP_SUF}.json"
+# 种子：真实访客（/chat/guest 下发可用密钥，避免手造 hash 形态与生产不一致）
+PP_GUEST=$(curl -s -X POST "$B/api/v1/chat/guest" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d '{}')
+PP_CID=$(echo "$PP_GUEST" | jsonget "['data']['customer_id']")
+PP_VK=$(echo "$PP_GUEST" | jsonget "['data']['visitor_key']")
+PP_HAS_VK=$([ ${#PP_VK} -gt 8 ] && echo y || echo n)
+check "本段访客已建档并领到密钥（缺它下面全部断言在空对象上假绿）" y "$PP_HAS_VK"
+# 商家侧内部字段：手机号是本人提供的（副本必须明文回给他），备注是销售判断（绝不该出现在副本里）
+$PSQL "UPDATE customers SET phone='13900001111', remark='内部备注：预算不足别报高价' WHERE id=${PP_CID:-0}" >/dev/null 2>&1
+# 消息 id 全段自造且**跨两表取上界**：归档行必须比热表行 id 小（生产搬移保留原主键、
+# 归档的都是老消息），这个相对关系正是"合并后必须重排"的前提，不能指望各表序列碰巧给出。
+PP_BASE=$($PSQL "SELECT GREATEST(COALESCE(max(id),0),(SELECT COALESCE(max(id),0) FROM messages_archive))+1000 FROM messages" 2>/dev/null | tr -d '[:space:]')
+PP_ARCID=$((PP_BASE-1))
+$PSQL "INSERT INTO messages (id,tenant_id,customer_id,conversation_id,sender_type,content,message_type,created_at,updated_at)
+  VALUES (${PP_BASE},1,${PP_CID:-0},0,'customer','我的冒烟原话 =SUM(1,2) 手机13900001111','text',NOW(),NOW()),
+         (${PP_BASE}+1,1,${PP_CID:-0},0,'human','顾问的冒烟回复','text',NOW(),NOW())" >/dev/null 2>&1
+$PSQL "INSERT INTO messages_archive (id,tenant_id,customer_id,conversation_id,sender_type,content,message_type,created_at,updated_at)
+  VALUES (${PP_ARCID},1,${PP_CID:-0},0,'customer','归档里的历史原话','text',NOW(),NOW())" >/dev/null 2>&1
+PP_SEED_ROWS=$($PSQL "SELECT (SELECT count(*) FROM messages WHERE customer_id=${PP_CID:-0})+(SELECT count(*) FROM messages_archive WHERE customer_id=${PP_CID:-0})" | tr -d '[:space:]')
+check "落库前置自检：热表2条+冷表1条真在库里（缺它'副本齐全'会在 0==0 上假绿）" 3 "${PP_SEED_ROWS:-0}"
+
+# ①第一窗口·租户1桶第1格：正确密钥取全量副本
+PP_CODE=$(curl -s -o "$PP_BODY" -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\"}")
+check "本人带正确密钥→200" 200 "$PP_CODE"
+# 数消息行数**不能在整份响应里 grep "id":**——customer 块与 conversations 那组也各带 id，
+# 本批首跑实测期望 3 实际 4（断言测错了对象，不是实现错了）。改按 JSON 路径取 messages 长度。
+check "副本含热表2条+冷归档1条（只读 messages 就少一截历史且没人报错）" 3 \
+  "$(jsonget "['data']['messages'].__len__()" < "$PP_BODY")"
+check "归档那条带 archived 标记（本人应能看出这条来自冷数据表，不是凭空多出来的）" 1 "$(grep -o '"archived":true' "$PP_BODY" | wc -l | tr -d ' ')"
+check "手机号明文回显（对本人掩码＝'我自己填的号码被改掉'的假副本）" y "$(grep -q '13900001111' "$PP_BODY" && echo y || echo n)"
+check "正文逐字回显：=SUM(1,2) 前缀未被 CSV 那套防注入改写" y "$(grep -q '=SUM(1,2)' "$PP_BODY" && echo y || echo n)"
+check "冷归档正文同样逐字在场" y "$(grep -q '归档里的历史原话' "$PP_BODY" && echo y || echo n)"
+# 负向清单：投影必须是**显式清单**。改成整行 json.Marshal model.Customer/Conversation/Message
+# 就会把这些字段一起交出去——其中 remark 是商家对客户的内部评价，visitor_key 是凭证本身。
+PP_LEAK=""
+for pp_key in remark t_vector_json visitor_key assigned_user_id state_json template_id anchor_type route_result intent_score; do
+  grep -q "\"${pp_key}\"" "$PP_BODY" && PP_LEAK="${PP_LEAK} ${pp_key}"
+done
+check "内部字段零泄露（remark/凭证/策略中间产物/话术投放事实都不在该给本人之列）" "none" "${PP_LEAK:-none}"
+check "单次配额硬顶回显 5000（全量一次给完会被网关掐成半截 JSON）" 5000 "$(grep -o '"row_cap":[0-9]*' "$PP_BODY" | cut -d: -f2)"
+
+# ②第一窗口·租户1桶第2格：错误密钥必须 403 且**一个正文都不回**
+PP_BADCODE=$(curl -s -o "$PP_BODY.bad" -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"definitely-not-the-key\"}")
+check "错误密钥→403" 403 "$PP_BADCODE"
+PP_BAD_LEAK=$(grep -c '我的冒烟原话\|"messages"' "$PP_BODY.bad" 2>/dev/null | tr -d '[:space:]')
+check "被拒的响应里没有聊天正文（先取数后认人＝正文已经进了响应体）" 0 "${PP_BAD_LEAK:-0}"
+
+# ③第一窗口·租户1桶第3格：缺 customer_id 必须 400（这一发占租户 1 桶的第 3 格，同时堵住"参数不全就当全量给"的退化）
+PP_NOPARAM=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" -d "{\"visitor_key\":\"${PP_VK}\"}")
+check "缺 customer_id→400（不得退化成把整个租户的客户都给我）" 400 "$PP_NOPARAM"
+
+# ④限流（租户1桶第4发）：免登录端点没有频控＝按客户 ID 枚举拖库零成本。
+#    ⚠ 桶键是 bucket:租户:IP（ip_limit.go:55），**跨租户那一发打的是别家的桶**——
+#    本批首跑按"第 4 次请求"写期望，结果回 200：同租户到这里才第 4 发，前三发分别是
+#    ①全量、②错密钥、③缺参，别家租户那发不计数。要撞闸就得继续打**同一租户**。
+PP_RL=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\"}")
+check "同租户同窗口第4次→429（3/min 频控真的挂上了）" 429 "$PP_RL"
+
+# ⑤跨租户取别人的客户→404（不回显"这家有/没有"的差别，但绝不能给数据）。
+#    放在闸后：这一发走 ACME 的桶，不受租户 1 已打满影响，正好同时证明
+#    "某个租户的桶满了不等于别家也取不到"（限流按租户维度计，不是按 IP 一刀切）。
+PP_XCODE=$(curl -s -o "$PP_BODY.x" -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\"}")
+check "拿着正确密钥打到别家租户→404（密钥自证不等于跨租户通行证）" 404 "$PP_XCODE"
+sleep 61
+
+# ⑥第二窗口 1/3：配额只允许调低。?limit=99999999 能绕过定长配额就不是"客户自助"该有的口子
+curl -s -o "$PP_BODY.big" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\",\"limit\":99999999}"
+check "limit=99999999 被钳回硬顶（查询参数不得放大配额）" 5000 \
+  "$(jsonget "['data']['page']['limit']" < "$PP_BODY.big")"
+
+# ⑦第二窗口 2/3（租户1桶）：游标第一页。等值断言——**第一条必须正好是归档那条（id 最小的冷行）**。
+# 实现若"先按 append 序砍尾巴再排序"，这里回的是热表第一条，冷行被跳过且游标永不回头。
+# ⚠ 取 id 一律走 JSON 路径而不是 grep 整份响应：customer 块里也有 "id"，grep 会先命中它，
+#    于是"取到哪条消息"这条断言会在错误的对象上比数字（本批首跑差点踩进去，与上面条数是同一族）。
+PP_P1=$(curl -s -o "$PP_BODY.p1" -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\",\"limit\":1,\"after_id\":0}")
+PP_NEXT=$(jsonget "['data']['page']['next_after_id']" < "$PP_BODY.p1")
+PP_P1ID=$(jsonget "['data']['messages'][0]['id']" < "$PP_BODY.p1")
+check "limit=1 第一页→200" 200 "$PP_P1"
+check "第一页取到的正是最小 id 那条（${PP_ARCID}）＝合并后真按 id 归并过" "${PP_ARCID}" "${PP_P1ID:-0}"
+check "截断标记如实为 true" true "$(grep -o '"truncated":[a-z]*' "$PP_BODY.p1" | cut -d: -f2)"
+check "游标指向已取的最后一条（不前进＝客户端死循环）" "${PP_ARCID}" "${PP_NEXT:-0}"
+
+# ⑧第二窗口 3/3（租户1桶）：续取不得把已取过的那条再回一遍，也不得跳过中间那条
+curl -s -o "$PP_BODY.p2" -X POST "$B/api/v1/privacy/my-data" \
+  -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0},\"visitor_key\":\"${PP_VK}\",\"limit\":1,\"after_id\":${PP_ARCID}}"
+check "续取第二页正是热表最小 id 那条（${PP_BASE}）：不重复、不跳号" "${PP_BASE}" \
+  "$(jsonget "['data']['messages'][0]['id']" < "$PP_BODY.p2")"
+check "续取那一页只回一条（limit=1 说话不算＝配额形同虚设）" 1 \
+  "$(jsonget "['data']['messages'].__len__()" < "$PP_BODY.p2")"
+sleep 61
+
+# ⑨第三窗口 1/2（租户1桶）：登录态**不等于放行**（B8 教训）。sales1 打一个归属别人的客户必须 403。
+PP_OTHER_UID=$($PSQL "SELECT id FROM tenant_users WHERE username='sales2' AND tenant_id=1 LIMIT 1" | head -1 | tr -d '[:space:]')
+$PSQL "UPDATE customers SET assigned_user_id=${PP_OTHER_UID:-0} WHERE id=${PP_CID:-0}" >/dev/null 2>&1
+PP_PRE_ASSIGNED=$($PSQL "SELECT assigned_user_id FROM customers WHERE id=${PP_CID:-0}" | tr -d '[:space:]')
+check "前置形态成立：该客户已归属 sales2（否则 403 会在'归属为空'上假绿）" "${PP_OTHER_UID}" "${PP_PRE_ASSIGNED}"
+PP_SALESCOPE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0}}")
+check "sales 代取非本人名下客户的副本→403（与读接口 DataScope 同口径）" 403 "$PP_SALESCOPE"
+# ⑩第三窗口 2/2：正向对照——**换一个归属**再打一次，sales1 必须 200。
+#    对照必须同角色同路径、只改"这客户归谁"：没有它，上面那发 403 可能只是
+#    "端点/租户头写错了谁都进不来"，而换了角色（比如拿超管来对照）就同时在测两条链路。
+#    ⚠ 如实登记一条已知限制：超管带 X-Tenant-ID 打本端点回 **400 缺少租户上下文**
+#    （TenantResolver 把 /privacy/* 当平台路径处理，super 身份在此落 tenant_id=0），
+#    所以"代客取副本"这条支持流程走的是租户内管理员/顾问，不是超管。这是 fail-closed
+#    （不给反而给多了），不是泄露；要不要给超管开一个显式代管口是产品决策，本批不动。
+PP_SELF_UID=$($PSQL "SELECT id FROM tenant_users WHERE username='sales1' AND tenant_id=1 LIMIT 1" | head -1 | tr -d '[:space:]')
+$PSQL "UPDATE customers SET assigned_user_id=${PP_SELF_UID:-0} WHERE id=${PP_CID:-0}" >/dev/null 2>&1
+PP_PRE_SELF=$($PSQL "SELECT assigned_user_id FROM customers WHERE id=${PP_CID:-0}" | tr -d '[:space:]')
+check "前置形态成立：同一客户已改归属 sales1 本人（对照只动归属这一个变量）" "${PP_SELF_UID}" "${PP_PRE_SELF}"
+PP_SALESOK=$(curl -s -o "$PP_BODY.me" -w "%{http_code}" -X POST "$B/api/v1/privacy/my-data" \
+  -H "Authorization: Bearer $STOKEN" -H "X-Tenant-ID: 1" -H "Content-Type: application/json" \
+  -d "{\"customer_id\":${PP_CID:-0}}")
+check "同一销售打**本人名下**客户→200（403 那条的对照，缺它无判别力）" 200 "$PP_SALESOK"
+check "登录态代取的副本同样带出 3 条消息（对照必须走到与 403 那条相同的数据路径）" 3 \
+  "$(jsonget "['data']['messages'].__len__()" < "$PP_BODY.me")"
+
+# 现场回收：合成消息（含冷表那条）与访客客户全清，不在库里留副本素材
+$PSQL "DELETE FROM messages WHERE id IN (${PP_BASE},${PP_BASE}+1); DELETE FROM messages_archive WHERE id=${PP_ARCID}; DELETE FROM customers WHERE id=${PP_CID:-0};" >/dev/null 2>&1
+check "本段合成消息已清零" 0 \
+  "$($PSQL "SELECT (SELECT count(*) FROM messages WHERE id IN (${PP_BASE},${PP_BASE}+1))+(SELECT count(*) FROM messages_archive WHERE id=${PP_ARCID})" | tr -d '[:space:]')"
+check "本段合成访客已清零" 0 "$($PSQL "SELECT count(*) FROM customers WHERE id=${PP_CID:-0}" | tr -d '[:space:]')"
+rm -f "$PP_BODY" "$PP_BODY".* 2>/dev/null
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

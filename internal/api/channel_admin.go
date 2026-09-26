@@ -11,6 +11,7 @@ import (
 
 	"ai-scrm/internal/channel"
 	"ai-scrm/internal/model"
+	"ai-scrm/internal/pii"
 	"ai-scrm/internal/webhook"
 	"ai-scrm/pkg/crypto"
 )
@@ -50,11 +51,14 @@ func strPtrIfNotEmpty(s string) *string {
 }
 
 // errString 将 error 安全转换为字符串。
+// FIX-2(2026-09-26)：出接口前统一过一层凭据脱敏——连通测试的失败详情直接取自 token 换取，
+// 而传输层错误串（*url.Error）自带完整 URL 含 corpsecret；界面上这一格就是密钥泄露点。
+// 脱敏按参数名精确替换值，host/path 与其它参数保留，排障线索不丢（pii 侧已说明口径）。
 func errString(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return pii.RedactSecretURL(err.Error())
 }
 
 // callbackURLHint 通道专属回调地址（含 :id，多通道无歧义；前端拼域名后填到渠道后台）。

@@ -68,7 +68,7 @@ acquire_lock() {
   if [ -n "${holder:-}" ] && kill -0 "$holder" 2>/dev/null; then
     return 1 # 真有人在跑
   fi
-  echo "[$(date '+%F %T')] [WARN] 发现陈旧锁 $LOCK_DIR（持有者 ${holder:-未知} 已不在），接管后继续" >&2
+  echo "[$(date '+%F %T')] [WARN] 发现陈旧锁 ${LOCK_DIR}（持有者 ${holder:-未知} 已不在），接管后继续" >&2
   rm -rf "$LOCK_DIR"
   mkdir "$LOCK_DIR" 2>/dev/null || return 1
   echo $$ > "$LOCK_DIR/pid"

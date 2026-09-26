@@ -6,6 +6,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Input, Select, Table, Tag, MessagePlugin } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+// FIX-8(2026-09-27)：发票金额与退款金额是同一笔钱的两个视图，必须走同一个换算口径。
+import { fenToYuan } from '../../lib/money'
 import { confirmDialog } from '../../lib/confirm'
 import type { CellProps, TableRowData } from '../../types'
 
@@ -70,7 +72,7 @@ export function InvoiceTab() {
   const cols = [
     { colKey: 'tenant_id', title: '租户ID', width: 90, cell: (p: CellProps) => p.row.tenant_id == null ? '-' : '#' + p.row.tenant_id },
     { colKey: 'order_id', title: '订单ID', width: 90 },
-    { colKey: 'amount_cents', title: '金额(元)', width: 110, cell: (p: CellProps) => '¥' + (Number(p.row.amount_cents || 0) / 100).toFixed(2) },
+    { colKey: 'amount_cents', title: '金额(元)', width: 110, cell: (p: CellProps) => '¥' + fenToYuan(Number(p.row.amount_cents || 0)) },
     { colKey: 'invoice_title', title: '发票抬头', width: 180, ellipsis: true },
     { colKey: 'invoice_tax_no', title: '税号', width: 160, cell: (p: CellProps) => p.row.invoice_tax_no || '-' },
     { colKey: 'invoice_email', title: '接收邮箱', width: 160, cell: (p: CellProps) => p.row.invoice_email || '-' },
@@ -116,7 +118,7 @@ export function InvoiceTab() {
         width={420}
       >
         <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>
-          抬头：{issueRow?.invoice_title || '-'}{issueRow?.invoice_tax_no ? ` · 税号 ${issueRow.invoice_tax_no}` : ''}{issueRow ? ` · 金额 ¥${(issueRow.amount_cents / 100).toFixed(2)}` : ''}
+          抬头：{issueRow?.invoice_title || '-'}{issueRow?.invoice_tax_no ? ` · 税号 ${issueRow.invoice_tax_no}` : ''}{issueRow ? ` · 金额 ¥${fenToYuan(issueRow.amount_cents)}` : ''}
         </div>
         <Input value={issueNo} onChange={(v) => setIssueNo(String(v))} placeholder="发票号（必填）" aria-label="发票号" />
       </Dialog>

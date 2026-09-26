@@ -53,7 +53,11 @@ jobs:
       DB_PASSWORD: ci_pass
       DB_NAME: ai_scrm
       DB_SSLMODE: disable
-      REDIS_ENABLED: "false"
+      # FIX-7(2026-09-27)：这里原来写死 REDIS_ENABLED:"false"，而上方 services 已经起了 redis:7-alpine——
+      # "起了一个没人连的 Redis"和"多副本没 Redis"是同一个洞的两半。单测层其实**不读这个键**
+      # （跨实例协议用例在 mq_redis_real_test.go 里自己探活、自己 Init 到 DB9，连不上就 skip），
+      # 所以把这行删掉、不再留一个"看起来在管单测、实际什么都没管"的假开关。
+      # 真正需要 Redis 轨的是**起了服务进程**的两个 job（e2e / uat），那里已改为 true。
       AI_MOCK_MODE: "true"
       GIN_MODE: release
       JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"
@@ -76,11 +80,16 @@ jobs:
       - name: go vet
         run: go vet ./...
       - name: govulncheck 官方漏洞库扫描（供应链安全，2026-09-15 增强批）
-        # 首月观察模式：存量依赖命中 CVE 不阻断 CI，人工评估升级窗口后去掉本行
-        continue-on-error: true
+        # FIX-7(2026-09-27) 转阻断：原注释写的"首月观察模式"（2026-09-15）已过期一个多月，
+        # 而 continue-on-error=true 的代价是"扫出了 CVE 也天天绿"——与本批那条教训同形
+        # （只会打日志并返回成功的守卫等于没有守卫）。
+        # ⚠ 如实登记：改这行时**本机跑不了 govulncheck**（go install 拉 proxy.golang.org 超时，
+        # 无外网），所以"存量是否已有 CVE"没有本地证据。首次 CI 跑若因此转红，处置口径是
+        # 二选一且要留字据：① 升级依赖到无漏洞版本；② 在 FIXLOG 写明 CVE 编号 + 不受本仓影响的理由 +
+        # 复核日期（书面豁免），**不要**把本行改回 continue-on-error。
         run: |
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          $(go env GOPATH)/bin/govulncheck ./...
       - name: 单测（含 DB 依赖用例，连 PG service）
         run: go test ./...
       - name: 编译
@@ -194,7 +203,11 @@ jobs:
       DB_PASSWORD: ci_pass
       DB_NAME: ai_scrm
       DB_SSLMODE: disable
-      REDIS_ENABLED: "false"
+      # FIX-7(2026-09-27)：这两个 job 会**真的起服务进程**跑十套 E2E（test_all 内部启动 9090/9091），
+      # 原先这里写死 "false" 而 services 已声明 redis:7-alpine —— Redis 锁、双轨限流、跨实例 WS 广播
+      # 这三条 E2E 层唯一能覆盖到的多实例语义，从此没人走过。改 true 后 redis 由上面的 service 提供，
+      # 地址走 config 默认 localhost:6379（与 service 端口映射一致）。
+      REDIS_ENABLED: "true"
       AI_MOCK_MODE: "true"
       GIN_MODE: release
       JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"
@@ -253,7 +266,11 @@ jobs:
       DB_PASSWORD: ci_pass
       DB_NAME: ai_scrm
       DB_SSLMODE: disable
-      REDIS_ENABLED: "false"
+      # FIX-7(2026-09-27)：这两个 job 会**真的起服务进程**跑十套 E2E（test_all 内部启动 9090/9091），
+      # 原先这里写死 "false" 而 services 已声明 redis:7-alpine —— Redis 锁、双轨限流、跨实例 WS 广播
+      # 这三条 E2E 层唯一能覆盖到的多实例语义，从此没人走过。改 true 后 redis 由上面的 service 提供，
+      # 地址走 config 默认 localhost:6379（与 service 端口映射一致）。
+      REDIS_ENABLED: "true"
       AI_MOCK_MODE: "true"
       GIN_MODE: release
       JWT_SECRET: "ci-test-secret-key-for-unit-tests-only-32ch"

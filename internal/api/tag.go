@@ -22,9 +22,14 @@ import (
 // 标签 CRUD
 // ============================================================
 
+// tagDictAllLimit `?all=1` 全量字典模式的条数上限（FIX-4，2026-09-27）。
+// 单独给一个数而不是复用分页的 100：标签是**字典**，一个租户几千个标签是设计内的量级，
+// 而分页列表的 100 是给"页面一屏"用的——两种语义混在一个上限里必然两头不讨好。
+const tagDictAllLimit = 1000
+
 // GetTagList 获取标签列表（分页+分类筛选+关键词搜索+状态筛选）
 // apidump:ts Paginated<Tag>
-// 标签字典分页列表。
+// 标签字典分页列表。`?all=1` 切到全量字典模式（不分页、上限 tagDictAllLimit、只回 id/name/code）。
 func GetTagList(c *gin.Context) {
 	var req schema.Pagination
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -55,6 +60,29 @@ func GetTagList(c *gin.Context) {
 
 	var total int64
 	query.Count(&total)
+
+	// FIX-4(2026-09-27)：全量字典模式——「后台下拉要选标签」与「标签页要分页看」是两件事。
+	// 旧的凑法是把 page_size 写成 500，被 100 硬顶静默截断：租户标签 >100 时**多出来的标签
+	// 在界面上再也选不到**，而且不报错，用户只会以为"标签丢了"。
+	// 这里不放宽分页上限（那等于把 P2-9 的防拖库红线一起放宽），而是给字典一个自己的、
+	// 有上限的取数口：只回下拉真正用到的三列，超出上限如实体现在 total 与 count 的差上。
+	if all := c.Query("all"); all == "1" || all == "true" {
+		type tagDictItem struct {
+			ID   uint   `json:"id"`
+			Name string `json:"name"`
+			Code string `json:"code"`
+		}
+		rows := make([]tagDictItem, 0, 64)
+		if err := query.Select("id, name, code").Order("id DESC").
+			Limit(tagDictAllLimit).Find(&rows).Error; err != nil {
+			RespErr(c, http.StatusInternalServerError, 500, "标签字典读取失败")
+			return
+		}
+		RespOK(c, "success", schema.PageResponse{
+			Total: total, Page: 1, PageSize: len(rows), List: rows,
+		})
+		return
+	}
 
 	var tags []model.Tag
 	query.Order("id DESC").

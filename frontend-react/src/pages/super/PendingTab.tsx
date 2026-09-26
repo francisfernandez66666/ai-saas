@@ -3,13 +3,15 @@
 import { Button, Table } from 'tdesign-react'
 import type { CellProps } from '../../types'
 import { Section, esc, type Pending } from './shared'
+// FIX-8(2026-09-27)：金额口径单点（分 → 元字符串，不做浮点除）。
+import { fenToYuan } from '../../lib/money'
 
 // PendingTab 平台后台「待确认收款」页：列出待确认订单并支持确认到账发放。
 export default function PendingTab({ pendings, onConfirm }: { pendings: Pending[]; onConfirm: (id: number) => void }) {
   // 待确认收款订单列定义（含确认到账发放按钮）
   const pendingCols = [
     { colKey: 'order_no', title: '订单号', width: 160 }, { colKey: 'tenant', title: '租户', width: 160, cell: (p: CellProps) => `${esc(p.row.tenant_name)} (#${p.row.tenant_id})` },
-    { colKey: 'package_name', title: '商业包', width: 140 }, { colKey: 'amount_cents', title: '金额', width: 100, cell: (p: CellProps) => '¥' + (p.row.amount_cents / 100).toFixed(2) },
+    { colKey: 'package_name', title: '商业包', width: 140 }, { colKey: 'amount_cents', title: '金额', width: 100, cell: (p: CellProps) => '¥' + fenToYuan(p.row.amount_cents) },
     { colKey: 'created_at', title: '提交时间', width: 160 }, { colKey: 'op', title: '操作', width: 140, cell: (p: CellProps) => <Button size="small" theme="success" onClick={() => onConfirm(p.row.id)}>确认到账并发放</Button> },
   ]
 

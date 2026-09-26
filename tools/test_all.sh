@@ -146,6 +146,25 @@ fi
 #    C7 事故形态（无 ctx 盖章落 0）历史上命中两次（C7、P1-5），接入即第三次被抓现行
 #    （message_queue.go WriteDegradedNotice，已修）。精准模式检测，见脚本头注释。
 python3 tools/check_tenant_stamp.py; verdict "D6 盖章护栏（db.DB 写租户表漏章检测）" $?
+# FIX-2 防回潮（2026-09-26 审计批）：通道 HTTP 传输层错误（*url.Error 含完整 URL 与 corpsecret）
+# 外抛前必须过 redactErr。判据按"Do 调用点紧跟的 if err != nil 分支"扫，自带六样本 --selftest
+# （违规必抓/合规必放/扫描面非空/零调用点可判空转），首版按函数体扫在三处 io.ReadAll 上误伤已收窄。
+python3 tools/check_channel_err_redact.py; verdict "通道错误外抛脱敏护栏（FIX-2 防回潮）" $?
+# 3.10 退款单号防回潮（FIX-1，2026-09-26 审计批）：发给 PSP 的退款单号必须是**稳定号**
+#      （库里 refund_out_no，缺失时按 "RF"+订单号 现推），三处出款适配器共用 refundOutNo() 单点。
+#      旧实现是 "RF"+秒级时间戳+订单号在微信/支付宝/通用网关各拼一遍——同一订单第二次请求
+#      （重试、双实例补呼、人工再点）在 PSP 侧是一个全新单子，"按 out_refund_no 幂等"从未成立。
+#      时间戳一旦回到号里，幂等就又变成一句注释，而这条退化在功能测试里看不出来
+#      （第一次永远成功），只有对账/重复出款时才炸。
+#      负向：号里不得混入时间格式；正向：三处调用点必须都还在（防止"把三处都删了"也判绿）。
+G6_RFNO=$(grep -rnE --include="*.go" '"RF" *\+ *(time\.Now\(\)|fmt\.Sprintf\("%d", *time)|time\.Now\(\)\.Format\("2006[^"]*" *\+)' internal/billing/ 2>/dev/null | grep -v '_test.go' | grep -vE '^[^:]+:[0-9]+:[[:space:]]*(//|\*)')
+if [ -n "$G6_RFNO" ]; then
+  echo "  FAIL  FIX-1: 退款单号又掺进秒级时间戳（同一次退款会算成两笔，PSP 侧无从幂等）："; echo "$G6_RFNO" | head -5; G6_FAIL=1
+fi
+G6_RFCALL=$(grep -rlE --include="*.go" 'refundOutNo\(order\)' internal/billing/ 2>/dev/null | grep -v '_test.go' | wc -l | tr -d ' ')
+if [ "${G6_RFCALL:-0}" -lt 3 ]; then
+  echo "  FAIL  FIX-1: 取稳定退款单号的调用点不足 3 处（微信/支付宝/通用网关必须共用 refundOutNo，当前 ${G6_RFCALL}）"; G6_FAIL=1
+fi
 verdict "G-6 防回潮断言" $G6_FAIL
 
 # ---------- 阶段零：CI 同口径 gofmt 门禁（2026-09-21 补，PLAN_FIX A2）----------
@@ -207,6 +226,31 @@ step "静态门禁：工作树卫生（未跟踪产物 / .bak 残留 / 异常权
 bash tools/check_worktree_hygiene.sh
 HYG_RC=$?
 verdict "工作树卫生护栏" $HYG_RC
+
+# ---------- 阶段零：部署体检脚本的反证用例（FIX-7 运维批，2026-09-27）----------
+# 这里 gate 的是 tools/test_deploy_preflight.sh（**反证用例**），不是 deploy_preflight 本体。
+# 为什么不 gate 本体：它对本机开发 .env 必然报红（GIN_MODE=debug、缺 APP_ENV、弱 DB 口令），
+# 那是它该抓的东西，不是回归失败——把它直接接进每次提交等于长红，长红的门禁等于没有门禁。
+# 所以接进来的是"它抓得到这些红"的那六条用例：副本>1 无 Redis（env 与 compose 两个来源各一例）、
+# 编排起了 Redis 却没人连、单实例正向不误报。教训同备份脚本那次：
+# **一个只会打日志并返回成功的守卫，等于没有守卫**。
+step "静态门禁：deploy_preflight 反证用例（tools/test_deploy_preflight.sh，6 例）"
+bash tools/test_deploy_preflight.sh >/tmp/test_all_preflight_selftest.log 2>&1
+PFS_RC=$?
+if [ "$PFS_RC" -ne 0 ]; then tail -15 /tmp/test_all_preflight_selftest.log; fi
+verdict "deploy_preflight 反证用例（FIX-7）" $PFS_RC
+
+# ---------- 阶段零：每日运维自检的反证用例（FIX-7 运维批，2026-09-27）----------
+# 同上：gate 的是 tools/test_ops_daily.sh（**反证用例**），不是 ops_daily.sh 本体。
+# 为什么不 gate 本体：本机 backups/ 里那份 .dump 什么时候过期，取决于这台机器有没有挂 cron，
+# 与本次提交有没有改坏东西毫无关系——把它直接接进每次提交等于长红，长红的门禁等于没有门禁。
+# 接进来的是五组合成 BACKUP_DIR（不存在 / 零个 dump / 距今 30h / 10 字节 / 当天真 dump），
+# 逐组断"该红的红、该绿的不红"。用例全程 OPS_NOTIFY_DISABLED=1，判红只落 stdout 不推运维群。
+step "静态门禁：ops_daily 反证用例（tools/test_ops_daily.sh，5 组）"
+bash tools/test_ops_daily.sh >/tmp/test_all_ops_daily_selftest.log 2>&1
+ODS_RC=$?
+if [ "$ODS_RC" -ne 0 ]; then tail -15 /tmp/test_all_ops_daily_selftest.log; fi
+verdict "ops_daily 反证用例（FIX-7）" $ODS_RC
 
 # ---------- 阶段一：单元测试层 ----------
 # 单测前置：先把数据库让给单测独占。历史那条「internal/billing 与在线服务后台 ticker 共库存在
@@ -446,6 +490,17 @@ step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 59 �
 step "E2E 层：uat_advisor.sh（顾问工作台字节级 88 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 欠账批 +3：反馈额度口径护栏——20 条评分行不吃「每日 20 条反馈」额度、20 条真反馈仍挡得住第 21 条，配落库前置自检防零行空转）"
 # 只读写测试客户/标签/阶段，不动全局开关，可安全并入串行队列（DEFECT_VERIFY §六建议落地）。
 ./tools/uat_advisor.sh "$PORT" >/tmp/test_all_advisor.log 2>&1; verdict "uat_advisor.sh" $?; tail -2 /tmp/test_all_advisor.log
+
+step "E2E 层：smoke_redis.sh（服务端 Redis 双轨冒烟 23 断言，FIX-7 运维批：本仓十余处「Redis 可用走 Redis、不可用退化内存」的双轨语义，此前**十套 E2E 全跑在退化轨上**，多实例会不会双答/锁会不会共享从未有机器判据。本段自建 9093/9094/9095 三台 release+APP_REPLICAS=2 实例：①连上 Redis 的观测位 connected、公开 /status 不判 crit；②登录防爆破锁真落 Redis（键可见、计数=阈值、TTL 有限），且**第二实例**认同一把锁；③反向对照——声明启用却连不上时观测位转 crit、公开 /status 必须判 crit、失败计数**不得**落进 Redis、也不得共享别人的锁。附带抓到并修掉一条真缺陷：/status/detail 不在 skipTenantPaths 里，release 下按 IP 探针被租户解析拦成 403，观测面自己不可观测（debug 兜底长期遮住）。本机 Redis 不可达时整段显式 SKIP，**不计 PASS**）"
+# 本段自己起三台实例、只写自己那两把守卫键（跑完就地清并复查已消失），不动 9090、不动全局开关。
+./tools/smoke_redis.sh >/tmp/test_all_redis.log 2>&1
+REDIS_RC=$?
+if grep -q '^  SKIP' /tmp/test_all_redis.log; then
+  echo "  SKIP  smoke_redis.sh：本机 Redis 不可达，多实例协调语义本轮未验证（请 docker compose up -d redis）"
+  tail -1 /tmp/test_all_redis.log
+else
+  verdict "smoke_redis.sh（Redis 双轨）" $REDIS_RC; tail -2 /tmp/test_all_redis.log
+fi
 
 step "E2E 层：playwright 真浏览器 E2E（21 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言；2026-09-23 批二补 S2 找回密码文案、第 9/10 项改断 S1 匿名写 400；2026-09-23 触达批补主动触达 Tab 渲染，且 D2/触达两项改为先探一个真进得去的代管租户——按下标取 option 会在清库后命中过期 trial 租户，断言打成 402；2026-09-23 D3/D4 批补第 19 项看板数字下钻〔卡片值取自响应 JSON 而非页面文本，且必须等响应而非等请求——只等请求会在数据回来前读到 0，实测 flake 过一次〕；2026-09-23 获客批补第 20 项活码建码→扫码归因→漏斗下钻，扫码格子必须不可点〔单位是次不是人〕，二维码链接断言必须作用域到 .t-dialog__body〔列表每行渲染同一条链接，全局 getByText 会 strict-mode 命中多元素〕；2026-09-24 残项批补第 21 项超管代管检索——把当年"直接写 localStorage 绕过下拉"的 e2e 收回界面：请求必须带 q=、候选必须收窄成搜索结果、选定后 X-Tenant-ID 必须真的进请求头、搜无命中时不得把当前代管冲掉）"
 # 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。

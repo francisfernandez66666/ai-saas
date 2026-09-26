@@ -60,7 +60,7 @@ fi
 # 前端文案表跟着抄件的节奏走，抄件又与源码无机制约束，就是残项3 的原始现场。
 ERRCODES_TS=frontend-react/src/types/error_codes.generated.ts
 if ! go run ./cmd/apidump -format errorcodes -out "$ERRCODES_TS" -check > /dev/null; then
-  echo "  FAIL  $ERRCODES_TS 与 internal/errcodes 清单不一致（请跑 go run ./cmd/apidump -format errorcodes -out $ERRCODES_TS）"
+  echo "  FAIL  $ERRCODES_TS 与 internal/errcodes 清单不一致（请跑 go run ./cmd/apidump -format errorcodes -out ${ERRCODES_TS}）"
   FAIL=1
 fi
 # 生成物自证：码数下限。零码/半截生成物与"后端真发不出几个码"在 diff 上看不出区别，

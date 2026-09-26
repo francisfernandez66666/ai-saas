@@ -162,25 +162,57 @@ func (a *AlipayProvider) CreatePayment(order *model.BillingOrder) (string, error
 	return qrToDataURL(qr)
 }
 
-// Refund 同步退款：alipay.trade.refund，fund_change=Y（或本次有退款金额返回）即出款成功。
-// out_request_no 防重：同一笔退款请求号重试幂等（支付宝侧部分退款幂等锚）。
+// Refund 同步退款：alipay.trade.refund。
+//
+// 成功判据是 alipayPost 内的网关码（code!=10000 一律返回 error），本函数不再二次判定：
+// 旧实现在此处还留了一段 `if fund_change=="N" { return nil }`——两个分支都 return nil，
+// 是条永不改变结果的死分支（FIX-10 收口，2026-09-26），留着只会让人误以为"N 需要特殊处理"。
+// fund_change 的真实语义：Y=本次调用真的动了钱，N=幂等重试（支付宝按 out_request_no 去重后
+// 原样回执），两种都是成功，所以无须分支。
+//
+// FIX-1（2026-09-26）：退款请求号取 refundOutNo(order) 稳定号。支付宝的 out_request_no
+// **本来就是**幂等锚——旧实现每次重试换新号，等于自废这件武器，同一订单可退两次。
 func (a *AlipayProvider) Refund(order *model.BillingOrder, refundCents int) error {
 	if a.PrivateKey == nil || a.AppID == "" {
 		return ErrRefundNotWired
 	}
-	body, err := a.alipayPost("alipay.trade.refund", map[string]interface{}{
+	_, err := a.alipayPost("alipay.trade.refund", map[string]interface{}{
 		"out_trade_no":   order.OrderNo,
 		"refund_amount":  centsToYuan(refundCents),
-		"out_request_no": fmt.Sprintf("RF%s%s", time.Now().Format("20060102150405"), order.OrderNo),
+		"out_request_no": refundOutNo(order),
+	})
+	return err
+}
+
+// QueryRefundStatus 实现 RefundResultQuerier：alipay.trade.fastpay.refund.query 查退款单。
+//
+// 支付宝退款是**同步**协议（上面 Refund 返回 nil 即已到账），查单的意义在于补崩溃窗口：
+// 账面停在 psp_ok（受理意图写了、结果没写回来）时，用查单确认这笔钱到底出去没有。
+// 判据只认"查得到这笔退款且金额对得上"：
+//   - 查到且 refund_amount == 应退金额 → success
+//   - 查到但金额不符 → 返回 error 交人工（宁可停在 psp_ok 反复查，不可凭半个回执改终态）
+//   - 查不到该退款单（网关码非 10000 即 error）→ 调用侧不改状态，下轮再查
+func (a *AlipayProvider) QueryRefundStatus(order *model.BillingOrder, outRefundNo string) (string, error) {
+	if a.PrivateKey == nil || a.AppID == "" {
+		return "", ErrRefundNotWired
+	}
+	body, err := a.alipayPost("alipay.trade.fastpay.refund.query", map[string]interface{}{
+		"out_trade_no":   order.OrderNo,
+		"out_request_no": outRefundNo,
 	})
 	if err != nil {
-		return err
+		return "", err
 	}
-	// fund_change=Y 表示本次真实发生资金变动；N 可能是重复请求（幂等重试），同样视为成功
-	if fc, _ := body["fund_change"].(string); fc == "N" {
-		return nil
+	got, _ := body["refund_amount"].(string)
+	gotCents, perr := alipayYuanToCents(got)
+	if perr != nil {
+		return "", fmt.Errorf("支付宝退款查询 refund_amount 无法解析(%q): %w", got, perr)
 	}
-	return nil
+	if gotCents != int64(order.RefundAmountCents) {
+		return "", fmt.Errorf("支付宝退款查询金额不符：平台侧 %d 分 / 账面 %d 分（号 %s）",
+			gotCents, order.RefundAmountCents, outRefundNo)
+	}
+	return "success", nil
 }
 
 // VerifyAlipayNotify 异步通知 RSA2 验签。

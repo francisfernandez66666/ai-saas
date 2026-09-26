@@ -1,7 +1,7 @@
 // 自动生成：禁止手改。
 // 来源：api.schema.json（go run ./cmd/apidump -out api.schema.json）
 // 生成：scripts/gen_api_types.mjs（npm run gen:api）
-import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminPackListView, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, ArchiveKeyResp, ArchiveRecordDetailResp, ArchiveRecordListResp, ArchiveStatusResp, ArchiveSyncResp, AuthResult, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, KbListResp, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, SuperPackBindResp, SuperPackReapplyResp, SuperPackTierResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
+import type { AIContribution, AIContributionDrillResp, AcqCodeListResp, AcqCodeRow, AcqDrillResp, AcqResolveResp, AcqScanResp, AcqStatusResp, AdminDunningResp, AdminPackListView, AdminUsageAlertsResp, AdvisorCustomerRow, AdvisorDealListResp, AdvisorRef, AdvisorStatItem, AiReplyToggle, AnchorStat, ApiResp, ArchiveKeyResp, ArchiveRecordDetailResp, ArchiveRecordListResp, ArchiveStatusResp, ArchiveSyncResp, AuthResult, BillingOrder, ChannelListResp, ChatMessage, Conversation, CreateChannelResp, Customer, CustomerTagRow, DealBoardResp, DealDetailResp, DealDrillResp, DealQuoteListResp, DealQuoteResp, FlowDefinition, FlowInstance, FollowUpRow, KbListResp, OutboundListResp, OutreachCancelResp, OutreachListResp, OutreachTaskRow, PackStatsResp, Paginated, PrivacyMyDataResp, SellingFeature, StatsOverview, SuperDunningActionResult, SuperDunningQueueResp, SuperInvoiceListResp, SuperPackBindResp, SuperPackReapplyResp, SuperPackTierResp, Tag, TagNames, TalkTemplate, TestDriveRow, WecomAgentConfigResp } from '../types'
 
 export interface ApiRoutes {
   "DELETE /api/v1/admin/apikeys/:id": unknown
@@ -126,7 +126,7 @@ export interface ApiRoutes {
   "GET /api/v1/super/billing/refund-requests": unknown
   "GET /api/v1/super/dunning": SuperDunningQueueResp
   "GET /api/v1/super/feedbacks": unknown
-  "GET /api/v1/super/invoices": unknown
+  "GET /api/v1/super/invoices": SuperInvoiceListResp
   "GET /api/v1/super/materials": unknown
   "GET /api/v1/super/monitor/health": unknown
   "GET /api/v1/super/orders/pending": unknown
@@ -249,6 +249,7 @@ export interface ApiRoutes {
   "POST /api/v1/org/departments": unknown
   "POST /api/v1/org/users": unknown
   "POST /api/v1/privacy/deletion-request": unknown
+  "POST /api/v1/privacy/my-data": PrivacyMyDataResp
   "POST /api/v1/strategy/templates": TalkTemplate
   "POST /api/v1/strategy/test": unknown
   "POST /api/v1/super/billing/orders/:id/mock-webhook": unknown
@@ -257,8 +258,9 @@ export interface ApiRoutes {
   "POST /api/v1/super/dunning/:id/nudge": SuperDunningActionResult
   "POST /api/v1/super/dunning/:id/reset": SuperDunningActionResult
   "POST /api/v1/super/feedbacks/resolve": unknown
-  "POST /api/v1/super/invoices/:id/issue": unknown
-  "POST /api/v1/super/invoices/:id/void": unknown
+  "POST /api/v1/super/invoices/:id/issue": BillingOrder
+  "POST /api/v1/super/invoices/:id/notify-resend": BillingOrder
+  "POST /api/v1/super/invoices/:id/void": BillingOrder
   "POST /api/v1/super/materials/:id/evals": unknown
   "POST /api/v1/super/materials/:id/review": unknown
   "POST /api/v1/super/orders/:id/confirm": unknown
