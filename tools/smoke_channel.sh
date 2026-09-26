@@ -188,6 +188,40 @@ check "连发3条恰好只落1条AI消息" 1 "$([ "$got" = 1 ] && echo "$AI_DELT
 CUST_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
 check "3条客户消息全部落库(历史不丢)" y "$([ "${CUST_NOW:-0}" -ge 4 ] && echo y || echo n)"
 
+# ---- 四c、连发 5 条只回 2 条（残项1+2 通道侧护栏，2026-09-26）----
+# 为什么单开一段：四b 的 3 条正好一批，走不到"批次上限被顶满 + 积压接管"那条路径，
+# 而用户报的"连发五条偶发双答"恰恰只在那条路径上出现（ DEFECT-G7-DUP-TAKEOVER / 接管双份归属）。
+# 本租户合并上限按配置默认 3 条，所以 5 条的真值只有两个：**两批、两条回复**。
+# 出现 3 条即回归（同一句被两个批次各答一遍），出现 1 条即丢消息。
+# 与四b 一样按"增量"计数，不动全局配置；结束由本套件既有 cleanup 统一清通道数据。
+echo "---- 四c、通道连发5条只回两批（残项1+2） ----"
+OB5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+AI5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+CUS5_BASE=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
+send_cb "%E9%97%A8%E5%BA%97%E4%BB%80%E4%B9%88%E6%97%B6%E5%80%99%E5%8F%AF%E4%BB%A5%E7%9C%8B%E8%BD%A6"   # 门店什么时候可以看车
+send_cb "%E7%8E%B0%E5%9C%A8%E6%9C%89%E4%BB%80%E4%B9%88%E9%A2%9D%E5%A4%96%E6%9D%83%E7%9B%8A"          # 现在有什么额外权益
+send_cb "%E7%BD%AE%E6%8D%A2%E8%A1%94%E8%B4%B4%E6%80%8E%E4%B9%88%E7%AE%97"                            # 置换补贴怎么算
+send_cb "%E4%BF%9D%E5%85%BB%E5%91%A8%E6%9C%9F%E5%A4%9A%E4%B9%85"                                     # 保养周期多久
+send_cb "%E8%83%BD%E5%AE%89%E6%8E%92%E5%91%A8%E5%85%AD%E8%AF%95%E9%A9%BE%E5%90%97"                   # 能安排周六试驾吗
+# 第二批要等第一批"生成 + 人类化延迟"整段走完，轮询上限放到 120s（mock 模式延迟仍是真的）
+got5=0
+for i in $(seq 1 120); do
+  AI5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+  [ $(( ${AI5_NOW:-0} - ${AI5_BASE:-0} )) -ge 2 ] && { got5=1; break; }
+  sleep 1
+done
+check "连发5条两批回复都到达" y "$([ "$got5" = 1 ] && echo y || echo n)"
+sleep 5 # 让潜在的"第三批/重复投递"尾巴露出来（双答回归时这一等就见分晓）
+AI5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='ai'" | tr -d '[:space:]')
+OB5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM channel_outbound WHERE channel_id=$CID" | tr -d '[:space:]')
+CUS5_NOW=$(psql "$DBURL" -tAc "SELECT count(*) FROM messages m JOIN channel_identities ci ON ci.customer_id=m.customer_id WHERE ci.channel_id=$CID AND m.sender_type='customer'" | tr -d '[:space:]')
+AI5_DELTA=$(( ${AI5_NOW:-0} - ${AI5_BASE:-0} ))
+OB5_DELTA=$(( ${OB5_NOW:-0} - ${OB5_BASE:-0} ))
+CUS5_DELTA=$(( ${CUS5_NOW:-0} - ${CUS5_BASE:-0} ))
+check "连发5条恰好落2条AI消息(3=双答/1=丢消息)" 2 "$AI5_DELTA"
+check "连发5条恰好投2条出站(客户侧不收到重叠回复)" 2 "$OB5_DELTA"
+check "连发5条客户消息全部落库(历史不丢)" 5 "$CUS5_DELTA"
+
 # ---- 五、人工锁定：AI 不出声（转人工无感知）----
 echo "---- 五、人工锁定态不自动回复 ----"
 psql "$DBURL" -c "UPDATE conversations SET is_human_locked=true, is_ai_reply_enabled=false, mode='human' WHERE customer_id IN (SELECT customer_id FROM channel_identities WHERE channel_id=$CID);" >/dev/null 2>&1

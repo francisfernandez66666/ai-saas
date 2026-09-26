@@ -440,7 +440,7 @@ step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
 step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移+E1-2 平台证书验签政策 49 项）"
 ./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
 
-step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 55 项，含侧边栏双签名 §十，自建 9091+mockwx）"
+step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 59 项，含侧边栏双签名 §十，自建 9091+mockwx；四c 段锁合并队列接管路径——连发 5 条恰好 2 条 AI 回复 + 2 条出站 + 5 条客户消息全落库，双答/丢答/丢历史三个方向同时封）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
 step "E2E 层：uat_advisor.sh（顾问工作台字节级 88 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 欠账批 +3：反馈额度口径护栏——20 条评分行不吃「每日 20 条反馈」额度、20 条真反馈仍挡得住第 21 条，配落库前置自检防零行空转）"
