@@ -303,7 +303,7 @@ verdict "工作树卫生护栏" $HYG_RC
 # 所以接进来的是"它抓得到这些红"的那六条用例：副本>1 无 Redis（env 与 compose 两个来源各一例）、
 # 编排起了 Redis 却没人连、单实例正向不误报。教训同备份脚本那次：
 # **一个只会打日志并返回成功的守卫，等于没有守卫**。
-step "静态门禁：deploy_preflight 反证用例（tools/test_deploy_preflight.sh，6 例）"
+step "静态门禁：deploy_preflight 反证用例（tools/test_deploy_preflight.sh，22 断言；⑤~⑧ 为 .env 丢失批四组）"
 bash tools/test_deploy_preflight.sh >/tmp/test_all_preflight_selftest.log 2>&1
 PFS_RC=$?
 if [ "$PFS_RC" -ne 0 ]; then tail -15 /tmp/test_all_preflight_selftest.log; fi
@@ -326,8 +326,8 @@ verdict "ops_daily 反证用例（FIX-7）" $ODS_RC
 # 为什么不 gate 本体：它要连真库、要写 backups/，接进每次提交等于把回归绑在一台机器的 cron 上。
 # 接进来的是三条守卫各自的判别力：RLS 预检（必须拦、且拦在 pg_dump 之前）、未通电库不得被误杀、
 # 半截归档不留盘、探针失明只 WARN。全部跑在 stub 的 psql/pg_dump/pg_restore 上，不碰真库。
-# 这一组判据自己也被变异检验过（四刀，见该文件头），因为第一版就有"删掉 exit 1 仍全绿"的空转。
-step "静态门禁：backup.sh 守卫反证用例（tools/test_backup_guard.sh，6 例）"
+# 这一组判据自己也被变异检验过（六刀，见该文件头），因为第一版就有"删掉 exit 1 仍全绿"的空转。
+step "静态门禁：backup.sh 守卫反证用例（tools/test_backup_guard.sh，14 断言）"
 bash tools/test_backup_guard.sh >/tmp/test_all_backup_guard_selftest.log 2>&1
 BGS_RC=$?
 if [ "$BGS_RC" -ne 0 ]; then tail -15 /tmp/test_all_backup_guard_selftest.log; fi
@@ -558,7 +558,7 @@ psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
 # 段名台账写法（2026-09-28 收官批）：**不再硬编码断言项数**。旧写法写死"608 项"，而 smoke 每批只加不减，
 # 数字从 608→711→今日更多却一行没改——标题变成一份"看起来权威的过期口径"，比没有数字更坏（读的人会拿它核对结果）。
 # 项数以本次实跑 tail 为准；下面只登记段落台账（段号重复由 smoke.sh 段头自检测门禁兜，见其 LC_ALL=C 判据）。
-step "E2E 层：smoke.sh（项数以实跑输出为准；段台账 §二十~二十五 批二/三+E4/E2/E3/E9/E10、§二十六~二十七 2026-09-20 审计批、§二十八 B2、§二十九 D2 贡献度口径、§三十 AI 销售闭环、§三十一 数据层治理/版本声明单点锁/微信验签观测位、§三十二 主动触达、§三十三 用量预警与催缴、§三十四 贡献度下钻同源、§三十五 获客活码、§三十六 商机与报价版本链、§三十七 E8 会话存档、§三十八 超管租户检索、§三十九 MQ 两段台账、§四十 行业包档位门槛、§四十一 同编码单上架版本、§四十二~四十六 2026-09-27 端到端审计批（通道密钥脱敏四路/退款单号与终态/分页与标签字典/发票交付五档/PIPL 本人副本）、§四十七 DB 级 RLS 通电〔2026-09-28 FIX-A〕）"
+step "E2E 层：smoke.sh（项数以实跑输出为准；段台账 §二十~二十五 批二/三+E4/E2/E3/E9/E10、§二十六~二十七 2026-09-20 审计批、§二十八 B2、§二十九 D2 贡献度口径、§三十 AI 销售闭环、§三十一 数据层治理/版本声明单点锁/微信验签观测位、§三十二 主动触达、§三十三 用量预警与催缴、§三十四 贡献度下钻同源、§三十五 获客活码、§三十六 商机与报价版本链、§三十七 E8 会话存档、§三十八 超管租户检索、§三十九 MQ 两段台账、§四十 行业包档位门槛、§四十一 同编码单上架版本、§四十二~四十六 2026-09-27 端到端审计批（通道密钥脱敏四路/退款单号与终态/分页与标签字典/发票交付五档/PIPL 本人副本）、§四十七 DB 级 RLS 通电〔2026-09-28 FIX-A〕、§四十八 外部凭据面：回填观测+密文可解性双向灯+密文不进日志〔2026-09-28 .env 丢失批〕）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 33 项）"

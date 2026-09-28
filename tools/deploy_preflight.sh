@@ -24,6 +24,10 @@ ENV_FILE="${1:-.env}"
 # 而那正是"为了让测试通过而动交付物"的开端。
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 export COMPOSE_FILE
+# 模板文件可覆盖（FIX-N 反向用例）：tools/test_deploy_preflight.sh 会喂一份**剥掉部署面键**的
+# 合成模板，断"照模板重建会静默丢键"这条判据真的会响。没有这个覆写，反向用例只能靠改仓库里的
+# .env.example 来做——那正是"为了让测试通过而动交付物"的开端（与 COMPOSE_FILE 覆写同理由）。
+ENV_EXAMPLE_FILE="${ENV_EXAMPLE_FILE:-.env.example}"
 
 PASS=0; FAIL=0
 ok()   { echo "  PASS  $1"; PASS=$((PASS+1)); }
@@ -33,6 +37,32 @@ warn() { echo "  WARN  $1"; }
 # env_get <KEY>：只回显值；调用方**不得**把结果写进日志，仅用于判空/判占位符
 env_get() { grep -E "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"' | tr -d ' '; }
 env_has() { grep -qE "^[[:space:]]*$1[[:space:]]*=" "$ENV_FILE" 2>/dev/null; }
+
+# ---- 外部凭据"占位形态"判据（FIX-N 2026-09-28 .env 丢失处置批）----
+# 为什么不能沿用上面那句 `[ -n "$(env_get K)" ]`：本机 .env 被误删后只能从模板重建，
+# 于是每个键都**非空但全是模板串**（sk-your-siliconflow-key 这种），旧判据一律报 PASS。
+# 「键存在」≠「凭据可用」，这是同一族安静失败里最贵的一次。
+# 清单与 config/envaudit.go 的 placeholderPrefixes 同源；两边集合的漂移由
+# tools/test_deploy_preflight.sh 的「判据同源」用例逐词比对——分叉的后果是运行期观测位
+# 与上线预检一个说红一个说绿，而 .env 其实整片没回填。
+PLACEHOLDER_PREFIXES="your- your_ sk-your change-me change_me changeme placeholder xxxx todo <"
+# 出厂默认值逐字表（须与 .env.example 的真值一致，同样由反证脚本比对）
+is_template_default() { # $1=键名 $2=现值
+  case "$1=$2" in
+    HEALTH_TOKEN=local-dev-health-2026|LLM_GATEWAY_TOKEN=change-me-gateway-shared-secret) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# is_placeholder_value：空串**不**算占位（留空属"这条没启用"，由成对判据与 warn 分别表达）
+is_placeholder_value() {
+  local s
+  s=$(printf '%s' "${1:-}" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+  [ -z "$s" ] && return 1
+  for p in $PLACEHOLDER_PREFIXES; do
+    case "$s" in "$p"*) return 0 ;; esac
+  done
+  return 1
+}
 
 echo "==== 上线前置校验（env=${ENV_FILE}） ===="
 
@@ -72,6 +102,69 @@ fi
 for k in DB_HOST DB_NAME DB_USER; do
   env_has "$k" && ok "$k 已声明" || bad "$k 缺失"
 done
+
+# ---- 2b. 外部凭据回填形态：键在≠凭据可用（FIX-N 2026-09-28）----
+# 只报键名与原因，**任何情况下都不回显值**（值可能就是真凭据，一旦进终端/工单就是泄露面）。
+echo "-- 2b) 外部凭据回填形态（值不回显）"
+CRED_KEYS="SILICONFLOW_API_KEY DEEPSEEK_API_KEY ZHIPU_API_KEY GLM_API_KEY EMBEDDING_API_KEY RERANK_API_KEY SMTP_HOST SMTP_USER SMTP_PASS SMTP_FROM HEALTH_TOKEN LLM_GATEWAY_TOKEN COLLECTOR_KEY"
+CRED_KEY_N=0
+UNBACKFILLED=0
+for k in $CRED_KEYS; do
+  env_has "$k" || continue            # 键不存在＝这条能力没启用，另有成对判据与 warn 覆盖
+  CRED_KEY_N=$((CRED_KEY_N+1))
+  v="$(env_get "$k")"
+  [ -z "$v" ] && continue             # 显式留空＝设计内关闭（降级链少一路兜底，不是配置错）
+  if is_placeholder_value "$v"; then
+    bad "外部凭据 $k 仍是模板占位形态（.env 从模板重建后没回填；值不回显）"
+    UNBACKFILLED=$((UNBACKFILLED+1))
+  elif is_template_default "$k" "$v"; then
+    bad "外部凭据 $k 仍是出厂默认值：守卫/共享密钥等于没设（值不回显）"
+    UNBACKFILLED=$((UNBACKFILLED+1))
+  fi
+done
+[ "$UNBACKFILLED" = 0 ] && ok "已声明的外部凭据无模板占位/出厂默认形态（本文件内共判 $CRED_KEY_N 个凭据键）"
+# 成对判据：URL 配了而凭据没配 = 半配，后果不是"没这功能"而是"每次请求真去拨号、每次必失败"。
+# RERANK_API_KEY 留空时代码复用 EMBEDDING_API_KEY（rerank.go:72-75），故回落键可用即算配好——
+# 把它报成半配就是预检自己在造红。
+for pair in "EMBEDDING_API_URL EMBEDDING_API_KEY -" "RERANK_API_URL RERANK_API_KEY EMBEDDING_API_KEY" "LLM_GATEWAY_URL LLM_GATEWAY_TOKEN -" "SMTP_HOST SMTP_PASS -"; do
+  read -r uk kk fk <<< "$pair"
+  [ "$fk" = "-" ] && fk=""
+  uv="$(env_get "$uk")"; kv="$(env_get "$kk")"
+  if [ -n "$fk" ] && { [ -z "$kv" ] || is_placeholder_value "$kv"; }; then
+    fbv="$(env_get "$fk")"
+    if [ -n "$fbv" ] && ! is_placeholder_value "$fbv"; then kv="$fbv"; fi
+  fi
+  u_set=0; [ -n "$uv" ] && u_set=1
+  k_set=0; if [ -n "$kv" ] && ! is_placeholder_value "$kv"; then k_set=1; fi
+  if [ "$u_set" != "$k_set" ]; then
+    if [ "$u_set" = 1 ]; then
+      bad "$uk 已声明而 $kk 未回填（半配：实现会真的拨号，每请求吃一次失败）"
+    else
+      warn "$kk 已配而 $uk 为空——这条增强不会生效（代码按 $uk 拨号）"
+    fi
+  fi
+done
+# 写了没人读的键：本机这次事故里最阴的一种形态——.env 里明明有这行，代码从不读它，
+# 于是运维以为配好了。SMTP_PASSWORD vs SMTP_PASS 是真实踩过的键名（notifier.go 读 SMTP_PASS）。
+if env_has SMTP_PASSWORD && ! env_has SMTP_PASS; then
+  bad "键名写错：本仓 SMTP 口令读的是 SMTP_PASS（internal/notify/notifier.go），SMTP_PASSWORD 无人读取"
+fi
+if [ -n "$(env_get WECOM_WEBHOOK_URL)$(env_get wecom_webhook_url)" ]; then
+  warn "WECOM_WEBHOOK_URL 写在 .env 里不生效：告警群 webhook 是 system_configs 平台级键 wecom_webhook_url（tenant_id=0，经后台/超管配置面写）"
+fi
+# 模板对账：部署面那几个键（模式/代理/指标令牌/副本数）历史上只在真 .env 里有、模板没有，
+# 重建 .env 时整片丢掉且不报错。模板里缺这些行本身就是缺陷，这里当 FAIL 报。
+if [ -f "$ENV_EXAMPLE_FILE" ]; then
+  MISSING_DOC=""
+  for k in APP_ENV ALLOW_MOCK_PAY TRUSTED_PROXIES METRICS_TOKEN APP_REPLICAS; do
+    grep -qE "^[[:space:]]*#?[[:space:]]*${k}=" "$ENV_EXAMPLE_FILE" || MISSING_DOC="$MISSING_DOC $k"
+  done
+  if [ -n "$MISSING_DOC" ]; then
+    bad "模板 $ENV_EXAMPLE_FILE 缺部署面键（照模板重建 .env 会静默丢掉）：$MISSING_DOC"
+  else
+    ok "模板已覆盖部署面键（APP_ENV/ALLOW_MOCK_PAY/TRUSTED_PROXIES/METRICS_TOKEN/APP_REPLICAS）"
+  fi
+fi
 
 # ---- 3. 网络与多实例：经代理/多副本必配项 ----
 echo "-- 3) 网络与多实例"
@@ -128,16 +221,34 @@ if [ "$(env_get AI_MOCK_MODE)" = "true" ]; then
   bad "AI_MOCK_MODE=true：生产不会调真实模型（回复全是模板）"
 else
   AIKEY=""
+  # 判据与 §2b 同源：**非空但不算回填**的模板串不能算"有 Key"（旧写法就在这里给
+  # sk-your-siliconflow-key 报过 PASS，而真实 AI 链路每次调用都 401）。
   for k in SILICONFLOW_API_KEY DEEPSEEK_API_KEY GLM_API_KEY LLM_GATEWAY_TOKEN; do
-    [ -n "$(env_get $k)" ] && AIKEY="$k"
+    av="$(env_get "$k")"
+    [ -n "$av" ] && ! is_placeholder_value "$av" && ! is_template_default "$k" "$av" && AIKEY="$k"
   done
-  [ -n "$AIKEY" ] && ok "AI 供应商 Key 至少一条非空（${AIKEY}）" || bad "AI 供应商 Key 全空且 AI_MOCK_MODE!=true——AI 链路必然全程失败"
+  [ -n "$AIKEY" ] && ok "AI 供应商 Key 至少一条已回填（${AIKEY}，只报键名）" || bad "AI 供应商 Key 全空或仍是模板值且 AI_MOCK_MODE!=true——AI 链路必然全程失败"
 fi
-[ -n "$(env_get SMTP_HOST)" ] && [ -n "$(env_get SMTP_USER)" ] \
-  && ok "SMTP 已配置（到期邮件/用量预警/催缴触达可用）" \
-  || warn "SMTP 未配置：到期邮件、D3 用量预警与催缴会**降级为日志**（不报错，但客户收不到）"
-[ -n "$(env_get WECOM_WEBHOOK_URL)$(env_get wecom_webhook_url)" ] \
-  && ok "告警群机器人已配" || warn "告警群未配：死信/包质量低分/催缴升级等告警只落日志"
+# SMTP 三件（HOST/USER/PASS）齐且非占位才算"可用"：只看 HOST/USER 会放过一个口令没填的
+# 配置，而 readiness 的 smtp 位同样按 HOST&&USER 判 configured——三条触达链路（到期邮件/
+# 用量预警/催缴）会天天在登录那步失败且不报错。§2b 的成对判据已把 PASS 缺口报成 FAIL，
+# 这里再按"齐了没有"给结论，两处口径一致。
+SMTP_OK=1
+for k in SMTP_HOST SMTP_USER SMTP_PASS; do
+  sv="$(env_get "$k")"
+  { [ -z "$sv" ] || is_placeholder_value "$sv"; } && SMTP_OK=0
+done
+if [ "$SMTP_OK" = 1 ]; then
+  ok "SMTP 已配齐（到期邮件/用量预警/催缴触达可用）"
+else
+  warn "SMTP 未配齐（HOST/USER/PASS 任一项空或仍是模板值）：到期邮件、D3 用量预警与催缴会**降级为日志**（不报错，但客户收不到）"
+fi
+# 口径更正（FIX-N 2026-09-28）：这一项过去按 .env 里有没有 WECOM_WEBHOOK_URL 判"已配"，
+# 而**代码从不读这个环境变量**（internal/notify 读的是 system_configs 平台级键
+# wecom_webhook_url，tenant_id=0）。照旧写法：在 .env 里写一行就得到一条 PASS，
+# 而群通知实际上一条都发不出去——这正是"键存在≠凭据可用"的教科书现场。
+# 预检不连库（只读纪律），所以这里如实报"本脚本判不了，须查库/后台"，不再给假 PASS。
+warn "告警群 webhook 不在 .env 里：须查 system_configs 平台级键 wecom_webhook_url（后台「触达通知」或 /status/detail 的 alert_channel 观测位）——死信/包质量低分/催缴升级全靠它"
 
 # ---- 5. 编排文件自身 ----
 echo "-- 5) 生产编排"

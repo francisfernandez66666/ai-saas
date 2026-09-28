@@ -12,7 +12,7 @@
 # 本项目的老教训就摆在那儿：旧 backup.sh 在缺 flock 的机器上"打一行 WARN 就 exit 0"，
 # cron 天天看到成功而备份从未真跑。**一个只会打日志并返回成功的守卫等于没有守卫。**
 #
-# 四组用例全部用 stub 的 psql/pg_dump/pg_restore 驱动**真实的 backup.sh**（不连库、不碰生产）：
+# 五组用例全部用 stub 的 psql/pg_dump/pg_restore 驱动**真实的 backup.sh**（不连库、不碰生产）：
 #   ① 反向：角色不可旁路 + 库里有已 ENABLE 的租户表 → 必须 exit≠0，且报出的是预检那句话
 #   ② 正向对照：角色可旁路（超级用户/BYPASSRLS）→ 预检必须放行，整条链路跑到"全部完成"
 #      （缺这组，①的"红"可能只是脚本被改成恒红）
@@ -21,15 +21,26 @@
 #        根本不能作为备份成功的判据，这一组就是把这条教训钉住）
 #   ④ 探测失败不拦：psql 打不通（读数取空）→ 只 WARN、继续尝试 dump
 #      （把"探针失败"变成"永久不备份"是更坏的结果；真失败时 pg_dump 自己会响亮地报错）
+#   ⑤ 凭据快照随归档留存（.env 丢失批 2026-09-28）：归档里的通道凭据是用 JWT_SECRET 派生的
+#      AES 密钥加密的，"只备份库、不备份 .env"恢复出来的就是一库解不开的密文——本机 09-28
+#      正是这么丢的（旧密钥无处可寻，那一行旧密文永久作废）。五条断言各钉一件事：
+#      留了 / 恰一份 / 权限 0600 / 内容与源逐字相同 / 值零回显；
+#      ⑤反 源 .env 不在场时必须只 WARN 并跑完（缺快照不该把唯一能救命的 dump 一起判红），
+#      且**不许**留下空快照（0 字节的 .env 会让人以为有）；
+#      ③·补 顺带钉住"快照排在完整性校验之后"：dump 失败的那一轮连凭据都不许单独落盘。
 #
-# 变异检验（本文件对自己做的反证，2026-09-28 实跑）：把 backup.sh 复制成四个变体、各挖掉
+# 变异检验（本文件对自己做的反证，2026-09-28 实跑）：把 backup.sh 复制成六个变体、各挖掉
 # 一条守卫，用 BACKUP_SCRIPT=<变体> 跑本脚本，逐个确认"该红的红了"：
 #   删掉预检的 exit 1        → ①①·补 双红（第一版只红 0 条：后面 du 失败把退出码补上了，
 #                              这正是给 ① 补 STUB_DUMP_BYTES 与"没开始 dump"两条断言的原因）
 #   去掉「有已 ENABLE 的表」腿 → ②·补 红（单向锁：库未通电的部署会被永久拦得没备份）
 #   trap 里的 rm -f 换成 :    → ③ 红
 #   探针失明分支改成 exit 1   → ④ 红（恒红守卫）
-# 原版实测 PASS=6 FAIL=0。
+#   快照落盘换成 `if :`（只打"已留存"日志）→ ⑤·补 红 3 条，而⑤那条**照绿**——
+#                              这条最说明问题：日志文案不能作为备份做了的判据，
+#                              所以 ⑤ 的重量全压在"盘上有几个文件/什么权限/字节是否相同"上
+#   chmod 600 改成 644        → ⑤·补 权限那条红（备份目录常被别的账号或备份代理读走）
+# 原版实测 PASS=14 FAIL=0。
 #
 # 用法：bash tools/test_backup_guard.sh                    （退出码 0=判据全对，1=有 FAIL）
 #       BACKUP_SCRIPT=/tmp/变异体.sh bash tools/test_backup_guard.sh   （跑变异检验）
@@ -82,6 +93,10 @@ STUB
 
 chmod +x "$BIN/psql" "$BIN/pg_dump" "$BIN/pg_restore"
 
+# 合成"形如 .env"的凭据文件（⑤ 用）：值是本用例自造的假密钥，唯一作用是能被"零回显"断言抓到。
+FAKE_JWT="STUBJWTDONTLEAK0123456789"
+printf 'JWT_SECRET=%s\nDB_HOST=stub-host-only\n' "$FAKE_JWT" >"$WORK/fake.env"
+
 # run_case <用例名> 之后由调用方自己断言 $OUT/$RC；BACKUP_DIR 每次换新目录防陈旧产物干扰
 BACKUP_DIR=""
 OUT=""
@@ -96,7 +111,9 @@ run_case() {
     cd "$ROOT" || exit 9
     PATH="$BIN:/usr/bin:/bin:/usr/sbin:/sbin"
     export HOME="$WORK/emptyhome"
-    export BACKUP_ENV_FILE="$WORK/no-such.env"
+    # 凭据来源默认指向不存在的 .env（读数只来自显式注入的环境变量）；
+    # ⑤ 那两组用 CASE_ENV_FILE 递一份"形如 .env"的合成文件，测的是"快照随归档留存"这条新守卫。
+    export BACKUP_ENV_FILE="${CASE_ENV_FILE:-$WORK/no-such.env}"
     export BACKUP_DIR PGHOST=127.0.0.1 PGPORT=5432 PGUSER=stub PGDATABASE=stub_db
     export OPS_NOTIFY_DISABLED=1 BACKUP_NOTIFY_WEBHOOK=
     export STUB_ROLE_FLAGS="${STUB_ROLE_FLAGS:-f}"
@@ -111,6 +128,9 @@ run_case() {
 }
 
 dump_count() { ls "$BACKUP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '; }
+env_count() { ls "$BACKUP_DIR"/*.env 2>/dev/null | wc -l | tr -d ' '; }
+# 快照权限（BSD/GNU 通用口径：看 ls -l 的权限串，不依赖 stat 方言）
+env_mode() { ls -l "$BACKUP_DIR"/*.env 2>/dev/null | head -1 | awk '{print $1}'; }
 
 echo "=== backup.sh 守卫自证（RLS 预检 / 半成品不留盘 / 探测失败不拦）==="
 
@@ -154,11 +174,18 @@ else
 fi
 
 # ③ 半成品不留盘：dump 写出 100 字节后失败 → 文件必须被删
-STUB_ROLE_FLAGS=t STUB_DUMP_BYTES=100 STUB_DUMP_RC=1 run_case c_partial
+#    这一组同时带着 CASE_ENV_FILE：凭据快照排在完整性校验**之后**，dump 失败的那一轮
+#    必须连快照都不留——目录里孤零零一份 .env 配上"没有可恢复的归档"，是下一次误删时的双倍损失。
+CASE_ENV_FILE="$WORK/fake.env" STUB_ROLE_FLAGS=t STUB_DUMP_BYTES=100 STUB_DUMP_RC=1 run_case c_partial
 if [ "$RC" -ne 0 ] && [ "$(dump_count)" = "0" ]; then
   ok "③ pg_dump 中途失败 → 非零半截归档被删掉、整体判红（exit=${RC}）"
 else
   bad "③ 半截归档留在盘上（$(dump_count) 个，exit=${RC}）——「文件存在且可解析」会被当成备份成功，而它其实缺数据"
+fi
+if [ "$(env_count)" = "0" ]; then
+  ok "③·补 dump 失败时凭据快照也不留盘（快照只在归档通过校验之后才写）"
+else
+  bad "③·补 归档没成功却留下了 $(env_count) 份凭据快照——密钥单独躺在备份目录里，而它配不到任何可恢复的库"
 fi
 
 # ④ 探测失败不拦：psql 打不通（非零退出且零输出）→ 只 WARN，继续尝试 dump
@@ -167,6 +194,51 @@ if [ "$RC" -eq 0 ] && grep -q "探测失败" "$OUT" && grep -q "全部完成" "$
   ok "④ 探针取不到读数 → 只 WARN 不拦，仍跑完（把探针失败变成永久不备份是更坏的结果）"
 else
   bad "④ 探针失败的处理口径不对（exit=${RC}）——既不能静默放行，也不能一律判红"
+fi
+
+# ⑤ 凭据快照随归档留存（.env 丢失批，2026-09-28）：
+#    归档里的通道凭据是 JWT_SECRET 派生密钥加密的，只备份库不备份 .env，恢复出来就是一库
+#    解不开的密文——本机 2026-09-28 正是这么丢的。四条断言各钉一件事：
+#    留了 / 只留一份 / 权限 0600 / 内容与源逐字相同，外加一条"值零回显"。
+CASE_ENV_FILE="$WORK/fake.env" STUB_ROLE_FLAGS=t STUB_RLS_TABLES=0 STUB_DUMP_BYTES=2048 run_case e_envsnap
+if [ "$RC" -eq 0 ] && grep -q "凭据快照已随归档留存" "$OUT"; then
+  ok "⑤ 校验通过的归档配一份凭据快照（exit=${RC}）"
+else
+  bad "⑤ 凭据快照没随归档落盘（exit=${RC}）——只备份密文库、不备份密钥，恢复后通道凭据全部作废"
+fi
+if [ "$(env_count)" = "1" ]; then
+  ok "⑤·补 快照恰一份（同名同戳，与本次归档配对）"
+else
+  bad "⑤·补 快照份数异常（$(env_count) 个）——多份密钥文件会让「恢复时该配哪一份」重新变成猜"
+fi
+if [ "$(env_mode)" = "-rw-------" ]; then
+  ok "⑤·补 快照权限 0600（备份目录常被别的账号/备份代理读走）"
+else
+  bad "⑤·补 快照权限是 '$(env_mode)'，不是 0600——把库备份的口径扩大到把密钥也群发了"
+fi
+if cmp -s "$WORK/fake.env" "$BACKUP_DIR"/*.env 2>/dev/null; then
+  ok "⑤·补 快照内容与源 .env 逐字相同（不是截断或空文件）"
+else
+  bad "⑤·补 快照内容与源不一致——恢复时 JWT_SECRET 差一个字符就全库解不开"
+fi
+if ! grep -q "$FAKE_JWT" "$OUT" && ! grep -rq "$FAKE_JWT" "$BACKUP_DIR"/*.dump 2>/dev/null; then
+  ok "⑤·补 密钥值零回显（日志与归档里都不出现该值本体）"
+else
+  bad "⑤·补 日志或归档里出现了密钥值——快照本意是防丢凭据，不能反手把凭据抄进日志"
+fi
+
+# ⑤反 源 .env 不在场：只 WARN、不判红（备份是主目标；把"没有快照"变成"整轮备份失败"
+# 等于用一条新守卫把唯一能救命的 dump 也废掉——与 ④ 同一口径）。
+STUB_ROLE_FLAGS=t STUB_RLS_TABLES=0 STUB_DUMP_BYTES=2048 run_case f_noenv
+if [ "$RC" -eq 0 ] && grep -q "不在场：本次归档没有配套凭据快照" "$OUT"; then
+  ok "⑤反 缺 .env → 只 WARN 并如实说明后果，整体仍跑完（exit=${RC}）"
+else
+  bad "⑤反 缺 .env 的处置口径不对（exit=${RC}）——既不能静默成功，也不能把备份本身判红"
+fi
+if [ "$(env_count)" = "0" ]; then
+  ok "⑤反·补 缺源文件时目录里不留下半份或空快照（宁缺毋滥：0 字节的 .env 会让人以为有）"
+else
+  bad "⑤反·补 源 .env 不在场却写出了 $(env_count) 份快照——空快照比没有更危险"
 fi
 
 rm -rf "$WORK"

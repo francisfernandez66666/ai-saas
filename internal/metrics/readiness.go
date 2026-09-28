@@ -83,6 +83,7 @@ func computeReadinessChecks() []HealthCheck {
 	checks = appendPaymentFundChecks(checks, cfg)
 	checks = appendDeployEnvChecks(checks)
 	checks = appendNotifyReachChecks(checks, cfg)
+	checks = appendCredentialSurfaceChecks(checks)
 	// R10 多实例协调层（O1-a，2026-09-23 批六）：REDIS_ENABLED=true 却连不上 = "声明了多实例语义、
 	// 实际各实例单干"（合并队列裁决/跨实例 WS 广播/登录锁全部退化），比没配更危险——
 	// 没配是明知单机，配了没连上是静默降级。旧实现探测一次定终身，compose 里 app 先于 redis ready

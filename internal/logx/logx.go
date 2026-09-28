@@ -1,6 +1,6 @@
 // Package logx 日志脱敏工具（C3，2026-09-12）
 // 背景：UAT 实证 GORM logger.Info 与业务 log.Printf 会把客户消息正文/手机号明文写盘——合规风险。
-// 本包自包含（不依赖 service，避免循环）：正则手机号/身份证/邮箱就地掩码。
+// 本包自包含（不依赖 service，避免循环）：正则手机号/身份证/邮箱/凭据密文就地掩码。
 // 出口：
 //   - logx.Safe(text, max)    业务日志：>max 字截断 + PII 掩码，替换裸 log.Printf(content)
 //   - logx.Mask(text)         纯掩码（GORM SQL 包装层用）
@@ -19,13 +19,22 @@ var (
 	idRe = regexp.MustCompile(`\b([0-9]{17}[0-9Xx])\b`)
 	// 邮箱：粗粒度 local@domain
 	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`)
+	// 凭据密文（.env 丢失批，2026-09-28）：pkg/crypto 的 AES-GCM 封套形态 "gcm1:"+base64。
+	// 密文本身不是明文凭据，但它是「可被同一把 JWT_SECRET 解开的凭据」的编码——
+	// 日志外泄 + JWT_SECRET 外泄 = 通道密钥明文外泄，故与 PII 同级处理。
+	// 8 位下限避开 `gcm1:` 后跟空串/短标记的误伤；整段（含前缀）一起替换，
+	// 替换产物含 `*` 与 `(`，不在字符类内 ⇒ Mask 幂等。
+	cipherRe = regexp.MustCompile(`gcm1:[A-Za-z0-9+/]{8,}={0,2}`)
 )
 
-// Mask 就地掩码文本中的手机号/身份证/邮箱，保留可辨识首尾。多次调用幂等。
+// Mask 就地掩码文本中的手机号/身份证/邮箱/凭据密文，保留可辨识首尾。多次调用幂等。
 func Mask(text string) string {
 	if text == "" {
 		return text
 	}
+	// 密文必须先掩：base64 载荷里能出现 11 位连续数字（被 phoneRe 命中留下半截）
+	// 与 `xx@yy` 形态（被 emailRe 命中留下半截），届时残留片段既不可读也丢了"这里曾是密文"的信息。
+	text = cipherRe.ReplaceAllString(text, "gcm1:***(redacted)")
 	text = maskByRe(phoneRe, text, maskPhone)
 	text = maskByRe(idRe, text, maskID)
 	text = emailRe.ReplaceAllStringFunc(text, maskEmailLocal)

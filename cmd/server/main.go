@@ -70,7 +70,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.39.0"
+const appVersion = "v2.40.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -983,6 +983,37 @@ func main() {
 			}
 		}
 	}()
+
+	// 8.11 凭据面体检接线（FIX-N，2026-09-28 .env 丢失处置批）。
+	// 为什么必须写在启动这一刻而不是等人去查 /status/detail：.env 被误删后从模板重建，
+	// 系统照常启动、照常 200、照常全绿（冒烟全程跑模拟态），唯一的症状是"第一次真调 AI、
+	// 第一次真发信"才炸——而那时已经过了几天。启动日志把两件事说清：
+	// ① 哪些**外部凭据键**仍是模板占位（只打键名，值绝不落日志）；
+	// ② 库里有多少通道凭据密文**当前密钥解不开**（AES 密钥派生自 JWT_SECRET，
+	//    轮换或重建 .env 即让存量凭据静默作废，界面上与"没配置"同为 ****）。
+	metrics.SetCredentialCipherProbe(func() (metrics.CredentialCipherAudit, error) {
+		sum, err := channel.AuditCredentialCiphers(db.DB)
+		return metrics.CredentialCipherAudit{
+			Scanned:          sum.CellsInspected,
+			WithCipher:       sum.WithCipher,
+			Undecryptable:    sum.Undecryptable,
+			AffectedChannels: sum.AffectedChannels,
+		}, err
+	})
+	if findings := config.AuditCredentialPlaceholders(nil); len(findings) > 0 {
+		names := make([]string, 0, len(findings))
+		for _, f := range findings {
+			names = append(names, f.Key+":"+f.Reason)
+		}
+		log.Printf("[WARN] 外部凭据未回填 %d 项（键名:原因，值不回显）: %s — 若 .env 是从 .env.example 重建的，这些都要重新填",
+			len(findings), strings.Join(names, ", "))
+	}
+	if sum, err := channel.AuditCredentialCiphers(db.DB); err != nil {
+		log.Printf("[WARN] 通道凭据密文体检不可用: %v", err)
+	} else if sum.Undecryptable > 0 {
+		log.Printf("[ERROR] 通道凭据密文有 %d 列解不开（涉及 %d 条通道）：AES 密钥派生自 JWT_SECRET，轮换或重建 .env 即让存量凭据作废，需在后台重录这些通道凭据",
+			sum.Undecryptable, sum.AffectedChannels)
+	}
 
 	// 8.12 企微会话存档增量拉取（E8-4，2026-09-24）：60s 一轮扫「已启用存档且 active」的通道，
 	// 按各通道 archive_seq 游标增量取数 → 解密 → 落 chat_archive_records → 单调推游标。

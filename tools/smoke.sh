@@ -93,6 +93,12 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         本轮 billing 九例红即此形态；配"旧两腿写法必被点名/三腿写法判合格"双向自证）、
 #         readiness 的 rls_policy_face 观测位恰一条、迁移账本 31 笔与 030/031 up/down 成对；
 #         数据层全部 psql 直查不走 HTTP）
+#       / 2026-09-28 外部凭据面 14 断言（四十八：.env 被误删重建后，"凭据没回填"与"JWT_SECRET 变了、
+#         库里密文全解不开"两件事都必须当场看得见——/status/detail 的 credential_placeholders 与
+#         credential_cipher_integrity 各恰一条、公开 /status 两条都不出现、整份载荷零凭据值（逐键
+#         拿 .env 真值反扫，只报键名）、坏密文行使作废计数 +1 且删除后 -1（增量口径，不锁绝对数）、
+#         本段合成通道的密文经日志面逐字扫：debug 态 GORM Info 会把 *_cipher 列值插进 SQL，
+#         故断"新增日志零 gcm1: 密文正文 + 掩码标记确实出现过"，并配合成密文的对照样本防判据空扫）
 #       / 2026-09-25 残项5：行业包同编码单上架版本 27 断言（四十一：迁移 027 记账与部分唯一索引
 #         ux_pack_one_active_per_code 实存、索引定义带 status=active 条件（只禁同时上架不禁历史）、
 #         全表不变式"同 code 多 active"=0 且先自检库里确有在架行、三个合成版本先建后比、
@@ -3631,6 +3637,115 @@ check "031 up/down 成对存在" 2 "$(ls "$PROJECT_ROOT/migrations/031_rls_polic
 # 这里按"账本行数==up 脚本数"整口径断言，不单独为 031 开一条——差额表会连同其它未记账的迁移一起暴露。
 check "迁移账本行数 == up 脚本数（含 031，无未记账迁移）" "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')" \
   "$($PSQL "SELECT count(*) FROM schema_migrations" 2>/dev/null | tr -d '[:space:]')"
+
+echo "---- 四十八、外部凭据面：回填观测 + 密文可解性 + 密文不进日志（.env 丢失批 2026-09-28）----"
+# 现场：本机 .env 被误删后从模板重建，13 个外部凭据键里若干填回的是模板占位，而 AES 密钥派生自
+# JWT_SECRET——密钥一变，库里已录的通道凭据密文同时变成解不开的字节串，管理台对这些列只显掩码，
+# 于是"解不开"与"还没配"在界面上是同一个 ****，只有客户报"通道连不上"才会被发现。
+# 本段把两件事钉成机器判据，全部走真接口/真日志：
+#   ① 观测位真的出现在被断言的那个载荷里（/status/detail 的 data.readiness），
+#      且公开 /status 一条都不泄露（P2-4 口径）；
+#   ② 作废计数是**双向灯**：塞一行坏密文它 +1，删掉它回到基线逐字相同——
+#      只测"能亮"的守卫会把"永远亮"也当成合规。
+# 判据一律用**增量**，不锁绝对数：本机库里本来就有一行旧密钥加密的测试通道（定损批已确认其
+# 明文不可恢复），锁绝对数会让这段在别人重录凭据后翻红。
+HT48=$(grep '^HEALTH_TOKEN=' "${PROJECT_ROOT}/.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+DETAIL48=$(curl -s -m 20 -H "X-Health-Token: $HT48" "$B/status/detail")
+# cred_cnt <观测名>：该观测名在 readiness 载荷里出现几次（恰 1 才算"一条一行"的读表节奏）
+cred_cnt() { printf '%s' "$DETAIL48" | grep -o "\"name\":\"$1\"" | wc -l | tr -d ' '; }
+# cred_val <观测名>：取该项 value（载荷里没有该名字时回 MISSING，让调用方红而不是空串蒙混）
+cred_val() {
+  printf '%s' "$DETAIL48" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    print("PARSE_FAIL")
+    sys.exit(0)
+rows = (d.get("data") or {}).get("readiness") or []
+for r in rows:
+    if r.get("name") == sys.argv[1]:
+        print(r.get("value") or "")
+        sys.exit(0)
+print("MISSING")' "$1"
+}
+check "credential_placeholders 在 /status/detail 的 readiness 载荷里恰一条（构造出来≠发得出去）" 1 "$(cred_cnt credential_placeholders)"
+check "credential_cipher_integrity 同上恰一条" 1 "$(cred_cnt credential_cipher_integrity)"
+# 公开面泄露收敛：两条新观测名都不得经无鉴权的 /status 出去（P2-4 只留 version/uptime/status/ok）
+PUB48=$(curl -s -m 15 "$B/status")
+check "公开 /status 零 credential_* 清单泄露" 0 \
+  "$(printf '%s' "$PUB48" | grep -o 'credential_' | wc -l | tr -d ' ')"
+# 值不回显：整份详情载荷逐键反扫 .env 真值（命中只报键名，任何情况下都不把值打进输出）。
+# 短值（<8）跳过：像 "true"/"1" 这种值在任何 JSON 里都会误命中，误报会让这条锁被人大意关掉。
+LEAK48=""
+for CK48 in SILICONFLOW_API_KEY DEEPSEEK_API_KEY ZHIPU_API_KEY GLM_API_KEY EMBEDDING_API_URL \
+            EMBEDDING_API_KEY RERANK_API_URL RERANK_API_KEY LLM_GATEWAY_URL LLM_GATEWAY_TOKEN \
+            SMTP_HOST SMTP_USER SMTP_PASS SMTP_FROM HEALTH_TOKEN COLLECTOR_KEY; do
+  CV48=$(grep -E "^${CK48}=" "${PROJECT_ROOT}/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r"' )
+  if [ "${#CV48}" -ge 8 ] && printf '%s' "$DETAIL48" | grep -qF -- "$CV48"; then
+    LEAK48="$LEAK48 $CK48"
+  fi
+  CV48=""
+done
+check "详情载荷零凭据值回显（只报键名:原因；命中的键会列在这里）" "" "$LEAK48"
+# —— 密文可解性：双向灯 ——
+# 从 value 里取"解不开的单元格数"：只有 X_of_Y_undecryptable(channels=M) 形态带数，其余形态记 0
+und_num() { case "$1" in *_of_*undecryptable*) printf '%s' "${1%%_of_*}";; *) printf '0';; esac; }
+CV48_BASE=$(cred_val credential_cipher_integrity)
+N48_BASE=$(und_num "$CV48_BASE")
+# 坏密文行：前缀对、载荷解不开（长度不足以容 nonce+tag，GCM 必失败）。
+# 用 DB 直插而不是走 API——API 会用**当前**密钥加密，插进去必然可解，本项要测的正是"解不开"。
+$PSQL "INSERT INTO channels (tenant_id,type,name,corpid,status,secret_cipher,created_at,updated_at)
+       VALUES (${ACME_ID},'wecom_app','凭据审计坏行','ww_cred_audit_bad','disabled','gcm1:AAAAAAAAAAAAAAAAAAAAAAAA',NOW(),NOW());" >/dev/null 2>&1
+DETAIL48=$(curl -s -m 20 -H "X-Health-Token: $HT48" "$B/status/detail")
+CV48_BAD=$(cred_val credential_cipher_integrity)
+N48_BAD=$(und_num "$CV48_BAD")
+# 落库前置自检：坏行确实在库里且确实是 gcm1: 形态，否则下面的 +1 会在"根本没插进去"上假红
+check "坏密文行已落库（前置自检，防 +1 判据在空集上失灵）" 1 \
+  "$($PSQL "SELECT count(*) FROM channels WHERE corpid='ww_cred_audit_bad' AND secret_cipher LIKE 'gcm1:%'" 2>/dev/null | tr -d '[:space:]')"
+check "一行解不开的密文让作废计数恰 +1（探针→metrics→载荷整条接线在做事）" $((N48_BASE + 1)) "$N48_BAD"
+check "作废档的 value 写法带出「几列解不开/共几列/几条通道」" y \
+  "$(printf '%s' "$CV48_BAD" | grep -qE '^[0-9]+_of_[0-9]+_undecryptable\(channels=[0-9]+\)$' && echo y || echo n)"
+$PSQL "DELETE FROM channels WHERE corpid='ww_cred_audit_bad';" >/dev/null 2>&1
+DETAIL48=$(curl -s -m 20 -H "X-Health-Token: $HT48" "$B/status/detail")
+CV48_BACK=$(cred_val credential_cipher_integrity)
+check "删掉坏行后该项逐字回到基线（灯会灭，不是只加不减的常亮红灯）" "$CV48_BASE" "$CV48_BACK"
+check "本段合成通道行已清零" 0 \
+  "$($PSQL "SELECT count(*) FROM channels WHERE corpid='ww_cred_audit_bad'" 2>/dev/null | tr -d '[:space:]')"
+# —— 日志面：debug 态 GORM 的 Info 会把 INSERT/UPDATE 的参数插值进 SQL 整条打屏，
+#     *_cipher 列的值因此原本会明文（密文形态）落进 ai-scrm.log。logx.Mask 现在把 gcm1: 封套
+#     整段替成 gcm1:***(redacted)，本段用一次真建通道把这条写库链路跑到日志里逐字扫。
+#     只扫本段新增字节：全文件扫会把修复前落下的历史行算进来，那是既有事实不是本次回归的产物。
+if [ -f "$LOGFILE" ]; then
+  CL48_M0=$(wc -c < "$LOGFILE" | tr -d '[:space:]')
+  curl -s -m 15 -o /dev/null -X POST "$B/api/v1/admin/channels" \
+    -H "Authorization: Bearer $TOKEN" -H "X-Tenant-ID: ${ACME_ID}" -H "Content-Type: application/json" \
+    -d '{"type":"wecom_app","name":"凭据日志面冒烟通道","corpid":"ww_cred_log_scan","secret":"SMOKEFIX48PLAINSECRET","config_json":"{}"}'
+  sleep 2
+  CL48_NEW=$(tail -c +$((CL48_M0 + 1)) "$LOGFILE" 2>/dev/null)
+  if printf '%s' "$CL48_NEW" | grep -q 'ww_cred_log_scan'; then
+    check "日志扫描前置自检：本段建通道的写库确实进了日志（缺它下面两条在空集上假绿）" y y
+    check "本段新增日志零密文正文（gcm1: 后不跟 base64 载荷）" 0 \
+      "$(printf '%s' "$CL48_NEW" | grep -cE 'gcm1:[A-Za-z0-9+/]{8,}' 2>/dev/null | tr -d ' ')"
+    check "本段新增日志里密文渲染成 gcm1:***(redacted)（正向对照：不是压根没写到那一列）" y \
+      "$(printf '%s' "$CL48_NEW" | grep -qF 'gcm1:***(redacted)' && echo y || echo n)"
+    # 判据非空扫自证：同一 grep 在"塞了真密文形态"的样本上必须命中
+    CL48_CTRL=$(mktemp)
+    printf '%s\n' "INSERT INTO \"channels\" (\"secret_cipher\") VALUES ('gcm1:bm9uY2VhbmRjaXBoZXJhbmR0YWcxMjM0NTY=');" > "$CL48_CTRL"
+    check "对照样本能被同一判据抓到（判据不是空扫）" 1 \
+      "$(grep -cE 'gcm1:[A-Za-z0-9+/]{8,}' "$CL48_CTRL" 2>/dev/null | tr -d ' ')"
+    rm -f "$CL48_CTRL"
+  else
+    # 本轮服务不是显式 debug（GORM 日志级为 Warn，不打插值 SQL）或 stdout 未落该文件：
+    # 这条泄露路径在当前运行形态下不存在，如实 SKIP 不计 PASS，勿改成"没命中即通过"。
+    echo "  SKIP  本段建通道未见于 ai-scrm.log（非 debug 态不打插值 SQL），跳过日志面三条断言"
+  fi
+  $PSQL "DELETE FROM channels WHERE corpid='ww_cred_log_scan';" >/dev/null 2>&1
+  check "本段日志面通道已清零" 0 \
+    "$($PSQL "SELECT count(*) FROM channels WHERE corpid='ww_cred_log_scan'" 2>/dev/null | tr -d '[:space:]')"
+else
+  echo "  SKIP  ai-scrm.log 不在场（服务 stdout 未落到该文件），跳过日志面四条断言"
+fi
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

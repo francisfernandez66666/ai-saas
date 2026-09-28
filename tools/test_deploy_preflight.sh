@@ -12,6 +12,11 @@
 #   ② 只把 replicas: 3 写进编排、.env 不提 APP_REPLICAS → 仍须 FAIL（旧实现看不见，本批补的那半）
 #   ③ 编排起了 redis 服务但应用不连 → 必须 FAIL（CI 三个 job 恰好就是这个形态）
 #   ④ 单实例且编排显式 REDIS_ENABLED:"true" → 三条腿一条都不许红（防"把闸改成恒红"这种假严格）
+#   ⑤~⑦（FIX-N 2026-09-28 .env 丢失处置批）凭据回填面：模板占位/出厂默认/半配/键名写错
+#      各须 FAIL，且**回填后红必须消失**（防"把闸改成恒红"）；⑧ 钉模板缺部署面键；
+#      ⑨ 是判据同源锁——
+#      shell 侧的占位清单与出厂默认表必须与 config/envaudit.go、.env.example 逐字相等，
+#      分叉的后果不是少报一条，而是"两边都认为自己覆盖了"，凭据没回填却双绿。
 #
 # 用法：bash tools/test_deploy_preflight.sh    （纯文件判据，不启容器、不连库、退出码 0/1）
 # ============================================================
@@ -130,6 +135,172 @@ if [ "$R4" = "0" ]; then
 else
   bad "④ 正向组整体退出码应为 0（rc=${R4}）"
   printf '%s\n' "$O4" | grep FAIL | sed 's/^/        /'
+fi
+
+# ============================================================
+# ⑤~⑨ 外部凭据回填判据（FIX-N 2026-09-28 .env 丢失处置批）
+#
+# 这四组钉的是同一条缺陷族：旧 §2b 不存在时，preflight 判"凭据有没有配"用的是 `[ -n 值 ]`，
+# 而本机 .env 从模板重建之后每个键都**非空但全是模板串**（sk-your-siliconflow-key 这种），
+# 于是预检对着一个整片没回填的 .env 报"AI 供应商 Key 已配"。
+# ⑨ 那条不是场景用例，是**判据同源锁**：shell 清单与 config/envaudit.go 的清单一旦分叉，
+# 运行期观测位与上线预检会一个说红一个说绿，而库里/机器上的凭据其实没动过。
+# ============================================================
+
+# mk_cred_env <目标文件> [附加 KEY=VALUE 行…]：除凭据段外全绿（单实例 + 编排开 Redis 时整体应为 0）
+mk_cred_env() {
+  local f=$1; shift
+  {
+    echo "GIN_MODE=release"
+    echo "APP_ENV=prod"
+    echo "ALLOW_MOCK_PAY=false"
+    echo "JWT_SECRET=selftest-only-0123456789abcdef0123456789abcdef"
+    echo "DB_PASSWORD=selftest_strong_pw"
+    echo "DB_HOST=db"
+    echo "DB_NAME=ai_scrm"
+    echo "DB_USER=ai_scrm"
+    echo "AI_MOCK_MODE=false"
+    echo "GLM_API_KEY=selftest-key"
+    for kv in "$@"; do echo "$kv"; done
+  } > "$f"
+}
+CK="$WORK/cred.yml"; mk_compose "$CK" yes "" no
+
+# ⑤ 主力 Key 仍是模板值 + 守卫令牌仍是出厂默认 → 两条都必须红
+E5="$WORK/c5.env"
+mk_cred_env "$E5" "SILICONFLOW_API_KEY=sk-your-siliconflow-key" "HEALTH_TOKEN=local-dev-health-2026"
+O5=$(run_preflight "$E5" "$CK"); R5=$?
+expect_fail_with "⑤ 模板占位 Key 必须 FAIL（旧写法在这里给 PASS）" "SILICONFLOW_API_KEY 仍是模板占位" "$O5" "$R5"
+expect_fail_with "⑤ 出厂默认 HEALTH_TOKEN 必须 FAIL（守卫等于没设）" "HEALTH_TOKEN 仍是出厂默认值" "$O5" "$R5"
+# 反向对照（防"把闸改成恒红"的假严格）：同一份 .env 只把这两处改成真实形态，两条红必须消失
+E5R="$WORK/c5r.env"
+mk_cred_env "$E5R" "SILICONFLOW_API_KEY=sk-7f3a9b12c4d5" "HEALTH_TOKEN=selftest-health-token"
+O5R=$(run_preflight "$E5R" "$CK"); R5R=$?
+# 匹配串取 FAIL 文案的**独有片段**（"仍是模板占位"），不能只取"模板占位"——正向那条 PASS
+# 自己写着"无模板占位/出厂默认形态"，取宽了就是断言把自己判红（首跑即踩）。
+expect_absent "⑤反 回填后的占位红消失" "仍是模板占位" "$O5R"
+expect_absent "⑤反 回填后的出厂默认红消失" "仍是出厂默认值" "$O5R"
+if [ "$R5R" != "0" ]; then
+  bad "⑤反 全回填组整体退出码应为 0（rc=${R5R}）"
+  printf '%s\n' "$O5R" | grep FAIL | sed 's/^/        /'
+else
+  ok "⑤反 全回填组整体退出码 0（凭据段不贡献任何 FAIL）"
+fi
+
+# ⑥ 半配：声明了 URL 却没配 Key（实现会真去拨号、每请求一次失败）
+E6="$WORK/c6.env"
+mk_cred_env "$E6" "EMBEDDING_API_URL=https://api.siliconflow.cn/v1/embeddings"
+O6=$(run_preflight "$E6" "$CK"); R6=$?
+expect_fail_with "⑥ URL 已配而 Key 没配 → FAIL（半配比没配更坏）" "EMBEDDING_API_URL 已声明而 EMBEDDING_API_KEY 未回填" "$O6" "$R6"
+# 反向对照 A：整条都没配＝能力未启用，不报（旧实现若把它报红，运维会被一堆"没打算用的功能"淹没）
+E6A="$WORK/c6a.env"; mk_cred_env "$E6A"
+O6A=$(run_preflight "$E6A" "$CK"); R6A=$?
+expect_absent "⑥反A 整条未启用不报半配" "未回填" "$O6A"
+# 反向对照 B：RERANK 只配 URL、Key 留空但 EMBEDDING Key 可用——这是**文档写明的合法形态**
+# （internal/service/rerank.go:72-75 复用 EmbeddingKey，有单测锁）。把它报成缺口就是预检自己造红。
+E6B="$WORK/c6b.env"
+mk_cred_env "$E6B" "RERANK_API_URL=https://api.siliconflow.cn/v1/rerank" "EMBEDDING_API_KEY=sk-emb-selftest"
+O6B=$(run_preflight "$E6B" "$CK"); R6B=$?
+expect_absent "⑥反B RERANK 回落 EMBEDDING Key 属合法形态，不报红" "RERANK_API_KEY 未回填" "$O6B"
+if [ "$R6B" != "0" ]; then
+  bad "⑥反B 回落形态整体应判 0（rc=${R6B}）"
+  printf '%s\n' "$O6B" | grep FAIL | sed 's/^/        /'
+else
+  ok "⑥反B 回落形态整体退出码 0"
+fi
+
+# ⑦ 写了没人读的键：SMTP_PASSWORD（代码读的是 SMTP_PASS）
+E7="$WORK/c7.env"
+mk_cred_env "$E7" "SMTP_PASSWORD=selftest-smtp-pw"
+O7=$(run_preflight "$E7" "$CK"); R7=$?
+expect_fail_with "⑦ 键名写错（SMTP_PASSWORD 无人读）必须 FAIL" "键名写错" "$O7" "$R7"
+E7R="$WORK/c7r.env"
+mk_cred_env "$E7R" "SMTP_PASS=selftest-smtp-pw" "SMTP_HOST=smtp.qiye.aliyun.com" "SMTP_USER=bot@example.com"
+O7R=$(run_preflight "$E7R" "$CK"); R7R=$?
+expect_absent "⑦反 正确键名不再报键名错配" "键名写错" "$O7R"
+if [ "$R7R" != "0" ]; then
+  bad "⑦反 正确键名组整体退出码应为 0（rc=${R7R}）"
+  printf '%s\n' "$O7R" | grep FAIL | sed 's/^/        /'
+else
+  ok "⑦反 正确键名组整体退出码 0"
+fi
+
+# ⑧ 模板缺部署面键：这条锁判的是"照模板重建 .env 会静默丢掉哪几行"，
+#    所以反向用例喂**剥掉那五行的合成模板**（ENV_EXAMPLE_FILE 覆写），不动仓库交付物——
+#    第一版这里没有覆写，"摘掉整条对账"的变异照样全绿（守卫空转而没人发现）。
+E8="$WORK/c8.env"
+mk_cred_env "$E8" "SILICONFLOW_API_KEY=sk-7f3a9b12c4d5" "HEALTH_TOKEN=selftest-health-token"
+STRIPPED_EX="$WORK/env.example.stripped"
+grep -vE "^[[:space:]]*(APP_ENV|ALLOW_MOCK_PAY|TRUSTED_PROXIES|METRICS_TOKEN|APP_REPLICAS)=" .env.example > "$STRIPPED_EX"
+O8=$(ENV_EXAMPLE_FILE="$STRIPPED_EX" COMPOSE_FILE="$CK" bash tools/deploy_preflight.sh "$E8" 2>&1); R8=$?
+expect_fail_with "⑧ 模板缺部署面键 → FAIL（重建 .env 时静默丢键）" "缺部署面键" "$O8" "$R8"
+# 反向对照：仓库真模板必须让这条判绿（否则"补进模板"只写在注释里，没有任何东西证明它到位了）
+O8R=$(run_preflight "$E8" "$CK"); R8R=$?
+expect_absent "⑧反 仓库 .env.example 不报缺键" "缺部署面键" "$O8R"
+if [ "$R8R" != "0" ]; then
+  bad "⑧反 真模板组整体退出码应为 0（rc=${R8R}）"
+  printf '%s\n' "$O8R" | grep FAIL | sed 's/^/        /'
+else
+  ok "⑧反 真模板组整体退出码 0"
+fi
+
+# ⑨ 判据同源锁：shell 侧的占位清单/出厂默认表必须与 Go 侧、与 .env.example 逐字相等。
+#   分叉后果不是"少报一条"，是"两边各自都认为自己覆盖了"——双绿而凭据其实没回填。
+DRIFT=$(python3 - "$ROOT" <<'PY'
+import re, sys
+root = sys.argv[1]
+go = open(root + "/config/envaudit.go", encoding="utf-8").read()
+sh = open(root + "/tools/deploy_preflight.sh", encoding="utf-8").read()
+ex = open(root + "/.env.example", encoding="utf-8").read()
+problems = []
+
+def go_prefixes():
+    m = re.search(r"var placeholderPrefixes = \[\]string\{(.*?)\n\}", go, re.S)
+    if not m:
+        problems.append("placeholderPrefixes 结构变了，解析器需同步")
+        return set()
+    return set(re.findall(r'"([^"]+)"', m.group(1)))
+
+def sh_prefixes():
+    m = re.search(r'PLACEHOLDER_PREFIXES="([^"]+)"', sh)
+    if not m:
+        problems.append("shell 侧 PLACEHOLDER_PREFIXES 不见了")
+        return set()
+    return set(m.group(1).split())
+
+def go_defaults():
+    m = re.search(r"var templateDefaults = map\[string\]string\{(.*?)\n\}", go, re.S)
+    if not m:
+        problems.append("templateDefaults 结构变了，解析器需同步")
+        return {}
+    return dict(re.findall(r'"([A-Z0-9_]+)":\s*"([^"]*)"', m.group(1)))
+
+gp, sp = go_prefixes(), sh_prefixes()
+if gp != sp:
+    problems.append("占位清单分叉：Go 独有 %s / shell 独有 %s" % (sorted(gp - sp) or "-", sorted(sp - gp) or "-"))
+gd = go_defaults()
+# shell 的 case 分支写法是 KEY=VALUE，逐条比对
+sh_def = dict(re.findall(r'([A-Z0-9_]{3,})=([^|\s)]+)', sh.split("is_template_default()")[1][:400])) if "is_template_default()" in sh else {}
+if "is_template_default()" not in sh:
+    problems.append("shell 侧 is_template_default 不见了")
+if set(gd) != set(sh_def):
+    problems.append("出厂默认表键集分叉：Go=%s shell=%s" % (sorted(gd), sorted(sh_def)))
+for k, v in gd.items():
+    if k in sh_def and sh_def[k] != v:
+        problems.append("%s 的出厂默认值两边不等：Go=%s shell=%s" % (k, v, sh_def[k]))
+    # Go 表必须等于模板真值（否则"没改过"判不出来，本批实踩过）
+    m = re.search(r"(?m)^%s=(.*)$" % re.escape(k), ex)
+    if not m:
+        problems.append("%s 不在 .env.example 里，templateDefaults 却在判它" % k)
+    elif m.group(1).strip() != v:
+        problems.append("%s 的表值与 .env.example 真值不等：Go=%s 模板=%s" % (k, v, m.group(1).strip()))
+print("\n".join(problems) if problems else "OK")
+PY
+)
+if [ "$DRIFT" = "OK" ]; then
+  ok "⑨ 判据同源：shell 占位清单/出厂默认表 == config/envaudit.go == .env.example"
+else
+  bad "⑨ 判据同源锁红：$(printf '%s' "$DRIFT" | tr '\n' '；')"
 fi
 
 echo ""

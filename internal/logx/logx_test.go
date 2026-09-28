@@ -1,7 +1,8 @@
-// C3 单测：手机号/身份证/邮箱掩码、Safe 截断、幂等、误伤防护
+// C3 单测：手机号/身份证/邮箱/凭据密文掩码、Safe 截断、幂等、误伤防护
 package logx
 
 import (
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -44,6 +45,69 @@ func TestMaskEmail(t *testing.T) {
 	}
 	if !strings.Contains(got, "z***n@example.com") {
 		t.Fatalf("邮箱应保留首尾+域名: %q", got)
+	}
+}
+
+// TestMaskCipher 凭据密文整段掩码（.env 丢失批，2026-09-28）：
+// debug 态 GORM logger.Info 会把 channels 的 *_cipher 列值原样插进 SQL 打屏，
+// 本用例锁「密文正文一条都不许留在日志里」，并保留 gcm1: 前缀做可辨识线索。
+func TestMaskCipher(t *testing.T) {
+	ct := "gcm1:" + base64.StdEncoding.EncodeToString([]byte("nonce12bytes||cipherbody||tag16bytes"))
+	in := `INSERT INTO "channels" ("secret_cipher","access_token_cipher") VALUES ('` + ct + `','` + ct + `')`
+	got := Mask(in)
+	if strings.Contains(got, ct) {
+		t.Fatalf("密文未掩码: %q", got)
+	}
+	if strings.Contains(got, base64.StdEncoding.EncodeToString([]byte("nonce12bytes"))) {
+		t.Fatalf("密文只掩了前半截: %q", got)
+	}
+	// 两条参数都要掩掉，不是"命中第一条就返回"
+	if n := strings.Count(got, "gcm1:***(redacted)"); n != 2 {
+		t.Fatalf("两条密文应各掩一次，实得 %d 次: %q", n, got)
+	}
+	// 反向对照：非密文的普通 SQL 片段不得被吞
+	if !strings.Contains(got, `INSERT INTO "channels"`) {
+		t.Fatalf("SQL 结构被误伤: %q", got)
+	}
+}
+
+// TestMaskCipherBeatsPhoneInsidePayload 密文必须**先于**手机号规则掩掉。
+// base64 载荷里可以出现 13812345678 这种 11 位号段；若手机号规则先跑，
+// 结果是"半截密文 + 4 个星"——既不可读，也丢了"这里曾是凭据密文"这条线索。
+func TestMaskCipherBeatsPhoneInsidePayload(t *testing.T) {
+	in := "cipher=gcm1:YWJjMTM4MTIzNDU2NzhkZWY=" // 载荷内含 13812345678 形态片段
+	got := Mask(in)
+	if got != "cipher=gcm1:***(redacted)" {
+		t.Fatalf("密文应整段替换且不被手机号规则抢先: %q", got)
+	}
+	// 反向对照：独立的手机号仍按 PII 口径保留首尾（别把两条规则做成同一条）
+	if got2 := Mask("手机 13812345678"); !strings.Contains(got2, "138****5678") {
+		t.Fatalf("手机号首尾保留口径被破坏: %q", got2)
+	}
+}
+
+// TestMaskCipherIdempotent 掩码产物含 `*` 与 `(`，不在密文字符类内 ⇒ 二次调用无变化。
+// 这条不是走过场：Safe() 与 GORM Trace 会对同一段文本重复调用 Mask。
+func TestMaskCipherIdempotent(t *testing.T) {
+	once := Mask("值 gcm1:AAAAAAAAAAAAAAAAAAAA 落库")
+	twice := Mask(once)
+	if once != twice {
+		t.Fatalf("密文掩码应幂等: once=%q twice=%q", once, twice)
+	}
+}
+
+// TestMaskCipherNoFalsePositive 短标记与含空格的普通文案不得误伤。
+// 8 位下限是给"gcm1: 后跟空串/枚举值"留的活路；掩掉合法文本会让排查日志变成不可用。
+func TestMaskCipherNoFalsePositive(t *testing.T) {
+	for _, in := range []string{
+		"gcm1:short",          // 长度不足载荷下限
+		"gcm1:",               // 空载荷
+		"cipher_kind=gcm1 模式", // 只有前缀、无冒号载荷
+		"归档表 messages_archive 版本 gcm1:2",
+	} {
+		if got := Mask(in); got != in {
+			t.Fatalf("不应误伤: in=%q got=%q", in, got)
+		}
 	}
 }
 

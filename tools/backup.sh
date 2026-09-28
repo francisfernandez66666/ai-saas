@@ -13,9 +13,13 @@
 #   ⚠ 别用应用角色跑 pg_restore：它建出来的表归它、策略也 FORCE 在它身上，而 pg_restore
 #     和 pg_dump 一样会请求 row_security=off，恢复会在 COPY 数据那步报错（同 rlspreflight）。
 #
-# 环境变量：BACKUP_DIR / PGHOST / PGPORT / PGUSER / PGPASSWORD / PGDATABASE
+# 环境变量：BACKUP_DIR / PGHOST / PGPORT / PGPASSWORD / PGUSER / PGDATABASE
 #           KEEP_DAYS(默认7) / BACKUP_REMOTE_CMD(异地推送,可选)
+#           BACKUP_REMOTE_ENV_CMD(凭据快照异地推送,**默认不做**——密钥出机器要人显式决定)
 #           BACKUP_NOTIFY_WEBHOOK(企微机器人 webhook，可选；配置后成败均通知)
+#           ⚠ 归档之外还会随成功校验留一份凭据快照 `<同名>.env`（0600）：库里的通道凭据是
+#             用 JWT_SECRET 派生的密钥加密的，只备份库不备份它，恢复出来的就是一库解不开的密文
+#             （2026-09-28 本机实踩，见下方「凭据快照」段）。快照内容永不进日志、永不进通知正文。
 #           BACKUP_DB_USER / BACKUP_DB_PASSWORD(可选)：**备份专用角色**。
 #           默认沿用 PGUSER（应用角色）。RLS 通电（迁移 030）后，非超级用户且无 BYPASSRLS 的
 #           角色跑 pg_dump 会在 COPY 上直接报错（pg_dump 会 SET row_security = off），
@@ -183,6 +187,37 @@ echo "[$(date '+%F %T')] 备份完成: $FILE ($SIZE)"
 # 完整性抽检：列出归档内容头部（损坏会在此报错）
 pg_restore --list "$FILE" > /dev/null && VALIDATED=1 && echo "[$(date '+%F %T')] 完整性校验通过"
 
+# ------------------------------------------------------------
+# 凭据快照：把 .env 随归档留一份（.env 丢失批，2026-09-28）
+#
+# 为什么这件事属于备份而不是属于"别忘了备份配置文件"：pg_dump 里通道凭据存的是
+# `gcm1:` 密文，而 AES 密钥由 sha256(JWT_SECRET + "|scrm-secretbox/v1") 派生。
+# 于是"库有备份、.env 没有"这种组合的实际结果是：**恢复出来的库自带一堆解不开的凭据**——
+# 数据一行没丢，通道却全部作废，且管理台对这些列只显掩码，界面上和"还没配"长得一模一样。
+# 本机 2026-09-28 就是这条：`.env` 被误删后从模板重建，旧 JWT_SECRET 无处可寻，
+# 库里那一行旧密文永久解不开（定损见 FIXLOG_2026-09-28_ENVLOSS.md）。
+# 口径三条：
+#   ① 排在完整性校验**之后**——半截归档不该配一份"看起来能恢复"的凭据；
+#   ② 权限 0600、内容永不回显（日志只写文件路径与权限，不写任何一个值）；
+#   ③ 刻意**不**跟着 BACKUP_REMOTE_CMD 走远端：远端通道由运维自己掌控，把 JWT_SECRET
+#      推到一个未知目的地，比"异地没有凭据"更糟。需要异地留凭据的人请显式自己配
+#      BACKUP_REMOTE_ENV_CMD（本脚本不代为决定）。
+# 留存失败只 WARN 不判红：备份本身是主目标，凭据快照缺失要在总账里如实说清，
+# 而不是把一次本来能救命的 dump 一起废掉。
+# ------------------------------------------------------------
+ENV_SNAP="${FILE%.dump}.env"
+ENV_SNAP_STATE="缺失"
+if [ -f "$ENV_FILE" ]; then
+  if cp "$ENV_FILE" "$ENV_SNAP" 2>/dev/null && chmod 600 "$ENV_SNAP" 2>/dev/null; then
+    ENV_SNAP_STATE="已留存"
+    echo "[$(date '+%F %T')] 凭据快照已随归档留存: $ENV_SNAP（0600，内容不回显）"
+  else
+    echo "[$(date '+%F %T')] [WARN] 凭据快照留存失败（$ENV_FILE → $ENV_SNAP）：这份归档恢复后通道凭据会全部解不开，请手工补一份 .env" >&2
+  fi
+else
+  echo "[$(date '+%F %T')] [WARN] $ENV_FILE 不在场：本次归档没有配套凭据快照，恢复库时 JWT_SECRET 无从对齐（通道密文将解不开）" >&2
+fi
+
 # 异地推送钩子（批次三）：BACKUP_REMOTE_CMD 配置即启用，{{FILE}} 替换为本次备份路径
 if [ -n "${BACKUP_REMOTE_CMD:-}" ]; then
   REMOTE_CMD="${BACKUP_REMOTE_CMD//\{\{FILE\}\}/$FILE}"
@@ -196,9 +231,25 @@ else
   echo "[$(date '+%F %T')] 未配置 BACKUP_REMOTE_CMD，跳过异地推送"
 fi
 
-# 保留策略：删除超期备份
+# 凭据快照的异地推送（可选，默认**不做**）：{{FILE}} 同样替换，但替换的是 .env 副本路径。
+# 与上一条分开的理由见上面「凭据快照」注释——密钥出机器必须由人显式决定，不跟着 dump 默认走。
+if [ -n "${BACKUP_REMOTE_ENV_CMD:-}" ] && [ "$ENV_SNAP_STATE" = "已留存" ]; then
+  REMOTE_ENV_CMD="${BACKUP_REMOTE_ENV_CMD//\{\{FILE\}\}/$ENV_SNAP}"
+  echo "[$(date '+%F %T')] 凭据快照异地推送开始（不回显内容）"
+  if bash -c "$REMOTE_ENV_CMD"; then
+    echo "[$(date '+%F %T')] 凭据快照异地推送成功"
+  else
+    echo "[$(date '+%F %T')] [WARN] 凭据快照异地推送失败（本机副本完好，请检查远端配置/网络）" >&2
+  fi
+fi
+
+# 保留策略：删除超期备份（凭据快照与归档同生命周期——只清 dump 不清 .env 副本，
+# 目录里会攒一堆"配不上任何归档"的密钥文件；两者一起过期才对得上"恢复时成对取用"的用法）
 find "$BACKUP_DIR" -name "ai_scrm_*.dump" -mtime +"$KEEP_DAYS" -print -delete |
   while read -r f; do echo "[$(date '+%F %T')] 清理过期备份: $f"; done
+find "$BACKUP_DIR" -name "ai_scrm_*.env" -mtime +"$KEEP_DAYS" -print -delete |
+  while read -r f; do echo "[$(date '+%F %T')] 清理过期凭据快照: $f"; done
 
 echo "[$(date '+%F %T')] 全部完成"
-notify "成功" "备份完成: $FILE ($SIZE)"
+notify "成功" "备份完成: $FILE ($SIZE)；凭据快照${ENV_SNAP_STATE}（留存失败时该归档恢复后通道密文解不开）"
+exit 0
