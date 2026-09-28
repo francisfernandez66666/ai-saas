@@ -50,6 +50,12 @@ type ApplyResult struct {
 
 // ApplyToTenant 将包内容物化到指定层级（事务）
 // tenantID 必须 >0（系统层禁止）；deptID=0 租户级（行业/企业包），>0 部门级（部门包）
+//
+// 拆分说明（2026-09-28 纯结构重构，行为零变化）：原 251 行的函数体按"八件套各 materialize 一件事"
+// 切为 materializeTemplates / materializeFeatures / materializeConfigKeys / materializeFlows /
+// materializeTags 五个同包非导出段。**事务边界仍在本函数的 db.DB.Transaction 闭包内，未跨函数拆散**——
+// 所有段共用同一个 tx，调用顺序与原实现逐字一致，各段的 continue（空内容跳过）/ return（写失败回滚整笔）
+// 语义原样保留。档位门槛（G-22c）判据在 api 层调用方（PackAllowedForTier 先于本函数），本函数不含也不搬。
 func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, error) {
 	if tenantID == 0 {
 		return nil, fmt.Errorf("系统层(0)禁止绑定行业包——包内容只进租户私有层")
@@ -57,6 +63,14 @@ func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, e
 	code := pc.Manifest.Code
 	prefix := IDPrefix(code, tenantID)
 	res := &ApplyResult{}
+
+	// 部门归属指针：deptID>0 指向该部门、=0 为 NULL（租户级）。templates/features 两段共用，
+	// 纯派生无查询，提到事务外一次算好（与原实现逐字等价）。
+	var deptPtr *uint
+	if deptID > 0 {
+		d := deptID
+		deptPtr = &d
+	}
 
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
 		scripts, err := pc.ParseScripts()
@@ -69,220 +83,34 @@ func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, e
 		}
 
 		// ---- templates：同层级先删后插（版本切换干净替换）----
-		delT := tx.Where("tenant_id = ? AND id LIKE ?", tenantID, prefix+"%")
-		if deptID > 0 {
-			delT = delT.Where("department_id = ?", deptID)
-		} else {
-			delT = delT.Where("department_id IS NULL")
-		}
-		if err := delT.Delete(&model.Template{}).Error; err != nil {
+		n, err := materializeTemplates(tx, code, prefix, tenantID, deptID, deptPtr, scripts)
+		if err != nil {
 			return err
 		}
-		var deptPtr *uint
-		if deptID > 0 {
-			d := deptID
-			deptPtr = &d
-		}
-		for i := range scripts {
-			s := &scripts[i]
-			// G-21(2026-09-24)：空话术模板不进库。
-			// 现场：auto 基包 scripts.json 把字段写成 "template"/"trigger_keywords"，
-			// 而 ScriptTemplate 认的是 prompt_template/hook_template/trigger_tags——
-			// encoding/json 对未知字段静默忽略，ParseScripts 一路"成功"，落库的三条模板
-			// 话术全为空。空模板能被策略召回（无 trigger_tags 时还给 0.6 基础分），
-			// 于是召回层挑中一条什么都没有的模板，AI 拿不到话术参考，现场毫无线索。
-			// 口径：跳过并 WARN（宁缺毋空），空模板一条也不写。
-			if strings.TrimSpace(s.PromptTemplate) == "" && strings.TrimSpace(s.HookTemplate) == "" {
-				log.Printf("[行业包] scripts.json 模板 %s(%s) 的 prompt_template 与 hook_template 全为空，已跳过——检查字段名是否写成 template/content", code, s.ID)
-				continue
-			}
-			status := s.Status
-			if status == 0 {
-				status = 1 // 缺省启用
-			}
-			row := model.Template{
-				ID: prefix + s.ID, TenantID: tenantID,
-				AnchorType: s.AnchorType, SubType: s.SubType,
-				Name: s.Name, Category: s.Category,
-				MinIntent: s.MinIntent, MaxIntent: s.MaxIntent,
-				PromptTemplate: s.PromptTemplate, HookTemplate: s.HookTemplate,
-				Priority: s.Priority, Status: status,
-				DepartmentID: deptPtr,
-			}
-			if len(s.TriggerTags) > 0 {
-				row.TriggerTags = marshalJSON(s.TriggerTags)
-			}
-			if len(s.RequiredTags) > 0 {
-				row.RequiredTags = marshalJSON(s.RequiredTags)
-			}
-			if len(s.ApplicableModels) > 0 {
-				row.ApplicableModels = marshalJSON(s.ApplicableModels)
-			}
-			if len(s.HookFields) > 0 {
-				row.HookFields = marshalJSON(s.HookFields)
-			}
-			if len(s.RequiredFeatures) > 0 {
-				// 引用同样加前缀，指向包内物化后的卖点ID
-				pf := make([]string, len(s.RequiredFeatures))
-				for i, v := range s.RequiredFeatures {
-					pf[i] = prefix + v
-				}
-				row.RequiredFeatures = marshalJSON(pf)
-			}
-			if err := tx.Create(&row).Error; err != nil {
-				return fmt.Errorf("模板 %s 写入失败: %w", row.ID, err)
-			}
-			res.Templates++
-		}
+		res.Templates = n
 
 		// ---- features：同规则 ----
-		delF := tx.Where("tenant_id = ? AND id LIKE ?", tenantID, prefix+"%")
-		if deptID > 0 {
-			delF = delF.Where("department_id = ?", deptID)
-		} else {
-			delF = delF.Where("department_id IS NULL")
-		}
-		if err := delF.Delete(&model.Feature{}).Error; err != nil {
+		n, err = materializeFeatures(tx, code, prefix, tenantID, deptID, deptPtr, kb.Features)
+		if err != nil {
 			return err
 		}
-		for i := range kb.Features {
-			f := &kb.Features[i]
-			// G-21：同上——卖点的正文描述为空则跳过。卖点会被 FillTemplate 注入话术，
-			// 空描述卖点等于给模板填了一段空白，且让包内容统计虚高（"配了 5 个卖点"其实一个都没有）。
-			if strings.TrimSpace(f.DescTemplate) == "" && strings.TrimSpace(f.ShortDesc) == "" {
-				log.Printf("[行业包] product_kb.json 卖点 %s(%s) 的 desc_template 与 short_desc 全为空，已跳过", code, f.ID)
-				continue
-			}
-			status := f.Status
-			if status == 0 {
-				status = 1
-			}
-			row := model.Feature{
-				ID: prefix + f.ID, TenantID: tenantID,
-				FeatureName: f.FeatureName, Category: f.Category,
-				DescTemplate: f.DescTemplate, ShortDesc: f.ShortDesc,
-				Priority: f.Priority, Status: status,
-				DepartmentID: deptPtr,
-			}
-			if len(f.Params) > 0 {
-				row.Params = marshalJSON(f.Params)
-			}
-			if len(f.ApplicableTags) > 0 {
-				row.ApplicableTags = marshalJSON(f.ApplicableTags)
-			}
-			if len(f.ApplicableModels) > 0 {
-				row.ApplicableModels = marshalJSON(f.ApplicableModels)
-			}
-			if err := tx.Create(&row).Error; err != nil {
-				return fmt.Errorf("卖点 %s 写入失败: %w", row.ID, err)
-			}
-			res.Features++
-		}
+		res.Features = n
 
 		// ---- prompts/params/mindset → system_configs 租户覆盖层存证（仅租户级包写配置键；
 		//      部门包的参数类就近覆盖待 P2 部门语境读取端一并实现）----
 		if deptID == 0 {
-			for _, item := range []struct{ file, key string }{
-				{FilePrompts, "pack_prompts_" + code},
-				{FileParams, "pack_params_" + code},
-				{FileMindset, "pack_mindset_" + code},
-			} {
-				raw, ok := pc.RawFile(item.file)
-				if !ok || len(raw) == 0 {
-					continue
-				}
-				if !json.Valid(raw) {
-					return fmt.Errorf("%s 不是合法 JSON", item.file)
-				}
-				var cnt int64
-				tx.Model(&model.SystemConfig{}).
-					Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).Count(&cnt)
-				if jsonSemanticallyEmpty(raw) {
-					// G-21(2026-09-24)：空壳（`[]`/`{}`/全空值对象）**不写覆盖键**。
-					// 旧判据只挡 len(raw)==0，而打包工具给未填充的文件统一补 `[]\n` 壳，
-					// 于是壳被当内容写进 pack_prompts_/pack_params_/pack_mindset_{code}。
-					// 危害不是脏数据而是**静默失去继承**：industry_semantics 读键只看"非空即用"，
-					// 空壳让租户的人设/参数/约束读成空串、又不回落基包与系统层——
-					// 配一个未填充的子包等于把行业话术层整段关掉，现场还毫无线索。
-					if cnt > 0 {
-						// 自愈：历史物化留下的空覆盖键要删掉，否则这个租户永远被自己的空壳挡住。
-						// 删前逐字复核库里的值也确实是空壳——非空内容永不在此路径被删。
-						var cur model.SystemConfig
-						if err := tx.Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).
-							First(&cur).Error; err == nil && jsonSemanticallyEmpty([]byte(cur.Value)) {
-							if err := tx.Delete(&cur).Error; err != nil {
-								return err
-							}
-							log.Printf("[行业包] %s 是空壳、库内值也是空壳，已清除覆盖键 %s（回落基包/系统层）", item.file, item.key)
-						}
-					}
-					continue
-				}
-				if cnt > 0 {
-					if err := tx.Model(&model.SystemConfig{}).
-						Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).
-						Update("value", string(raw)).Error; err != nil {
-						return err
-					}
-				} else if err := tx.Create(&model.SystemConfig{
-					TenantID: tenantID, Category: "industry_pack",
-					Key: item.key, Value: string(raw), ValueType: "json",
-					Description: "行业包[" + pc.Manifest.Name + "] " + item.file,
-				}).Error; err != nil {
-					return err
-				}
-				res.Configs++
+			n, err := materializeConfigKeys(tx, pc, code, tenantID)
+			if err != nil {
+				return err
 			}
+			res.Configs = n
 		}
 
 		// ---- P2（2026-08-26）：flows.json 导入 flow_definitions（租户私有，code 加前缀防冲突）----
-		// G-21：flows 同样按"语义有内容"判，替掉旧的 len(raw) > 2 字节魔术数
-		if raw, ok := pc.RawFile(FileFlows); ok && deptID == 0 && !jsonSemanticallyEmpty(raw) {
-			var flows []struct {
-				Code        string          `json:"code"`
-				Name        string          `json:"name"`
-				Description string          `json:"description"`
-				Nodes       json.RawMessage `json:"nodes"`
-				Edges       json.RawMessage `json:"edges"`
-				StartNodeID string          `json:"start_node_id"`
-			}
-			if err := json.Unmarshal(raw, &flows); err != nil {
-				return fmt.Errorf("flows.json 解析失败: %w", err)
-			}
-			for _, fl := range flows {
-				if fl.Code == "" || fl.Name == "" {
-					continue
-				}
-				code := prefix + fl.Code
-				nodesJSON := string(fl.Nodes)
-				if nodesJSON == "" {
-					nodesJSON = "[]"
-				}
-				edgesJSON := string(fl.Edges)
-				if edgesJSON == "" {
-					edgesJSON = "[]"
-				}
-				var existing model.FlowDefinition
-				if err := tx.Where("code = ?", code).First(&existing).Error; err == nil {
-					if err := tx.Model(&existing).Updates(map[string]interface{}{
-						"name": fl.Name, "description": fl.Description,
-						"nodes": nodesJSON, "edges": edgesJSON,
-						"start_node_id": fl.StartNodeID,
-					}).Error; err != nil {
-						return err
-					}
-					continue
-				}
-				row := model.FlowDefinition{
-					TenantID: tenantID, Name: fl.Name, Code: code,
-					Description: fl.Description, NodesJSON: nodesJSON,
-					EdgesJSON: edgesJSON, StartNodeID: fl.StartNodeID, Status: 1,
-				}
-				if err := tx.Create(&row).Error; err != nil {
-					return fmt.Errorf("流程 %s 写入失败: %w", code, err)
-				}
-			}
+		if err := materializeFlows(tx, pc, tenantID, deptID, prefix); err != nil {
+			return err
 		}
+
 		// ---- tags.json：物化行业包预置标签（租户私有层，code 加包前缀防冲突 + 幂等换版本）----
 		// tag_rules 因引用 TargetTagID（插入后生成），跨包映射耦合高，留待标签引擎专项（P2）
 		if n, err := materializeTags(pc, tx, tenantID); err != nil {
@@ -302,6 +130,246 @@ func ApplyToTenant(pc *PackContent, tenantID uint, deptID uint) (*ApplyResult, e
 	log.Printf("[IndustryPack] 已物化到租户%d [%s] pack=%s v%s 模板=%d 卖点=%d 配置=%d 标签=%d",
 		tenantID, scope, code, pc.Manifest.Version, res.Templates, res.Features, res.Configs, res.Tags)
 	return res, nil
+}
+
+// materializeTemplates 物化话术模板段：本包前缀先删后插（幂等换版本）。
+// 为什么单独成段：这是唯一喂给策略召回候选池（strategy.templatesForTenant）的一段，
+// 其失败路径与其他件套不同——空话术按 G-21 口径 continue 跳过并 WARN（宁缺毋空），
+// 而单行写入失败必须 return 上抛回滚整笔事务；判据与副作用集中在此便于守卫生效。
+func materializeTemplates(tx *gorm.DB, code, prefix string, tenantID uint, deptID uint, deptPtr *uint, scripts []ScriptTemplate) (int, error) {
+	// ---- templates：同层级先删后插（版本切换干净替换）----
+	delT := tx.Where("tenant_id = ? AND id LIKE ?", tenantID, prefix+"%")
+	if deptID > 0 {
+		delT = delT.Where("department_id = ?", deptID)
+	} else {
+		delT = delT.Where("department_id IS NULL")
+	}
+	if err := delT.Delete(&model.Template{}).Error; err != nil {
+		return 0, err
+	}
+	count := 0
+	for i := range scripts {
+		s := &scripts[i]
+		// G-21(2026-09-24)：空话术模板不进库。
+		// 现场：auto 基包 scripts.json 把字段写成 "template"/"trigger_keywords"，
+		// 而 ScriptTemplate 认的是 prompt_template/hook_template/trigger_tags——
+		// encoding/json 对未知字段静默忽略，ParseScripts 一路"成功"，落库的三条模板
+		// 话术全为空。空模板能被策略召回（无 trigger_tags 时还给 0.6 基础分），
+		// 于是召回层挑中一条什么都没有的模板，AI 拿不到话术参考，现场毫无线索。
+		// 口径：跳过并 WARN（宁缺毋空），空模板一条也不写。
+		if strings.TrimSpace(s.PromptTemplate) == "" && strings.TrimSpace(s.HookTemplate) == "" {
+			log.Printf("[行业包] scripts.json 模板 %s(%s) 的 prompt_template 与 hook_template 全为空，已跳过——检查字段名是否写成 template/content", code, s.ID)
+			continue
+		}
+		status := s.Status
+		if status == 0 {
+			status = 1 // 缺省启用
+		}
+		row := model.Template{
+			ID: prefix + s.ID, TenantID: tenantID,
+			AnchorType: s.AnchorType, SubType: s.SubType,
+			Name: s.Name, Category: s.Category,
+			MinIntent: s.MinIntent, MaxIntent: s.MaxIntent,
+			PromptTemplate: s.PromptTemplate, HookTemplate: s.HookTemplate,
+			Priority: s.Priority, Status: status,
+			DepartmentID: deptPtr,
+		}
+		if len(s.TriggerTags) > 0 {
+			row.TriggerTags = marshalJSON(s.TriggerTags)
+		}
+		if len(s.RequiredTags) > 0 {
+			row.RequiredTags = marshalJSON(s.RequiredTags)
+		}
+		if len(s.ApplicableModels) > 0 {
+			row.ApplicableModels = marshalJSON(s.ApplicableModels)
+		}
+		if len(s.HookFields) > 0 {
+			row.HookFields = marshalJSON(s.HookFields)
+		}
+		if len(s.RequiredFeatures) > 0 {
+			// 引用同样加前缀，指向包内物化后的卖点ID
+			pf := make([]string, len(s.RequiredFeatures))
+			for i, v := range s.RequiredFeatures {
+				pf[i] = prefix + v
+			}
+			row.RequiredFeatures = marshalJSON(pf)
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return count, fmt.Errorf("模板 %s 写入失败: %w", row.ID, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+// materializeFeatures 物化卖点段：与模板同规则（本包前缀先删后插）。
+// 为什么单独成段：卖点走的是 FillTemplate 注入链路而非召回池，其 G-21 空内容判据
+// （desc_template 与 short_desc 全空即跳过）与模板段的判据不是同一条，副作用也不同
+// （空卖点还会让包内容统计虚高）；两段判据各自成段，改一边不会把另一边的口径带跑。
+func materializeFeatures(tx *gorm.DB, code, prefix string, tenantID uint, deptID uint, deptPtr *uint, features []KbFeature) (int, error) {
+	// ---- features：同规则 ----
+	delF := tx.Where("tenant_id = ? AND id LIKE ?", tenantID, prefix+"%")
+	if deptID > 0 {
+		delF = delF.Where("department_id = ?", deptID)
+	} else {
+		delF = delF.Where("department_id IS NULL")
+	}
+	if err := delF.Delete(&model.Feature{}).Error; err != nil {
+		return 0, err
+	}
+	count := 0
+	for i := range features {
+		f := &features[i]
+		// G-21：同上——卖点的正文描述为空则跳过。卖点会被 FillTemplate 注入话术，
+		// 空描述卖点等于给模板填了一段空白，且让包内容统计虚高（"配了 5 个卖点"其实一个都没有）。
+		if strings.TrimSpace(f.DescTemplate) == "" && strings.TrimSpace(f.ShortDesc) == "" {
+			log.Printf("[行业包] product_kb.json 卖点 %s(%s) 的 desc_template 与 short_desc 全为空，已跳过", code, f.ID)
+			continue
+		}
+		status := f.Status
+		if status == 0 {
+			status = 1
+		}
+		row := model.Feature{
+			ID: prefix + f.ID, TenantID: tenantID,
+			FeatureName: f.FeatureName, Category: f.Category,
+			DescTemplate: f.DescTemplate, ShortDesc: f.ShortDesc,
+			Priority: f.Priority, Status: status,
+			DepartmentID: deptPtr,
+		}
+		if len(f.Params) > 0 {
+			row.Params = marshalJSON(f.Params)
+		}
+		if len(f.ApplicableTags) > 0 {
+			row.ApplicableTags = marshalJSON(f.ApplicableTags)
+		}
+		if len(f.ApplicableModels) > 0 {
+			row.ApplicableModels = marshalJSON(f.ApplicableModels)
+		}
+		if err := tx.Create(&row).Error; err != nil {
+			return count, fmt.Errorf("卖点 %s 写入失败: %w", row.ID, err)
+		}
+		count++
+	}
+	return count, nil
+}
+
+// materializeConfigKeys 物化 prompts/params/mindset 三件：以 JSON 存证进 system_configs 租户覆盖层。
+// 为什么单独成段：它写的不是内容行而是配置键，失败路径与判据都独立于其它件套——
+// 非法 JSON 直接 return 上抛（写坏配置键会让消费端整层读挂），语义空壳则是 continue + 自愈删除
+// （G-21：空壳键会静默遮蔽基包/系统层继承，删前还须逐字复核库内值也是空壳）；
+// 三种结局（跳过/删除/写入）都只影响这一个键，集中一段便于守住"非空内容永不被此路径删掉"。
+// 调用方仅对租户级包（deptID==0）调用本段，部门包参数类就近覆盖留待 P2。
+func materializeConfigKeys(tx *gorm.DB, pc *PackContent, code string, tenantID uint) (int, error) {
+	count := 0
+	for _, item := range []struct{ file, key string }{
+		{FilePrompts, "pack_prompts_" + code},
+		{FileParams, "pack_params_" + code},
+		{FileMindset, "pack_mindset_" + code},
+	} {
+		raw, ok := pc.RawFile(item.file)
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		if !json.Valid(raw) {
+			return count, fmt.Errorf("%s 不是合法 JSON", item.file)
+		}
+		var cnt int64
+		tx.Model(&model.SystemConfig{}).
+			Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).Count(&cnt)
+		if jsonSemanticallyEmpty(raw) {
+			// G-21(2026-09-24)：空壳（`[]`/`{}`/全空值对象）**不写覆盖键**。
+			// 旧判据只挡 len(raw)==0，而打包工具给未填充的文件统一补 `[]\n` 壳，
+			// 于是壳被当内容写进 pack_prompts_/pack_params_/pack_mindset_{code}。
+			// 危害不是脏数据而是**静默失去继承**：industry_semantics 读键只看"非空即用"，
+			// 空壳让租户的人设/参数/约束读成空串、又不回落基包与系统层——
+			// 配一个未填充的子包等于把行业话术层整段关掉，现场还毫无线索。
+			if cnt > 0 {
+				// 自愈：历史物化留下的空覆盖键要删掉，否则这个租户永远被自己的空壳挡住。
+				// 删前逐字复核库里的值也确实是空壳——非空内容永不在此路径被删。
+				var cur model.SystemConfig
+				if err := tx.Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).
+					First(&cur).Error; err == nil && jsonSemanticallyEmpty([]byte(cur.Value)) {
+					if err := tx.Delete(&cur).Error; err != nil {
+						return count, err
+					}
+					log.Printf("[行业包] %s 是空壳、库内值也是空壳，已清除覆盖键 %s（回落基包/系统层）", item.file, item.key)
+				}
+			}
+			continue
+		}
+		if cnt > 0 {
+			if err := tx.Model(&model.SystemConfig{}).
+				Where("tenant_id = ? AND \"key\" = ?", tenantID, item.key).
+				Update("value", string(raw)).Error; err != nil {
+				return count, err
+			}
+		} else if err := tx.Create(&model.SystemConfig{
+			TenantID: tenantID, Category: "industry_pack",
+			Key: item.key, Value: string(raw), ValueType: "json",
+			Description: "行业包[" + pc.Manifest.Name + "] " + item.file,
+		}).Error; err != nil {
+			return count, err
+		}
+		count++
+	}
+	return count, nil
+}
+
+// materializeFlows 物化 flows.json → flow_definitions（租户私有，code 加包前缀防冲突）。
+// 为什么单独成段：它是件套里唯一"存在即更新、不存在才插入"的 upsert 语义段
+// （流程定义被 journey 引擎按 code 引用，换版本不能换出行，否则节点锚全丢），
+// 失败路径也与先删后插的模板/卖点段不同——解析失败 return 上抛、单条缺 code/name continue 跳过；
+// 且仅租户级（deptID==0）且文件语义非空才执行，三重前置都收在本段内部、判据不外溢。
+func materializeFlows(tx *gorm.DB, pc *PackContent, tenantID uint, deptID uint, prefix string) error {
+	// G-21：flows 同样按"语义有内容"判，替掉旧的 len(raw) > 2 字节魔术数
+	if raw, ok := pc.RawFile(FileFlows); ok && deptID == 0 && !jsonSemanticallyEmpty(raw) {
+		var flows []struct {
+			Code        string          `json:"code"`
+			Name        string          `json:"name"`
+			Description string          `json:"description"`
+			Nodes       json.RawMessage `json:"nodes"`
+			Edges       json.RawMessage `json:"edges"`
+			StartNodeID string          `json:"start_node_id"`
+		}
+		if err := json.Unmarshal(raw, &flows); err != nil {
+			return fmt.Errorf("flows.json 解析失败: %w", err)
+		}
+		for _, fl := range flows {
+			if fl.Code == "" || fl.Name == "" {
+				continue
+			}
+			code := prefix + fl.Code
+			nodesJSON := string(fl.Nodes)
+			if nodesJSON == "" {
+				nodesJSON = "[]"
+			}
+			edgesJSON := string(fl.Edges)
+			if edgesJSON == "" {
+				edgesJSON = "[]"
+			}
+			var existing model.FlowDefinition
+			if err := tx.Where("code = ?", code).First(&existing).Error; err == nil {
+				if err := tx.Model(&existing).Updates(map[string]interface{}{
+					"name": fl.Name, "description": fl.Description,
+					"nodes": nodesJSON, "edges": edgesJSON,
+					"start_node_id": fl.StartNodeID,
+				}).Error; err != nil {
+					return err
+				}
+				continue
+			}
+			row := model.FlowDefinition{
+				TenantID: tenantID, Name: fl.Name, Code: code,
+				Description: fl.Description, NodesJSON: nodesJSON,
+				EdgesJSON: edgesJSON, StartNodeID: fl.StartNodeID, Status: 1,
+			}
+			if err := tx.Create(&row).Error; err != nil {
+				return fmt.Errorf("流程 %s 写入失败: %w", code, err)
+			}
+		}
+	}
+	return nil
 }
 
 // materializeTags 将包内 tags.json 物化到租户私有标签层（P0-3）

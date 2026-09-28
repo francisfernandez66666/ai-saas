@@ -452,8 +452,34 @@ func queueDepth() int {
 }
 
 // RenderPrometheus 汇总运行时、DB、队列与业务指标并生成 /metrics 文本。
+// ⚠ 本函数是 Prometheus 文本暴露的唯一出口，按指标域拆成 appendXxxLines 若干组，
+// 主体只做**有序拼接**。输出顺序与逐行格式被冒烟/运维面板的 grep 计数锁定
+// （如 tools/smoke.sh 的 `grep -c '^ai_scrm_refund_outcome_unverified '` 这类行数恰为 N 的断言），
+// 新增指标只能在对应组内追加或在末尾加组，勿重排既有组序、勿在组间穿插额外输出。
 func RenderPrometheus() string {
-	snap := ComputeHealth()
+	var b []byte
+	b = appendCoreGaugeLines(b, ComputeHealth())
+	b = appendHTTPLines(b)
+	b = appendAIRateLines(b)
+	b = appendDBConnLines(b)
+	b = appendQueueReliabilityLines(b)
+	b = appendOutreachLines(b)
+	b = appendBillingNotifyLines(b)
+	b = appendPaymentLines(b)
+	b = appendCapacityLines(b)
+	b = appendKafkaComplaintLines(b)
+	b = appendComplianceSignalLines(b)
+	b = appendPackAttributionLines(b)
+	b = appendDeadLetterFallbackLines(b)
+	b = appendRefundOutcomeLines(b)
+	return string(b)
+}
+
+// appendCoreGaugeLines 渲染"同一次 ComputeHealth 快照的派生读数"四枚 gauge。
+// 为什么单独成组：goroutine/db_up/merge_queue_active/critical_24h 全部取自同一个 snap
+// 或同一时刻的探针（queueDepth）——若把它们挪进别的组各自取快照，会出现四行读数
+// 来自不同时刻、彼此对不上账的形态，所以快照只在入口取一次、整组消费。
+func appendCoreGaugeLines(b []byte, snap HealthSnapshot) []byte {
 	var crit24h int64
 	for _, ch := range snap.Checks {
 		if ch.Name == "critical_24h" {
@@ -467,7 +493,6 @@ func RenderPrometheus() string {
 		dbUp = 1
 	}
 
-	var b []byte
 	b = append(b, "# HELP ai_scrm_goroutines runtime goroutine count\n"...)
 	b = append(b, "# TYPE ai_scrm_goroutines gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_goroutines %d\n", runtime.NumGoroutine())...)
@@ -483,7 +508,14 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_critical_24h critical audit events in last 24h\n"...)
 	b = append(b, "# TYPE ai_scrm_critical_24h gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_critical_24h %d\n", crit24h)...)
+	return b
+}
 
+// appendHTTPLines 渲染 HTTP 域：总请求数 + uptime + 延迟直方图。
+// 为什么单独成组：直方图的桶语义（le 累计单调、+Inf 由 latencyCount 兜底、_sum 用 float 秒）
+// 是 P1-18 修复的整体，三段必须一起看才不会有人把桶计数改回非累计；且 latencyCount 在原实现
+// 里被读两次（+Inf 桶与 _count 各一次），这个"同一次渲染读两次"的时刻差语义按原样保留。
+func appendHTTPLines(b []byte) []byte {
 	b = append(b, "# HELP ai_scrm_http_requests_total total http requests since boot\n"...)
 	b = append(b, "# TYPE ai_scrm_http_requests_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_http_requests_total %d\n", atomic.LoadUint64(&httpTotal))...)
@@ -504,7 +536,13 @@ func RenderPrometheus() string {
 	// P1-18 修复：_sum 用 float 秒（原整数除法丢亚秒精度，histogram_quantile 无法用）
 	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_sum %.6f\n", float64(atomic.LoadUint64(&latencySumNs))/1e9)...)
 	b = append(b, fmt.Sprintf("ai_scrm_http_request_duration_seconds_count %d\n", atomic.LoadUint64(&latencyCount))...)
+	return b
+}
 
+// appendAIRateLines 渲染 AI 成功/失败计数与成功率。
+// 为什么单独成组：succ/fail 各自只读一次原子量，计数两行与 rate 一行必须来自同一次读数——
+// 拆成两次读会出现 success+failure 与按 rate 反推的总数对不上，看板口径即被污染。
+func appendAIRateLines(b []byte) []byte {
 	// ---- P1-2 指标2：AI 成功率 ----
 	succ := atomic.LoadUint64(&aiSuccessTotal)
 	fail := atomic.LoadUint64(&aiFailureTotal)
@@ -521,7 +559,14 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_ai_success_rate AI success rate (percent)\n"...)
 	b = append(b, "# TYPE ai_scrm_ai_success_rate gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_ai_success_rate %.2f\n", rate)...)
+	return b
+}
 
+// appendDBConnLines 渲染连接池三 gauge（open/idle/in_use）。
+// 为什么单独成组：这是全篇唯一"条件输出"的域——db 未初始化或取不到 sql.DB 时连
+// # HELP/# TYPE 都不打（冒烟按行数计数，这里多打或漏打都会改变读数），
+// 双层条件与提前收敛的形态必须原样保留，故与其余无条件域隔离开。
+func appendDBConnLines(b []byte) []byte {
 	// ---- P1-2 指标3：DB 连接数 ----
 	if db.DB != nil {
 		if sqlDB, err := db.DB.DB(); err == nil {
@@ -537,7 +582,13 @@ func RenderPrometheus() string {
 			b = append(b, fmt.Sprintf("ai_scrm_db_in_use_connections %d\n", st.InUse)...)
 		}
 	}
+	return b
+}
 
+// appendQueueReliabilityLines 渲染消息链路两枚"静默失效"探针：到店第二段落库失败、
+// Redis 故障投递认领降级。为什么单独成组：两者同属"客户无感、实际在丢消息/可能双发"的
+// 形态，判读口径共用——非 0 即说明多实例互斥或补偿腿坏了，要运维介入而不是告警客户。
+func appendQueueReliabilityLines(b []byte) []byte {
 	// ---- P2-66 指标：到店第二段追问失败 ----
 	svsFail := atomic.LoadUint64(&storeVisitSecondFailTotal)
 	b = append(b, "# HELP ai_scrm_store_visit_second_fail_total second follow-up persist fail count (after retry)\n"...)
@@ -548,7 +599,13 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_reply_delivery_degrade_total reply delivery claim degraded to local arbitration due to Redis error\n"...)
 	b = append(b, "# TYPE ai_scrm_reply_delivery_degrade_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_reply_delivery_degrade_total %d\n", atomic.LoadUint64(&replyDeliveryDegradeTotal))...)
+	return b
+}
 
+// appendOutreachLines 渲染主动触达四计数。
+// 为什么单独成组：这四枚必须整体在场——queued 与 sent 的差值就是"卡在出站队列"的量，
+// 只有并排渲染运维才看得出是策略太严（skipped 高）还是投递链路坏了（sent 追不上 queued）。
+func appendOutreachLines(b []byte) []byte {
 	// ---- 主动触达四计数（触达最小闭环 2026-09-23）----
 	// queued 与 sent 的差值 = 卡在出站队列里的触达任务数，运维看这两个数的剪刀差即可判断
 	// "投递链路坏了"还是"策略拦得多"（skipped 大但 failed=0 属正常态）。
@@ -564,7 +621,14 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_outreach_failed_total outreach tasks failed (send error/exhausted retries/missing receipt)\n"...)
 	b = append(b, "# TYPE ai_scrm_outreach_failed_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_outreach_failed_total %d\n", atomic.LoadUint64(&outreachFailedTotal))...)
+	return b
+}
 
+// appendBillingNotifyLines 渲染 D3 用量预警与催缴四计数。
+// 为什么单独成组：sent/skipped 与 sent/suspended 是同一件事的两面对照——
+// 预警"命中了但一封没发出去"（skipped>0 且 sent=0）与"只封不催"（suspended 涨而 sent 不涨）
+// 这两个静默失效形态只有四行并排才可判读，拆散即失去判别力。
+func appendBillingNotifyLines(b []byte) []byte {
 	// ---- D3 用量预警与催缴四计数（2026-09-23）----
 	// 判读口径：usage_alert_skipped_total > 0 而 usage_alert_sent_total = 0，
 	// 说明预警"命中了但一封都没发出去"——十有八九是 SMTP/群机器人未配置，属上线首日静默失效。
@@ -580,7 +644,13 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_dunning_suspended_total tenants auto-suspended by dunning grace period (data retained)\n"...)
 	b = append(b, "# TYPE ai_scrm_dunning_suspended_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_dunning_suspended_total %d\n", atomic.LoadUint64(&dunningSuspendedTotal))...)
+	return b
+}
 
+// appendPaymentLines 渲染支付成功/失败计数与成功率。
+// 为什么单独成组：与 AI 成功率同一口径——pp/pf 各只读一次原子量，计数与 rate 来自
+// 同一次读数；且支付两行+比率一行是资金侧看板的固定三件套，grep 按名锁行。
+func appendPaymentLines(b []byte) []byte {
 	// ---- P1-2 指标4：支付成功率 ----
 	pp := atomic.LoadUint64(&paymentPaidTotal)
 	pf := atomic.LoadUint64(&paymentFailedTotal)
@@ -597,7 +667,13 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_payment_success_rate payment success rate (percent)\n"...)
 	b = append(b, "# TYPE ai_scrm_payment_success_rate gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_payment_success_rate %.2f\n", prate)...)
+	return b
+}
 
+// appendCapacityLines 渲染到期租户数与磁盘水位。
+// 为什么单独成组：这两枚是全篇仅有的"渲染即取数"探针——countExpiringTenants 现查库、
+// diskUsedRatio 现发 statfs，一次渲染各调一次；归组后"哪里贵"一眼可见，勿在别处重复调用。
+func appendCapacityLines(b []byte) []byte {
 	// ---- P1-2 指标5：到期租户数（7 天内即将到期 active/trial 租户）----
 	expiring := countExpiringTenants(7)
 	b = append(b, "# HELP ai_scrm_tenants_expiring_7d tenants expiring within 7d\n"...)
@@ -612,7 +688,13 @@ func RenderPrometheus() string {
 		b = append(b, "# TYPE ai_scrm_disk_used_ratio gauge\n"...)
 		b = append(b, fmt.Sprintf("ai_scrm_disk_used_ratio %.4f\n", diskRatio)...)
 	}
+	return b
+}
 
+// appendKafkaComplaintLines 渲染 G-15 消息总线三计数 + 投诉事件计数。
+// 为什么单独成组：kafka 发布/消费/失败是同一吞吐链路的上下游，投诉量是事件总线的下游信号，
+// 运维排查"事件丢了没"时这四行必须一起读（publish 与 consume 的差值即积压）。
+func appendKafkaComplaintLines(b []byte) []byte {
 	// ---- G-15 指标：Kafka 发布/消费 ----
 	b = append(b, "# HELP ai_scrm_kafka_publish_total kafka messages published\n"...)
 	b = append(b, "# TYPE ai_scrm_kafka_publish_total counter\n"...)
@@ -628,7 +710,14 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_complaint_total complaint events published\n"...)
 	b = append(b, "# TYPE ai_scrm_complaint_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_complaint_total %d\n", atomic.LoadUint64(&complaintTotal))...)
+	return b
+}
 
+// appendComplianceSignalLines 渲染合规与资金漏损的"速率探针"：敬语「您」兜底替换、
+// 重置码不安全通道、Token 欠账、内容安全命中/拦截。
+// 为什么单独成组：这四组共同特征是"非 0 不代表服务坏了，代表口径被击穿"
+// （话术漏网点 / 验证码落日志 / 公司侧漏收 / 闸门命中），运维手册里是同一页判读表。
+func appendComplianceSignalLines(b []byte) []byte {
 	// ---- Q5 指标：敬语「您」兜底替换 ----
 	b = append(b, "# HELP ai_scrm_address_polite_total AI replies containing 您 sanitized on exit\n"...)
 	b = append(b, "# TYPE ai_scrm_address_polite_total counter\n"...)
@@ -651,12 +740,25 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_contentsafety_block_total AI replies blocked in enforce mode\n"...)
 	b = append(b, "# TYPE ai_scrm_contentsafety_block_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_contentsafety_block_total %d\n", atomic.LoadUint64(&contentSafetyBlockTotal))...)
+	return b
+}
 
+// appendPackAttributionLines 渲染 D9 行业包质量归因三计数器。
+// 为什么单独成组：三者都走 renderPackCounter 的带标签渲染且"零条目整段不输出"——
+// 与前面的裸样本行不同，这两条输出形态（有无 # HELP 头）取决于运行时是否见过包流量，
+// 归在一起便于核对冒烟的 grep 计数在冷启动/有流量两种态下各自的期望行数。
+func appendPackAttributionLines(b []byte) []byte {
 	// ---- D9 指标：行业包质量归因 ----
 	renderPackCounter(&b, "ai_scrm_pack_reply_total", "AI reply attribution count by pack/template", &packReplyTotal, true)
 	renderPackCounter(&b, "ai_scrm_pack_lead_captured_total", "Lead captured count attributed by pack", &packLeadCapturedTotal, false)
 	renderPackCounter(&b, "ai_scrm_pack_alert_total", "Pack quality alert count by pack", &packAlertTotal, false)
+	return b
+}
 
+// appendDeadLetterFallbackLines 渲染 F6/G-5/FIX-5 三枚单标签计数器 + 死信积压 gauge。
+// 为什么单独成组：三者共用 renderLabeledCounter 的"零条目整段不输出"形态，且 pending
+// gauge 紧跟死信 total 是有意的——速率与水位并排，运维一眼判"在涨还是在消"。
+func appendDeadLetterFallbackLines(b []byte) []byte {
 	// ---- F6 指标：通道死信速率 + 积压水位 ----
 	renderLabeledCounter(&b, "ai_scrm_channel_dead_letter_total", "Outbound/inbound messages moved to dead-letter by reason", "reason", &channelDeadLetterTotal)
 	renderLabeledCounter(&b, "ai_scrm_ai_fallback_total", "AI replies served by rule fallback (no model call) by reason", "reason", &aiFallbackTotal)
@@ -664,13 +766,19 @@ func RenderPrometheus() string {
 	b = append(b, "# HELP ai_scrm_channel_dead_letter_pending Current failed outbound messages (dead-letter backlog)\n"...)
 	b = append(b, "# TYPE ai_scrm_channel_dead_letter_pending gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_channel_dead_letter_pending %d\n", atomic.LoadInt64(&channelDeadLetterPending))...)
+	return b
+}
 
+// appendRefundOutcomeLines 渲染 FIX-1 退款"受理未证实"积压 gauge。
+// 为什么单独成组（也是全篇末位的原因）：退款终态四档码与资金台账同源于 billing，
+// 指标侧只读 billing 对账器回填的这一个水位、不做任何判定——它是"没人收尾的退款"
+// 唯一的面外可见通道，冒烟以 `grep -c '^ai_scrm_refund_outcome_unverified '` 锁行数。
+func appendRefundOutcomeLines(b []byte) []byte {
 	// ---- FIX-1 观测位（2026-09-26）：退款受理未证实积压 ----
 	b = append(b, "# HELP ai_scrm_refund_outcome_unverified Refunded orders accepted by PSP but not yet confirmed terminal\n"...)
 	b = append(b, "# TYPE ai_scrm_refund_outcome_unverified gauge\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_refund_outcome_unverified %d\n", atomic.LoadInt64(&refundOutcomeUnverified))...)
-
-	return string(b)
+	return b
 }
 
 // countExpiringTenants 统计 N 天内即将到期的 active/trial 租户数（P1-2 指标5）

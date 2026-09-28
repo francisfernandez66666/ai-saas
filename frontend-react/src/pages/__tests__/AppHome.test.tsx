@@ -12,13 +12,22 @@ function renderAsRole(role: string) {
   return render(<AppHome />)
 }
 
+// 原来弱在哪：getByText(/收银台/) 配 truthy 只证明页面上有"收银台"三个字——
+// 挂在哪个卡片、跳哪儿都不管。现在钉：h3 全文（图标+标题，AppHome.tsx 渲染为
+// `{icon} {title}`）+ 所属 <a> 的 href（与 cards 数组的 to 字段一一对应）。
+function expectCard(title: string, href: string) {
+  const heading = screen.getByText(title)
+  expect(heading).toHaveTextContent(title)
+  expect(heading.closest('a')).toHaveAttribute('href', href)
+}
+
 describe('AppHome 卡片角色分流（G-23）', () => {
   beforeEach(() => localStorage.clear())
   afterEach(() => localStorage.clear())
 
   it.each(['super_admin', 'tenant_admin', 'admin'])('%s 可见收银台卡片', (role) => {
     renderAsRole(role)
-    expect(screen.getByText(/收银台/)).toBeTruthy()
+    expectCard('💰 收银台', '/app/billing')
   })
 
   it('成员角色（user/sales/dept_admin/readonly）不显示收银台，其余入口保留', () => {
@@ -26,9 +35,9 @@ describe('AppHome 卡片角色分流（G-23）', () => {
       const { unmount } = renderAsRole(role)
       expect(screen.queryByText(/收银台/)).toBeNull()
       // 顾问台/邀请是销售岗核心工作台与个人资产，不得随收银台一起藏掉
-      expect(screen.getByText(/顾问台/)).toBeTruthy()
-      expect(screen.getByText(/邀请推广/)).toBeTruthy()
-      expect(screen.getByText(/账号设置/)).toBeTruthy()
+      expectCard('🧑‍💼 顾问台', '/app/advisor')
+      expectCard('🎁 邀请推广', '/app/referral')
+      expectCard('⚙️ 账号设置', '/app/settings')
       unmount()
     }
   })
@@ -36,7 +45,7 @@ describe('AppHome 卡片角色分流（G-23）', () => {
   it('未登录访客：注册漏斗入口保留（点进去由布局守卫甩到登录页），仅管理岗入口不显示', () => {
     render(<AppHome />)
     expect(screen.queryByText(/收银台/)).toBeNull()
-    expect(screen.getByText(/客户对话/)).toBeTruthy()
-    expect(screen.getByText(/定价/)).toBeTruthy()
+    expectCard('💬 客户对话', '/app/chat')
+    expectCard('🧾 定价', '/pricing')
   })
 })

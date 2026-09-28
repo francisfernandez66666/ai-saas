@@ -155,6 +155,15 @@ var DefaultConfigs = []model.SystemConfig{
 	// 也还没有真实的 token 补给路径，硬停会把整站 AI 直接打断；扣减先开、硬停缓开，
 	// 是更稳的爬坡顺序（超额仍会落告警日志，运营可见）。
 	{Category: "billing", Key: "token_billing_enabled", Value: "true", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "true", SortOrder: 10},
+	// FIX-M(2026-09-28)：模拟模式的虚拟 token 用量，出厂 0＝现网行为逐字节不变。
+	// 为什么要有这个键：mock 模式在真正调模型**之前**就短路返回模板话术，于是整条计量腿
+	// （usage_ledger 落账 + 三桶扣减）一步都不走——「③免费桶→①订阅额度→②余额」这条
+	// 商业红线在零凭证环境里根本不可判，回归只能靠真模型 Key（本机/CI 都没有），
+	// uat §八 因此长期只能断到"全空→降级"这一格，中间三格是空转。
+	// 口径：只在模拟模式为真时被读（非模拟模式设了也不生效，防"设了忘关"把真扣减放大）；
+	// 只虚拟用量、不改回复内容也不改模型路由。键为平台级（见 PlatformLevelKeys 末尾 FIX-M 注释）：
+	// 计量仿真的开关不能让租户自改，否则任一租户可往自己的用量台账里编造 token 数。
+	{Category: "billing", Key: "ai_mock_usage_tokens", Value: "0", ValueType: "number", Description: "模拟模式每次回复的虚拟token用量(0=不计量,现网默认；仅mock生效，用于零凭证环境回归三桶扣减级联)", DefaultValue: "0", SortOrder: 11},
 	{Category: "knowledge", Key: "kb_cross_dept_fallback", Value: "true", ValueType: "bool", Description: "跨部门知识回退：开启时兄弟部门的共享部门包内容对本部门可见（精确命中打标采用）", DefaultValue: "true", SortOrder: 1},
 	// D3(2026-09-13)：KB 向量检索热开关。关闭时不请求 embedding、不走 pgvector；pgvector 不可用时仍回退旧路径。
 	{Category: "knowledge", Key: "kb_vector_search", Value: "true", ValueType: "bool", Description: "KB向量检索开关(pgvector近邻+embedding余弦混合；关闭回退关键词检索)", DefaultValue: "true", SortOrder: 2},
@@ -351,4 +360,12 @@ var PlatformLevelKeys = map[string]bool{
 	"dunning_enabled":                 true, // D3：催缴总开关(平台级，租户不可自关催缴)
 	"dunning_steps":                   true, // D3：催缴档位天数序列(平台级)
 	"dunning_suspend_after_days":      true, // D3：宽限期封禁阈值(平台级，可关成"只催不封"但不能由各租户自定)
+	// FIX-M(2026-09-28)：模拟模式的虚拟 token 用量。**为什么它是平台级而不是租户级**：
+	// 这不是"各家压测额度不同"的业务参数，而是计量口径的仿真开关——租户能自改，就等于能往
+	// 自己的 usage_ledger 里编造任意 token 数（分级看板 /admin/usage 与超管 /super/usage/cost
+	// 都吃这份数），成本核算面从此不可信；且 uat §八 是以超管身份写系统层、由各租户读回落，
+	// 留平台级才和读取端（GetIntForTenant 无覆盖即回落系统缓存）对上——
+	// 若留在租户层，超管未显式带 X-Tenant-ID 时写进的是默认租户，被测租户永远读不到（静默失效，
+	// 与当年 email_verify_enabled「写租户层读系统层永远看不到变更」同一形态）。
+	"ai_mock_usage_tokens": true,
 }

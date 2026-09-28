@@ -28,6 +28,10 @@ import (
 //   - 线性加权模型简单可解释，方便调参
 //   - 权重可以通过AB测试不断优化
 //   - 特征函数可以不断扩充
+//
+// 结构重构（2026-09-28，纯"剪切-粘贴"，行为零变化）：签名与返回一字未动；函数体里
+// 的四条特殊规则各自抽成同包非导出的 applyXxxAnchorRule，主体仍按**原顺序**逐条叠加
+// （score 是累加量，规则之间的先后即判据本身，不可调换）。
 func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [AnchorCount]float64 {
 	var scores [AnchorCount]float64
 
@@ -38,10 +42,50 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 	stage := float64(state.CurrentStage) // 心智阶段
 	hookRate := state.HookRate           // 接钩率
 
+	anchorWeights := loadAnchorWeights()
+
+	// 修复：首轮规则从硬编码→后台可调
+	// first_round_nothrow_bonus：首轮不抛锚加分（默认5.0）
+	// first_round_compare_penalty：首轮对比锚及以上减分（默认-3.0）
+	firstRoundNoThrowBonus := runtimecfg.SafeCfgFloat("first_round_nothrow_bonus", 5.0)
+	firstRoundComparePenalty := runtimecfg.SafeCfgFloat("first_round_compare_penalty", -3.0)
+
+	// 对每个锚类型计算加权分数
+	for a := 0; a < AnchorCount; a++ {
+		w := anchorWeights[a]
+
+		// score = w_intent * intent + w_trust * trust + w_hook * hook_rate + w_stage * stage + w_price * price_sens + bias
+		score := w.IntentScoreWeight*intentScore +
+			w.TrustWeight*trustLevel +
+			w.HookRateWeight*hookRate +
+			w.StageWeight*(stage/5.0) + // 阶段归一化到0-1
+			w.PriceSensWeight*priceSens +
+			w.BaseBias
+
+		// 四条特殊规则按原顺序逐条叠加：后一条在前一条的结果之上继续加减分
+		score = applyFirstRoundAnchorRule(a, score, state, firstRoundNoThrowBonus, firstRoundComparePenalty)
+		score = applyNegativeEmotionAnchorRule(a, score, state)
+		score = applyResistanceAnchorRule(a, score, tVector)
+		score = applyHighIntentAnchorRule(a, score, state)
+
+		scores[a] = score
+	}
+
+	return scores
+}
+
+// loadAnchorWeights 装配本轮打分使用的锚权重数组（Step1 的权重读取段）。
+//
+// 为什么单独拆出来：这是 Step1 里唯一"读外部热配置 + 可能失败并回落"的一段——
+// 反序列化得到全零权重时 len 校验照样通过（历史上所有锚因此用零权重打分），必须在这里
+// 判掉并回落 DefaultAnchorWeights；其后的打分循环没有任何失败分支。两段混在一起时
+// "打分退化"与"算错分"无法归因，拆开后各自的日志与判据一一对应。
+func loadAnchorWeights() [AnchorCount]AnchorWeight {
+	var anchorWeights [AnchorCount]AnchorWeight
+
 	// 修复：锚权重从硬编码→后台可调
 	// 后台改权重→热加载→下次推理立即生效，不需要改代码发版
 	// 读取失败时fallback到DefaultAnchorWeights（保持原有行为）
-	var anchorWeights [AnchorCount]AnchorWeight
 	var weightsFromConfig []AnchorWeight
 	// P2-52 修复：单例未初始化（冷路径/单测）时回退默认权重，防 nil panic
 	if runtimecfg.DefaultSystemConfigService != nil {
@@ -69,120 +113,129 @@ func Step1_CalcAnchorScores(tVector [32]float64, state model.SessionState) [Anch
 		log.Printf("[策略引擎] Step1: 使用后台配置的锚权重")
 	}
 
-	// 修复：首轮规则从硬编码→后台可调
-	// first_round_nothrow_bonus：首轮不抛锚加分（默认5.0）
-	// first_round_compare_penalty：首轮对比锚及以上减分（默认-3.0）
-	firstRoundNoThrowBonus := runtimecfg.SafeCfgFloat("first_round_nothrow_bonus", 5.0)
-	firstRoundComparePenalty := runtimecfg.SafeCfgFloat("first_round_compare_penalty", -3.0)
+	return anchorWeights
+}
 
-	// 对每个锚类型计算加权分数
-	for a := 0; a < AnchorCount; a++ {
-		w := anchorWeights[a]
-
-		// score = w_intent * intent + w_trust * trust + w_hook * hook_rate + w_stage * stage + w_price * price_sens + bias
-		score := w.IntentScoreWeight*intentScore +
-			w.TrustWeight*trustLevel +
-			w.HookRateWeight*hookRate +
-			w.StageWeight*(stage/5.0) + // 阶段归一化到0-1
-			w.PriceSensWeight*priceSens +
-			w.BaseBias
-
-		// 特殊规则：第一次对话（attempts=0），强力偏向不抛锚
-		// 修复历程：
-		//   v1：不抛锚-0.5（方向反了，寒暄直接开大）
-		//   v2：不抛锚+3.0，同类锚+2.0（同类锚分数还是压过不抛锚）
-		//   v3（当前）：不抛锚+5.0，同类/场景锚+0（确保数值上不抛锚压住同类锚）
-		// 同时有寒暄检测（IsGreeting）做语义级双重保险
-		// 修复：首轮规则值从硬编码→读后台配置，后台调参即时生效
-		if state.Attempts == 0 {
-			if a == AnchorNoThrow {
-				score += firstRoundNoThrowBonus // 不抛锚大幅加成，确保数值上压住同类锚
-			}
-			if a >= AnchorCompare { // 对比锚及以上（aggressiveness ≥ 3）
-				score += firstRoundComparePenalty // 强力减分，防止首轮"平A开大"
-			}
+// applyFirstRoundAnchorRule 特殊规则：首轮（attempts=0）强力偏向不抛锚。
+//
+// 为什么单独拆出来：它是四条规则里唯一判据值不写死在代码里的（两个热配置参数），
+// 参数化把"循环外读一次、循环内用七次"的关系写成显式入参——避免后续有人在循环体里
+// 重新 SafeCfgFloat，把一次配置读变成 AnchorCount 次。
+func applyFirstRoundAnchorRule(a int, score float64, state model.SessionState, noThrowBonus, comparePenalty float64) float64 {
+	// 特殊规则：第一次对话（attempts=0），强力偏向不抛锚
+	// 修复历程：
+	//   v1：不抛锚-0.5（方向反了，寒暄直接开大）
+	//   v2：不抛锚+3.0，同类锚+2.0（同类锚分数还是压过不抛锚）
+	//   v3（当前）：不抛锚+5.0，同类/场景锚+0（确保数值上不抛锚压住同类锚）
+	// 同时有寒暄检测（IsGreeting）做语义级双重保险
+	// 修复：首轮规则值从硬编码→读后台配置，后台调参即时生效
+	if state.Attempts == 0 {
+		if a == AnchorNoThrow {
+			score += noThrowBonus // 不抛锚大幅加成，确保数值上压住同类锚
 		}
-
-		// 特殊规则：情绪负面时，降低高aggressiveness锚的分数
-		if state.Emotion == "negative" {
-			if a >= AnchorCompare {
-				score -= 1.5 // 对比锚及以上降分
-			}
-			if a == AnchorNoThrow {
-				score += 0.8 // 不抛锚（先安抚）
-			}
+		if a >= AnchorCompare { // 对比锚及以上（aggressiveness ≥ 3）
+			score += comparePenalty // 强力减分，防止首轮"平A开大"
 		}
-
-		// 特殊规则：抗性检测（从T[14]读取抗性类型）
-		// PRD核心：客户有抗性时，策略中心输出对比/拆解锚 + exchange_flag
-		// 抗性类型：0=无 1=价格 2=规格 3=服务 4=品牌
-		resistanceType := int(tVector[14])
-		if resistanceType > 0 {
-			// ---- 共通规则：有抗性时，温和锚和过于激进的锚都靠边 ----
-			if a == AnchorSameKind {
-				score -= 1.0 // 同类锚减分——客户有抗性了，不能再聊"很多人选"
-			}
-			if a == AnchorScarcity || a == AnchorSelfPay {
-				score -= 1.5 // 稀缺/代价自担减分——抗性时太激进会激化对立
-			}
-
-			// ---- 按抗性类型差异化加分 ----
-			switch resistanceType {
-			case 1: // 价格抗性：首选对比锚（性价比）+ 拆解锚（价值拆解），次选损失锚
-				if a == AnchorCompare {
-					score += 2.5 // 对比锚——"同价位我们配置最高"
-				}
-				if a == AnchorDisassemble {
-					score += 2.0 // 拆解锚——"贵有贵的道理，拆开给您算"
-				}
-				if a == AnchorLoss {
-					score += 1.0 // 损失锚——"便宜车后期开销更大"
-				}
-			case 2: // 规格抗性：首选拆解锚（配置拆解）+ 对比锚（竞品对比）
-				if a == AnchorDisassemble {
-					score += 2.5 // 拆解锚——"这项配置的作用是..."
-				}
-				if a == AnchorCompare {
-					score += 2.0 // 对比锚——"同级别对比我们参数更高"
-				}
-				if a == AnchorLoss {
-					score += 0.8 // 损失锚辅助
-				}
-			case 3: // 服务抗性：对比锚 + 损失锚
-				if a == AnchorCompare {
-					score += 2.2 // 对比锚——"对比竞品我们服务多2年质保"
-				}
-				if a == AnchorLoss {
-					score += 1.5 // 损失锚——"服务不好后期花钱更多"
-				}
-				if a == AnchorDisassemble {
-					score += 1.0 // 拆解锚辅助
-				}
-			case 4: // 品牌抗性：对比锚 + 同类锚（口碑）
-				if a == AnchorCompare {
-					score += 2.0 // 对比锚——"品牌力看销量/保值率"
-				}
-				if a == AnchorSameKind {
-					score += 1.5 // 同类锚——"很多客户从XX品牌转过来的"（抵消之前的减分后净+0.5）
-				}
-				if a == AnchorLoss {
-					score += 0.8
-				}
-			}
-		}
-
-		// 特殊规则：高意向持续轮数多，推高aggressive锚
-		if state.HighIntentRounds >= 2 {
-			if a == AnchorScarcity || a == AnchorSelfPay {
-				// 每多一轮高意向，稀缺/代价自担锚加0.3分，持续高热度逐步推高促单锚
-				score += float64(state.HighIntentRounds) * 0.3
-			}
-		}
-
-		scores[a] = score
 	}
+	return score
+}
 
-	return scores
+// applyNegativeEmotionAnchorRule 特殊规则：情绪负面时压低激进锚、抬高不抛锚。
+//
+// 为什么单独拆出来：判据只来自 S 状态里的一个字符串字段，且与首轮规则**可叠加**
+// （首轮 + 负面时两条都作用于同一个锚），保留独立函数正好把"叠加而非互斥"这件事写明。
+func applyNegativeEmotionAnchorRule(a int, score float64, state model.SessionState) float64 {
+	// 特殊规则：情绪负面时，降低高aggressiveness锚的分数
+	if state.Emotion == "negative" {
+		if a >= AnchorCompare {
+			score -= 1.5 // 对比锚及以上降分
+		}
+		if a == AnchorNoThrow {
+			score += 0.8 // 不抛锚（先安抚）
+		}
+	}
+	return score
+}
+
+// applyResistanceAnchorRule 特殊规则：按 T[14] 的抗性类型做差异化加减分（PRD 核心）。
+//
+// 为什么单独拆出来：整段是一张"抗性 × 锚"的判据表（共通减分 + 按类型 switch 加分），
+// 它自带一条硬编码约束——同类锚在品牌抗性下先 -1.0 再 +1.5（净 +0.5），这个净值只有在
+// 两条规则同处一段时才看得见，所以整段不拆细、原样搬走。
+func applyResistanceAnchorRule(a int, score float64, tVector [32]float64) float64 {
+	// 特殊规则：抗性检测（从T[14]读取抗性类型）
+	// PRD核心：客户有抗性时，策略中心输出对比/拆解锚 + exchange_flag
+	// 抗性类型：0=无 1=价格 2=规格 3=服务 4=品牌
+	resistanceType := int(tVector[14])
+	if resistanceType > 0 {
+		// ---- 共通规则：有抗性时，温和锚和过于激进的锚都靠边 ----
+		if a == AnchorSameKind {
+			score -= 1.0 // 同类锚减分——客户有抗性了，不能再聊"很多人选"
+		}
+		if a == AnchorScarcity || a == AnchorSelfPay {
+			score -= 1.5 // 稀缺/代价自担减分——抗性时太激进会激化对立
+		}
+
+		// ---- 按抗性类型差异化加分 ----
+		switch resistanceType {
+		case 1: // 价格抗性：首选对比锚（性价比）+ 拆解锚（价值拆解），次选损失锚
+			if a == AnchorCompare {
+				score += 2.5 // 对比锚——"同价位我们配置最高"
+			}
+			if a == AnchorDisassemble {
+				score += 2.0 // 拆解锚——"贵有贵的道理，拆开给您算"
+			}
+			if a == AnchorLoss {
+				score += 1.0 // 损失锚——"便宜车后期开销更大"
+			}
+		case 2: // 规格抗性：首选拆解锚（配置拆解）+ 对比锚（竞品对比）
+			if a == AnchorDisassemble {
+				score += 2.5 // 拆解锚——"这项配置的作用是..."
+			}
+			if a == AnchorCompare {
+				score += 2.0 // 对比锚——"同级别对比我们参数更高"
+			}
+			if a == AnchorLoss {
+				score += 0.8 // 损失锚辅助
+			}
+		case 3: // 服务抗性：对比锚 + 损失锚
+			if a == AnchorCompare {
+				score += 2.2 // 对比锚——"对比竞品我们服务多2年质保"
+			}
+			if a == AnchorLoss {
+				score += 1.5 // 损失锚——"服务不好后期花钱更多"
+			}
+			if a == AnchorDisassemble {
+				score += 1.0 // 拆解锚辅助
+			}
+		case 4: // 品牌抗性：对比锚 + 同类锚（口碑）
+			if a == AnchorCompare {
+				score += 2.0 // 对比锚——"品牌力看销量/保值率"
+			}
+			if a == AnchorSameKind {
+				score += 1.5 // 同类锚——"很多客户从XX品牌转过来的"（抵消之前的减分后净+0.5）
+			}
+			if a == AnchorLoss {
+				score += 0.8
+			}
+		}
+	}
+	return score
+}
+
+// applyHighIntentAnchorRule 特殊规则：连续高意向轮数多时逐步推高促单锚。
+//
+// 为什么单独拆出来：它的加分数值来自 S 状态本身（HighIntentRounds × 0.3，随轮数线性增长），
+// 是四条规则里唯一"量纲跟着输入变"的一条——单独成段后，"每多一轮加 0.3"这个斜率只有一个归属点。
+func applyHighIntentAnchorRule(a int, score float64, state model.SessionState) float64 {
+	// 特殊规则：高意向持续轮数多，推高aggressive锚
+	if state.HighIntentRounds >= 2 {
+		if a == AnchorScarcity || a == AnchorSelfPay {
+			// 每多一轮高意向，稀缺/代价自担锚加0.3分，持续高热度逐步推高促单锚
+			score += float64(state.HighIntentRounds) * 0.3
+		}
+	}
+	return score
 }
 
 // CalcAnchorScoresPromoteLocked 带促单锁的锚打分

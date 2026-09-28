@@ -9,7 +9,7 @@
 //      `Number('0.29')*100` 那种浮点往返一旦进了报价单就是少一分钱。
 //   4. **写操作后整块回读**：合计由服务端按明细重算，拿表单去更新界面就是自欺。
 // 网络层统一 mock AUTH，不发真实请求。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('../../../lib/api', () => ({
@@ -20,6 +20,7 @@ vi.mock('../../../lib/api', () => ({
 
 import { AUTH } from '../../../lib/api'
 import { DealsTab } from '../DealsTab'
+import { fenToYuan, fenToYuanInput } from '../../../lib/money'
 
 const authMock = AUTH as ReturnType<typeof vi.fn>
 
@@ -97,13 +98,16 @@ function route(opts: RouteOpts = {}) {
 async function pickSelect(scope: HTMLElement, triggerLabel: string, optionText: string) {
   const input = Array.from(scope.querySelectorAll<HTMLInputElement>('input.t-input__inner'))
     .find((i) => i.value === triggerLabel || i.placeholder === triggerLabel)
-  expect(input).toBeTruthy()
-  fireEvent.click(input as HTMLInputElement)
+  // 原来弱在哪：helper 里 toBeTruthy 是前置守卫，触发项找不到时它红得没有信息量；
+  // 现在钉什么：直接抛带触发项名字的错误——红的时候一眼说出"哪个下拉没找到"。
+  if (!input) throw new Error(`找不到选择器触发项：${triggerLabel}`)
+  fireEvent.click(input)
   const opt = await waitFor(() => {
     const el = Array.from(document.querySelectorAll<HTMLElement>('.t-select-option'))
       .find((o) => (o.textContent || '').trim() === optionText)
-    expect(el).toBeTruthy()
-    return el as HTMLElement
+    // 同上：浮层里没这个选项时 waitFor 持续重试到超时，错误信息带选项名
+    if (!el) throw new Error(`浮层选项未出现：${optionText}`)
+    return el
   })
   fireEvent.click(opt)
 }
@@ -127,13 +131,25 @@ describe('DealsTab', () => {
     route()
     render(<DealsTab />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/admin/deals/board?days=30&stuck_days=7'))
-    // 阶段名取 config.stage_names：写死"谈判中"就找不到"商务谈判"
-    expect(await screen.findByText('商务谈判')).toBeTruthy()
-    expect(screen.getByText('在途')).toBeTruthy()
-    // 1234500 分 = 12,345.00 元（千分位、两位小数，不做浮点）
-    expect(screen.getByText('¥ 12,345.00')).toBeTruthy()
-    expect(screen.getByText('赢单率')).toBeTruthy()
-    expect(screen.getByText('80%')).toBeTruthy()
+    // 原来弱在哪：五句 truthy 只证明页面上飘着这些字样——「商务谈判」挂错格子、
+    // 「¥ 12,345.00」配错人、赢单率与「赢单率」三个字分家，全都照样过；
+    // 现在钉什么：每句都钉进它自己的格子/卡片容器，数字由 BOARD 字段现推。
+    const nego = BOARD.stages.find((s) => s.stage === 'negotiating')!
+    const negoCell = await screen.findByTestId(`deal-cell-${nego.drill_filter}`)
+    // 阶段名取 config.stage_names（写死"谈判中"就找不到"商务谈判"），且就在该格子里
+    expect(within(negoCell).getByText(nego.stage_name)).toBeInTheDocument()
+    // 同格数字=该阶段 count（deal-cell-count 是 :143 的锚）
+    expect(within(negoCell).getByTestId('deal-cell-count').textContent).toBe(String(nego.count))
+    // 在途分组格标签来自 CONFIG.filter_labels.open（:63），不是前端第二套枚举
+    expect(within(screen.getByTestId('deal-cell-open')).getByText(CONFIG.filter_labels.open)).toBeInTheDocument()
+    // 1234500 分 = 12,345.00 元：期望串由 fenToYuan(该格 amount_cents) 现推
+    //（lib/money 是展示口径单点，本用例钉的是「这一格拿的是这一个数」）
+    const quoted = BOARD.stages.find((s) => s.stage === 'quoted')!
+    expect(within(screen.getByTestId(`deal-cell-${quoted.drill_filter}`)).getByText(`¥ ${fenToYuan(quoted.amount_cents)}`)).toBeInTheDocument()
+    // 赢单率：三个字与百分数必须同格（:91 `赢单率 <strong>{win_rate_pct}%</strong>`）
+    const rateEl = screen.getByText(/赢单率/)
+    expect(rateEl).toHaveTextContent(`赢单率 ${BOARD.win_rate_pct}%`)
+    expect(screen.getByText(`${BOARD.win_rate_pct}%`).tagName).toBe('STRONG')
   })
 
   it('换窗口后重新取数，下钻带的是当前窗口而不是首屏的 30 天', async () => {
@@ -150,8 +166,17 @@ describe('DealsTab', () => {
     route()
     render(<DealsTab />)
     await drillInto('stage:quoted')
-    expect(screen.getByTestId('deal-drill-total').textContent).toBe('12')
-    expect(screen.getByText('极石 01 四驱版 · 置换')).toBeTruthy()
+    // total 期望串同样从夹具现推（本页只有 1 行，写条数就是 12 变 1）
+    expect(screen.getByTestId('deal-drill-total').textContent).toBe(String(DRILL.total))
+    // 原来弱在哪：truthy 只证明标题字样在场，串行（B 客户的单配到 A 的名字）也过；
+    // 现在钉什么：标题按钮所在行内，客户名/阶段名/金额逐格同排
+    //（金额串由 fenToYuan(DEAL.amount_cents) 现推，1280050 分 → 12,800.50）。
+    const titleBtn = screen.getByRole('button', { name: DEAL.title })
+    const row = titleBtn.closest('tr') as HTMLElement
+    expect(row).not.toBeNull()
+    expect(within(row).getByText(DEAL.customer_name)).toBeInTheDocument()
+    expect(within(row).getByText(DEAL.stage_name)).toBeInTheDocument()
+    expect(within(row).getByText(fenToYuan(DEAL.amount_cents))).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /返回看板/ }))
     await waitFor(() => expect(screen.queryByTestId('deal-drill-total')).toBeNull())
   })
@@ -159,7 +184,11 @@ describe('DealsTab', () => {
   it('后端标了 truncated 就必须把"数字偏小"说在明面上', async () => {
     route({ board: { ...BOARD, truncated: true } })
     const { unmount } = render(<DealsTab />)
-    expect(await screen.findByText(/下面的数字比真实值小/)).toBeTruthy()
+    // 原来弱在哪：truthy 只截了半句正则，警示语被截断、丢了「后端如实标注」的
+    // 上下文也过；现在钉什么：强调段是 <strong>，且整句警示（含前因后果）逐字在场（:98）。
+    const warnStrong = await screen.findByText('下面的数字比真实值小')
+    expect(warnStrong.tagName).toBe('STRONG')
+    expect(warnStrong.parentElement).toHaveTextContent('单量超出一次扫描上限，下面的数字比真实值小（后端如实标注，不静默少算）。')
     unmount()
 
     route()
@@ -192,11 +221,14 @@ describe('DealsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /新建商机/ }))
     fireEvent.change(screen.getByPlaceholderText('给复盘时看的名字'), { target: { value: '无客户名的单' } })
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }))
-    expect(await screen.findByText(/请填写正确的客户 ID/)).toBeTruthy()
+    // 原来弱在哪：正则只截半句，丢「（正整数）」的口径也过；
+    // 现在钉什么：整句逐字（:245 校验文案）。
+    expect(await screen.findByText('请填写正确的客户 ID（正整数）')).toBeInTheDocument()
     expect(calls.some((c) => c.method === 'POST' && c.url === '/api/v1/admin/deals')).toBe(false)
 
     // 第二路：后端拒 deal_already_open —— 页面不该留一张红字报错的窗
-    route({ create: { code: 409, reason: 'deal_already_open', message: '该客户已有在途商机 #12' } })
+    const ALREADY_OPEN_MSG = '该客户已有在途商机 #12'
+    route({ create: { code: 409, reason: 'deal_already_open', message: ALREADY_OPEN_MSG } })
     fireEvent.click(screen.getByRole('button', { name: /新建商机/ }))
     fireEvent.change(screen.getByPlaceholderText('如 1024'), { target: { value: '1024' } })
     fireEvent.click(screen.getByRole('button', { name: /创\s*建/ }))
@@ -204,7 +236,8 @@ describe('DealsTab', () => {
     // 提示走 toast 而不是窗内红字（窗已关，红字无处可留）。
     // 这里**不能**断"这段文案不在文档里"——toast 恰好在屏上挂着，3s 后才自己消失，
     // 那样写等于把"该有的提示"当成缺陷来断言，且快慢机上结果不一致（首次跑就是它给的假红）。
-    expect(await screen.findByText(/该客户已有在途商机/)).toBeTruthy()
+    // deal_already_open 不在前端码表（lib/dealReasons）里 → 逐字回落后端 message（:262 warning toast）。
+    expect(await screen.findByText(ALREADY_OPEN_MSG)).toBeInTheDocument()
   })
 
   it('详情每次写操作后整块回读（界面不拿表单自更新）', async () => {
@@ -232,11 +265,13 @@ describe('DealsTab', () => {
     const dlg = document.querySelector('.t-dialog') as HTMLElement
     await pickSelect(dlg, '选择目标阶段', '成交')
     fireEvent.click(screen.getByRole('button', { name: /推\s*进/ }))
-    expect(await screen.findByText(/标记成交必须填成交金额/)).toBeTruthy()
+    // 原来弱在哪：正则截半句；现在钉什么：整句校验文案逐字（:471，含「大于 0」口径）
+    expect(await screen.findByText('标记成交必须填成交金额（元，最多两位小数，且大于 0）')).toBeInTheDocument()
 
     await pickSelect(dlg, '选择目标阶段', '流失')
     fireEvent.click(screen.getByRole('button', { name: /推\s*进/ }))
-    expect(await screen.findByText(/标记流失必须选一个原因/)).toBeTruthy()
+    // 同上：整句逐字（:474）
+    expect(await screen.findByText('标记流失必须选一个原因')).toBeInTheDocument()
     expect(calls.some((c) => c.url === '/api/v1/admin/deals/12/move')).toBe(false)
   })
 
@@ -245,7 +280,11 @@ describe('DealsTab', () => {
     render(<DealsTab />)
     await drillInto('stage:quoted')
     await openDetail()
-    expect(screen.getByText(/不等于成交/)).toBeTruthy()
+    // 原来弱在哪：truthy 只证明「不等于成交」字样在场，这句纪律挂在弹窗外也过；
+    // 现在钉什么：强调段是 <strong> 且整句开头逐字（:416「客户已接受」不等于成交…）。
+    const neTip = screen.getByText('不等于成交')
+    expect(neTip.tagName).toBe('STRONG')
+    expect(neTip.parentElement).toHaveTextContent('「客户已接受」不等于成交')
     fireEvent.click(screen.getByRole('button', { name: /客户已接受/ }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/v1/admin/quotes/40/accept')).toBe(true))
     expect(screen.queryByText(/报价已发出并锁死/)).toBeNull()
@@ -259,8 +298,15 @@ describe('DealsTab', () => {
     await openDetail()
     // v2 是草稿 → 有编辑；v1 已发出 → 只有作废/拒绝，没有编辑
     expect(screen.getAllByRole('button', { name: '编辑' }).length).toBe(1)
-    expect(screen.getByRole('button', { name: '发出' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: '作废' })).toBeTruthy()
+    // 原来弱在哪：truthy 只证明「发出/作废」按钮在场，挂错版本行（给已发出的
+    // v1 配「发出」）也过；现在钉什么：发出 在 v2·草稿行、作废 在 v1·已发出行
+    //（版本/状态名都取自夹具字段，:385-414 的行内渲染）。
+    const sendRow = screen.getByRole('button', { name: '发出' }).closest('tr') as HTMLElement
+    expect(within(sendRow).getByText(`v${QUOTE_DRAFT.version}`)).toBeInTheDocument()
+    expect(within(sendRow).getByText(QUOTE_DRAFT.status_name)).toBeInTheDocument()
+    const voidRow = screen.getByRole('button', { name: '作废' }).closest('tr') as HTMLElement
+    expect(within(voidRow).getByText(`v${QUOTE_SENT.version}`)).toBeInTheDocument()
+    expect(within(voidRow).getByText(QUOTE_SENT.status_name)).toBeInTheDocument()
   })
 
   it('报价明细以分回显、提交带 set_valid 显式声明有效期是否改动', async () => {
@@ -271,8 +317,11 @@ describe('DealsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: '编辑' }))
     await waitFor(() => expect(calls.some((c) => c.url === '/api/v1/admin/quotes/41')).toBe(true))
     // 草稿回填：1280000 分 → "12800.00"，不是浮点串出来的 12800 / 12799.999
-    const unit = await screen.findByDisplayValue('12800.00')
-    expect(unit).toBeTruthy()
+    // 原来弱在哪：truthy 是 findBy 的重复断言，值对没对上全看 findBy 本身；
+    // 现在钉什么：期望串由 fenToYuanInput(明细行 unit_cents) 现推（:567 的回填口径），
+    // 且这个输入框确在报价编辑弹窗里。
+    const unit = await screen.findByDisplayValue(fenToYuanInput(QUOTE_DRAFT.lines[0].unit_cents))
+    expect(unit.closest('.t-dialog')).not.toBeNull()
     fireEvent.change(unit, { target: { value: '0.10' } })
     const qty = screen.getByDisplayValue('1')
     fireEvent.change(qty, { target: { value: '3' } })
@@ -292,7 +341,10 @@ describe('DealsTab', () => {
     render(<DealsTab />)
     await waitFor(() => expect(authMock).toHaveBeenCalled())
     expect(screen.queryByTestId('deal-cell-open')).toBeNull()
-    expect(screen.getByText(/点上面任意一格/)).toBeTruthy()
+    // 原来弱在哪：truthy + 半句正则；现在钉什么：空态引导整句逐字（:123），
+    // 且不是"加载中…"（失败后加载态必须收掉，否则用户以为还在跑）。
+    expect(screen.getByText('点上面任意一格，这里就展开对应的客户名单。')).toBeInTheDocument()
+    expect(screen.queryByText('加载中…')).toBeNull()
   })
 })
 

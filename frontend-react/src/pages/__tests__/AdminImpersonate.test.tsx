@@ -82,7 +82,11 @@ describe('Admin 代管租户选择器', () => {
     await waitFor(() => expect(urls.some((u) => u.includes('q=%E6%9E%81%E7%9F%B3'))).toBe(true))
     // 命中结果把候选收窄：未命中的那家不该还挂在下拉里当"可选项"
     const after = await screen.findByRole('option', { name: '极石汽车（rox）' })
-    expect(after).toBeTruthy()
+    // 原来弱在哪：findByRole 已保证存在，toBeTruthy 不再加任何信息。
+    // 现在钉：option 的 value 必须是租户 ID（OLD_TENANT.id=7，组件按 value={t.id} 渲染），
+    // 后续 fireEvent.change(sel) 选的就是这家而不是同名错行。
+    expect(after).toHaveAttribute('value', '7')
+    expect(after).toHaveTextContent('极石汽车（rox）')
     expect(screen.queryByRole('option', { name: '新登记的店（newshop）' })).toBeNull()
   })
 

@@ -147,6 +147,14 @@ func ProcessInbound(ch *model.Channel, in *InboundMessage) (err error) {
 //     （处理者可能是 web 请求或另一路通道 worker）；直接出站，不重复落库（DB 双入口共享）；
 //  3. 本 worker 持处理权 → 策略推理 + AI 生成 + 闸门 + 落库 + 人类化延迟 + SetReply(epoch) 唤醒
 //     web 等待者 + 出站投递。任何提前退出路径必须 release()（SetReply 空串）释放批次，防等待者挂死。
+//
+// 2026-09-28 纯结构拆分（形态先例：internal/api chat_main.go 阶段方法）：三种归宿的执行段各自抽成
+// 辅助函数（runInboundSimpleBranch / deliverMergedReplyOnce / inboundApplyRoute /
+// inboundGenerateAndDeliver，另含留资拦截段 inboundLeadIntercept），本函数只保留
+// 「前置分流→入队→分支裁决→收尾」骨架。拆分不动任何投递顺序：ClaimReplyDelivery 认领仍先于
+// release、release 仍先于 deliverAI；到店第二句的接管复核仍在开口之前（runInboundPreRoute 与
+// chatflow.StoreVisitSecondSkipReason 单点判据均未触碰）；release 闭包与 released 标志仍在函数头
+// （D8 panic 兜底 defer 需要引用），每条提前退出路径的 release() 调用与拆分前一一对应。
 func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, conv *model.Conversation,
 	inMsgID uint, done func(error), workerStart time.Time) {
 
@@ -187,21 +195,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 
 	// 分支 1：简单消息快速通道（不合并；与 web chat_main 简单消息分支同款节奏）
 	if isSimple {
-		defer service.DefaultMessageQueueService.SimpleMessageDone(tid, customerID)
-		if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
-			chatflow.CancellableSleep(customerID, service.GetSimpleReplyDelay())
-		}
-		simpleReply := service.GetSimpleReply(in.Content)
-		saveAndDeliver(ch, conv, customerID, simpleReply, "channel_simple")
-		// D3 修复(2026-09-16B)：与 web 简单消息分支同款"防漏"留资检测（简单消息一般不含
-		// 手机号，但 2-gram 误判进快速通道时不能把留资吞掉）
-		var simpleCust model.Customer
-		if db.DB.First(&simpleCust, customerID).Error == nil &&
-			!chatflow.CapturedStage(simpleCust.JourneyStage) {
-			if leadResult := chatflow.DetectLeadCapture(in.Content, &simpleCust); leadResult != 0 {
-				log.Printf("[通道] 客户%d 留资检测(简单消息防漏,OneID目标=%d)", customerID, leadResult)
-			}
-		}
+		runInboundSimpleBranch(ch, in, tid, conv, customerID)
 		return
 	}
 
@@ -209,14 +203,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	// D5 投递认领：处理者可能已是同通道另一 worker（它投过），也可能是不出站的 web 请求——
 	// "每批每通道恰好一次"交给 ClaimReplyDelivery 原子裁决。
 	if !shouldProcess {
-		if reply == "" {
-			// 处理者走人工/静默路由（如转人工无感知）：通道同样不出声，网页侧自有提示
-			return
-		}
-		if service.DefaultMessageQueueService.ClaimReplyDelivery(tid, customerID, epoch, ch.ID) {
-			// 只投递不落库：回复文本已由批次处理者落 messages（DB 双入口共享，重复落=历史双气泡）
-			deliverText(ch, conv, customerID, reply)
-		}
+		deliverMergedReplyOnce(tid, customerID, epoch, ch, conv, reply)
 		return
 	}
 
@@ -243,21 +230,8 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		release("")
 		return
 	}
-	// D3 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：通道入站补留资硬拦截——旧实现
-	// 零引用 DetectLeadCapture，客户在企微/微信客服/公众号里发手机号不落 phone/阶段/顾问分配，
-	// 顾问端永远看不到线索。放在策略推理之前，与 web（chat_main 留资硬拦截）同口径。
-	if !chatflow.CapturedStage(cust.JourneyStage) {
-		if leadResult := chatflow.DetectLeadCapture(mergedContent, &cust); leadResult != 0 {
-			log.Printf("[通道] 客户%d 留资检测命中(OneID目标=%d)，重载客户并设1轮引导反问", customerID, leadResult)
-			db.DB.First(&cust, customerID) // 同步 journey_stage 等内存字段，供后续推理/延迟判定
-			db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
-				"guided_remaining_rounds": 1,
-				"guided_disabled":         false,
-			})
-			conv.GuidedRemainingRounds = 1
-			conv.GuidedDisabled = false
-		}
-	}
+	inboundLeadIntercept(mergedContent, &cust, conv, customerID)
+
 	si := strategy.StrategyInput{
 		TVector:        cust.BuildBaseTVector(),
 		State:          conv.GetState(),
@@ -270,6 +244,82 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		DeptIDs:        service.DeptChainForUser(conv.AssignedUserID),
 	}
 	out := strategy.DefaultEngine.Infer(si)
+
+	// 路由裁决与非 AI 直出段抽至 inboundApplyRoute：四条出口（human/待接管/养鱼/非AI）各自 release+收尾，
+	// 返回 false 即本轮 worker 结束——与拆分前每个 case 末尾的 return 一一对应。
+	if !inboundApplyRoute(ch, conv, customerID, &out, release) {
+		return
+	}
+
+	// AI 生成→人类化延迟→认领→release→投递 的收尾段抽至 inboundGenerateAndDeliver（顺序未动）。
+	inboundGenerateAndDeliver(workerCtx, tid, ch, conv, customerID, &cust, si, &out,
+		mergedContent, mergeWaitDuration, mergeCount, epoch, inMsgID, workerStart, release)
+}
+
+// runInboundSimpleBranch 通道 worker 分支 1（简单消息快速通道）执行段（自 runInboundWorker 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：这条分支的锁是 simple 串行锁（SimpleMessageDone），根本不触碰批次与 release，
+// 与「处理者」主流程混写时两套锁生命周期难以逐条核对；抽出后观察点收敛——defer 在辅助函数返回时释放
+// 串行锁，相对外层 worker defer（done 台账收尾）的先后次序与拆分前一致（LIFO：先放串行锁、后写台账）。
+func runInboundSimpleBranch(ch *model.Channel, in *InboundMessage, tid uint, conv *model.Conversation, customerID uint) {
+	defer service.DefaultMessageQueueService.SimpleMessageDone(tid, customerID)
+	if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
+		chatflow.CancellableSleep(customerID, service.GetSimpleReplyDelay())
+	}
+	simpleReply := service.GetSimpleReply(in.Content)
+	saveAndDeliver(ch, conv, customerID, simpleReply, "channel_simple")
+	// D3 修复(2026-09-16B)：与 web 简单消息分支同款"防漏"留资检测（简单消息一般不含
+	// 手机号，但 2-gram 误判进快速通道时不能把留资吞掉）
+	var simpleCust model.Customer
+	if db.DB.First(&simpleCust, customerID).Error == nil &&
+		!chatflow.CapturedStage(simpleCust.JourneyStage) {
+		if leadResult := chatflow.DetectLeadCapture(in.Content, &simpleCust); leadResult != 0 {
+			log.Printf("[通道] 客户%d 留资检测(简单消息防漏,OneID目标=%d)", customerID, leadResult)
+		}
+	}
+}
+
+// deliverMergedReplyOnce 通道 worker 分支 2（被并入在途批次）的送达段（自 runInboundWorker 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：「每批每通道恰好一次」的投递认领在此收口——空回复静默与 ClaimReplyDelivery
+// 先认领后 deliverText 的先后关系抽进单一函数，后续改动无法绕过认领直接投递（认领点也不在发送之后）。
+// 此处仍不落库：回复文本已由批次处理者写进 messages，双入口共享历史，重复落=历史双气泡。
+func deliverMergedReplyOnce(tid, customerID uint, epoch uint64, ch *model.Channel, conv *model.Conversation, reply string) {
+	if reply == "" {
+		// 处理者走人工/静默路由（如转人工无感知）：通道同样不出声，网页侧自有提示
+		return
+	}
+	if service.DefaultMessageQueueService.ClaimReplyDelivery(tid, customerID, epoch, ch.ID) {
+		// 只投递不落库：回复文本已由批次处理者落 messages（DB 双入口共享，重复落=历史双气泡）
+		deliverText(ch, conv, customerID, reply)
+	}
+}
+
+// inboundLeadIntercept 通道 worker 处理段的留资硬拦截（自 runInboundWorker 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：留资检测必须在策略推理之前跑（与 web chat_main 同口径），且命中时要重载客户、
+// 回写会话引导轮数、同步内存字段三件事一起发生——集中一处防「推理先于拦截」的顺序回潮。
+func inboundLeadIntercept(mergedContent string, cust *model.Customer, conv *model.Conversation, customerID uint) {
+	// D3 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：通道入站补留资硬拦截——旧实现
+	// 零引用 DetectLeadCapture，客户在企微/微信客服/公众号里发手机号不落 phone/阶段/顾问分配，
+	// 顾问端永远看不到线索。放在策略推理之前，与 web（chat_main 留资硬拦截）同口径。
+	if !chatflow.CapturedStage(cust.JourneyStage) {
+		if leadResult := chatflow.DetectLeadCapture(mergedContent, cust); leadResult != 0 {
+			log.Printf("[通道] 客户%d 留资检测命中(OneID目标=%d)，重载客户并设1轮引导反问", customerID, leadResult)
+			db.DB.First(cust, customerID) // 同步 journey_stage 等内存字段，供后续推理/延迟判定
+			db.DB.Model(&model.Conversation{}).Where("id = ?", conv.ID).Updates(map[string]interface{}{
+				"guided_remaining_rounds": 1,
+				"guided_disabled":         false,
+			})
+			conv.GuidedRemainingRounds = 1
+			conv.GuidedDisabled = false
+		}
+	}
+}
+
+// inboundApplyRoute D5 路由裁决与非 AI 直出段（自 runInboundWorker 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：human/待接管/养鱼/非AI 四条出口每条都是一次「release(批次)+落库投递」收尾，
+// 抽出后主函数只见 `if !inboundApplyRoute(...) { return }`，不会有 release 调用或批次持有漏进 AI 生成腿。
+// 返回 true=路由允许 AI 生成（RouteAI/RoutePrice）；false=本函数已完成本轮收尾，worker 直接返回。
+func inboundApplyRoute(ch *model.Channel, conv *model.Conversation, customerID uint,
+	out *strategy.StrategyOutput, release func(string)) bool {
 	// D5 路由对齐 web（chat_main 751-820）：旧通道实现非 AI 一律静默，price 询价/human 转人工
 	// 在微信侧与网页侧行为分裂（网页会引导到店/发退场词，通道无声）。合并后统一按 web 口径。
 	routeGo := out.RouteResult == strategy.RouteAI || out.RouteResult == strategy.RoutePrice
@@ -283,7 +333,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		conv.Mode, conv.IsHumanLocked, conv.IsAiReplyEnabled = "human", true, false
 		release(exitText)
 		saveAndDeliver(ch, conv, customerID, exitText, "channel_human_exit")
-		return
+		return false
 	case strategy.RoutePendingHuman:
 		// D7 修复(2026-09-16B，AUDIT_UAT_VERIFY_2026-09-16B)：软接管与 web 同口径——
 		// 旧实现在 default 分支静默，客户在微信里干等永不回复。退场词+锁会话+关AI回复，
@@ -295,7 +345,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		conv.Mode, conv.IsHumanLocked, conv.IsAiReplyEnabled = "human", true, false
 		release(pendingExit)
 		saveAndDeliver(ch, conv, customerID, pendingExit, "channel_pending_human_exit")
-		return
+		return false
 	case strategy.RouteFish:
 		// D7 修复(2026-09-16B)：养鱼罐头话术对齐 web（旧通道静默）。会话保持 active，
 		// 与 web 同：仅内存 Mode=fish 不回写（web 亦未持久化该列）。
@@ -303,7 +353,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 		conv.Mode = "fish"
 		release(fishText)
 		saveAndDeliver(ch, conv, customerID, fishText, "channel_fish")
-		return
+		return false
 	case strategy.RouteAI, strategy.RoutePrice:
 		routeGo = true
 	default:
@@ -311,11 +361,22 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	}
 	if !routeGo {
 		release("")
-		return
+		return false
 	}
 
+	return true
+}
+
+// inboundGenerateAndDeliver 通道 worker 处理者的 AI 生成、人类化延迟与投递认领收尾段（自 runInboundWorker 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：本段的「认领先于 release、认领成功才投递」（D5）的顺序是双答的最后一道闸，
+// 且批次持有期从 release 到 SetReply 集中在这一个函数里收尾，主函数重排不可能在认领与投递之间插入其它出口。
+// 生成红线不变：经 flow→strategy→llm，本包不直连 llm；延迟预算 2 分钟硬顶截断口径逐行保留。
+func inboundGenerateAndDeliver(workerCtx context.Context, tid uint, ch *model.Channel, conv *model.Conversation,
+	customerID uint, cust *model.Customer, si strategy.StrategyInput, out *strategy.StrategyOutput,
+	mergedContent string, mergeWaitDuration time.Duration, mergeCount int, epoch uint64, inMsgID uint,
+	workerStart time.Time, release func(string)) {
 	// 生成 AI 回复（红线：flow→strategy→llm）
-	aiReply := flow.DefaultEngine.OrchestrateReply(workerCtx, &cust, conv.ID, mergedContent, &out, si.DeptIDs)
+	aiReply := flow.DefaultEngine.OrchestrateReply(workerCtx, cust, conv.ID, mergedContent, out, si.DeptIDs)
 	if aiReply == "" {
 		release("")
 		return
@@ -324,7 +385,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 
 	// 人类化延迟与 web 同款：合并窗口已消耗的时间计入偏移，总时长 2 分钟硬顶截断
 	humanlikeDelay := service.CalcHumanlikeDelay(tid, aiReply, mergeWaitDuration, mergeCount,
-		service.IsStoreVisitIntentForTenant(tid, mergedContent) && !chatflow.IsLeadCaptured(&cust))
+		service.IsStoreVisitIntentForTenant(tid, mergedContent) && !chatflow.IsLeadCaptured(cust))
 	elapsed := time.Since(workerStart)
 	if remaining := 120*time.Second - elapsed; humanlikeDelay > remaining {
 		humanlikeDelay = remaining
@@ -341,7 +402,7 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 	claim := service.DefaultMessageQueueService.ClaimReplyDelivery(tid, customerID, epoch, ch.ID)
 	release(aiReply) // 唤醒 web/其它通道等待者（携带本批代际，旧处理者复活不践踏）
 	if claim {
-		deliverAI(ch, conv, customerID, aiReply, &out, si.TVector[0], inMsgID)
+		deliverAI(ch, conv, customerID, aiReply, out, si.TVector[0], inMsgID)
 	}
 }
 

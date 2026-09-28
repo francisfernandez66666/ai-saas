@@ -5,21 +5,26 @@
 // miniredis 不模拟的东西：SetNX 锁的**值匹配解锁**（Lua 脚本）、`GETDEL` 式原子排空
 // 列表、以及 TTL 到期。假服务端把这些实现成"永远成功"，用例就退化成测我们自己的桩。
 //
-// 覆盖三条真实跨实例路径（单实例内存模式下**根本走不到**，故此前的单测全为盲区）：
+// 覆盖四条真实跨实例路径（单实例内存模式下**根本走不到**，故此前的单测全为盲区）：
 //  1. 实例甲持处理锁、实例乙经 Redis 转交消息 → 甲窗口收账时吸收 → 一条合并回复
 //     同时送达两实例（乙拿到的还是与甲配对的代际号，供 D5 投递认领）；
 //  2. 持锁实例死亡（锁消失且无回复）→ 远程等待者接管，消息**不丢也不重**
 //     （接管时 absorb 会因"本地未在 processing"把消息退回 Redis，靠窗口收账那次吸收捡回，
 //     这条链路只有真跑才看得出来）；
-//  3. ClaimReplyDelivery 跨实例互斥：同 (批次代际, 通道) 只有一个调用方拿到投递权。
+//  3. ClaimReplyDelivery 跨实例互斥：同 (批次代际, 通道) 只有一个调用方拿到投递权；
+//  4. 连发条数超过合并上限时被挤出的消息（2026-09-28 G-TAKEOVER-STRAND）：等待者只消费
+//     "含自己那一句"的回复，否则继续等/接管——不丢答也不双答。
 //
-// 不测的：waitRemotely 等待超时后的降级提示分支（P2-38）——它要等满 processing_lock_timeout
-// 才进，纯耗时不产出判据，且落库侧已有 WriteDegradedNotice 的租户归属单测。
+// 覆盖路径 1~3 的原始动机记在这里备查：这套协议的三个关键语义恰恰是 miniredis
+// 不模拟的东西（见文件头）。另有一条分支刻意**不**在此产出判据：waitRemotely 等待
+// 超时后的降级提示分支（P2-38）——它要等满 processing_lock_timeout 才进，纯耗时
+// 不产出判定价值，且落库侧已有 WriteDegradedNotice 的租户归属单测。
 package service
 
 import (
 	"context"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -259,5 +264,107 @@ func TestRedisClaimReplyDeliveryCrossInstance(t *testing.T) {
 	// epoch=0（旧协议/降级路径）一律放行：宁可极端双发，不可静默漏发
 	if !svcA.ClaimReplyDelivery(tid, cid, 0, chID) {
 		t.Error("epoch=0 应放行投递")
+	}
+}
+
+// TestRedisBurstBeyondMergeCapNothingStranded 连发 5 条、合并上限 3 条：
+// 被上限挤出的那两句必须**各自成批被答一次**，一条不丢、一条不重，列表不残留。
+//
+// 这是 G-TAKEOVER-STRAND（2026-09-28）的结构性证据。缺陷现场：处理者的 SetReply
+// 先发布回复、后释放锁，于是还挂在 mq:pending 里的第 4、5 条在下一次轮询先撞上
+// "有新回复"，把**不含自己那句**的上一批回复取走并离场——两句话永久滞留，
+// 客户连发超过合并上限的消息从此静默丢答（smoke_channel §四c 在 Redis 轨上四条全红）。
+// 单实例内存模式走不到这条路（积压等待者自己就是本地接管者），所以此前十一路端到端
+// 一直跑在 REDIS_ENABLED=false 上时从未暴露。
+//
+// 判据为什么这样写：
+//   - 「每个标记在所有 shouldProcess=true 的合并内容里恰好出现 1 次」同时锁住两个方向
+//     （0＝丢答、2＝同一句被两个批次各答一遍＝双答＋双烧 token）；
+//   - 「每个等待者离场时手里都有非空回复」防"取走别人那一批的回复当自己的答案就离场"——
+//     这正是缺陷本身：那条回复里没有它，客户也就永远等不到它那一句的回音；
+//   - 「批次数 ≥ 2」防"5 条被当成 1 批改完"（挤出的两句根本没进过任何批次）；
+//   - 「mq:pending 收尾为空」是滞留这件事最直接的观测位——缺陷复发时这一条必红。
+func TestRedisBurstBeyondMergeCapNothingStranded(t *testing.T) {
+	enableRealRedis(t)
+	cleanMQKeys(t)
+	defer cleanMQKeys(t)
+	defer queueTestConfig(t, 3, nil)() // 合并上限 3、窗口 1s
+
+	svc := NewMessageQueueService()
+	tid, cid := uint(44), uint(94804)
+	k := queueKey(tid, cid)
+
+	// 五条各不相同的句子：按标记比对，不按到达顺序（谁并进哪一批由调度决定）
+	markers := []string{"第五条甲：现在有什么额外权益", "第五条乙：置换补贴怎么算",
+		"第五条丙：保养周期多久", "第五条丁：续航实际能跑多少", "第五条戊：车里隔音效果怎么样"}
+
+	// 第 1 条必须先拿到处理锁，后面四条才会走"转交其他实例"那条路（否则五条各开一批，测不到上限）
+	first := make(chan qResult, 1)
+	go func() {
+		m, p, r, _, simple, n, e := svc.EnqueueAndWait(tid, cid, markers[0], "")
+		first <- qResult{merged: m, process: p, reply: r, count: n, epoch: e, isSimple: simple}
+	}()
+	waitLockHeld(t, "mq:lock:"+k, 5*time.Second)
+
+	// 结果统一进一个 channel，主循环边收边当"AI"交卷：
+	// 处理者一回来就 SetReply，否则被挤出的那两句没有下一个触发点（15s 内等不到就判挂死）。
+	type tagged struct {
+		who string
+		r   qResult
+	}
+	all := make(chan tagged, 5)
+	all <- tagged{markers[0], <-first}
+	for _, mk := range markers[1:] {
+		go func(mk string) {
+			m, p, r, _, simple, n, e := svc.EnqueueAndWait(tid, cid, mk, "")
+			all <- tagged{mk, qResult{merged: m, process: p, reply: r, count: n, epoch: e, isSimple: simple}}
+		}(mk)
+	}
+
+	var mergedAll []string
+	processors := 0
+	for i := 0; i < 5; i++ {
+		var x tagged
+		select {
+		case x = <-all:
+		case <-time.After(25 * time.Second):
+			t.Fatalf("第 %d 路入队 25s 未返回（已收 %d 路）——等待者挂死或挤出的两句从未成批", i+1, i)
+		}
+		if x.r.isSimple {
+			t.Errorf("%q 被判为简单消息走了快速通道，本用例的批次上限路径根本没被走到", x.who)
+		}
+		if x.r.process {
+			processors++
+			mergedAll = append(mergedAll, x.r.merged)
+			svc.SetReply(tid, cid, x.r.epoch, "批次回复（第"+strconv.Itoa(processors)+"批）")
+			continue
+		}
+		if x.r.reply == "" {
+			t.Errorf("%q 作为等待者拿到空回复 reply=%q merged=%q——等待者离场却没答案＝客户侧丢答（降级分支也会走到这里）",
+				x.who, x.r.reply, x.r.merged)
+		}
+	}
+
+	// 批次数下界：5 条 / 上限 3 条 ⇒ 不可能一批改完（1＝挤出的两句丢了）。
+	// **上界不锁**：被挤出的那句由等待者自己接管成独立一批，是正确行为而不是缺陷
+	// ——锁死"恰好 2 批"会把"谁抢到锁"这种纯调度时序当成判据，用例变成随机红。
+	// 真正的判据是下面三条：每句恰好被答一次、每个等待者离场时手里有答案、列表不残留。
+	if processors < 2 {
+		t.Errorf("处理者批次=%d，5 条消息上限 3 条至少要 2 批（各批内容：%q）", processors, mergedAll)
+	}
+	// 每条消息在所有批次的合并内容里恰好出现一次
+	joined := strings.Join(mergedAll, "\n")
+	for _, mk := range markers {
+		if got := strings.Count(joined, mk); got != 1 {
+			t.Errorf("%q 出现在合并批次内容中 %d 次（0＝被挤出来后无人接管＝丢答，2＝同一句被两批各答一遍＝双答）；批次内容：%q",
+				mk, got, mergedAll)
+		}
+	}
+	// 滞留观测位：缺陷复发时这里必然剩 1~2 条
+	if n := redisclient.LLen("mq:pending:" + k); n != 0 {
+		t.Errorf("收尾时 Redis 待合并列表仍残留 %d 条——就是 G-TAKEOVER-STRAND 的滞留本身", n)
+	}
+	if redisclient.LockExists("mq:lock:" + k) {
+		t.Error("收尾时处理锁仍未释放，后续消息会一直走转交路径")
 	}
 }

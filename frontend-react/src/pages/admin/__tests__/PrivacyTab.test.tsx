@@ -1,5 +1,5 @@
 // F1 PIPL 删除请求 Tab 冒烟：列表渲染、状态筛选触发请求、待处理行显示"立即执行"。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { PrivacyTab } from '../PrivacyTab'
 
@@ -44,8 +44,16 @@ describe('PrivacyTab（PIPL 删除请求）', () => {
     // 请求带 pending 状态过滤
     expect(fetchMock.mock.calls[0][0]).toContain('/admin/privacy/deletion-requests')
     expect(fetchMock.mock.calls[0][0]).toContain('status=pending')
-    expect(await screen.findByText('立即执行')).toBeTruthy()
-    expect(screen.getByText('已处理')).toBeTruthy()
+    // 原来弱在哪：两条 toBeTruthy 只管「页面上有这几个字」，分不清入口挂在哪一行；
+    // 现在按「对象」列（customer#id / user#id，PrivacyTab.tsx:58）定位行，逐行钉操作列状态：
+    // pending 行必须给可点的「立即执行」，终态行必须收口成「已处理」且不留按钮
+    const pRow = (await screen.findByText(`customer#${pendingRow.customer_id}`)).closest('tr')
+    if (!pRow) throw new Error('未定位到 pending 行所在的表格行')
+    expect(within(pRow).getByRole('button', { name: '立即执行' })).toBeEnabled()
+    const dRow = screen.getByText(`user#${doneRow.user_id}`).closest('tr')
+    if (!dRow) throw new Error('未定位到 anonymized 行所在的表格行')
+    expect(within(dRow).getByText('已处理')).toBeInTheDocument()
+    expect(within(dRow).queryByRole('button', { name: '立即执行' })).toBeNull()
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe('Bearer test-token')
   })
 

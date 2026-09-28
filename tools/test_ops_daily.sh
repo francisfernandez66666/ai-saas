@@ -97,17 +97,22 @@ if command -v pg_dump >/dev/null 2>&1 && [ -s "$WORK/made.dump" ]; then
   mkdir -p "$WORK/good"
   cp "$WORK/made.dump" "$WORK/good/ai_scrm_$(date +%Y%m%d_%H%M%S).dump"
   run_ops "$WORK/good"
+  # ⚠ 变量一律写成 ${kw} / ${RC}：macOS 自带 bash 3.2 在 **UTF-8 locale** 下会把紧跟
+  #   变量名的多字节标点（「」）（）一并吞进变量名，于是 $kw」（ 查的是名为 `kw」` 的变量，
+  #   在 set -u 下当场 "unbound variable" 中断整段反证（2026-09-28 经 tools/cleanenv.sh
+  #   包装跑 test_all 时实锤——cleanenv 显式导出 LC_ALL=en_US.UTF-8，裸 shell 的 C locale 反而不犯）。
+  #   花括号是语法级定界，与 locale 无关，勿"顺手美化"去掉。
   for kw in "最新备份已" "只有" "解析失败" "没有任何 .dump" "备份目录"; do
     if printf '%s' "$OUT" | grep -q "FAIL.*$kw"; then
-      bad "⑤ 正向组不该报「$kw」红，却报了——判据被改成恒红时①~④会绿得毫无意义"
+      bad "⑤ 正向组不该报「${kw}」红，却报了——判据被改成恒红时①~④会绿得毫无意义"
     else
-      ok "⑤ 正向组不报「$kw」（该绿的不红）"
+      ok "⑤ 正向组不报「${kw}」（该绿的不红）"
     fi
   done
   if [ "$RC" = 0 ]; then
     ok "⑤ 正向组整体退出码 0"
   else
-    bad "⑤ 正向组整体退出码应为 0（rc=$RC）"
+    bad "⑤ 正向组整体退出码应为 0（rc=${RC}）"
     printf '%s\n' "$OUT" | grep -E 'FAIL|结果' | sed 's/^/        /'
   fi
 else

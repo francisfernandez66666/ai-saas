@@ -104,13 +104,14 @@ afterEach(() => {
 })
 
 // 各页挂载即触达的接口是异步的：冒烟断言"壳层渲染成功"，用 waitFor 兜渲染异常
-async function smoke(label: string, ui: React.ReactElement, finder?: () => unknown) {
+// 原来弱在哪：公共 smoke() 的默认分支是 `getAllByText(label).length>0` + finder 返回值
+// `toBeTruthy()`——"页面上有这几个字"对壳层冒烟太薄（文案挂在哪、是不是输入框都不管）。
+// 现在改成：每页必传 assert 回调，回调内用 getByText/getByRole/getByPlaceholder 等
+// **唯一性查询 + 值断言**（查不到即抛错、多个命中也抛错），helper 自身零弱断言。
+async function smoke(label: string, ui: React.ReactElement, assert: () => void) {
   const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
   render(ui)
-  await waitFor(() => {
-    if (finder) expect(finder()).toBeTruthy()
-    else expect(screen.getAllByText(label, { exact: false }).length).toBeGreaterThan(0)
-  })
+  await waitFor(assert)
   // 未捕获渲染异常会经 console.error（React 18 错误日志）——冒烟即失败
   const crashes = errSpy.mock.calls.filter((a) => /Cannot read|is not a function|Minified React error|useLayoutEffect/.test(String(a[0])))
   expect(crashes, `页面 ${label} 渲染异常`).toHaveLength(0)
@@ -120,53 +121,93 @@ async function smoke(label: string, ui: React.ReactElement, finder?: () => unkno
 const R = (el: React.ReactNode) => <MemoryRouter>{el}</MemoryRouter>
 
 describe('核心页面冒烟（无后端可渲染）', () => {
-  it('落地页 Index', async () => await smoke('登录工作台', R(<Index />)))
+  // 各 assert 的唯一性依据：Index.tsx:114 全站仅此一处「登录工作台」链接（Login 页的
+  // 同名文案是 h2，且该用例只渲染 Index，树里不存在歧义）。href 钉到 /login。
+  it('落地页 Index', async () => await smoke('登录工作台', R(<Index />), () => {
+    expect(screen.getByRole('link', { name: '登录工作台' })).toHaveAttribute('href', '/login')
+  }))
   it('登录页 Login', async () => {
     installFetch()
-    await smoke('用户名', R(<Login />))
+    // 「用户名」在 Login.tsx 源码出现 6 次（label/placeholder/注释混在一起），故不钉文本
+    // 计数，改钉输入框本体：placeholder 精确等值 + 初值为空串（受控 input state 初值 ''）。
+    await smoke('用户名', R(<Login />), () => {
+      const box = screen.getByPlaceholderText('用户名')
+      expect(box.tagName).toBe('INPUT')
+      expect((box as HTMLInputElement).value).toBe('')
+    })
   })
   it('注册页 Register', async () => {
     installFetch()
-    await smoke('免费开通试用', R(<Register />))
+    // Register.tsx:155 唯一 h2「免费开通试用」——按 heading 角色钉，不再"含字即绿"
+    await smoke('免费开通试用', R(<Register />), () => {
+      expect(screen.getByRole('heading', { level: 2, name: '免费开通试用' })).toHaveTextContent('免费开通试用')
+    })
   })
   it('定价页 Pricing', async () => {
     installFetch()
-    await smoke('选择适合您的套餐', R(<Pricing />))
+    // Pricing.tsx:52 唯一 h1
+    await smoke('选择适合您的套餐', R(<Pricing />), () => {
+      expect(screen.getByRole('heading', { level: 1, name: '选择适合您的套餐' })).toBeInTheDocument()
+    })
   })
   it('客户对话 Client', async () => {
     installFetch()
-    // 客户消息框是 placeholder 文本，用 getByPlaceholderText 作壳层断言
-    await smoke('输入你的问题', R(<Client />), () => screen.getByPlaceholderText(/输入你的问题/))
+    // Client.tsx:430：消息输入框是 <input aria-label="消息输入框" placeholder="输入你的问题…">，
+    // 受控初值空串。原来弱在哪：finder 返回元素 + helper toBeTruthy；现在钉属性与初值。
+    await smoke('输入你的问题', R(<Client />), () => {
+      const box = screen.getByLabelText('消息输入框')
+      expect(box.tagName).toBe('INPUT')
+      expect(box).toHaveAttribute('placeholder', '输入你的问题…')
+      expect((box as HTMLInputElement).value).toBe('')
+    })
   })
   it('顾问工作台 Advisor', async () => {
     installFetch()
     localStorage.setItem(TOKEN_KEY, 'jwt-smoke')
-    // P1-11：除壳层文案外断言客户列表关键列真实渲染（数据来自 /advisor/customers 分页信封）
-    await smoke('顾问工作台', R(<Advisor />), () => screen.getAllByText('顾问工作台', { exact: false }).length > 0 && screen.getByText(SMOKE_CUSTOMER_NAME))
+    // P1-11：除壳层渲染外断言客户列表关键列真实渲染（数据来自 /advisor/customers 分页信封）。
+    // getByText 唯一性+文本双钉：信封取数路径写错此格即空，用例即红。
+    await smoke('顾问工作台', R(<Advisor />), () => {
+      expect(screen.getByText(SMOKE_CUSTOMER_NAME)).toHaveTextContent(SMOKE_CUSTOMER_NAME)
+    })
   })
   it('管理中心 Admin', async () => {
     installFetch()
     localStorage.setItem(TOKEN_KEY, 'jwt-smoke')
     localStorage.setItem('role', 'tenant_admin')
-    await smoke('管理中心', R(<Admin />))
+    // Admin.tsx:243 唯一 h1「管理中心」（子 Tab 不复制该文案）
+    await smoke('管理中心', R(<Admin />), () => {
+      expect(screen.getByRole('heading', { level: 1, name: '管理中心' })).toBeInTheDocument()
+    })
   })
   it('平台超管 SuperAdmin', async () => {
     installFetch('super_admin')
     localStorage.setItem(TOKEN_KEY, 'jwt-smoke')
     localStorage.setItem('role', 'super_admin')
-    // P1-11：断言租户表关键列——/super/tenants 返回 {list,total} 信封，取数路径写错此列即空
-    await smoke('租户管理', R(<SuperAdmin />), () => screen.getAllByText('租户管理').length > 0 && screen.getByText(SMOKE_TENANT_NAME))
+    // P1-11：断言租户表关键列——/super/tenants 返回 {list,total} 信封，取数路径写错此列即空。
+    // 原来弱在哪：`getAllByText('租户管理').length>0 && getByText(name)` 返回 boolean 再被
+    // toBeTruthy 消费；现在拆成两条独立值断言（表头 h2 + 租户名格）。
+    await smoke('租户管理', R(<SuperAdmin />), () => {
+      expect(screen.getByRole('heading', { level: 2, name: '租户管理' })).toBeInTheDocument()
+      expect(screen.getByText(SMOKE_TENANT_NAME)).toHaveTextContent(SMOKE_TENANT_NAME)
+    })
   })
   it('收银台 Billing', async () => {
     installFetch()
     localStorage.setItem(TOKEN_KEY, 'jwt-smoke')
-    await smoke('订阅与收银台', R(<Billing />))
+    // Billing.tsx:188 唯一 h2「订阅与收银台」
+    await smoke('订阅与收银台', R(<Billing />), () => {
+      expect(screen.getByRole('heading', { level: 2, name: '订阅与收银台' })).toBeInTheDocument()
+    })
   })
   it('组织架构 Org', async () => {
     installFetch()
     localStorage.setItem(TOKEN_KEY, 'jwt-smoke')
-    // P1-11：断言部门树节点真实渲染（/org/departments/tree 返回裸数组，形态错则整树为空）
-    await smoke('部门', R(<Org />), () => screen.getAllByText('部门树').length > 0 && screen.getByText(SMOKE_DEPT_NAME, { exact: false }))
+    // P1-11：断言部门树节点真实渲染（/org/departments/tree 返回裸数组，形态错则整树为空）。
+    // 父子两格都钉（夹具：销售一部 → 华东组），只渲染出根节点/只渲染出叶子都算红。
+    await smoke('部门', R(<Org />), () => {
+      expect(screen.getByText(SMOKE_DEPT_NAME, { exact: false })).toHaveTextContent(SMOKE_DEPT_NAME)
+      expect(screen.getByText('华东组')).toHaveTextContent('华东组')
+    })
   })
 })
 
@@ -223,7 +264,9 @@ describe('护栏自测（关键列断言数据耦合）', () => {
     const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     render(R(<SuperAdmin />))
     // 壳层（菜单）照常渲染，数据请求失败不崩；失败信封经 AUTH toast，不弹窗外异常
-    await waitFor(() => expect(screen.getAllByText('租户管理').length).toBeGreaterThan(0))
+    // 原来弱在哪：getAllByText('租户管理').length>0 是"等待壳层"的同步点，但也顺带成了
+    // 断言。现在钉 TenantsTab.tsx:50 的 h2（唯一 heading），等待语义不变、强度升级。
+    await waitFor(() => expect(screen.getByRole('heading', { level: 2, name: '租户管理' })).toBeInTheDocument())
     // 数据请求经包装桩返回 500 信封（此路径不入 fetchLog），给异步链留完成窗口
     await new Promise((r) => setTimeout(r, 150))
     expect(screen.queryByText(SMOKE_TENANT_NAME)).toBeNull()

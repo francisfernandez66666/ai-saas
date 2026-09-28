@@ -122,7 +122,9 @@ describe('dropSystemNotice 清理瞬时系统占位（2026-09-09）', () => {
     const next = dropSystemNotice(msgs, '顾问可能正在忙碌中，请稍候')
     expect(next).toHaveLength(2)
     expect(next.find((m) => m.content === '顾问可能正在忙碌中，请稍候')).toBeUndefined()
-    expect(next.find((m) => m.id === 51)).toBeTruthy()
+    // 原来弱在哪：toBeTruthy 只证明「找到了某条」，不证明找到的就是那条真实回复
+    //（比如误把别的残留行当命中也绿）。现在钉：整行与夹具逐字段相等。
+    expect(next.find((m) => m.id === 51)).toEqual({ id: 51, sender_type: 'ai', content: '真实回复' })
   })
 
   it('列表无该占位时原样返回', () => {

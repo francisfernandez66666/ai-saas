@@ -506,6 +506,33 @@ func LLen(key string) int64 {
 	return n
 }
 
+// ListContains 判断列表里是否还有某一条**逐字相等**的元素（只读探测，不取走、不删除）。
+// Redis 未启用或出错一律 false，与 LLen 同口径 fail-open：探测失败按"不在列表里"处理，
+// 调用方（合并队列远程等待者）据此回落既有消费行为，绝不因为一次网络抖动把等待者挂死。
+//
+// 为什么需要它（2026-09-28）：远程等待者此前只能判断"有没有新回复"，判断不了
+// "这条新回复里有没有我这一句"——批次满员时被退回列表的转交消息会撞上持锁实例发布的
+// 上一批回复，等待者把不含自己那句的回复当自己的答案取走并离场，那句话就永久留在列表里
+// 无人认领（客户连发超过合并上限的消息从此静默丢答）。本函数给出的是"我这句还在不在
+// 待合并列表"这一唯一可观测判据，让等待者能区分"被答了"与"还在排队"。
+func ListContains(key, value string) bool {
+	if !IsEnabled() {
+		return false
+	}
+	ctx, cancel := ctxDefault()
+	defer cancel()
+	items, err := client().LRange(ctx, key, 0, -1).Result()
+	if err != nil {
+		return false
+	}
+	for _, item := range items {
+		if item == value {
+			return true
+		}
+	}
+	return false
+}
+
 // luaDrainList 原子取出整个列表（LRANGE+DEL 非原子会丢消息，必须 Lua）
 var luaDrainList = redis.NewScript(`
 local v = redis.call("LRANGE", KEYS[1], 0, -1)

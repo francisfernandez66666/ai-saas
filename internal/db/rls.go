@@ -8,11 +8,14 @@ package db
 // 策略（休眠式）：默认 app.current_tenant 未设置 → current_setting 返回 NULL →
 //   USING 表达式 OR NULL IS NULL 恒真 → 全表可见，与现状完全等价（零行为变更）。
 // 激活方式：在事务内 SET LOCAL app.current_tenant='<tid>' 后查询即被 DB 强制按租户收敛
-//   （见 SetTenantRLS）。采用 FORCE ROW LEVEL SECURITY 确保即便表 owner 也受策略约束。
+//   （见 SetTenantRLS）。ENABLE ROW LEVEL SECURITY 让策略真正被咨询，FORCE ROW LEVEL SECURITY
+//   再确保即便表 owner 也受策略约束——**两者缺一不可**（FIX-A 2026-09-28：旧实现只写 FORCE，
+//   而 PG 语义是未 ENABLE 时策略永不被咨询，整套"DB 级兜底"从未真生效）。
 // 仅对确含 tenant_id 的业务表启用；平台级表（tenants/system_configs/…）不在列，避免误伤跨租户管理。
 // ============================================================
 
 import (
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -130,6 +133,11 @@ type RLSStatusInfo struct {
 	Enabled bool // 是否已随 RLS_ENABLED 建策略（EnableRLS 走完创建流程）
 	Bypass  bool // 连接角色为 SUPERUSER/BYPASSRLS：PG 无条件旁路，启用也形同虚设
 	Tables  int  // 已挂策略的租户表数
+	// EnableVerified 真查 pg_class.relrowsecurity 得到的"确实已 ENABLE"表数（FIX-A 2026-09-28）。
+	// 之所以单独设这一位而不是复用 Tables：PG 语义是 relrowsecurity=false 时策略**永不被咨询**，
+	// "清单条数/策略挂上数"与"实际生效数"是两个数——旧实现把前者当后者报，实测 14 张表挂了策略
+	// 而 relrowsecurity 全为 false，DB 级隔离从未真生效。-1 表示验证查询失败（未能验证，不是 0）。
+	EnableVerified int
 }
 
 // rlsStatus 进程内状态快照（EnableRLS 只在启动跑一次，读写无并发窗口）
@@ -137,6 +145,70 @@ var rlsStatus = RLSStatusInfo{}
 
 // GetRLSStatus 返回 RLS 生效形态快照（未调 EnableRLS / 未启用时为零值 Enabled=false）
 func GetRLSStatus() RLSStatusInfo { return rlsStatus }
+
+// RLSPolicyFaceInfo RLS「策略面」快照（FIX-A 2026-09-28 可观测位数据源）。
+//
+// 为什么在 EnableVerified 之外还要单独看策略面：通电（relrowsecurity=true）只保证
+// "PG 会咨询策略"，策略内容本身对不对没人看。本结构的判据是"已 ENABLE **且**挂了
+// tenant_isolation 策略"的表里，有几张的 USING 表达式缺了休眠腿——缺了不是"更严"，
+// 而是那条连接上休眠态被筛成空集 / 写入撞 42501（空串复位缺陷的现场形态）。
+// 与 031 迁移同源：031 按同样的判据决定"哪张表要重建策略"，观测位与迁移判据分叉
+// 就是"日志说没事、数据其实没修"的第二个版本，故两侧共用 rlsPolicyHasDormantLegs。
+type RLSPolicyFaceInfo struct {
+	// Checked 已 ENABLE 且挂了 tenant_isolation 策略的表数（策略面 ∩ 通电面）。
+	Checked int
+	// DormantLegMissing 其中 USING 表达式缺休眠腿（IS NULL 或空串两条腿任一不齐）的表数。
+	DormantLegMissing int
+	// MissingTables 缺腿表名（供日志/接口直出，便于逐表定位；已按名字排序）。
+	MissingTables []string
+	// QueryFailed 真查失败——**必须与"checked=0 且缺腿=0"区分**：前者是"没看成"，后者是"看成了、没事"。
+	QueryFailed bool
+}
+
+// rlsPolicyHasDormantLegs 判一条策略的 USING 表达式是否两条休眠腿齐全。
+// 入参是 pg_get_expr / pg_policies.qual 的 PG 规整文本（不是 Go 常量原文）：
+// PG 会把 `current_setting('app.current_tenant', true)` 渲染成
+// `current_setting('app.current_tenant'::text, true)`、把 `”` 渲染成 `”::text`，
+// 所以判据按规整文本写，比较前折叠空白并转小写，避免"文本形态不同判成缺腿"。
+func rlsPolicyHasDormantLegs(qual string) bool {
+	norm := strings.ToLower(strings.Join(strings.Fields(qual), " "))
+	const cs = "current_setting('app.current_tenant'::text, true)"
+	return strings.Contains(norm, cs+" is null") && strings.Contains(norm, cs+" = ''")
+}
+
+// RLSPolicyFace 实查 pg_policy + pg_class，返回策略面快照（不受 RLS_ENABLED 控制：
+// 策略是库内持久状态，002 基线与 030/031 迁移都能留下它，与本次进程是否启用无关）。
+func RLSPolicyFace() RLSPolicyFaceInfo {
+	out := RLSPolicyFaceInfo{}
+	if DB == nil {
+		out.QueryFailed = true
+		return out
+	}
+	var rows []struct {
+		Table string
+		Qual  string
+	}
+	// 只看"通电且挂了策略"的表：未 ENABLE 的表策略永不生效，缺腿只是休眠式设计里的一行文本，
+	// 把它报成故障会与本缺陷的真实形态（策略在场且生效但休眠腿不全）混淆。
+	err := DB.Raw(`SELECT c.relname::text AS table, pg_get_expr(p.polqual, p.polrelid) AS qual
+		FROM pg_policy p
+		JOIN pg_class c ON c.oid = p.polrelid
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = current_schema() AND p.polname = 'tenant_isolation' AND c.relrowsecurity
+		ORDER BY c.relname`).Scan(&rows).Error
+	if err != nil {
+		out.QueryFailed = true
+		return out
+	}
+	out.Checked = len(rows)
+	for _, r := range rows {
+		if !rlsPolicyHasDormantLegs(r.Qual) {
+			out.DormantLegMissing++
+			out.MissingTables = append(out.MissingTables, r.Table)
+		}
+	}
+	return out
+}
 
 // rlsExemptTables 设计内**不**进 RLS 清单的含 tenant_id 表，key=表名，value=不入库的理由。
 //
@@ -260,12 +332,24 @@ func reconcileRLSChecklist(fatalOnPhantom bool) (unlisted, phantom, deadExempt [
 }
 
 // rlsPolicyUsing 租户隔离策略的 USING 表达式——**休眠式设计的核心，也是本文件唯一的行为契约**。
-// 第二条腿 `... IS NULL` 意为"未 SET app.current_tenant 即全表放行"：后台任务、迁移、
-// 超管跨租户视图全走这条腿。删掉它 RLS 看着"更严"，实际会让所有未显式设 GUC 的查询静默返回
-// 空集（全站级故障）。因此它不只写在注释里——rls_coverage_test.go 把这段表达式当 SQL 直接求值，
-// 并配"抽掉 NULL 腿必须翻红"的反证。
+// 三条腿的分工：第一条是激活态（SET 过 GUC 就只放行本租户）；后两条是休眠态（未激活即全表放行），
+// 后台任务、迁移、超管跨租户视图全走休眠腿。删掉休眠腿 RLS 看着"更严"，实际会让所有未显式设 GUC
+// 的查询静默返回空集、写入报 42501（全站级故障）。因此它不只写在注释里——rls_coverage_test.go 把这段
+// 表达式当 SQL 直接求值，并配"抽掉休眠腿必须翻红"的反证。
+//
+// 为什么光有 IS NULL 一条休眠腿不够（FIX-A 落地当天实跑量出来的，2026-09-28）：
+//
+//	①新会话        current_setting('app.current_tenant',true) → NULL，IS NULL = true（放行）
+//	②跑过一次 SET LOCAL 的那条连接、事务提交之后 → **''（空串）**，IS NULL = **false**
+//
+// 即 PG 的"复位"对自定义 GUC 是把值置成空串、不是把它变回未定义。连接池不会关掉这些连接，
+// 于是**任何曾经激活过 RLS 的连接，此后的 current_setting 恒为 ”**——只看 IS NULL 的休眠腿在这条
+// 连接上永久失效：普通查询被筛成空集、写入撞 42501（本轮补 ENABLE 之后 internal/billing 的九条
+// 用例正是这样红的：策略从没被咨询过，所以这个形态在 002 之后一直存在、只是没人看得见）。
+// 所以休眠态判据必须写成「NULL 或 空串」两者。空串不可能是合法租户号，把它当"未激活"没有歧义。
 const rlsPolicyUsing = `tenant_id::text = current_setting('app.current_tenant', true)
-				OR current_setting('app.current_tenant', true) IS NULL`
+				OR current_setting('app.current_tenant', true) IS NULL
+				OR current_setting('app.current_tenant', true) = ''`
 
 // rlsPolicySQL 按表名生成 CREATE POLICY 语句。
 // 生产路径与测试断言共用这一模板，避免"测的是表达式 A、线上建的是表达式 B"。
@@ -277,9 +361,11 @@ func rlsPolicySQL(table string) string {
 
 // EnableRLS 幂等启用租户隔离策略（受 RLS_ENABLED 开关控制）
 // 关闭（默认）：不打任何策略，租户隔离完全由应用层 db.T/c.PQ 保证（零行为变更）。
-// 开启：对租户业务表创建 FORCE ROW LEVEL SECURITY 策略；业务事务内经
+// 开启：对租户业务表逐表 ENABLE + FORCE ROW LEVEL SECURITY 并重建 tenant_isolation 策略
+// （FIX-A 2026-09-28 补 ENABLE：只有 FORCE 没有 ENABLE 时 PG 根本不会咨询策略）；业务事务内经
 // db.WithTenantRLS(tid, fn) 或 SET LOCAL app.current_tenant 激活后即被 DB 强制收敛。
-// 采用休眠式设计：默认 app.current_tenant 未设置时策略恒真，零行为变更
+// 采用休眠式设计：默认 app.current_tenant 未设置时策略恒真，零行为变更。
+// 结尾日志报的是 pg_class.relrowsecurity 的**实查数**，不是清单条数（见 RLSStatusInfo.EnableVerified）。
 func EnableRLS() {
 	if DB == nil {
 		return
@@ -312,6 +398,17 @@ func EnableRLS() {
 
 	failed := 0
 	for _, t := range rlsTenantTables {
+		// FIX-A(2026-09-28) 根因补位：PG 语义下 relrowsecurity=false（未 ENABLE）时，
+		// 表上挂的策略**永不被咨询**——FORCE ROW LEVEL SECURITY 只关"表 owner 旁路"这一格，
+		// 不含 ENABLE 语义，救不了这件事。旧循环只有 FORCE + DROP/CREATE POLICY，于是启动日志
+		// 宣称"已对 N 张租户表启用"而 DB 级隔离从未真生效（2026-09-28 本机实测：14 张表挂了
+		// tenant_isolation 策略、pg_class.relrowsecurity 全为 false）。ENABLE 必须排在 FORCE 前：
+		// 顺序反了也不报错，但"先 FORCE 后 ENABLE"在中间窗口里 owner 仍可旁路，口径按依赖序写。
+		// 失败处理与 FORCE 同口径：计数 + WARN，让末尾的实查数字与 failed 计数互相印证。
+		if err := DB.Exec(fmt.Sprintf("ALTER TABLE %s ENABLE ROW LEVEL SECURITY", t)).Error; err != nil {
+			log.Printf("[RLS] 表 %s ENABLE 失败: %v", t, err)
+			failed++
+		}
 		// FORCE：即便表 owner 也受策略约束；因 NULL 旁路，当前不生效，仅作激活准备
 		if err := DB.Exec(fmt.Sprintf("ALTER TABLE %s FORCE ROW LEVEL SECURITY", t)).Error; err != nil {
 			log.Printf("[RLS] 表 %s FORCE 失败: %v", t, err)
@@ -328,13 +425,50 @@ func EnableRLS() {
 	}
 	rlsStatus.Enabled = true
 	rlsStatus.Tables = len(rlsTenantTables)
-	log.Printf("[RLS] 已对 %d 张租户表启用休眠式行级隔离（SET app.current_tenant 激活；未设置 GUC 恒真放行属设计内，非全时强隔离）", len(rlsTenantTables))
+	// FIX-A(2026-09-28)："启用"的宣告从"循环没报错"改为真查 pg_class——这两件事在旧实现里
+	// 被混为一谈，而正是这种混淆让缺陷静默存活了三年（002 起只写 FORCE）。查询失败时如实打
+	// "未能验证"，绝不再凭循环无报错宣称启用（一个只会打日志的守卫等于没有守卫）。
+	var verified int
+	if err := DB.Raw(`SELECT count(*) FROM pg_class c
+		JOIN pg_namespace n ON n.oid = c.relnamespace
+		WHERE n.nspname = 'public' AND c.relrowsecurity AND c.relname::text = ANY($1)`,
+		rlsTenantTables).Scan(&verified).Error; err != nil {
+		rlsStatus.EnableVerified = -1 // -1＝未能验证，与"真查为 0"严格区分
+		log.Printf("[RLS][WARN] relrowsecurity 实查失败，未能验证启用结果（下面的循环计数不是验证值）: %v", err)
+		log.Printf("[RLS] 休眠式行级隔离已对 %d 张租户表执行 ENABLE/FORCE/建策略（**未能验证**，请检查 pg_class 查询权限）", len(rlsTenantTables))
+		return
+	}
+	rlsStatus.EnableVerified = verified
+	if verified < len(rlsTenantTables) {
+		log.Printf("[RLS][WARN] 实查 relrowsecurity=true 的表只有 %d/%d：差额表要么建表失败要么 ALTER 被拒，逐表检查上方日志", verified, len(rlsTenantTables))
+	}
+	log.Printf("[RLS] 已对 %d/%d 张租户表启用休眠式行级隔离（实查 pg_class.relrowsecurity=true 数/清单数；SET app.current_tenant 激活；未设置 GUC 恒真放行属设计内，非全时强隔离）", verified, len(rlsTenantTables))
 }
 
 // SetTenantRLS 在事务内激活租户隔离
 // 返回已 SET LOCAL 的事务 *gorm.DB，调用方须在该事务内完成查询
 // 提交/回滚后设置自动失效（SET LOCAL 作用域为当前事务）
+//
+// fail-closed（FIX-A 2026-09-28）：传进来的必须是**事务句柄**。非事务句柄上跑 `SET LOCAL`
+// 时 PG 只给一句 "SET LOCAL can only be used in transaction blocks" 的 WARNING 就照常返回
+// 命令成功——调用方以为自己在这一句之后就被 DB 强制按租户收敛了，实际一条策略都没生效；
+// 更糟的是它还把那台连接上的自定义 GUC 置成了空串（见 rlsPolicyUsing 的实跑记录），
+// 于是"没激活"被伪装成"激活过了"。补 ENABLE 之前策略永不被咨询，这个误用毫无后果，
+// 所以它一直活着；现在必须当场报错，让调用方的 `if r.Error != nil { return r.Error }` 接得住。
 func SetTenantRLS(d *gorm.DB, tenantID uint) *gorm.DB {
+	if d == nil || d.Statement == nil {
+		return d
+	}
+	// GORM 的事务句柄其底层连接池就是 *sql.Tx；根句柄是 *sql.DB（或注入的自定义池）。
+	// 只认 *sql.Tx，是为了让"看起来传了 tx、其实传了 db.DB"这种写法直接红。
+	if _, isTx := d.Statement.ConnPool.(*sql.Tx); !isTx {
+		// 错误只挂在返回的会话副本上：gorm 的 AddError 会写进句柄自己的 Error 字段，
+		// 直接对根句柄 AddError 会让它之后的每一次查询都带着这个错（误伤面比原缺陷更大）。
+		// AddError 返回的是聚合后的 error，不是 *gorm.DB，所以这里分两步写。
+		rejected := d.Session(&gorm.Session{})
+		rejected.AddError(fmt.Errorf("SetTenantRLS 必须在事务句柄上调用（SET LOCAL 在事务块外是 no-op，RLS 不会激活）：收到的是非事务连接"))
+		return rejected
+	}
 	return d.Exec(fmt.Sprintf("SET LOCAL app.current_tenant = '%d'", tenantID))
 }
 

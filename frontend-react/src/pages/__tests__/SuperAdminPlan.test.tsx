@@ -62,16 +62,26 @@ describe('SuperAdmin 换套餐', () => {
   it('租户行有换套餐按钮，弹窗可下拉选择并发出 PUT', async () => {
     render(<SuperAdmin />)
     const btn = await screen.findByText('换套餐', undefined, { timeout: 6000 })
-    expect(screen.getByText('席位')).toBeTruthy() // 列表已带席位用量列
+    // 原来弱在哪：getByText('席位') 配 truthy 只证明表头有"席位"俩字，列有没有真的
+    // 渲染用量单元格不管。现在钉 TenantsTab.tsx 列定义的 cell 公式：
+    // 席位 = `${used_users}/${max_users}` = '1/1'、客户用量 = `${used_customers}/${max_customers}` = '3/200'（夹具推得）。
+    expect(screen.getByText('席位')).toHaveTextContent('席位')
+    expect(screen.getByText('1/1')).toHaveTextContent('1/1')
+    expect(screen.getByText('3/200')).toHaveTextContent('3/200')
     fireEvent.click(btn)
     const opt = await screen.findByText(/企业标准版 · 席位5/, undefined, { timeout: 6000 })
     const sel = opt.closest('select') as HTMLSelectElement
     sel.value = '2'
     fireEvent.click(screen.getByText('确认变更'))
-    await waitFor(() => {
-      const put = calls.find((c) => (c.init?.method === 'PUT') && c.url.includes('/super/tenants/77/plan'))
-      expect(put).toBeTruthy()
-      expect(String(put!.init!.body)).toContain('"plan_id":2')
+    const put = await waitFor(() => {
+      const found = calls.find((c) => c.init?.method === 'PUT' && c.url.includes('/super/tenants/77/plan'))
+      if (!found) throw new Error('还没看到换套餐 PUT 请求')
+      return found
     })
+    // 原来弱在哪：waitFor 里 expect(put) 配 truthy + body 里"含一段字符串"——
+    // method 写错、body 序列化成 {"plan_id":"2"}（字符串）都能绿。
+    // 现在钉：method 精确等于 PUT、body 反序列化后 plan_id 是**数字** 2（夹具里选中的企业标准版 id）。
+    expect(put.init?.method).toBe('PUT')
+    expect(JSON.parse(String(put.init?.body))).toMatchObject({ plan_id: 2 })
   })
 })

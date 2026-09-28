@@ -28,12 +28,29 @@ describe('CdpTab', () => {
     })
     render(<CdpTab />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/cdp/tag-defs'))
-    expect(await screen.findByText('已留资')).toBeTruthy()
+    // 原来弱在哪：truthy 只证明"已留资"三个字在场——出现在字典表还是别处、行里
+    // 编码/权重对不对都不管。现在钉：命中的是标签字典表那行 <tr>，且同带着夹具的
+    // code 与 weight_default（CdpTab.tsx 列定义 code/name/…/weight_default）。
+    const tagNameCell = await screen.findByText('已留资')
+    expect(tagNameCell).toHaveTextContent('已留资')
+    const defRow = tagNameCell.closest('tr') as HTMLElement
+    expect(defRow).toHaveTextContent('beh_lead_captured')
+    expect(defRow).toHaveTextContent('2')
     fireEvent.click(screen.getByRole('button', { name: '圈选' }))
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/cdp/segments?tag=beh_lead_captured'))
-    expect(await screen.findByText('c:123')).toBeTruthy()
+    // one_ids 夹具只有一条 'c:123'：等值钉"恰好一个 Tag"，不是"页面上有这串字"
+    const idTags = await screen.findAllByText('c:123')
+    expect(idTags).toHaveLength(1)
+    expect(idTags[0]).toHaveTextContent('c:123')
     fireEvent.click(screen.getByRole('button', { name: '123 张三' }))
-    expect(await screen.findByText('事件数')).toBeTruthy()
-    expect(await screen.findByText('yes')).toBeTruthy()
+    // 「事件数」格与值同容器（画像卡每格是 <div><div>标签</div><div>值</div></div>），
+    // 值=夹具 event_count=8；旧断言只证明页面上飘着"事件数"三个字。
+    const evLabel = await screen.findByText('事件数')
+    expect(evLabel.parentElement).toHaveTextContent('事件数8')
+    // 画像标签表：profileTags 由 tags 对象 + 字典联名而来——值格 'yes' 与名称格
+    // '已留资'、编码格必须在同一 <tr>（错行=联表挂错）。
+    const yesCell = await screen.findByText('yes')
+    expect(yesCell).toHaveTextContent('yes')
+    expect(yesCell.closest('tr')).toHaveTextContent('beh_lead_captured')
   })
 })

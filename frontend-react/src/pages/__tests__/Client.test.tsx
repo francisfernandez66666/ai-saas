@@ -40,7 +40,11 @@ describe('Client 个人信息删除', () => {
       '/api/v1/privacy/deletion-request',
       expect.objectContaining({ method: 'POST' }),
     ))
-    expect(await screen.findByText(/已受理删除申请/)).toBeTruthy()
+    // 原来弱在哪：/已受理删除申请/ 命中即绿，"受理了但没回期限"也绿。现在钉 Client.tsx
+    // 拼接前缀「已受理删除申请，预计 」（夹具带了 deadline 就必走该分支）。预计时刻经
+    // toLocaleString 格式化、随运行机时区变，无注入点——整串钉死会把用例变本机专属，
+    // 故钉到前缀为止（分隔符「，预计 」本身就是"deadline 已拼上"的证据）。
+    expect(await screen.findByText(/已受理删除申请/)).toHaveTextContent(/^已受理删除申请，预计 /)
   })
 })
 
@@ -87,8 +91,12 @@ describe('Client 获客活码归因', () => {
     // resolve 必须排在建客之前（顺序错=死码也照写来源）
     expect(calls.findIndex((c) => c.url.includes('/acquisition/abcd2345'))).toBeLessThan(calls.indexOf(guest!))
     // 扫码事件在建客之后，且带上了刚拿到的访客密钥
+    // 原来弱在哪：toBeTruthy 只证明"有过某个 url 含 /scan 的调用"，POST/路径拼错也绿。
+    // 现在钉：命中的那条调用整条等值。URL 里的码是大写 'ABCD2345'——Client.tsx 用
+    // resolve 响应回传的规范码（checkAcquisitionCode 返回 j.data.code）而非 URL 原始小写
+    // 拼 scan 路径；API='/api/v1' 是未导出局部常量，无 import 点，按源码拼接结果写死。
     const scan = calls.find((c) => c.url.endsWith('/scan'))
-    expect(scan).toBeTruthy()
+    expect(scan).toMatchObject({ url: '/api/v1/acquisition/ABCD2345/scan', method: 'POST' })
     expect(calls.indexOf(scan!)).toBeGreaterThan(calls.indexOf(guest!))
     expect(scan?.body).toMatchObject({ visitor_key: 'vk_new' })
     window.history.replaceState({}, '', '/client')
@@ -97,7 +105,10 @@ describe('Client 获客活码归因', () => {
   it('码已停用/不存在：提示活动结束，但照常放行对话且不带码建档、不记事件', async () => {
     const calls = stub({ resolveOk: false })
     render(<Client />)
-    expect(await screen.findByText(/这个活动已经结束了/)).toBeTruthy()
+    // 原来弱在哪：正则命中"这个活动已经结束了"八字即绿。现在钉 Client.tsx L311 的
+    // system 气泡完整文案（后半句"不过你仍然可以直接问我"是"放行对话"承诺的本体，丢了就该红）。
+    expect(await screen.findByText(/这个活动已经结束了/))
+      .toHaveTextContent('这个活动已经结束了，不过你仍然可以直接问我')
     await waitFor(() => expect(calls.some((c) => c.url.includes('/chat/guest'))).toBe(true))
     expect(calls.find((c) => c.url.includes('/chat/guest'))?.body).toMatchObject({ code: '' })
     expect(calls.some((c) => c.url.endsWith('/scan'))).toBe(false)

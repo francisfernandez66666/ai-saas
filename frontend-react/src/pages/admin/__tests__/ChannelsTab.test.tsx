@@ -67,11 +67,19 @@ describe('ChannelsTab', () => {
     const { container } = render(<ChannelsTab />)
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/v1/admin/channels', expect.any(Object)))
-    expect(await screen.findByText('企微自建应用')).toBeTruthy()
+    // 原来弱在哪：四处 toBeTruthy 各自证明"这串字在页面某处"——类型列/状态列挂错行
+    // 也照样绿。现在钉：类型中文与状态中文必须和通道名同在一行 <tr>
+    // （CHANNEL_TYPE_LABELS/CHANNEL_STATUS_LABELS 的映射按列定义落格）。
+    const nameCell = await screen.findByText('企微自建应用')
+    expect(nameCell).toHaveTextContent(channel.name)
+    const chRow = nameCell.closest('tr') as HTMLElement
+    expect(chRow).toHaveTextContent('企业微信自建应用')
+    expect(chRow).toHaveTextContent('已启用')
     expect(container.textContent).toContain('S:sec_****abcd · T:tok_****1234 · A:aes_****5678')
-    expect(screen.getByText('企业微信自建应用')).toBeTruthy()
-    expect(screen.getByText('已启用')).toBeTruthy()
-    expect(screen.getByText('测试失败出站消息')).toBeTruthy()
+    // 死信行同理：内容格与其 error 必须同行（错行=表数据串台）
+    const dlqCell = await screen.findByText('测试失败出站消息')
+    expect(dlqCell).toHaveTextContent(deadLetter.content)
+    expect(dlqCell.closest('tr')).toHaveTextContent(deadLetter.error)
 
     fireEvent.click(screen.getByRole('button', { name: '重发' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(

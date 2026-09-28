@@ -50,7 +50,12 @@ OE=$(orign notify email_verify_enabled true); OPL=$(orign notify pay_mode '"mock
 # 八节 Token 级联测试需强制走 AI 回复路径（否则真实 AI 低信任度会把会话路由到 pending_human，
 # 关闭 AI 回复→后续轮次不产生扣减→级联断言随机失败）。捕获原阈值，trap 统一恢复。
 OTT=$(orign strategy theta_trust 0.3); OTH=$(orign strategy theta_hook_rate_crit 0.2); OTL=$(orign strategy theta_l3_intent 0.8)
-trap 'curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$OE\"},{\"category\":\"notify\",\"key\":\"pay_mode\",\"value\":$OPL},{\"category\":\"billing\",\"key\":\"token_billing_enabled\",\"value\":\"$OTB\"},{\"category\":\"billing\",\"key\":\"billing_enforced\",\"value\":\"$OBE\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$OIL\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$OII\"},{\"category\":\"strategy\",\"key\":\"theta_trust\",\"value\":\"$OTT\"},{\"category\":\"strategy\",\"key\":\"theta_hook_rate_crit\",\"value\":\"$OTH\"},{\"category\":\"strategy\",\"key\":\"theta_l3_intent\",\"value\":\"$OTL\"}]" >/dev/null; echo "  [trap] 已恢复全部开关"' EXIT
+# FIX-M(2026-09-28)：模拟模式的虚拟 token 用量。第八节的三桶级联断言此前**只在接了真模型 Key
+# 的环境里才真的在测**——mock 模式在调模型之前就返回模板话术，台账零行、三桶零扣减，
+# 于是"③→①→②"中间三格永远在 6000==6000 上假绿/假红（本机跑出的三条红正是这件事）。
+# 本段把它设成 3000/次，让级联在零凭证环境可判；出厂默认 0＝不计量，脚本结束按原值恢复。
+OMU=$(orign billing ai_mock_usage_tokens 0)
+trap 'curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" -d "[{\"category\":\"notify\",\"key\":\"email_verify_enabled\",\"value\":\"$OE\"},{\"category\":\"notify\",\"key\":\"pay_mode\",\"value\":$OPL},{\"category\":\"billing\",\"key\":\"token_billing_enabled\",\"value\":\"$OTB\"},{\"category\":\"billing\",\"key\":\"billing_enforced\",\"value\":\"$OBE\"},{\"category\":\"billing\",\"key\":\"register_ip_daily_limit\",\"value\":\"$OIL\"},{\"category\":\"billing\",\"key\":\"register_ip_min_interval_sec\",\"value\":\"$OII\"},{\"category\":\"strategy\",\"key\":\"theta_trust\",\"value\":\"$OTT\"},{\"category\":\"strategy\",\"key\":\"theta_hook_rate_crit\",\"value\":\"$OTH\"},{\"category\":\"strategy\",\"key\":\"theta_l3_intent\",\"value\":\"$OTL\"},{\"category\":\"billing\",\"key\":\"ai_mock_usage_tokens\",\"value\":\"$OMU\"}]" >/dev/null; echo "  [trap] 已恢复全部开关"' EXIT
 
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
   -d '[{"category":"notify","key":"email_verify_enabled","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"1000"},{"category":"billing","key":"register_ip_min_interval_sec","value":"0"}]' >/dev/null
@@ -227,7 +232,7 @@ STALE=$($PSQL "SELECT status FROM billing_orders WHERE order_no='${STALE_NO}'");
 echo ""
 echo "== 八、Token三桶强制扣减级联 =="
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
-  -d '[{"category":"billing","key":"token_billing_enabled","value":"true"},{"category":"billing","key":"billing_enforced","value":"true"}]' >/dev/null
+  -d '[{"category":"billing","key":"token_billing_enabled","value":"true"},{"category":"billing","key":"billing_enforced","value":"true"},{"category":"billing","key":"ai_mock_usage_tokens","value":"3000"}]' >/dev/null
 # 强制 AI 回复路径：信任/接钩率/L3 三项转人工判据全部关闭（theta_trust=0 恒不触发信任转人工，
 # theta_hook_rate_crit=0 恒不触发接钩率转人工，theta_l3_intent=2.0 高于任何意向分）。
 # 目的是隔离"扣减引擎"行为，避免真实 AI 路由把会话切到 pending_human 后不再扣费（非计费 bug）。
@@ -643,8 +648,8 @@ $PSQL "DELETE FROM messages WHERE customer_id=$GC_ID AND tenant_id=$UA_ID; DELET
 echo ""
 echo "== 恢复现场 =="
 curl -s -X PUT "$B/api/v1/admin/config" -H "$AH" -H "Content-Type: application/json" \
-  -d '[{"category":"notify","key":"email_verify_enabled","value":"true"},{"category":"notify","key":"pay_mode","value":"\"mock\""},{"category":"billing","key":"token_billing_enabled","value":"false"},{"category":"billing","key":"billing_enforced","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"3"},{"category":"billing","key":"register_ip_min_interval_sec","value":"60"}]' >/dev/null
-echo "  已恢复: 邮箱验证/pay_mode/token双开关/IP限流默认值"
+  -d '[{"category":"notify","key":"email_verify_enabled","value":"true"},{"category":"notify","key":"pay_mode","value":"\"mock\""},{"category":"billing","key":"token_billing_enabled","value":"false"},{"category":"billing","key":"billing_enforced","value":"false"},{"category":"billing","key":"register_ip_daily_limit","value":"3"},{"category":"billing","key":"register_ip_min_interval_sec","value":"60"},{"category":"billing","key":"ai_mock_usage_tokens","value":"0"}]' >/dev/null
+echo "  已恢复: 邮箱验证/pay_mode/token双开关/IP限流/模拟虚拟用量默认值"
 
 echo ""
 echo "=========================================================="

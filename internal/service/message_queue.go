@@ -521,6 +521,14 @@ func syncMergeCount(q *CustomerQueue, batchID uint64) int {
 // 跨实例接管（waitRemotely）传**已发过号**的值——那一行可能已由 absorb 落到本地 pending，
 // 三条分支一律经 ensureOwnPendingRow 认领它，不再"看见积压行就当自己已入批"（残项2 真修）。
 // P1-19：返回值末尾增加 epoch（处理代际号），调用方生成回复后须携带该代际调 SetReply
+//
+// 2026-09-28 纯结构拆分（形态先例：internal/api chat_main.go 阶段方法）：本函数拆为编排骨架 +
+// 五个 *Locked 辅助函数（healStaleProcessingLocked / openFreshBatchLocked / joinRunningBatchLocked /
+// awaitBacklogClaimLocked / takeoverNextBatchLocked，各函数文档注释说明「为什么这段单独成段」）。
+// 锁纪律红线：所有辅助函数一律「调用方持 q.mu 进入、不解锁退出」，解锁点只保留在本函数、
+// 与 locked 标志相邻——P0-3 兜底 defer 在每条 return/panic 路径上的释放语义与拆分前逐字一致，
+// 绝不把「加锁—干活—释放锁」拆成跨函数的两条路径。计数口径不变：入批只经 ensureOwnPendingRow
+// （按 ReqID 幂等）、条数只经 syncMergeCount（由 pending 实际行数派生），拆分未搬出任何 ++/--。
 func (s *MessageQueueService) processLocally(k string, content string, reqID uint64, traceID string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int, epoch uint64) {
 	q := s.getQueue(k)
 
@@ -541,6 +549,92 @@ func (s *MessageQueueService) processLocally(k string, content string, reqID uin
 		}
 	}()
 
+	// processing 锁超时自愈（判据与动作原样抽至 healStaleProcessingLocked，持 q.mu 调用）
+	healStaleProcessingLocked(q, k)
+
+	// 归属号：跨实例接管由调用方（waitRemotely）预先发号，本地入队在此处代发。
+	// 发号点必须在锁内——见 allocReqID 注释。
+	// 残项2 真修(2026-09-26)：这里**不再**无条件 append 自己那句。旧写法在函数入口就把行
+	// 塞进 pending 并记下标 msgIdx，三条分支再各自用下标标批次，于是"我这句在哪一批"
+	// 与"pending 里有没有我的行"是两件事（接管场景下 msgIdx 恒为 -1，行根本没人标）。
+	// 现在统一由 ensureOwnPendingRow 在分支决策点落行（锁内、一次性、按 ReqID 幂等）。
+	if reqID == 0 {
+		q.nextReqID++
+		reqID = q.nextReqID
+	}
+
+	// 如果没在处理中，本请求拿处理权
+	if !q.processing {
+		myEpoch, completedBatch := openFreshBatchLocked(q, reqID, content)
+		locked = false
+		q.mu.Unlock()
+
+		log.Printf("[合并队列] 客户%s 拿到处理权(批次%d,代%d)，开始合并窗口等待: %q%s", k, completedBatch, myEpoch, logx.Safe(content, 40), traceTag(traceID))
+
+		// 事件驱动合并等待（滑动窗口），返回合并内容+实际等待时长+本批实际条数
+		merged, waitDuration, batchCount := s.waitForMerge(q, k)
+		// P2-36 修复(2026-09-09)：waitForMerge 解耦后 q.currentBatch 可能已被并发写入，
+		// 读取需重新加锁快照——否则 -race 报数据竞争（解锁后读受锁保护字段）。
+		q.mu.Lock()
+		finalBatch := q.currentBatch
+		q.mu.Unlock()
+		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, finalBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
+		return merged, true, "", waitDuration, false, batchCount, myEpoch
+	}
+
+	// 已经在处理中了，检查是否还能合并进当前批次
+	if joinReply, myCount, waitEpoch, joined := joinRunningBatchLocked(q, k, reqID, content, traceID); joined {
+		// D5：解锁前快照（P2-36 同款纪律——return 表达式里读受锁字段是数据竞争）
+		// 残项2：返回入批那一刻算好的 myCount，不再读醒来时刻的 q.mergeCount
+		// （等待期间可能已开下一批并把它清零/改数，读它就是"报别人那批的条数"）。
+		locked = false
+		q.mu.Unlock()
+		return "", false, joinReply, 0, false, myCount, waitEpoch
+	}
+
+	// 超过合并上限，积压队列——本消息要么由别人开的新批带上，要么自己成为下一批的第一个。
+	//
+	// 残项1(2026-09-25，DEFECT-G7-DUP-TAKEOVER)：这里原来是"醒来就无条件把自己立成新批第一个"。
+	// 批1 交卷那一次 Broadcast 同时唤醒停在本处的第 4、5 条，谁先抢到锁由调度决定：先醒的那路
+	// 开批2，收账循环把**所有** BatchID==0 的行（连同对手那一句）一起标进批2；后醒的那路发现
+	// 自己的行已不在积压集合里（inBatch=false），走下面的防御分支把同一句话**再补进** pending
+	// 一遍 → 批3 诞生，客户为同一句收到两条内容重叠的回复，AI token 双烧。
+	// 修法：pending 行带请求归属号 ReqID，被别人的批次收走时登记 claimedByReq[ReqID]=那一批的
+	// 代际；醒来先查这张表——命中即说明"我这句已经在某一批里被答了/正被答"，改等那一批的回复。
+	// 残项2 真修(2026-09-26)：同一段里当初留的"防御补写"（看不到任何积压行就再写一句自己）
+	// 一并换成 ensureOwnPendingRow——补不补写只看"我的 ReqID 那行在不在批里"，不再看
+	// "有没有任何积压行"。前者是Own判据，后者会把别人的残留当成自己的。
+	// 排队前先把自己的那句落成"积压行"（BatchID==0＝还不在任何批次里）。
+	// 为什么必须在等待之前：旧实现在 processLocally 入口就无条件 append，所以停在积压等待里
+	// 的请求天生在 pending 里有一行，先醒的那个接管时能把它一起收进批2；我删掉入口盲写之后，
+	// 排队中的请求在 pending 里**根本没有行**，于是先醒那路只收到自己一句，后醒那路只能再开一批
+	// ——连发 5 条从 2 个批次退化成 3 个（TestRealMergeFiveMessagesTwoReplies 实测抓到）。
+	// 落行点是"排队可见性"，入批动作仍由下面两处共同完成：接管那轮的标记循环（按 ReqID 登记
+	// claimedByReq）+ 唯一裁决点 ensureOwnPendingRow（同 ReqID 幂等，绝不写出第二行）。
+	ensureOwnPendingRow(q, reqID, content, 0)
+
+	if claimReply, claimEpoch, claimed := awaitBacklogClaimLocked(q, reqID); claimed {
+		locked = false
+		q.mu.Unlock()
+		log.Printf("[合并队列] 客户%s 消息已被代%d那一批收走，随批取回回复: %q%s", k, claimEpoch, logx.Safe(content, 40), traceTag(traceID))
+		return "", false, claimReply, 0, false, 0, claimEpoch
+	}
+
+	// 当前批次完成了，本消息成为下一批的第一个
+	myEpoch, myBatch, startCount := takeoverNextBatchLocked(q, reqID, content)
+	locked = false
+	q.mu.Unlock()
+
+	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q%s", k, myBatch, myEpoch, startCount, logx.Safe(content, 40), traceTag(traceID))
+	merged, waitDuration, batchCount := s.waitForMerge(q, k)
+	log.Printf("[合并队列] 客户%s 积压批合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, myBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
+	return merged, true, "", waitDuration, false, batchCount, myEpoch
+}
+
+// healStaleProcessingLocked processing 锁超时自愈段（自 processLocally 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：它只处理「上一个处理者卡死后的残留状态」，与新请求「我这句在哪一批」的
+// 三分支裁决无关；抽出去后主函数的分支决策连成一片。调用方必须持有 q.mu，本函数不解锁。
+func healStaleProcessingLocked(q *CustomerQueue, k string) {
 	// 修复：processing锁超时自愈
 	// 根因：用户11:13发消息，11:22才收到回复（9分钟），远超2分钟硬顶
 	// 如果前一个请求的goroutine卡死（Cloudflare连接断开但sleep未结束），
@@ -571,65 +665,51 @@ func (s *MessageQueueService) processLocally(k string, content string, reqID uin
 		}
 		q.cond.Broadcast()
 	}
+}
 
-	// 归属号：跨实例接管由调用方（waitRemotely）预先发号，本地入队在此处代发。
-	// 发号点必须在锁内——见 allocReqID 注释。
-	// 残项2 真修(2026-09-26)：这里**不再**无条件 append 自己那句。旧写法在函数入口就把行
-	// 塞进 pending 并记下标 msgIdx，三条分支再各自用下标标批次，于是"我这句在哪一批"
-	// 与"pending 里有没有我的行"是两件事（接管场景下 msgIdx 恒为 -1，行根本没人标）。
-	// 现在统一由 ensureOwnPendingRow 在分支决策点落行（锁内、一次性、按 ReqID 幂等）。
-	if reqID == 0 {
-		q.nextReqID++
-		reqID = q.nextReqID
-	}
+// openFreshBatchLocked 新批次开账并把本请求这一句落进本批（自 processLocally「拿处理权」分支原样抽出）。
+// 为什么这段单独成段：开账是 processing/currentBatch/epoch/batchClosed 必须同锁内一起推进的唯一写点，
+// 集中一处防「忘复位某列」回潮；入批唯一裁决点（ensureOwnPendingRow）与计数派生（syncMergeCount）
+// 仍相邻同序。调用方必须持有 q.mu，本函数不解锁；返回代际/批次号供主函数解锁后记日志与 SetReply fencing。
+func openFreshBatchLocked(q *CustomerQueue, reqID uint64, content string) (myEpoch, completedBatch uint64) {
+	q.processing = true
+	q.batchClosed = false              // P0-7：新批次开账
+	q.currentBatch++                   // 新批次，递增batchID
+	q.epoch++                          // P1-19：代际递增，本批次持代返回给调用方做 SetReply 校验
+	q.processingStartedAt = time.Now() // 记录处理开始时间，用于超时检测
+	q.lastReply = ""
+	q.deadlineExpired = false
+	// 唯一裁决点：本请求这一句落进新批。
+	// 残项2(2026-09-25 DEFECT-G7-TAKEOVER-MERGECOUNT → 2026-09-26 真修)：mergeCount 此前
+	// 无条件置 1，而接管场景（自己的消息还挂在 Redis 待合并列表里）批内一条都没有，虚高 1；
+	// 反向，absorb 已把本句标进旧批次号时又算不到它。现在计数从行数派生（syncMergeCount），
+	// 两个方向都不可能有偏差。虚高的影响面：internal/channel/inbound.go 的 D7 相似抑制前置
+	// `mergeCount <= 1`（该抑制的批次跳过判定，极端下重复回复一条通道消息）。
+	ensureOwnPendingRow(q, reqID, content, q.currentBatch)
+	syncMergeCount(q, q.currentBatch)
+	myEpoch = q.epoch
+	completedBatch = q.currentBatch
+	return
+}
 
-	// 如果没在处理中，本请求拿处理权
-	if !q.processing {
-		q.processing = true
-		q.batchClosed = false              // P0-7：新批次开账
-		q.currentBatch++                   // 新批次，递增batchID
-		q.epoch++                          // P1-19：代际递增，本批次持代返回给调用方做 SetReply 校验
-		q.processingStartedAt = time.Now() // 记录处理开始时间，用于超时检测
-		q.lastReply = ""
-		q.deadlineExpired = false
-		// 唯一裁决点：本请求这一句落进新批。
-		// 残项2(2026-09-25 DEFECT-G7-TAKEOVER-MERGECOUNT → 2026-09-26 真修)：mergeCount 此前
-		// 无条件置 1，而接管场景（自己的消息还挂在 Redis 待合并列表里）批内一条都没有，虚高 1；
-		// 反向，absorb 已把本句标进旧批次号时又算不到它。现在计数从行数派生（syncMergeCount），
-		// 两个方向都不可能有偏差。虚高的影响面：internal/channel/inbound.go 的 D7 相似抑制前置
-		// `mergeCount <= 1`（该抑制的批次跳过判定，极端下重复回复一条通道消息）。
-		ensureOwnPendingRow(q, reqID, content, q.currentBatch)
-		syncMergeCount(q, q.currentBatch)
-		locked = false
-		myEpoch := q.epoch
-		completedBatch := q.currentBatch
-		q.mu.Unlock()
-
-		log.Printf("[合并队列] 客户%s 拿到处理权(批次%d,代%d)，开始合并窗口等待: %q%s", k, completedBatch, myEpoch, logx.Safe(content, 40), traceTag(traceID))
-
-		// 事件驱动合并等待（滑动窗口），返回合并内容+实际等待时长+本批实际条数
-		merged, waitDuration, batchCount := s.waitForMerge(q, k)
-		// P2-36 修复(2026-09-09)：waitForMerge 解耦后 q.currentBatch 可能已被并发写入，
-		// 读取需重新加锁快照——否则 -race 报数据竞争（解锁后读受锁保护字段）。
-		q.mu.Lock()
-		finalBatch := q.currentBatch
-		q.mu.Unlock()
-		log.Printf("[合并队列] 客户%s 合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, finalBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
-		return merged, true, "", waitDuration, false, batchCount, myEpoch
-	}
-
-	// 已经在处理中了，检查是否还能合并进当前批次
+// joinRunningBatchLocked 「并进在途批」裁决与挂起段（自 processLocally 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：这是唯一一条「挂锁内等别人的批次」的路——Signal/Wait/replyByEpoch 三条件
+// 的整个苏醒过程必须在持锁期完成，抽出后主函数只做「解锁+返回」收尾，锁生命周期不再横跨两段。
+// joined=false 表示批次已满或已关账（P0-7），调用方落到积压接管路径，未命中时本函数不写任何状态。
+// 调用方必须持有 q.mu，本函数不解锁。myCount 是入批那一刻算好的批内条数快照（残项2 口径），
+// 不是醒来时刻的窗口计数器；对外返回它而非 q.mergeCount。
+func joinRunningBatchLocked(q *CustomerQueue, k string, reqID uint64, content, traceID string) (reply string, myCount int, waitEpoch uint64, joined bool) {
 	// P0-7 修复(2026-09-15)：加 !q.batchClosed——批次已关账（waitForMerge 收集完毕，
 	// AI 生成/延迟期间）时不再标进旧批次走"等旧回复"路径（旧回复不含本条内容，
 	// 消息会以旧 BatchID 滞留成孤儿），落到下方积压接管路径作为下一批处理。
 	if q.mergeCount < config.GlobalConfig.ReplySpeed.MaxMergeMessages && !q.batchClosed {
-		waitEpoch := q.epoch
+		waitEpoch = q.epoch
 		waitBatch := q.currentBatch
 		// 唯一裁决点：并进在途批时同样只经这里落自己的行（ReqID 已有则只对齐批次号）。
 		// 旧写法是 `q.mergeCount++` 后 `if msgIdx >= 0` 才标批次——接管场景 msgIdx 恒 -1，
 		// 于是"计数 +1 而行没进批"，窗口计数器与本批真实行数分家（残项2 的另一半现场）。
 		ensureOwnPendingRow(q, reqID, content, waitBatch)
-		myCount := syncMergeCount(q, waitBatch)
+		myCount = syncMergeCount(q, waitBatch)
 		// 立刻通知主请求：新消息到达（事件驱动，替代定时轮询）
 		q.cond.Signal()
 
@@ -648,44 +728,28 @@ func (s *MessageQueueService) processLocally(k string, content string, reqID uin
 		if reply == "" {
 			reply = q.lastReply
 		}
-		// D5：解锁前快照（P2-36 同款纪律——return 表达式里读受锁字段是数据竞争）
-		// 残项2：返回入批那一刻算好的 myCount，不再读醒来时刻的 q.mergeCount
-		// （等待期间可能已开下一批并把它清零/改数，读它就是"报别人那批的条数"）。
-		locked = false
-		q.mu.Unlock()
-		return "", false, reply, 0, false, myCount, waitEpoch
+		joined = true
+		return
 	}
 
-	// 超过合并上限，积压队列——本消息要么由别人开的新批带上，要么自己成为下一批的第一个。
-	//
-	// 残项1(2026-09-25，DEFECT-G7-DUP-TAKEOVER)：这里原来是"醒来就无条件把自己立成新批第一个"。
-	// 批1 交卷那一次 Broadcast 同时唤醒停在本处的第 4、5 条，谁先抢到锁由调度决定：先醒的那路
-	// 开批2，收账循环把**所有** BatchID==0 的行（连同对手那一句）一起标进批2；后醒的那路发现
-	// 自己的行已不在积压集合里（inBatch=false），走下面的防御分支把同一句话**再补进** pending
-	// 一遍 → 批3 诞生，客户为同一句收到两条内容重叠的回复，AI token 双烧。
-	// 修法：pending 行带请求归属号 ReqID，被别人的批次收走时登记 claimedByReq[ReqID]=那一批的
-	// 代际；醒来先查这张表——命中即说明"我这句已经在某一批里被答了/正被答"，改等那一批的回复。
-	// 残项2 真修(2026-09-26)：同一段里当初留的"防御补写"（看不到任何积压行就再写一句自己）
-	// 一并换成 ensureOwnPendingRow——补不补写只看"我的 ReqID 那行在不在批里"，不再看
-	// "有没有任何积压行"。前者是Own判据，后者会把别人的残留当成自己的。
-	// 排队前先把自己的那句落成"积压行"（BatchID==0＝还不在任何批次里）。
-	// 为什么必须在等待之前：旧实现在 processLocally 入口就无条件 append，所以停在积压等待里
-	// 的请求天生在 pending 里有一行，先醒的那个接管时能把它一起收进批2；我删掉入口盲写之后，
-	// 排队中的请求在 pending 里**根本没有行**，于是先醒那路只收到自己一句，后醒那路只能再开一批
-	// ——连发 5 条从 2 个批次退化成 3 个（TestRealMergeFiveMessagesTwoReplies 实测抓到）。
-	// 落行点是"排队可见性"，入批动作仍由下面两处共同完成：接管那轮的标记循环（按 ReqID 登记
-	// claimedByReq）+ 唯一裁决点 ensureOwnPendingRow（同 ReqID 幂等，绝不写出第二行）。
-	ensureOwnPendingRow(q, reqID, content, 0)
+	return "", 0, 0, false
+}
 
+// awaitBacklogClaimLocked 积压等待循环（自 processLocally 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：这里是「我这句是否已被别人的新批收走」的唯一查法（claimedByReq 消费 +
+// D8 同代际等待 + 收走批次从未交卷时回循环顶重争处理权）；抽出后 claimed 路径的「解锁→记日志→
+// 返回」收尾全部落在主函数，锁不横跨函数。claimed=true 即随批取回回复（mergeCount 由调用方回
+// 0=未知，残项3 口径）；claimed=false 表示没人收走，调用方自己开下一批。调用方必须持有 q.mu，本函数不解锁。
+func awaitBacklogClaimLocked(q *CustomerQueue, reqID uint64) (reply string, claimEpoch uint64, claimed bool) {
 	for {
 		for q.processing {
 			q.cond.Wait()
 		}
 		// 查归属登记表：ReqID==0（老版本转交来的行）与"从未被别人收走"两种情况都拿不到格，
 		// 表里也从不写 key=0 的行，故这里无需额外分支判空。
-		claimEpoch, claimed := q.claimedByReq[reqID]
+		claimEpoch, claimed = q.claimedByReq[reqID]
 		if !claimed {
-			break // 没人收走我这句：本请求自己开下一批
+			return "", 0, false // 没人收走我这句：本请求自己开下一批
 		}
 		delete(q.claimedByReq, reqID)
 		// D8 同款判据：只等自己那一格，代际推进或 processing 释放都不再干等
@@ -700,17 +764,19 @@ func (s *MessageQueueService) processLocally(k string, content string, reqID uin
 			// 残项3(2026-09-26)：随批取回复的等待者返回 0=未知——此处读 q.mergeCount 拿到的是
 			// **醒来时刻**那个批次的计数（收走我这句的批次早已交卷，计数早被下一批改写过），
 			// 与"我这句所在那批有几条"无关。等待路径统一按 EnqueueAndWait 头注的口径回 0。
-			locked = false
-			q.mu.Unlock()
-			log.Printf("[合并队列] 客户%s 消息已被代%d那一批收走，随批取回回复: %q%s", k, claimEpoch, logx.Safe(content, 40), traceTag(traceID))
-			return "", false, reply, 0, false, 0, claimEpoch
+			return reply, claimEpoch, true
 		}
 		// 极端时序：收走我这句的那一批被超时自愈清掉且从未交卷——消息不能就此蒸发。
 		// 回到循环顶部重新争处理权，走下面的接管路径；我那行已被收账收走（pending 里查不到
 		// ReqID），ensureOwnPendingRow 会补写一行——这是"丢了要重来"的唯一补写入口。
 	}
+}
 
-	// 当前批次完成了，本消息成为下一批的第一个
+// takeoverNextBatchLocked 「本请求自开下一批」接管段（自 processLocally 原样抽出，2026-09-28 纯结构拆分）。
+// 为什么这段单独成段：开账 + 收编全部积压行（BatchID==0 → 本批，别人的行按 ReqID 登记 claimedByReq）
+// + 自己那句的唯一裁决点收编，是一次必须原子完成的批次移交；抽出后主函数只做解锁与合并窗口。
+// startCount 仍由 syncMergeCount 从本批实际行数派生（残项2 口径未动）。调用方必须持有 q.mu，本函数不解锁。
+func takeoverNextBatchLocked(q *CustomerQueue, reqID uint64, content string) (myEpoch, myBatch uint64, startCount int) {
 	q.processing = true
 	q.batchClosed = false // P0-7：积压接管即新批次开账
 	q.currentBatch++      // 新批次
@@ -744,26 +810,23 @@ func (s *MessageQueueService) processLocally(k string, content string, reqID uin
 	//   · 那一行此刻其实还挂在 Redis 列表里（absorb 退回过）→ 补写 → 同一句两处各一份归属。
 	// 现在按**自己的 ReqID** 问"我这句在不在批里"：在就只对齐批次号，不在才补写。
 	ensureOwnPendingRow(q, reqID, content, q.currentBatch)
-	startCount := syncMergeCount(q, q.currentBatch)
-	locked = false
-	myEpoch := q.epoch
-	myBatch := q.currentBatch
-	q.mu.Unlock()
-
-	log.Printf("[合并队列] 客户%s 积压消息拿到处理权(批次%d,代%d): %d条: %q%s", k, myBatch, myEpoch, startCount, logx.Safe(content, 40), traceTag(traceID))
-	merged, waitDuration, batchCount := s.waitForMerge(q, k)
-	log.Printf("[合并队列] 客户%s 积压批合并完成(批次%d): %d条消息, 等待%.1fs, 内容: %q%s", k, myBatch, batchCount, waitDuration.Seconds(), logx.Safe(merged, 40), traceTag(traceID))
-	return merged, true, "", waitDuration, false, batchCount, myEpoch
+	startCount = syncMergeCount(q, q.currentBatch)
+	myEpoch = q.epoch
+	myBatch = q.currentBatch
+	return
 }
 
 // waitRemotely 远程等待路径（本实例未抢到锁，消息转交处理者实例）
 // 协议：
 //  1. LPUSH 消息到 mq:pending:{k}，处理者会在窗口内/窗口关闭时吸收进当前批次
-//  2. 轮询 mq:lastseq:{k}，序号增长后读 mq:reply:{k}:{seq} 取回复
-//  3. 锁消失（持有实例死亡）→ 尝试接管成为新处理者
+//  2. 轮询 mq:lastseq:{k}，序号增长后读 mq:reply:{k}:{seq} 取回复——
+//     **但只取"覆盖到我这一句"的那一条**：判据是我自己那句已经不在 mq:pending 列表里
+//     （G-TAKEOVER-STRAND，2026-09-28）。批次满员被退回的消息撞上上一批回复时取走它＝丢答。
+//  3. 锁消失（持有实例死亡**或**已交卷）→ 尝试接管成为新处理者；抢锁输给了同客户的另一个
+//     远程等待者时**回到等待**而不是落降级提示（它那一批会把我还挂着的那句一起收走）
 //
-// 已知边界：若转交消息到达时批次已满被"退回"，会随下一批处理，但本请求可能拿到
-// 上一批的回复体（前端聊天记录为准，影响极小）；单实例模式无此问题。
+// 已知边界：接管批次可能把我这一句并到比它更早开账的那一批，拿到的回复体含同批其他句子
+// （前端聊天记录为准，影响极小）；单实例内存模式下由本地积压接管路径承担同一语义。
 // 例外（残项2 真修，2026-09-26）：**接管者自己那一句**即使批次已满也不退回 Redis，
 // 而是就地留成本地待接管积压行——同一句话只能有一个归属地，两处各存一份就是双答。
 func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, content string, traceID string) (mergedContent string, shouldProcess bool, reply string, mergeWaitDuration time.Duration, isSimple bool, mergeCount int, epoch uint64) {
@@ -784,62 +847,103 @@ func (s *MessageQueueService) waitRemotely(tenantID uint, customerID uint, conte
 	log.Printf("[合并队列] 客户%s 消息转交其他实例处理: %q%s", k, logx.Safe(content, 40), traceTag(traceID))
 
 	deadline := time.Now().Add(getProcessingLockTimeout(tidFromKey(k)))
-	for time.Now().Before(deadline) {
-		time.Sleep(300 * time.Millisecond)
+	for {
+		// 内层轮询：等"覆盖我这一句的回复"或"处理锁消失"
+		lockGone := false
+		for time.Now().Before(deadline) {
+			time.Sleep(300 * time.Millisecond)
 
-		// 新回复发布？
-		if v, ok := redisclient.Get("mq:lastseq:" + k); ok {
-			if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > curSeq {
-				if r, ok := redisclient.Get(fmt.Sprintf("mq:reply:%s:%d", k, n)); ok && r != "" {
-					// D5：读取配对 epoch（老版本处理者未发布 → 0，投递认领退化为放行，宁双不漏）
-					var repEpoch uint64
-					if ev, ok := redisclient.Get(fmt.Sprintf("mq:replepoch:%s:%d", k, n)); ok {
-						repEpoch, _ = strconv.ParseUint(ev, 10, 64)
+			// 有新回复发布？——但"有新回复"不等于"这条回复里有我这一句"
+			if v, ok := redisclient.Get("mq:lastseq:" + k); ok {
+				if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > curSeq {
+					if r, ok := redisclient.Get(fmt.Sprintf("mq:reply:%s:%d", k, n)); ok && r != "" {
+						// D5：读取配对 epoch（老版本处理者未发布 → 0，投递认领退化为放行，宁双不漏）
+						var repEpoch uint64
+						if ev, ok := redisclient.Get(fmt.Sprintf("mq:replepoch:%s:%d", k, n)); ok {
+							repEpoch, _ = strconv.ParseUint(ev, 10, 64)
+						}
+						// G-TAKEOVER-STRAND(2026-09-28)：批次满员时被退回列表的转交消息，会撞上
+						// 持锁实例刚发布的**上一批**回复。旧写法在这里无条件取走它并返回，于是
+						// 这一句永久留在 mq:pending 里无人认领——客户连发超过合并上限的消息
+						// 从第 4 条起静默丢答（smoke_channel §四c 在 Redis 轨上确定性复现：
+						// 五条只回一批）。判据用"我这句还在不在待合并列表"：在＝没人答过它，
+						// 这条回复不是我该等的那一份——**不返回、也不 continue**（continue 会跳过
+						// 下面的锁活性判定，锁已消失时永远走不到接管），而是落到锁判定：
+						// 锁还在就继续等它那一批，锁没了就跳出接管。
+						if shouldConsumeRemoteReply(true, s.ownMessageStillPending(k, content)) {
+							log.Printf("[合并队列] 客户%s 远程回复已取到(序号%d)", k, n)
+							// 残项3(2026-09-26)：原先这里硬编码 mergeCount=1，是把"我不知道批内有几句"
+							// 谎报成"就一句"。等待路径拿不到处理者实例的收账行数，真值只能由处理者
+							// 那条返回（waitForMerge 收账行数）。现在返回 0=未知，并被下面的
+							// EnqueueAndWait 文档注释固化为契约：0 不是"零句"也不是"一句"，
+							// 禁止任何下游把等待路径的该值当有效条数消费。
+							return "", false, r, 0, false, 0, repEpoch
+						}
 					}
-					log.Printf("[合并队列] 客户%s 远程回复已取到(序号%d)", k, n)
-					// 残项3(2026-09-26)：原先这里硬编码 mergeCount=1，是把"我不知道批内有几句"
-					// 谎报成"就一句"。等待路径拿不到处理者实例的收账行数，真值只能由处理者
-					// 那条返回（waitForMerge 收账行数）。现在返回 0=未知，并被下面的
-					// EnqueueAndWait 文档注释固化为契约：0 不是"零句"也不是"一句"，
-					// 禁止任何下游把等待路径的该值当有效条数消费。
-					return "", false, r, 0, false, 0, repEpoch
 				}
+			}
+
+			// 锁消失且尚无（覆盖我的）回复 → 原处理实例交卷/死亡，跳出循环去接管
+			if !redisclient.LockExists(lockKey) {
+				log.Printf("[合并队列] 客户%s 检测到处理者失联或已交卷，尝试接管%s", k, traceTag(traceID))
+				lockGone = true
+				break
 			}
 		}
 
-		// 锁消失且尚无新回复 → 原持有实例死亡，跳出循环去接管
-		if !redisclient.LockExists(lockKey) {
-			log.Printf("[合并队列] 客户%s 检测到处理者失联，尝试接管%s", k, traceTag(traceID))
-			break
+		if lockGone {
+			// 接管：拿到锁则成为新处理者
+			if h := redisclient.TryLock(lockKey, getProcessingLockTimeout(tidFromKey(k))); h != nil {
+				q := s.getQueue(k)
+				q.mu.Lock()
+				q.redisLock = h
+				q.mu.Unlock()
+				// 残项2 真修(2026-09-26)：接管前先给本请求发一个归属号，交给 absorb 认领
+				// "列表里哪一条是我刚 RPush 的那句"。旧写法把认领完全交给 absorb +
+				// processLocally 的防御补写：absorb 因"本地批次未在 processing"把这句退回 Redis，
+				// 而 processLocally 又把它补进本地 pending → 同一句话在 Redis 和本地各存一份归属，
+				// 后续可能被两个批次各答一遍（客户看到双答、AI token 双烧）。
+				myReqID := s.allocReqID(q)
+				// D6 注(2026-09-16B)：与 EnqueueAndWait 抢锁段不同，接管场景本地队列可能正有
+				// processing=true 的在途批次（web 请求），此处 absorb 能把死实例转交的消息并进
+				// 该批次（真语义，非空转）——保留。抢锁段的同款调用已删（见 EnqueueAndWait D6 注释）。
+				s.absorbRemotePending(k, q, myReqID, content)
+				return s.processLocally(k, content, myReqID, traceID)
+			}
+			// 抢锁失败＝同客户的另一个远程等待者已抢先接管（多条消息同时被退回列表时正是如此）。
+			// 它那一批会把我还挂着的那句一起收走，所以这里**绝不能**落到下面的降级分支——
+			// 落一次就同一个客户既收到"系统繁忙"又收到真回复。回到内层继续等它交卷；
+			// 只有等到 deadline 仍没等到，才按 P2-38 的既有口径止损。
+			if time.Now().Before(deadline) {
+				continue
+			}
 		}
-	}
 
-	// 接管：拿到锁则成为新处理者
-	if h := redisclient.TryLock(lockKey, getProcessingLockTimeout(tidFromKey(k))); h != nil {
-		q := s.getQueue(k)
-		q.mu.Lock()
-		q.redisLock = h
-		q.mu.Unlock()
-		// 残项2 真修(2026-09-26)：接管前先给本请求发一个归属号，交给 absorb 认领
-		// "列表里哪一条是我刚 RPush 的那句"。旧写法把认领完全交给 absorb +
-		// processLocally 的防御补写：absorb 因"本地批次未在 processing"把这句退回 Redis，
-		// 而 processLocally 又把它补进本地 pending → 同一句话在 Redis 和本地各存一份归属，
-		// 后续可能被两个批次各答一遍（客户看到双答、AI token 双烧）。
-		myReqID := s.allocReqID(q)
-		// D6 注(2026-09-16B)：与 EnqueueAndWait 抢锁段不同，接管场景本地队列可能正有
-		// processing=true 的在途批次（web 请求），此处 absorb 能把死实例转交的消息并进
-		// 该批次（真语义，非空转）——保留。抢锁段的同款调用已删（见 EnqueueAndWait D6 注释）。
-		s.absorbRemotePending(k, q, myReqID, content)
-		return s.processLocally(k, content, myReqID, traceID)
+		// P2-38 修复(2026-09-09)：极端场景——锁被别的实例抢先拿走但仍无回复。
+		// 原逻辑"本地兜底处理"会再生成一遍 AI 回复 → 跨实例双回复+双计费。
+		// 改为落一条降级提示，不让客户端空等，也绝不再触发第二次 AI 调用。
+		log.Printf("[合并队列] 客户%s 远程等待超时且拿锁失败，落降级提示（不重复生成AI回复）", k)
+		s.WriteDegradedNotice(tenantID, customerID, "系统繁忙，请稍等片刻再试一次")
+		// 残项3(2026-09-26)：mergeCount 由硬编码 1 改为 0=未知（同上，等待路径无收账行数）。
+		return content, false, "", 0, false, 0, 0
 	}
+}
 
-	// P2-38 修复(2026-09-09)：极端场景——锁被别的实例抢先拿走但仍无回复。
-	// 原逻辑"本地兜底处理"会再生成一遍 AI 回复 → 跨实例双回复+双计费。
-	// 改为落一条降级提示，不让客户端空等，也绝不再触发第二次 AI 调用。
-	log.Printf("[合并队列] 客户%s 远程等待超时且拿锁失败，落降级提示（不重复生成AI回复）", k)
-	s.WriteDegradedNotice(tenantID, customerID, "系统繁忙，请稍等片刻再试一次")
-	// 残项3(2026-09-26)：mergeCount 由硬编码 1 改为 0=未知（同上，等待路径无收账行数）。
-	return content, false, "", 0, false, 0, 0
+// ownMessageStillPending 本请求转交出去的那一句此刻是否还挂在跨实例待合并列表里。
+// true＝还没被任何批次收走（上一条回复不含它）；false＝已被收走（会被答或已被答）。
+// Redis 探测失败按 false 处理（fail-open，与 LLen 同口径）：宁可退回旧行为取走回复，
+// 也不把等待者挂死在一次网络抖动上。
+func (s *MessageQueueService) ownMessageStillPending(k, content string) bool {
+	return redisclient.ListContains("mq:pending:"+k, content)
+}
+
+// shouldConsumeRemoteReply 远程回复消费判据（纯函数，便于逐表反证）：
+// 只有"确实有新回复"且"我自己那句已经不在待合并列表里"两条同时成立，
+// 这条回复才可以算作对我这一句的回答。
+// 反证锚点：newReply=true 且 ownStillPending=true 就是 G-TAKEOVER-STRAND 的现场——
+// 批次满员被退回的消息撞上上一批回复，取走即丢答。
+func shouldConsumeRemoteReply(newReply, ownStillPending bool) bool {
+	return newReply && !ownStillPending
 }
 
 // ClaimReplyDelivery D5(2026-09-16)：为 (批次代际, 通道) 认领"本批唯一回复送达该通道"的一次性权利。

@@ -68,6 +68,10 @@ MODE="full"
 [ "${1:-}" = "--fast" ] && MODE="fast"
 [ "${1:-}" = "--unit" ] && MODE="unit"
 [ "${1:-}" = "--capacity" ] && MODE="capacity"
+# --static（2026-09-28 新增）：只跑阶段零那批静态门禁就收工。加它是为了"改完门禁脚本能立刻验
+# 接线"——以前只能 --unit/--fast 从头跑，等十几分钟才看到阶段零那一屏结果，于是没人会去复查
+# 门禁本身是不是空转的（阶段零的红也常被后面阶段的噪声盖掉）。
+[ "${1:-}" = "--static" ] && MODE="static"
 [ "${1:-}" = "--failfast" ] && FAILFAST=1 || FAILFAST=0
 
 PASS=0; FAIL=0
@@ -165,6 +169,49 @@ G6_RFCALL=$(grep -rlE --include="*.go" 'refundOutNo\(order\)' internal/billing/ 
 if [ "${G6_RFCALL:-0}" -lt 3 ]; then
   echo "  FAIL  FIX-1: 取稳定退款单号的调用点不足 3 处（微信/支付宝/通用网关必须共用 refundOutNo，当前 ${G6_RFCALL}）"; G6_FAIL=1
 fi
+# 3.11 后台节拍循环 / 停机序列 / 指标覆盖防回潮（FIX-F，2026-09-28 审计复核批）。
+#     本批在 cmd/server/main.go 立了四条结构，退化后**功能测试全绿、生产才炸**，只能静态锁：
+#       (a) 17 处周期任务循环必须是 `for { select { case <-bgCtx.Done(): … } }` 形态。
+#           退回裸 `for range tk.C` 的后果：`defer tk.Stop()` 一次都不执行，SIGTERM 到来时
+#           goroutine 被硬杀——正在跑的 50s 存档 / 15min PIPL 扫描拦腰断，锁残留到 600s TTL。
+#           判据用「Done 腿数 = ticker 数」而不是写死 17，加/减循环都不必回来改门禁。
+#       (b) 每个循环必须向 bgLoops 报到（停机时"等它跑完"而非"睡一秒猜"），Add 与 Done 数必须相等。
+#       (c) main 必须 `<-shutdownDone` 等停机序列走完再返回。Go 运行时在 main 返回时终止所有
+#           goroutine——少了这一行，HTTP 宽限/队列排空/通道排空/计量 flush 全是尽力而为
+#           （本批实跑日志里整段只剩"收到退出信号"一行，即 P2-8、FIX-5 两批的排空从未真生效）。
+#       (d) 请求计数中间件必须注册在 `r.NoRoute`（SPA 回落）**之前**。gin 按注册时刻捕获中间件，
+#           排在后面时所有前端深路由对 Prometheus 恒不可见：API 数正常、页面访问数为 0，
+#           看板会告诉你"前端没人用"——绿着的盲区比没有指标更危险。
+#       (e) smoke.sh 的段号自检 guard 必须钉 LC_ALL=C：BSD sort/uniq 在 en_US.UTF-8 下会把
+#           46 个中文段号误折叠成一条，guard 判"全部重复"并在一条断言都没跑时 exit 1。
+G6_MAIN="cmd/server/main.go"
+G6_BARE_TK=$(grep -nE '^[[:space:]]*for range (tk|ticker)\.C \{' "$G6_MAIN" 2>/dev/null || true)
+if [ -n "$G6_BARE_TK" ]; then
+  echo "  FAIL  FIX-F(a): main.go 又出现裸 ticker 循环（bgCtx 双通道是唯一形态）："; echo "$G6_BARE_TK" | head -3; G6_FAIL=1
+fi
+G6_TICK_N=$(grep -c 'time\.NewTicker(' "$G6_MAIN" 2>/dev/null || true)
+G6_DONE_N=$(grep -c 'case <-bgCtx\.Done():' "$G6_MAIN" 2>/dev/null || true)
+if [ "${G6_TICK_N:-0}" -lt 15 ] || [ "${G6_TICK_N:-0}" != "${G6_DONE_N:-0}" ]; then
+  echo "  FAIL  FIX-F(a): ticker 数(${G6_TICK_N:-?}) 与 bgCtx 退出腿数(${G6_DONE_N:-?}) 不等——有循环没接停机"; G6_FAIL=1
+fi
+G6_ADD_N=$(grep -c 'bgLoops\.Add(1)' "$G6_MAIN" 2>/dev/null || true)
+G6_WG_N=$(grep -c 'defer bgLoops\.Done()' "$G6_MAIN" 2>/dev/null || true)
+if [ "${G6_ADD_N:-0}" != "${G6_TICK_N:-0}" ] || [ "${G6_WG_N:-0}" != "${G6_TICK_N:-0}" ]; then
+  echo "  FAIL  FIX-F(b): bgLoops 登记不齐（Add=${G6_ADD_N:-?} Done=${G6_WG_N:-?} ticker=${G6_TICK_N:-?}）——停机不再等后台轮次收尾"; G6_FAIL=1
+fi
+G6_WAIT_LINE=$(grep -n '^[[:space:]]*<-shutdownDone$' "$G6_MAIN" 2>/dev/null | head -1 | cut -d: -f1)
+G6_EXIT_LINE=$(grep -n 'log\.Println("服务已退出")' "$G6_MAIN" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -z "${G6_WAIT_LINE:-}" ] || [ -z "${G6_EXIT_LINE:-}" ] || [ "$G6_WAIT_LINE" -gt "$G6_EXIT_LINE" ]; then
+  echo "  FAIL  FIX-F(c): main 未等停机序列完成就返回（shutdownDone 缺失或位置错）——整段排空会变尽力而为"; G6_FAIL=1
+fi
+G6_MET_LINE=$(grep -n 'metrics\.IncRequest()' "$G6_MAIN" 2>/dev/null | head -1 | cut -d: -f1)
+G6_NOROUTE_LINE=$(grep -n 'r\.NoRoute(' "$G6_MAIN" 2>/dev/null | head -1 | cut -d: -f1)
+if [ -z "${G6_MET_LINE:-}" ] || [ -z "${G6_NOROUTE_LINE:-}" ] || [ "$G6_MET_LINE" -gt "$G6_NOROUTE_LINE" ]; then
+  echo "  FAIL  FIX-F(d): 请求计数中间件又排到 SPA/NoRoute 之后（${G6_MET_LINE:-?} vs ${G6_NOROUTE_LINE:-?}）——前端流量对监控不可见"; G6_FAIL=1
+fi
+if ! grep -q 'LC_ALL=C sort | LC_ALL=C uniq -d' tools/smoke.sh 2>/dev/null; then
+  echo "  FAIL  FIX-F(e): smoke.sh 段号 guard 丢了 LC_ALL=C（locale 异常时会在零断言下整段误杀）"; G6_FAIL=1
+fi
 verdict "G-6 防回潮断言" $G6_FAIL
 
 # ---------- 阶段零：CI 同口径 gofmt 门禁（2026-09-21 补，PLAN_FIX A2）----------
@@ -209,6 +256,21 @@ DOCCOM_RC=$?
 tail -3 /tmp/test_all_doccom.log
 verdict "导出面中文文档注释棘轮" $DOCCOM_RC
 
+# ---------- 阶段零：超长函数棘轮（FIX-G，2026-09-28 审计复核批）----------
+# 口径：非测试 Go 文件里 >150 行的函数**个数只准降不准升**（基线 .longfunc_baseline）。
+# 为什么用棘轮而不是"硬顶 150 行"：本批确实把 17 处拆了，但拆完不等于守得住——
+# 长函数是"赶进度时最省事的加法"的必然产物（在已经很长的 if 尾巴上再接一段），
+# 没有任何机器声音会提示下一个人。写注释"请勿再加长"等于没写。
+# 检查器自带 --selftest（造一个 200 行函数必须被抓、30 行必须放行、_test.go 必须排除、
+# 真实扫描面必须非空），因为它一旦与语言形态失配就会**静默返回空清单**、门禁恒绿。
+step "静态门禁：超长函数棘轮（tools/check_function_length.py）"
+python3 tools/check_function_length.py --selftest
+LF_SELFTEST=$?
+python3 tools/check_function_length.py
+LF_RC=$?
+verdict "超长函数检查器自证" $LF_SELFTEST
+verdict "超长函数棘轮（>150 行个数只降不升）" $LF_RC
+
 # ---------- 阶段零：显式 DB ctx 透传棘轮（AI 链 ctx 批，2026-09-23 批六）----------
 # 与上一条同为纯静态扫描（不依赖服务/DB）。口径：`db.DB.WithContext(` 透传点只升不降，
 # 与 G-12 裸 db.DB 白名单（只降不升）同向，防"把带 ctx 的写法改回裸句柄"这种静默回退。
@@ -251,6 +313,26 @@ bash tools/test_ops_daily.sh >/tmp/test_all_ops_daily_selftest.log 2>&1
 ODS_RC=$?
 if [ "$ODS_RC" -ne 0 ]; then tail -15 /tmp/test_all_ops_daily_selftest.log; fi
 verdict "ops_daily 反证用例（FIX-7）" $ODS_RC
+
+# ---------- 阶段零：备份守卫的反证用例（FIX-A 后续，2026-09-28）----------
+# 同上两条的口径：gate 的是 tools/test_backup_guard.sh（**反证用例**），不是 backup.sh 本体。
+# 为什么不 gate 本体：它要连真库、要写 backups/，接进每次提交等于把回归绑在一台机器的 cron 上。
+# 接进来的是三条守卫各自的判别力：RLS 预检（必须拦、且拦在 pg_dump 之前）、未通电库不得被误杀、
+# 半截归档不留盘、探针失明只 WARN。全部跑在 stub 的 psql/pg_dump/pg_restore 上，不碰真库。
+# 这一组判据自己也被变异检验过（四刀，见该文件头），因为第一版就有"删掉 exit 1 仍全绿"的空转。
+step "静态门禁：backup.sh 守卫反证用例（tools/test_backup_guard.sh，6 例）"
+bash tools/test_backup_guard.sh >/tmp/test_all_backup_guard_selftest.log 2>&1
+BGS_RC=$?
+if [ "$BGS_RC" -ne 0 ]; then tail -15 /tmp/test_all_backup_guard_selftest.log; fi
+verdict "backup.sh 守卫反证用例（FIX-A 后续）" $BGS_RC
+
+# 阶段零跑完即可收工的模式（--static）：不碰数据库、不编译、不起服务，专给"改门禁验门禁"用。
+if [ "$MODE" = "static" ]; then
+  echo ""
+  echo "==== 阶段零静态门禁总账: PASS=$PASS FAIL=$FAIL（--static：未跑单测/构建/契约/E2E）===="
+  if [ "$FAIL" -ne 0 ]; then exit 1; fi
+  exit 0
+fi
 
 # ---------- 阶段一：单元测试层 ----------
 # 单测前置：先把数据库让给单测独占。历史那条「internal/billing 与在线服务后台 ticker 共库存在
@@ -466,13 +548,16 @@ for i in $(seq 1 60); do sleep 2; [ "$(curl -s -o /dev/null -w '%{http_code}' -m
 psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc \
   "UPDATE tenant_users SET must_change_password=false WHERE username IN ('admin','sales1','sales2','sales3')" >/dev/null 2>&1 || true
 
-step "E2E 层：smoke.sh（608 项，含 2026-09-19 批二/三+E4/E2/E3/E9/E10 护栏 §二十~二十五、2026-09-20 审计批 §二十六~二十七、2026-09-21 B2 §二十八 + D2 AI 贡献度口径 §二十九、2026-09-23 AI 销售闭环 §三十、批六数据层治理与观测面 §三十一（末 2 项为版本声明单点锁）、主动触达最小闭环 §三十二、D3 用量预警与到期催缴 §三十三、D4 贡献度下钻与看板同源 §三十四、获客活码渠道归因 §三十五、商机与报价版本链 §三十六、E1-2 微信验签观测位 §三十一、E8 企微会话存档密文/留痕/观测位 §三十七、超管租户检索 §三十八、G-15 MQ 事件审计两段台账 §三十九、G-22c 行业包档位门槛（列表标注与写侧拒绝同源）§四十、G-21/G-22 包内容门禁与超管换包/清旧包/重物化下发 §十一、G-24 演示租户包绑定（非空壳 + 企业层真物化）§十一、2026-09-25 残项5 行业包同编码单上架版本（上架=原子换位 + 迁移 027 部分唯一索引）§四十一）"
+# 段名台账写法（2026-09-28 收官批）：**不再硬编码断言项数**。旧写法写死"608 项"，而 smoke 每批只加不减，
+# 数字从 608→711→今日更多却一行没改——标题变成一份"看起来权威的过期口径"，比没有数字更坏（读的人会拿它核对结果）。
+# 项数以本次实跑 tail 为准；下面只登记段落台账（段号重复由 smoke.sh 段头自检测门禁兜，见其 LC_ALL=C 判据）。
+step "E2E 层：smoke.sh（项数以实跑输出为准；段台账 §二十~二十五 批二/三+E4/E2/E3/E9/E10、§二十六~二十七 2026-09-20 审计批、§二十八 B2、§二十九 D2 贡献度口径、§三十 AI 销售闭环、§三十一 数据层治理/版本声明单点锁/微信验签观测位、§三十二 主动触达、§三十三 用量预警与催缴、§三十四 贡献度下钻同源、§三十五 获客活码、§三十六 商机与报价版本链、§三十七 E8 会话存档、§三十八 超管租户检索、§三十九 MQ 两段台账、§四十 行业包档位门槛、§四十一 同编码单上架版本、§四十二~四十六 2026-09-27 端到端审计批（通道密钥脱敏四路/退款单号与终态/分页与标签字典/发票交付五档/PIPL 本人副本）、§四十七 DB 级 RLS 通电〔2026-09-28 FIX-A〕）"
 ./tools/smoke.sh "$PORT" >/tmp/test_all_smoke.log 2>&1; verdict "smoke.sh" $?; tail -2 /tmp/test_all_smoke.log
 
 step "E2E 层：smoke_perm.sh（角色权限矩阵 33 项）"
 ./tools/smoke_perm.sh "$PORT" >/tmp/test_all_perm.log 2>&1; verdict "smoke_perm.sh" $?; tail -2 /tmp/test_all_perm.log
 
-step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸+A1 锁定超时落库 25 项）"
+step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸+A1 锁定超时落库+§8.11 归属门禁 fail-closed 30 项）"
 ./tools/smoke_chat_identity.sh "$PORT" >/tmp/test_all_identity.log 2>&1; verdict "smoke_chat_identity.sh" $?; tail -2 /tmp/test_all_identity.log
 
 step "E2E 层：smoke_org.sh（11 项）"
@@ -484,7 +569,7 @@ step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
 step "E2E 层：smoke_pay.sh（§W 支付回调验签+防重放+C6 资金安全+M2 nonce 消费点后移+E1-2 平台证书验签政策 49 项）"
 ./tools/smoke_pay.sh "$PORT" >/tmp/test_all_pay.log 2>&1; verdict "smoke_pay.sh" $?; tail -2 /tmp/test_all_pay.log
 
-step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 59 项，含侧边栏双签名 §十，自建 9091+mockwx；四c 段锁合并队列接管路径——连发 5 条恰好 2 条 AI 回复 + 2 条出站 + 5 条客户消息全落库，双答/丢答/丢历史三个方向同时封）"
+step "E2E 层：smoke_channel.sh（企微/微信客服/公众号通道 E2E 81 项，含侧边栏双签名 §十，自建 9091+mockwx；四c 段锁合并队列接管路径——连发 5 条恰好 2 条 AI 回复 + 2 条出站 + 5 条客户消息全落库，双答/丢答/丢历史三个方向同时封，且先按 messages.route_result 证明「这些行来自本段链路」再比等式；§十一 分支D 锁到店第二句的接管复核闸——顾问接手后计划中的补发句必须不开口，等满 48s 覆盖 25~45s 上限）"
 ./tools/smoke_channel.sh >/tmp/test_all_channel.log 2>&1; verdict "smoke_channel.sh" $?; tail -2 /tmp/test_all_channel.log
 
 step "E2E 层：uat_advisor.sh（顾问工作台字节级 88 断言，2026-09-20 缺陷核实批并入：补齐 advisor 域覆盖缺口；2026-09-25 欠账批 +3：反馈额度口径护栏——20 条评分行不吃「每日 20 条反馈」额度、20 条真反馈仍挡得住第 21 条，配落库前置自检防零行空转）"
@@ -517,7 +602,10 @@ else
 fi
 
 if [ "$MODE" != "fast" ]; then
-  step "E2E 层：uat.sh（112 断言全场景，较长；含 M1 账目守恒、A1 正式链落库双入口与 §十五 退款口径批）"
+  # 断言数写法（2026-09-28 收官批）：与 smoke 同一口径——**不再在标题里写死项数**（旧写"112"，实跑 115）。
+  # 段内容变化：§八 Token 三桶级联此前在零凭证环境里只断到"全空→降级"那一格（模拟模式在调模型前就返回，
+  # 台账零行、三桶零扣减，中间三格空转）；本轮补 ai_mock_usage_tokens（出厂 0＝行为不变）后四格全判。
+  step "E2E 层：uat.sh（全场景，较长；含 M1 账目守恒、A1 正式链落库双入口、§十五 退款口径批、§八 三桶扣减级联〔模拟模式虚拟用量，FIX-M〕）"
   # uat 含真实 AI 调用与长时间等待，默认纳入 full 模式；CI 建议 --fast
   ./tools/uat.sh "$PORT" >/tmp/test_all_uat.log 2>&1; verdict "uat.sh" $?; tail -3 /tmp/test_all_uat.log
 else

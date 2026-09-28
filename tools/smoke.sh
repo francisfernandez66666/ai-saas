@@ -85,6 +85,14 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         的对照前提，缺它本段会在一家本来看得见的租户上假绿。**前提 2026-09-25 改为自造**：
 #         旧写法取"库里最小的四位数 ID"，隐含"租户数 > 20"这一环境状态，清库后只剩几家种子时
 #         首页＝全表、前提恒假而红过一次；现显式插 22 家对照租户并把目标定为 id 倒序第 21 家）
+#       / 2026-09-28 FIX-A：DB 级 RLS 通电与策略内容护栏 14 断言（四十七：前置自检策略面非空防 0==0 假绿、
+#         已 ENABLE 的策略表数与挂策略表数**等值**（PG 语义 relrowsecurity=false 时策略永不
+#         被咨询，旧实现只写 FORCE——FORCE 不救）、system_configs 反向对照防"把全库都 ENABLE"
+#         喂绿、**策略表达式两条休眠腿逐腿核**（IS NULL + 空串：030 点亮后 PG 把跑过 SET LOCAL
+#         的连接上自定义 GUC 复位成 ''而非 NULL，只看 IS NULL 会让未激活查询筛成空集/写 42501，
+#         本轮 billing 九例红即此形态；配"旧两腿写法必被点名/三腿写法判合格"双向自证）、
+#         readiness 的 rls_policy_face 观测位恰一条、迁移账本 31 笔与 030/031 up/down 成对；
+#         数据层全部 psql 直查不走 HTTP）
 #       / 2026-09-25 残项5：行业包同编码单上架版本 27 断言（四十一：迁移 027 记账与部分唯一索引
 #         ux_pack_one_active_per_code 实存、索引定义带 status=active 条件（只禁同时上架不禁历史）、
 #         全表不变式"同 code 多 active"=0 且先自检库里确有在架行、三个合成版本先建后比、
@@ -131,7 +139,13 @@ jsonget() { python3 -c "import sys,json;d=json.load(sys.stdin);print(eval('d'+sy
 # 索引也会同时指两处。这不是美观问题——**段号是本脚本里断言的归属地址**。
 # 故 fail-fast：宁可开头就退出，也不要跑完 670 项再让人去猜哪一段的账。
 # awk 按字节取"、"前的段号（中文段号 3 字节/字，index 命中第一个"、"的字节位即整段号末尾）。
-SMOKE_DUP_SECS=$(awk '/^echo "---- /{s=substr($0,12);p=index(s,"、");if(p>0)print substr(s,1,p-1)}' "${BASH_SOURCE[0]}" 2>/dev/null | sort | uniq -d | tr '\n' ' ')
+# FIX-F(2026-09-28 审计复核批)：sort/uniq 一律钉 LC_ALL=C（字节序）。
+# 为什么：本机实踩——BSD sort/uniq 在 en_US.UTF-8 区域下对这批中文段号做 locale  collation 时会把
+# 46 个不同段号误折叠成同一条（`uniq -c` 报 "46 一"），于是 `uniq -d` 判"段号全部重复"，
+# 脚本在**一条断言都没跑**的情况下 exit 1，把整条旗舰冒烟（670+ 项）按死在开场。
+# 这与产品无关、与段号是否真重复也无关——**判据不能建立在 sort 实现的多字节行为上**。
+# 段号本身是 UTF-8 字节串，按字节去重才是我们要的语义（相同字节串＝真重复）。
+SMOKE_DUP_SECS=$(awk '/^echo "---- /{s=substr($0,12);p=index(s,"、");if(p>0)print substr(s,1,p-1)}' "${BASH_SOURCE[0]}" 2>/dev/null | LC_ALL=C sort | LC_ALL=C uniq -d | tr '\n' ' ')
 if [ -n "$SMOKE_DUP_SECS" ]; then
   echo "FATAL  冒烟段号重复：[$SMOKE_DUP_SECS] —— 请给新段顺延编号（段号重复＝断言归属地址有二义）"
   exit 1
@@ -374,6 +388,33 @@ check "/metrics 端点可达" 200 "$CODE"
 METRICS=$(curl -s "$B/metrics" 2>/dev/null)
 echo "$METRICS" | grep -q "ai_scrm_kafka_publish_total" && check "指标: ai_scrm_kafka_publish_total 存在" y y || check "指标: ai_scrm_kafka_publish_total 存在" y n
 echo "$METRICS" | grep -q "ai_scrm_complaint_total" && check "指标: ai_scrm_complaint_total 存在" y y || check "指标: ai_scrm_complaint_total 存在" y n
+
+# FIX-F(2026-09-28 审计复核批)：SPA 深路由必须计入 HTTP 请求数。
+# 缺陷形态（本批修掉的）：请求计数中间件注册在 `r.NoRoute`（SPA 回落）**之后**，而 gin 的
+# 中间件按"注册时刻"捕获——于是所有前端深路由对 Prometheus 恒不可见：API 计数正常、
+# 页面访问数为 0，看板会告诉你"前端没人用"。这种"绿着的监控盲区"比没有指标更危险。
+# 前置自检：先证明这个计数器在动（打一次 /api 面路径后必须涨），否则"深路由没涨"
+# 会被误读成"SPA 没计数"（其实是计数器本身或抓取坏了）——防在 0==0 上假红/假绿。
+HTTP_T_BASE=$(curl -s "$B/metrics" | awk '/^ai_scrm_http_requests_total /{print $2}')
+sleep 1
+HTTP_T_NOW=$(curl -s "$B/metrics" | awk '/^ai_scrm_http_requests_total /{print $2}')
+# 反向对照：只打 /metrics 本身 1 秒，计数不得增长（/metrics 已在中间件里显式排除，
+# 否则 Prometheus 每次抓取都会给自己的计数器灌水，"总请求数"从此和真实流量脱钩）
+if [ "${HTTP_T_BASE:-0}" = "${HTTP_T_NOW:-0}" ]; then
+  check "/metrics 自身不计入请求总数(抓取不灌水)" y y
+else
+  check "/metrics 自身不计入请求总数(抓取不灌水)" y "${HTTP_T_BASE:-?}->${HTTP_T_NOW:-?}"
+fi
+# 正向：SPA 深路由（走 NoRoute 回落，不是任何已注册路由）打 3 次，计数至少 +3
+for i in 1 2 3; do curl -s -o /dev/null "$B/app/smoke/deep/route"; done
+HTTP_T_AFTER=$(curl -s "$B/metrics" | awk '/^ai_scrm_http_requests_total /{print $2}')
+SPA_DELTA=$(( ${HTTP_T_AFTER:-0} - ${HTTP_T_NOW:-0} ))
+[ "$SPA_DELTA" -ge 3 ] && check "SPA 深路由计入 HTTP 请求数(+$SPA_DELTA)" y y || check "SPA 深路由计入 HTTP 请求数" y "+$SPA_DELTA"
+# 对照面：/health 在本中间件之前注册，按 gin 语义不计入（口径如实钉住，防"全量计数"被误当成回归）
+HTTP_T_H0=$(curl -s "$B/metrics" | awk '/^ai_scrm_http_requests_total /{print $2}')
+curl -s -o /dev/null "$B/health"
+HTTP_T_H1=$(curl -s "$B/metrics" | awk '/^ai_scrm_http_requests_total /{print $2}')
+[ "${HTTP_T_H0:-0}" = "${HTTP_T_H1:-0}" ] && check "/health 不计入(注册时序在中间件之前)" y y || check "/health 不计入(注册时序在中间件之前)" y "${HTTP_T_H0:-?}->${HTTP_T_H1:-?}" 
 
 echo "---- 十、G-19 投诉事件集成 ----"
 # 投诉关键词识别：发送含投诉意图的消息，验证 complaint 计数器不为负
@@ -3522,6 +3563,74 @@ check "本段合成消息已清零" 0 \
   "$($PSQL "SELECT (SELECT count(*) FROM messages WHERE id IN (${PP_BASE},${PP_BASE}+1))+(SELECT count(*) FROM messages_archive WHERE id=${PP_ARCID})" | tr -d '[:space:]')"
 check "本段合成访客已清零" 0 "$($PSQL "SELECT count(*) FROM customers WHERE id=${PP_CID:-0}" | tr -d '[:space:]')"
 rm -f "$PP_BODY" "$PP_BODY".* 2>/dev/null
+
+echo "---- 四十七、DB 级 RLS 通电护栏（FIX-A 2026-09-28）----"
+# 本段钉的是一句 PG 语义：relrowsecurity=false 时表上挂的策略**永不被咨询**，
+# FORCE ROW LEVEL SECURITY 只关"表 owner 旁路"、不含 ENABLE、救不了这件事。
+# 旧 EnableRLS/迁移 002 都只 FORCE——"挂策略表数"与"通电表数"是两个数，
+# 只断前者会永远绿在"从未生效"这个假事实之上（2026-09-28 实测：14 张表挂策略、relrowsecurity 全 false）。
+# 全部直查 psql，不走 HTTP：这是纯 DB 结构事实，与接口层无关。
+# 前置自检（红线：防 0==0 假绿）：先证明策略面非空，"通电数==挂策略数"这条等式才有意义；
+# 策略面为空时后面的等式两侧都是 0，任何实现都能把它喂绿。
+RLS_POLICY_TBL=$($PSQL "SELECT count(DISTINCT tablename) FROM pg_policies WHERE policyname='tenant_isolation'" 2>/dev/null | tr -d '[:space:]')
+if [ "${RLS_POLICY_TBL:-0}" -gt 0 ] 2>/dev/null; then
+  echo "  PASS  前置自检：$RLS_POLICY_TBL 张表挂有 tenant_isolation 策略（策略面非空，后续等式有判别力）"; PASS=$((PASS+1))
+else
+  echo "  FAIL  前置自检：策略面为空（0 张表挂策略）——后续「已ENABLE数==挂策略表数」会在 0==0 上假绿，本段其余断言失去意义；请先确认 EnableRLS/迁移 002 是否跑过"; FAIL=$((FAIL+1))
+fi
+# 主断言（等值，不是"≥1"）：每张挂了 tenant_isolation 策略的表都必须已 ENABLE——
+# 漏掉任何一张，那张表的策略就永远不被咨询，而"≥1"式的弱断言对此完全无感。
+RLS_ENABLED_TBL=$($PSQL "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace JOIN pg_policies p ON p.tablename=c.relname WHERE n.nspname='public' AND p.policyname='tenant_isolation' AND c.relrowsecurity" 2>/dev/null | tr -d '[:space:]')
+check "已 ENABLE（relrowsecurity=true）的策略表数 == 挂策略表数（逐张通电，漏一张即该表策略永不被咨询）" "${RLS_POLICY_TBL:-0}" "${RLS_ENABLED_TBL:-0}"
+# 反向对照：任取一张"含 tenant_id 但按设计不挂策略"的表（system_configs——rls.go 豁免集的
+# 唯一成员），断言它**没有**被 ENABLE。缺这条，"把全库所有表都 ENABLE"这种实现照样能让
+# 上面的等式全绿——而那是把无策略的平台表也置成"看着有保护"，还顺带切断 system_configs
+# 读系统层默认值的回落腿（见 rls.go rlsExemptTables 注释）。先自证对照前提成立再断言。
+RLS_SYS_POL=$($PSQL "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='system_configs' AND policyname='tenant_isolation'" 2>/dev/null | tr -d '[:space:]')
+check "对照前提：system_configs 确属「含 tenant_id 但无 tenant_isolation 策略」的设计内豁免表" 0 "${RLS_SYS_POL:-0}"
+RLS_SYS_RLS=$($PSQL "SELECT relrowsecurity::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='system_configs'" 2>/dev/null | tr -d '[:space:]')
+check "system_configs 未被 ENABLE（修复口径是按策略表逐张通电，不是把全库都 ENABLE——全开即本条翻红）" false "${RLS_SYS_RLS:-missing}"
+# 迁移账本（延续"迁移 0xx 已记账"惯例）：账本现至 031，up/down 必须成对（C4 迁移纪律）。
+# 只查文件不实查 schema_migrations 那行：030/031 由执行器在服务启动时正常记账，
+# 冒烟不重启在线服务，台账行是否已在由部署侧负责——本段钉的是"这一版代码带着成对的 030/031"。
+check "030 up/down 成对存在（缺 down 则 MigrateDownFrom 会在回退时中断）" 2 "$(ls "$PROJECT_ROOT/migrations/030_rls_enable.up.sql" "$PROJECT_ROOT/migrations/030_rls_enable.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
+
+# —— 策略「内容」面（FIX-A 落地当天补，2026-09-28）：通电之外还要钉表达式本身 ——
+# 为什么不能只断上一条：030 把策略点亮之后，PG 对自定义 GUC 的复位是**置成空串**而不是变回
+# 未定义（跑过一次 SET LOCAL 的那条连接，提交后 current_setting 恒为 ''）。连接池不关连接，
+# 于是只看 IS NULL 的休眠腿在这条连接上永久失效——未激活的普通查询被筛成空集、写入撞 42501。
+# 这正是本轮 internal/billing 九条用例的首发现现场，也是 031 迁移存在的全部理由。
+# 判据写法两条坑（本段首跑就是被它们骗过去的，留字此处）：
+#   ① 不可用 replace(...,' ','') 折叠空白——那样 "IS NULL" 会变成 "ISNULL"，判据永不命中、
+#      计数恒为表宽，"缺腿数为 0" 这条断言会假绿（这里按 PG 原样文本判，规整文本本就单空格）。
+#   ② 不可在双引号 bash 串里写 SQL 字面量 '%=''::text%'——SQL 会把中间 '' 解成一个引号，
+#      模式变成 `%'::text`，同样永不命中。改用 chr(39) 拼引号，语义与转义解耦。
+RLS_NO_EMPTY_LEG=$($PSQL "SELECT count(*) FROM pg_policies WHERE policyname='tenant_isolation' AND lower(qual) NOT LIKE '%'||chr(39)||chr(39)||'::text%'" 2>/dev/null | tr -d '[:space:]')
+check "挂策略的表里，缺「空串休眠腿」的张数为 0（031 已把三腿写法落到每一张表）" 0 "${RLS_NO_EMPTY_LEG:-missing}"
+RLS_NO_NULL_LEG=$($PSQL "SELECT count(*) FROM pg_policies WHERE policyname='tenant_isolation' AND lower(qual) NOT LIKE '%is null%'" 2>/dev/null | tr -d '[:space:]')
+check "挂策略的表里，缺「IS NULL 休眠腿」的张数为 0" 0 "${RLS_NO_NULL_LEG:-missing}"
+# 反证自证（本段最容易空转的地方）：判据必须在**旧两腿写法**上真的翻红。
+# 缺这两条，"表达式里根本没有空串腿、计数却恒为 0"（比如上面两条踩了 ①/② 任一坑）这种失效
+# 形态照样全绿——一个只会返回 0 的守卫等于没有守卫。
+RLS_JUDGE_EMPTY=$($PSQL "SELECT count(*) FROM (SELECT '((tenant_id)::text = current_setting(''app.current_tenant''::text, true) OR current_setting(''app.current_tenant''::text, true) IS NULL)'::text AS qual) t WHERE lower(qual) NOT LIKE '%'||chr(39)||chr(39)||'::text%'" 2>/dev/null | tr -d '[:space:]')
+check "反证：旧两腿写法（无空串腿）必须被上面的判据点名（=1）" 1 "${RLS_JUDGE_EMPTY:-missing}"
+RLS_JUDGE_THREE=$($PSQL "SELECT count(*) FROM (SELECT '(((tenant_id)::text = current_setting(''app.current_tenant''::text, true)) OR (current_setting(''app.current_tenant''::text, true) IS NULL) OR (current_setting(''app.current_tenant''::text, true) = ''''::text))'::text AS qual) t WHERE lower(qual) NOT LIKE '%'||chr(39)||chr(39)||'::text%'" 2>/dev/null | tr -d '[:space:]')
+check "反向对照：三腿写法（库里现在这份）必须判为合格（=0）" 0 "${RLS_JUDGE_THREE:-missing}"
+# IS NULL 腿同样双向：去掉它的写法必被点名，库里现写的判合格
+RLS_JUDGE_NONULL=$($PSQL "SELECT count(*) FROM (SELECT '((tenant_id)::text = current_setting(''app.current_tenant''::text, true) OR current_setting(''app.current_tenant''::text, true) = ''''::text)'::text AS qual) t WHERE lower(qual) NOT LIKE '%is null%'" 2>/dev/null | tr -d '[:space:]')
+check "反证：只留空串腿（无 IS NULL）的写法也必须被点名（=1）" 1 "${RLS_JUDGE_NONULL:-missing}"
+# 观测位（HTTP 层）：/status/detail 必须直出 rls_policy_face 且**恰一条**——
+# 逐表刷行会破坏 readiness"一眼看到哪项没配好"的读表节奏（口径见 readiness_test 同名用例）。
+HT47=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
+RLS_FACE_CNT=$(curl -s -H "X-Health-Token: $HT47" "$B/status/detail" 2>/dev/null | grep -o '"rls_policy_face"' | wc -l | tr -d ' ')
+check "readiness 含 rls_policy_face 观测位且恰一条（通电≠策略内容合格，两件事各有一行）" 1 "${RLS_FACE_CNT:-0}"
+# 迁移 031 账本：与 030 同一纪律（up/down 成对；down 刻意 no-op 并在文件里写清为什么不能回退）
+check "迁移账本：up 脚本共 31 笔（031_rls_policy_guc_empty 已入列）" 31 "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')"
+check "031 up/down 成对存在" 2 "$(ls "$PROJECT_ROOT/migrations/031_rls_policy_guc_empty.up.sql" "$PROJECT_ROOT/migrations/031_rls_policy_guc_empty.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
+# 031 已记账（schema_migrations 行）：本机服务重启过一次即由执行器写入；全新库由部署侧首次启动写入。
+# 这里按"账本行数==up 脚本数"整口径断言，不单独为 031 开一条——差额表会连同其它未记账的迁移一起暴露。
+check "迁移账本行数 == up 脚本数（含 031，无未记账迁移）" "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')" \
+  "$($PSQL "SELECT count(*) FROM schema_migrations" 2>/dev/null | tr -d '[:space:]')"
 
 echo "==== 结果: PASS=$PASS FAIL=$FAIL ===="
 [ "$FAIL" = "0" ] || exit 1

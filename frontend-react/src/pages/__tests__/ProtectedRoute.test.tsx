@@ -76,8 +76,11 @@ describe('ProtectedRoute 会话失败分支落点（FIX-6）', () => {
 
     renderGuard()
     // 首屏是"校验中"空白占位，故用 findBy 等分支落地
-    expect(await screen.findByText(/网络异常/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: '重试' })).toBeTruthy()
+    // 原来弱在哪：/网络异常/ 四个字命中即绿；现在钉 App.tsx network_error 分支的整句
+    // 文案（"你的登录状态没有丢"正是本 FIX 给用户的核心承诺，被改没了就该红）。
+    expect(await screen.findByText(/网络异常/))
+      .toHaveTextContent('网络异常，暂时连不上服务器。你的登录状态没有丢，恢复网络后点重试即可。')
+    expect(screen.getByRole('button', { name: '重试' })).toHaveTextContent('重试')
     // URL 未变——本条验收的正身：旧写法在这里已经是 /login?mcp=1
     expect(screen.getByTestId('url').textContent).toBe('/admin')
     expect(screen.queryByText('登录页')).toBeNull()
@@ -100,7 +103,9 @@ describe('ProtectedRoute 会话失败分支落点（FIX-6）', () => {
     await screen.findByText(/网络异常/)
     online = true
     fireEvent.click(screen.getByRole('button', { name: '重试' }))
-    expect(await screen.findByText('后台机密内容')).toBeTruthy()
+    // 原来弱在哪：toBeTruthy 只等"有这段字"，钉渲染内容本体（renderGuard 里塞的
+    // 就是 <div>后台机密内容</div>），等价于"守卫真的放行了 children"。
+    expect(await screen.findByText('后台机密内容')).toHaveTextContent('后台机密内容')
     expect(screen.getByTestId('url').textContent).toBe('/admin')
   })
 
@@ -109,7 +114,11 @@ describe('ProtectedRoute 会话失败分支落点（FIX-6）', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResponse(403, { code: 403, error_code: 'tenant_suspended' }))))
 
     renderGuard()
-    expect(await screen.findByText(/暂时无法访问该页面/)).toBeTruthy()
+    // 原来弱在哪：/暂时无法访问该页面/ 会被网络分支文案里的"暂时连不上"混近吗？不会，
+    // 但正则只钉了半句——括号里的三种归因（停用/配额/权限）是这条提示的 informative 部分。
+    // 现在钉 App.tsx forbidden 分支整句。
+    expect(await screen.findByText(/暂时无法访问该页面/))
+      .toHaveTextContent('当前账号暂时无法访问该页面（可能是租户已停用、配额用尽或权限变更）。')
     expect(screen.getByTestId('url').textContent).toBe('/admin')
     expect(screen.queryByRole('button', { name: '重试' })).toBeNull() // 重试只对网络异常有意义
     expect(getToken()).toBe('jwt-still-valid')
@@ -120,7 +129,9 @@ describe('ProtectedRoute 会话失败分支落点（FIX-6）', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResponse(403, { code: 403, error_code: 'must_change_password' }))))
 
     renderGuard()
-    expect(await screen.findByText('登录页')).toBeTruthy()
+    // 原来弱在哪：toBeTruthy 只当同步点用；改成值断言后仍然等同一件事，但把
+    // "落在登录页"从"节点存在"收紧为"渲染的就是 renderGuard 摆的那句"。
+    expect(await screen.findByText('登录页')).toHaveTextContent('登录页')
     expect(screen.getByTestId('url').textContent).toBe('/login?mcp=1')
     // 改密接口要带这枚 token，跳过去的路上不能把它清掉
     expect(getToken()).toBe('jwt-still-valid')
@@ -131,7 +142,7 @@ describe('ProtectedRoute 会话失败分支落点（FIX-6）', () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(meResponse(401, { code: 401, error_code: 'token_expired' }))))
 
     renderGuard()
-    expect(await screen.findByText('登录页')).toBeTruthy()
+    expect(await screen.findByText('登录页')).toHaveTextContent('登录页')
     expect(screen.getByTestId('url').textContent).toBe('/login?redirect=%2Fadmin')
     expect(getToken()).toBe('')
   })

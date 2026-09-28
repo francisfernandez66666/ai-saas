@@ -5,7 +5,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { logoutAndRedirect, verifySession, type SessionCheck } from './lib/api'
 import { RequireRole } from './components/RequireRole'
-import { ADMIN_ROLES } from './lib/roles'
+import { ADMIN_ROLES, ROLES } from './lib/roles'
 /** 导航落地页懒加载入口。 */
 const Index = lazy(() => import('./pages/Index'))
 /** 登录页懒加载入口。 */
@@ -138,8 +138,10 @@ export default function App() {
       <Route path="/privacy-policy" element={<PrivacyPolicy />} />
       {/* 租户管理员后台：管理成员、部门、客户等租户级资源（需登录） */}
       <Route path="/admin" element={<ProtectedRoute><RequireRole allow={ADMIN_ROLES}><Admin /></RequireRole></ProtectedRoute>} />
-      {/* 平台超管后台：管理租户、套餐、全局配置等平台级资源（需登录） */}
-      <Route path="/super" element={<ProtectedRoute><SuperAdmin /></ProtectedRoute>} />
+      {/* 平台超管后台：管理租户、套餐、全局配置等平台级资源（需登录 + super_admin 角色）
+          FIX-D(2026-09-28)：守卫统一批——此前角色校验只在 SuperAdmin 页内 localStorage 判定，
+          路由层与 /admin（RequireRole）口径不一致；现补路由级第一闸，页内两处判定保留作兜底。 */}
+      <Route path="/super" element={<ProtectedRoute><RequireRole allow={[ROLES.superAdmin]}><SuperAdmin /></RequireRole></ProtectedRoute>} />
       {/* 顾问工作台：管理客户会话、跟进记录、AI 接待策略（需登录） */}
       <Route path="/advisor" element={<ProtectedRoute><Advisor /></ProtectedRoute>} />
       {/* C 端客户对话页：匿名访客与 AI 对话，支持人机验证（免登录） */}

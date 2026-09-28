@@ -1,5 +1,5 @@
 // F13/T6 移动端设置页 PIPL 删除权入口冒烟测试。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import AppSettings from '../AppSettings'
 
@@ -34,7 +34,11 @@ describe('AppSettings 个人信息删除', () => {
     render(<AppSettings />)
     fireEvent.click(await screen.findByRole('button', { name: '申请删除账号信息' }))
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/privacy/deletion-request', expect.objectContaining({ method: 'POST', body: { scope: 'user' } })))
-    expect(await screen.findByText(/已受理/)).toBeTruthy()
+    // 原来弱在哪：/已受理/ 命中任意包含这四个字的节点即可，"受理了但没带期限回执"
+    // 这种残缺文案也绿。现在钉：AppSettings.tsx 的拼接前缀「已受理，预计 」（夹具返回了
+    // deadline 就必带此前缀）。具体日期串取决于运行机时区（toLocaleString 无 tz 注入），
+    // 钉死会把用例变成本机专属——故只钉到前缀为止。
+    expect(await screen.findByText(/已受理/)).toHaveTextContent(/^已受理，预计 /)
   })
 })
 
@@ -49,10 +53,18 @@ describe('AppSettings 知识库角色分流（G-23）', () => {
     authMock.mockImplementation(async (url: string) => (url.includes('/kb/my') ? kbResp : { code: 0, data: {} }))
     render(<AppSettings />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/api/v1/advisor/kb/my')))
-    expect(await screen.findByText('售后政策')).toBeTruthy()
+    // 原来弱在哪：toBeTruthy 只证明页面上有"售后政策"四个字。现在钉：命中的是 <li> 本体、
+    // 文本逐字等（夹具 title），且该条目内不含任何 <a> 删除链接（成员侧只读由
+    // AppSettings.tsx `{isAdmin && <a>删除</a>}` 条件渲染决定）。
+    const item = await screen.findByText('售后政策')
+    expect(item.tagName).toBe('LI')
+    expect(item).toHaveTextContent('售后政策')
+    expect(item.querySelector('a')).toBeNull()
     expect(screen.queryByRole('button', { name: '上传切片入库' })).toBeNull()
     expect(screen.queryByText('删除')).toBeNull()
-    expect(screen.getByText(/请联系管理员/)).toBeTruthy()
+    // 成员引导文案整句钉死（AppSettings.tsx 非 admin 分支的完整字符串，不再只匹配尾缀）
+    expect(screen.getByText(/请联系管理员/))
+      .toHaveTextContent('本租户已沉淀的资料，AI 对话会自动引用；需要补充或修改请联系管理员')
     // 成员侧不得打管理端点（打了就是 403）
     expect(authMock.mock.calls.some((c) => String(c[0]).startsWith('/api/v1/admin/'))).toBe(false)
   })
@@ -62,8 +74,15 @@ describe('AppSettings 知识库角色分流（G-23）', () => {
     authMock.mockImplementation(async (url: string) => (url.includes('/kb/my') ? kbResp : { code: 0, data: {} }))
     render(<AppSettings />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/api/v1/admin/kb/my')))
-    expect(await screen.findByText('售后政策')).toBeTruthy()
-    expect(screen.getByRole('button', { name: '上传切片入库' })).toBeTruthy()
-    expect(screen.getByText('删除')).toBeTruthy()
+    // 原来弱在哪：三处 toBeTruthy 都只证明"字出现了"。现在钉：条目是 <li> 且行内带
+    // <a>删除</a>（组件里删除入口就是 li 内的 a 标签）；上传按钮可见且可用。
+    const item = await screen.findByText('售后政策')
+    expect(item.tagName).toBe('LI')
+    expect(item).toHaveTextContent('售后政策')
+    const delLink = within(item).getByText('删除')
+    expect(delLink.tagName).toBe('A')
+    const uploadBtn = screen.getByRole('button', { name: '上传切片入库' })
+    expect(uploadBtn).toHaveTextContent('上传切片入库')
+    expect(uploadBtn).toBeEnabled()
   })
 })

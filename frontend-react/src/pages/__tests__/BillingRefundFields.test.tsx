@@ -5,6 +5,8 @@
 import { render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Billing from '../Billing'
+// 期望金额串从换算单点推导，不复制 '¥99.00' 字面量（改口径时测试跟随，不双维护）
+import { fenToYuan } from '../../lib/money'
 
 vi.mock('../../lib/api', () => ({
   AUTH: () => ({ headers: { Authorization: 'Bearer t' } }),
@@ -42,7 +44,11 @@ describe('Billing 订单列表 F1 退款字段展示', () => {
     vi.stubGlobal('fetch', routeFetch())
     render(<Billing />)
     const badge = await screen.findByText('已退款 ¥99.00', undefined, { timeout: 4000 })
-    expect(badge).toBeTruthy()
+    // 原来弱在哪：findByText 精确串已经把文案钉住了，但尾随的 toBeTruthy 不再加任何
+    // 约束——升级成对 badge 本身的值断言：文本由夹具 refund_amount_cents 经 fenToYuan
+    // 推得（99 元整），并确认它是徽标 <span> 而非别的巧合节点。
+    expect(badge.tagName).toBe('SPAN')
+    expect(badge).toHaveTextContent(`已退款 ¥${fenToYuan(refundedOrder.refund_amount_cents)}`)
     // 不应再出现英文原值裸奔
     expect(screen.queryByText('refunded')).toBeNull()
   })

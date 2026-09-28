@@ -37,7 +37,8 @@ for a in "$@"; do
     # 只跑①段：给 tools/test_ops_daily.sh 的反向用例用。整脚本跑会连带调 deploy_preflight
     # 与其 6 例自证（那些有自己的门禁位），反向用例只关心"备份产物判据有没有牙"。
     --backup-only) BACKUP_ONLY=1 ;;
-    *) echo "未知参数: $a（可用 --quiet / --backup-only）" >&2; exit 2 ;;
+    # ${a} 花括号非装饰：macOS bash 3.2 在 UTF-8 locale 下会把紧跟的多字节标点吞进变量名，set -u 下当场 unbound
+    *) echo "未知参数: ${a}（可用 --quiet / --backup-only）" >&2; exit 2 ;;
   esac
 done
 HOST_TAG=$(hostname 2>/dev/null || echo unknown-host)

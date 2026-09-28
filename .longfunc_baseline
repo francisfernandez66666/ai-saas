@@ -1,0 +1,3 @@
+# 超长函数（> 150 行）个数棘轮基线，由 tools/check_function_length.py 维护。
+# 口径：只准降不准升。拆完一批后用 --update-baseline 收紧。
+0

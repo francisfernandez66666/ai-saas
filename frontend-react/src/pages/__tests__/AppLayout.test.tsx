@@ -17,6 +17,15 @@ function renderAsRole(role: string) {
   )
 }
 
+// 原来弱在哪：getByText('收银台') 配 truthy 只证明"有这三个字"，不证明它是那条
+// 导航链接——标题文案、别的说明文字都能喂绿。现在钉：label 所在 <a> 的 href
+// 与 AppLayout.tsx link(to,label) 的 to 一一对应（/app/billing、/app/advisor、/app/referral）。
+function expectLink(label: string, href: string) {
+  const el = screen.getByText(label)
+  expect(el).toHaveTextContent(label)
+  expect(el.closest('a')).toHaveAttribute('href', href)
+}
+
 describe('AppLayout 角色导航矩阵（P1-8）', () => {
   beforeEach(() => localStorage.clear())
   afterEach(() => localStorage.clear())
@@ -24,7 +33,7 @@ describe('AppLayout 角色导航矩阵（P1-8）', () => {
   // 管理岗三角色：收银台入口可见（与后端 AdminRequired 认同一集合）
   it.each(['super_admin', 'tenant_admin', 'admin'])('%s 可见收银台入口', (role) => {
     renderAsRole(role)
-    expect(screen.getByText('收银台')).toBeTruthy()
+    expectLink('收银台', '/app/billing')
   })
 
   // dept_admin 后端不认管理员 → 入口不再显示（P1-8 修复点，旧实现恒显示）
@@ -32,14 +41,14 @@ describe('AppLayout 角色导航矩阵（P1-8）', () => {
     renderAsRole('dept_admin')
     expect(screen.queryByText('收银台')).toBeNull()
     // 其余所有登录成员可见的入口不受影响
-    expect(screen.getByText('顾问台')).toBeTruthy()
-    expect(screen.getByText('邀请')).toBeTruthy()
+    expectLink('顾问台', '/app/advisor')
+    expectLink('邀请', '/app/referral')
   })
 
   it('sales 成员：有顾问台/邀请，无收银台', () => {
     renderAsRole('sales')
-    expect(screen.getByText('顾问台')).toBeTruthy()
-    expect(screen.getByText('邀请')).toBeTruthy()
+    expectLink('顾问台', '/app/advisor')
+    expectLink('邀请', '/app/referral')
     expect(screen.queryByText('收银台')).toBeNull()
   })
 })

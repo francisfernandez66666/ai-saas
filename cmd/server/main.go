@@ -47,6 +47,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -69,7 +70,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.38.0"
+const appVersion = "v2.39.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -81,6 +82,28 @@ func safeRun(name string, fn func()) {
 		}
 	}()
 	fn()
+}
+
+// waitBgLoops FIX-F(2026-09-28 审计复核批)：有界等待后台节拍循环收尾。
+// 返回 true 表示全部退出；false 表示超时（调用方须如实打日志，不得报"已排空"）。
+// 为什么不用 `select { case <-done: case <-time.After() }` 手搓：WaitGroup 没有通道形态，
+// 而把 17 处循环改成 channel 编排是比本批更大的重构（各处节拍/锁/前置任务差异大），
+// 这里用一次性 goroutine 把 Wait 桥接成可 select 的通道，超时只放弃等待、不泄漏语义
+// （那个 goroutine 会随循环真正退出而结束，进程本身正在退出）。
+func waitBgLoops(wg *sync.WaitGroup, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
 }
 
 // main 程序入口：按既定顺序编排启动（配置→DB→seed→缓存→引擎→消费者→路由→监听）
@@ -99,6 +122,19 @@ func main() {
 
 	// 2. 加载配置
 	cfg := config.LoadConfig()
+
+	// FIX-F(2026-09-28 审计复核批)：后台任务统一停机上下文。
+	// 此前 main.go 17 处裸 ticker 的 `for range tk.C` 永不返回，defer tk.Stop() 形同虚设，
+	// SIGTERM 到来时后台轮次（最坏 50s 存档 / 15min PIPL 扫描）被拦腰硬杀。
+	// 现在 17 处循环全部就地改成 select 双通道（各调用点带注释），优雅停机序列第一步
+	// bgCancel() 让它们各自 Stop 后退出；mq.StartConsumers 同用本 ctx（kafka 消费循环
+	// 本就"以 ctx.Err() 为正常关闭出口，旧写法传 context.Background() 等于永不关）。
+	bgCtx, bgCancel := context.WithCancel(context.Background())
+	// bgLoops 登记所有后台节拍循环（17 处）。为什么用 WaitGroup 而不是"取消后睡一秒"：
+	// 停机要等的是**当前这一轮真的跑完**——一轮最坏 50s 存档、15min PIPL 扫描，
+	// 猜固定睡眠要么白等要么切一半。Add 全部发生在启动序列（main 顺序执行），
+	// Wait 只在收到退出信号后发生，两者不并发。
+	var bgLoops sync.WaitGroup
 
 	// 2.0 结构化日志（2026-09-15 增强批）：LOG_FORMAT=json|text，release 默认 json、debug 默认 text。
 	// 全仓 556 处 std log.Printf 经 logx 桥接逐条转 slog 记录，云端可直接按行解析聚合。
@@ -309,19 +345,30 @@ func main() {
 
 	// 9.2 状态机巡检（SAAS_PLAN §17.3）：心跳超时实例重新入队
 	// 多实例安全：Redis 选主，同一时刻只有一个实例执行巡检；未启用 Redis 时各实例直跑（幂等）
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(60 * time.Second)
-		for range ticker.C {
-			safeRun("sm:sweep", func() {
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:sm:sweep", 55*time.Second); h != nil {
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("sm:sweep", func() {
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:sm:sweep", 55*time.Second); h != nil {
+							statemachine.SweepOnce(10 * time.Minute)
+							h.Unlock()
+						}
+					} else {
 						statemachine.SweepOnce(10 * time.Minute)
-						h.Unlock()
 					}
-				} else {
-					statemachine.SweepOnce(10 * time.Minute)
-				}
-			})
+				})
+			}
 		}
 	}()
 
@@ -333,7 +380,10 @@ func main() {
 	//      默认关闭，故挂在同一小时节拍上：欠费与额度问题本来就该和"到期摘除"同一轮裁决，
 	//      分两个 ticker 只会多一个竞态窗口（见 billing/dunning.go 设计决定 4）。
 	// 9.4 订单超时关闭（M4，2026-08-25）：pending 超 order_timeout_minutes(默认15分钟) 自动 closed
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		// P2-6 修复(2026-09-09)：启动即补一次同样加锁——原实现 9.3 三处启动即跑
 		// （ResetAllTenantsMonthlyUsageIfDue/ExpireCheck/SweepExpiredOrders）无锁，
 		// 多实例同时启动会各自重复执行一轮全表巡检。统一走与周期巡检相同的选主。
@@ -353,38 +403,57 @@ func main() {
 			safeRun("usage:reset+expire+d3@startup", run)
 		}
 		ticker := time.NewTicker(1 * time.Hour)
-		for range ticker.C {
-			safeRun("usage:reset+expire+d3", func() {
-				runWithLock := func() {
-					billing.ResetAllTenantsMonthlyUsageIfDue()
-					billing.ExpireCheck()
-					billing.SweepUsageAlerts()
-					billing.SweepDunning()
-				}
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
-						runWithLock()
-						h.Unlock()
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("usage:reset+expire+d3", func() {
+					runWithLock := func() {
+						billing.ResetAllTenantsMonthlyUsageIfDue()
+						billing.ExpireCheck()
+						billing.SweepUsageAlerts()
+						billing.SweepDunning()
 					}
-				} else {
-					runWithLock()
-				}
-			})
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:usage:reset", 55*time.Minute); h != nil {
+							runWithLock()
+							h.Unlock()
+						}
+					} else {
+						runWithLock()
+					}
+				})
+			}
 		}
 	}()
 
 	// 9.44 数据飞轮回流上报器（P3，2026-08-26）：每小时把上一窗口的配置调参/包操作
 	// 审计增量 POST 到 feedback_collector_url（空=关闭）。失败仅告警不影响业务。
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(1 * time.Hour)
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
 		var lastID uint
 		db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
-		for range ticker.C {
-			// K8修复(2026-08-26)：上报成功才推进 lastID，失败保留以重试，避免增量审计数据漏传
-			var ok bool
-			safeRun("flywheel:report", func() { ok = billing.ReportAuditIncrement(lastID) })
-			if ok {
-				db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				// K8修复(2026-08-26)：上报成功才推进 lastID，失败保留以重试，避免增量审计数据漏传
+				var ok bool
+				safeRun("flywheel:report", func() { ok = billing.ReportAuditIncrement(lastID) })
+				if ok {
+					db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
+				}
 			}
 		}
 	}()
@@ -394,30 +463,52 @@ func main() {
 
 	// 9.45 订单超时扫描（M4，2026-08-25）：每5分钟一次（阈值 order_timeout_minutes 默认15分钟）
 	// 多实例安全：Redis TryLock 选主；未启用 Redis 各实例直跑（条件 UPDATE 天然幂等）
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(5 * time.Minute)
-		for range ticker.C {
-			safeRun("billing:sweep", func() {
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:billing:sweep", 4*time.Minute); h != nil {
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("billing:sweep", func() {
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:billing:sweep", 4*time.Minute); h != nil {
+							billing.SweepExpiredOrders()
+							h.Unlock()
+						}
+					} else {
 						billing.SweepExpiredOrders()
-						h.Unlock()
 					}
-				} else {
-					billing.SweepExpiredOrders()
-				}
-			})
+				})
+			}
 		}
 	}()
 
 	// 9.46 消息合并队列空闲回收（2026-09-09 内存治理）：每60s删除空闲>15min的客户队列
 	// 纯内存结构，多实例各自清理各自内存，无需 Redis 选主（idempotent）
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(60 * time.Second)
-		for range ticker.C {
-			safeRun("queue:sweep", func() {
-				service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
-			})
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("queue:sweep", func() {
+					service.DefaultMessageQueueService.SweepIdleQueues(15 * time.Minute)
+				})
+			}
 		}
 	}()
 
@@ -425,63 +516,96 @@ func main() {
 	// message_event_records 审计 30 天、inbox_events 收件箱 90 天；payload 为全量原文，
 	// 无界留存违反隐私最小化。多实例用 Redis 选主兜底（条件 DELETE 幂等，未启用时各自直跑）。
 	// 保留天数可经 system_configs 覆盖：mq_audit_retention_days / mq_inbox_retention_days
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(24 * time.Hour)
-		for range ticker.C {
-			safeRun("mq:cleanup", func() {
-				run := func() {
-					service.CleanupMQTables()
-				}
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
-						run()
-						h.Unlock()
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("mq:cleanup", func() {
+					run := func() {
+						service.CleanupMQTables()
 					}
-				} else {
-					run()
-				}
-			})
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:mq:cleanup", 20*time.Minute); h != nil {
+							run()
+							h.Unlock()
+						}
+					} else {
+						run()
+					}
+				})
+			}
 		}
 	}()
 
 	// 9.48 消息冷数据归档（2026-09-15 增强批）：messages → messages_archive 每日搬迁。
 	// 默认关闭：message_archive_days=0 直接空转；有真实量级后按租户行业节奏手动开（热配置，改完即生效）。
 	// 多实例 Redis 选主，CTE 先删后插原子搬移；PIPL 匿名化已同步覆盖归档表（privacy.go）。
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(24 * time.Hour)
-		for range ticker.C {
-			safeRun("archive:messages", func() {
-				run := func() { archive.RunMessagesOnce() }
-				if redisclient.IsEnabled() {
-					if h := redisclient.TryLock("lock:archive:messages", 40*time.Minute); h != nil {
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("archive:messages", func() {
+					run := func() { archive.RunMessagesOnce() }
+					if redisclient.IsEnabled() {
+						if h := redisclient.TryLock("lock:archive:messages", 40*time.Minute); h != nil {
+							run()
+							h.Unlock()
+						}
+					} else {
 						run()
-						h.Unlock()
 					}
-				} else {
-					run()
-				}
-			})
+				})
+			}
 		}
 	}()
 
 	// 8.49 订阅生命周期 + 对账（P2）：每 6 小时生成续费订单并对账补救发放失败单
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(6 * time.Hour)
-		for range ticker.C {
-			safeRun("billing:renew+reconcile", func() {
-				runRecon := func(name string, fn func() int) {
-					if redisclient.IsEnabled() {
-						if h := redisclient.TryLock("lock:"+name, 5*time.Hour); h != nil {
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("billing:renew+reconcile", func() {
+					runRecon := func(name string, fn func() int) {
+						if redisclient.IsEnabled() {
+							if h := redisclient.TryLock("lock:"+name, 5*time.Hour); h != nil {
+								fn()
+								h.Unlock()
+							}
+						} else {
 							fn()
-							h.Unlock()
 						}
-					} else {
-						fn()
 					}
-				}
-				runRecon("billing:renew", billing.SweepSubscriptionRenewals)
-				runRecon("billing:reconcile", billing.ReconcileBilling)
-			})
+					runRecon("billing:renew", billing.SweepSubscriptionRenewals)
+					runRecon("billing:reconcile", billing.ReconcileBilling)
+				})
+			}
 		}
 	}()
 
@@ -489,14 +613,25 @@ func main() {
 	// 原 RecoverCoolingModels 全仓零调用——供应商连续失败5次被置 Available=false 后
 	// 永远跳过、markSuccess 永远无机会执行，模型直到进程重启都是砖。
 	// 现每60s检查一次，冷却到期(默认300s)自动复活重试。纯内存操作，多实例各自执行无害。
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		ticker := time.NewTicker(60 * time.Second)
-		for range ticker.C {
-			safeRun("ai:recover-cooling", func() {
-				if ai.Router != nil {
-					ai.Router.RecoverCoolingModels()
-				}
-			})
+		// FIX-F(2026-09-28)：裸 `for range ticker.C` 改 select 双通道——bgCtx 取消时 Stop 后退出（原 defer Stop 从未执行）；
+		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
+		for {
+			select {
+			case <-bgCtx.Done():
+				ticker.Stop()
+				return
+			case <-ticker.C:
+				safeRun("ai:recover-cooling", func() {
+					if ai.Router != nil {
+						ai.Router.RecoverCoolingModels()
+					}
+				})
+			}
 		}
 	}()
 
@@ -526,71 +661,106 @@ func main() {
 	}()
 
 	// 8.5 启动消息消费循环（kafka 模式生效；log 模式空操作）
-	go mq.StartConsumers(context.Background())
+	// FIX-F(2026-09-28)：传 bgCtx 而非 Background()——KafkaCenter.consumeLoop 本就以
+	// ctx.Err() 作为"正常关闭"出口，旧写法等于告诉它"永远不要关"。
+	go mq.StartConsumers(bgCtx)
 
 	// 8.6 通道出站队列 worker（W6，2026-09-12）：3s 取到期 pending→适配器发送→指数退避，多实例 Redis 选主
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(3 * time.Second)
-		defer tk.Stop()
-		for range tk.C {
-			run := func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-				defer cancel()
-				channel.ProcessDueOutbound(ctx)
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:channel:outbound", 20*time.Second); h != nil {
-					safeRun("channel:outbound", run)
-					h.Unlock()
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				run := func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+					defer cancel()
+					channel.ProcessDueOutbound(ctx)
 				}
-			} else {
-				safeRun("channel:outbound", run)
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:channel:outbound", 20*time.Second); h != nil {
+						safeRun("channel:outbound", run)
+						h.Unlock()
+					}
+				} else {
+					safeRun("channel:outbound", run)
+				}
 			}
 		}
 	}()
 
 	// 8.7 微信客服增量拉取（W4，2026-09-12）：5s 轮询启用的 kf 通道 sync_msg 拉增量，多实例 Redis 选主
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(5 * time.Second)
-		defer tk.Stop()
-		for range tk.C {
-			run := func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-				defer cancel()
-				channel.SyncAllActiveKfChannels(ctx)
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:channel:kf_sync", 25*time.Second); h != nil {
-					safeRun("channel:kf_sync", run)
-					h.Unlock()
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				run := func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+					defer cancel()
+					channel.SyncAllActiveKfChannels(ctx)
 				}
-			} else {
-				safeRun("channel:kf_sync", run)
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:channel:kf_sync", 25*time.Second); h != nil {
+						safeRun("channel:kf_sync", run)
+						h.Unlock()
+					}
+				} else {
+					safeRun("channel:kf_sync", run)
+				}
 			}
 		}
 	}()
 
 	// 8.8 PIPL 删除请求日批（C2，2026-09-12）：每 15 分钟扫描到期的 pending 请求并匿名化（多实例 Redis 选主）
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(15 * time.Minute)
-		defer tk.Stop()
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
 		// 启动即跑一次，缩短验收等待（deadline 通常 +15d，这里只是扫描器节奏）
 		run := func() { privacy.ProcessExpired() }
 		safeRun("privacy:sweep", run)
-		for range tk.C {
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:privacy:sweep", 10*time.Minute); h != nil {
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:privacy:sweep", 10*time.Minute); h != nil {
+						safeRun("privacy:sweep", run)
+						h.Unlock()
+					}
+				} else {
 					safeRun("privacy:sweep", run)
-					h.Unlock()
 				}
-			} else {
-				safeRun("privacy:sweep", run)
 			}
 		}
 	}()
 
 	// 8.85 包质量归因小时任务（D9，2026-09-13）：评分补洞 → 物化小时快照 → 低分告警；多实例 Redis 选主。
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		packCfgBool := func(key string, def bool) bool {
 			if runtimecfg.DefaultSystemConfigService == nil {
 				return def
@@ -672,25 +842,42 @@ func main() {
 		}
 		sweepBoth("@startup", 10*time.Minute)
 		tk := time.NewTicker(1 * time.Hour)
-		defer tk.Stop()
-		for range tk.C {
-			sweepBoth("", 50*time.Minute)
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				sweepBoth("", 50*time.Minute)
+			}
 		}
 	}()
 
 	// 8.9 出站事件 webhook worker（D6，2026-09-12）：3s 取到期 pending→签名投递→指数退避/死信/熔断，多实例 Redis 选主
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(3 * time.Second)
-		defer tk.Stop()
-		for range tk.C {
-			run := func() { webhook.ProcessDue() }
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:webhook:deliver", 20*time.Second); h != nil {
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				run := func() { webhook.ProcessDue() }
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:webhook:deliver", 20*time.Second); h != nil {
+						safeRun("webhook:deliver", run)
+						h.Unlock()
+					}
+				} else {
 					safeRun("webhook:deliver", run)
-					h.Unlock()
 				}
-			} else {
-				safeRun("webhook:deliver", run)
 			}
 		}
 	}()
@@ -700,35 +887,45 @@ func main() {
 	// 三层护栏：① 热开关 talkmining_draft_enabled 默认 false，关态在查库之前就短路；
 	// ② 只在 Redis 选主下执行（未启用 Redis 各实例直跑，幂等键 minedTemplateID 保证不重复出稿）；
 	// ③ 不在启动时跑——离线增强作业，避免每次重启都烧一轮真实 token。
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(24 * time.Hour)
-		defer tk.Stop()
-		for range tk.C {
-			// 入口闸按"系统层 or 任一租户覆盖"判定（2026-09-23 批六）：只看系统层会让
-			// "租户自己开了开关、作业永远不转"——真正的逐租户裁决在 RunDraftSweep 内部。
-			if !runtimecfg.SafeCfgBool("talkmining_draft_enabled", false) &&
-				!runtimecfg.SafeAnyTenantFlagOn("talkmining_draft_enabled") {
-				continue
-			}
-			run := func() {
-				st, err := talkmining.RunDraftSweep(
-					runtimecfg.SafeCfgInt("talkmining_window_days", 30),
-					runtimecfg.SafeCfgInt("talkmining_max_drafts_per_run", 20),
-					runtimecfg.SafeCfgInt("talkmining_min_samples", 0)) // 0 = 用包内默认门槛
-				if err != nil {
-					log.Printf("[话术挖掘] 本轮失败: %v", err)
-					return
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				// 入口闸按"系统层 or 任一租户覆盖"判定（2026-09-23 批六）：只看系统层会让
+				// "租户自己开了开关、作业永远不转"——真正的逐租户裁决在 RunDraftSweep 内部。
+				if !runtimecfg.SafeCfgBool("talkmining_draft_enabled", false) &&
+					!runtimecfg.SafeAnyTenantFlagOn("talkmining_draft_enabled") {
+					continue
 				}
-				log.Printf("[话术挖掘] 本轮完成 租户=%d(未开开关%d·失败%d) 新草稿=%d 样本不足=%d 已存在=%d LLM失败=%d",
-					st.Tenants, st.TenantsDisabled, st.TenantsFailed, st.Created, st.SkippedInsufficient, st.SkippedExisting, st.SkippedLLM)
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:talkmining:draft", 20*time.Hour); h != nil {
+				run := func() {
+					st, err := talkmining.RunDraftSweep(
+						runtimecfg.SafeCfgInt("talkmining_window_days", 30),
+						runtimecfg.SafeCfgInt("talkmining_max_drafts_per_run", 20),
+						runtimecfg.SafeCfgInt("talkmining_min_samples", 0)) // 0 = 用包内默认门槛
+					if err != nil {
+						log.Printf("[话术挖掘] 本轮失败: %v", err)
+						return
+					}
+					log.Printf("[话术挖掘] 本轮完成 租户=%d(未开开关%d·失败%d) 新草稿=%d 样本不足=%d 已存在=%d LLM失败=%d",
+						st.Tenants, st.TenantsDisabled, st.TenantsFailed, st.Created, st.SkippedInsufficient, st.SkippedExisting, st.SkippedLLM)
+				}
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:talkmining:draft", 20*time.Hour); h != nil {
+						safeRun("talkmining:draft", run)
+						h.Unlock()
+					}
+				} else {
 					safeRun("talkmining:draft", run)
-					h.Unlock()
 				}
-			} else {
-				safeRun("talkmining:draft", run)
 			}
 		}
 	}()
@@ -741,38 +938,48 @@ func main() {
 	// ③ 启动时不跑——重启即发一轮会让积压任务在进程起来那刻集中砸向客户。
 	// 出站投递钩子直接绑 channel.Enqueue：触达不自建第二条发送链路，退避/死信/重发全部复用通道层。
 	outreach.SendHook = channel.Enqueue
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(30 * time.Second)
-		defer tk.Stop()
-		for range tk.C {
-			if !runtimecfg.SafeCfgBool("outreach_enabled", false) &&
-				!runtimecfg.SafeAnyTenantFlagOn("outreach_enabled") {
-				continue
-			}
-			run := func() {
-				res, err := outreach.DispatchDue(db.DB, time.Now(), 100)
-				if err != nil {
-					log.Printf("[主动触达] 派发本轮失败: %v", err)
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				if !runtimecfg.SafeCfgBool("outreach_enabled", false) &&
+					!runtimecfg.SafeAnyTenantFlagOn("outreach_enabled") {
+					continue
 				}
-				if res.Scanned > 0 {
-					log.Printf("[主动触达] 派发 扫描=%d 入队=%d 拦下=%d 失败=%d 待重试=%d",
-						res.Scanned, res.Queued, res.Skipped, res.Failed, res.Retried)
+				run := func() {
+					res, err := outreach.DispatchDue(db.DB, time.Now(), 100)
+					if err != nil {
+						log.Printf("[主动触达] 派发本轮失败: %v", err)
+					}
+					if res.Scanned > 0 {
+						log.Printf("[主动触达] 派发 扫描=%d 入队=%d 拦下=%d 失败=%d 待重试=%d",
+							res.Scanned, res.Queued, res.Skipped, res.Failed, res.Retried)
+					}
+					sent, failed, serr := outreach.SyncResults(db.DB, time.Now(), 200)
+					if serr != nil {
+						log.Printf("[主动触达] 结果对账本轮失败: %v", serr)
+					}
+					if sent > 0 || failed > 0 {
+						log.Printf("[主动触达] 对账 送达=%d 失败=%d", sent, failed)
+					}
 				}
-				sent, failed, serr := outreach.SyncResults(db.DB, time.Now(), 200)
-				if serr != nil {
-					log.Printf("[主动触达] 结果对账本轮失败: %v", serr)
-				}
-				if sent > 0 || failed > 0 {
-					log.Printf("[主动触达] 对账 送达=%d 失败=%d", sent, failed)
-				}
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:outreach:dispatch", 25*time.Second); h != nil {
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:outreach:dispatch", 25*time.Second); h != nil {
+						safeRun("outreach:dispatch", run)
+						h.Unlock()
+					}
+				} else {
 					safeRun("outreach:dispatch", run)
-					h.Unlock()
 				}
-			} else {
-				safeRun("outreach:dispatch", run)
 			}
 		}
 	}()
@@ -798,29 +1005,39 @@ func main() {
 			SyncErrors:      snap.SyncErrors,
 		}, nil
 	})
+	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	bgLoops.Add(1)
 	go func() {
+		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
 		tk := time.NewTicker(60 * time.Second)
-		defer tk.Stop()
-		for range tk.C {
-			run := func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
-				defer cancel()
-				sum := channel.SyncAllArchiveChannels(ctx)
-				if sum.Channels == 0 && len(sum.Errors) == 0 {
-					return // 没开存档：一声不吭（默认关闭是出厂形态，不是事件）
+		// FIX-F(2026-09-28)：裸 `for range tk.C` 改 select 双通道——bgCtx 取消时 tk.Stop() 后退出；
+		// 原 `defer tk.Stop()` 因循环永不返回从未执行过（现收进退出腿）。
+		for {
+			select {
+			case <-bgCtx.Done():
+				tk.Stop()
+				return
+			case <-tk.C:
+				run := func() {
+					ctx, cancel := context.WithTimeout(context.Background(), 50*time.Second)
+					defer cancel()
+					sum := channel.SyncAllArchiveChannels(ctx)
+					if sum.Channels == 0 && len(sum.Errors) == 0 {
+						return // 没开存档：一声不吭（默认关闭是出厂形态，不是事件）
+					}
+					log.Printf("[会话存档] 本轮 通道=%d 取数=%d 入库=%d 重复=%d 过期=%d 解密失败=%d 游标=%d 失败码=%v",
+						sum.Channels, sum.Ingest.Fetched, sum.Ingest.Stored,
+						sum.Ingest.DupSkipped, sum.Ingest.StaleSkipped, sum.Ingest.DecryptFailed,
+						sum.Ingest.MaxSeq, sum.Errors)
 				}
-				log.Printf("[会话存档] 本轮 通道=%d 取数=%d 入库=%d 重复=%d 过期=%d 解密失败=%d 游标=%d 失败码=%v",
-					sum.Channels, sum.Ingest.Fetched, sum.Ingest.Stored,
-					sum.Ingest.DupSkipped, sum.Ingest.StaleSkipped, sum.Ingest.DecryptFailed,
-					sum.Ingest.MaxSeq, sum.Errors)
-			}
-			if redisclient.IsEnabled() {
-				if h := redisclient.TryLock("lock:channel:archive_sync", 55*time.Second); h != nil {
+				if redisclient.IsEnabled() {
+					if h := redisclient.TryLock("lock:channel:archive_sync", 55*time.Second); h != nil {
+						safeRun("channel:archive_sync", run)
+						h.Unlock()
+					}
+				} else {
 					safeRun("channel:archive_sync", run)
-					h.Unlock()
 				}
-			} else {
-				safeRun("channel:archive_sync", run)
 			}
 		}
 	}()
@@ -920,9 +1137,27 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	// FIX-F(2026-09-28 审计复核批)：停机序列的**完成**信号。
+	// 这里抓到一个比"ticker 不退出"更靠前的根因：ListenAndServe 在 Shutdown 后立刻返回
+	// http.ErrServerClosed，而 main 当时直接走到函数尾就 return 了——**Go 运行时一旦 main
+	// 返回就终止全部 goroutine**，于是下面那整段排空序列（HTTP 宽限 / 合并队列 ShutdownDrain /
+	// 通道 DrainBackgroundFor / UsageSink 最终 flush / mq.Close / 关池）全是"尽力而为"，
+	// 实际经常只跑到第一行就随进程一起没了（本机实跑日志里 [优雅停机] 只剩"收到退出信号"一行，
+	// 连旧版就有的"完成"都 occasionally 丢）。**这等于 P2-8/FIX-5 那两批声称修掉的
+	// "锁残留 600s、客户静默黑屏"从来没真正生效过。**
+	// 现口径：main 等 shutdownDone 再退出；序列内部各段本就有界（10+5+10+15s），不会挂死。
+	shutdownDone := make(chan struct{})
+
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 		log.Println("[优雅停机] 收到退出信号，停止接收新请求（10s 宽限）...")
+		// FIX-F(2026-09-28 审计复核批)：第一步先叫停后台节拍循环（17 处 ticker + Kafka 消费）。
+		// 为什么排最前：这些循环写库、发信、烧 AI，进程若在它们跑到一半时被硬杀，落的就是
+		// "半轮"状态（锁残留到 TTL、台账停 processing）。取消后它们不再起新一轮；正在跑的
+		// 那一轮不强行打断（强杀只会把"多等一会儿"换成"数据写一半"），靠后面的 HTTP 10s
+		// 宽限 + 队列 5s 排空 + 通道 10s 排空提供收尾时间，最后才关连接池。
+		bgCancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -939,6 +1174,15 @@ func main() {
 		// 客户那句话已落库、回复永远不来（且台账停在 processing，重启后要等锁超时自愈）。
 		if !channel.DrainBackgroundFor(10 * time.Second) {
 			log.Println("[优雅停机] 通道后台协程未在 10s 内排空，剩余在途轮次由重启后的锁自愈接管")
+		}
+		// FIX-F(2026-09-28 审计复核批)：等后台节拍循环把**当前这一轮**跑完再往下关连接池。
+		// 有界 15s：前面已经给了 HTTP 10s + 队列 5s + 通道 10s，这里再等一轮常态耗时；
+		// 超时就如实打日志（不打"已排空"的假话）——最坏情况是这轮任务被后面的关池打断，
+		// 那与旧版"SIGTERM 立刻硬杀所有循环"相比仍是净改善，且日志留了痕。
+		if waitBgLoops(&bgLoops, 15*time.Second) {
+			log.Println("[优雅停机] 后台节拍循环已全部退出")
+		} else {
+			log.Println("[优雅停机] 警告：15s 内仍有后台循环未收尾（可能正卡在长任务里），继续往下关池")
 		}
 		log.Println("[优雅停机] 执行计量最终 flush...")
 		billing.DefaultUsageSink.Stop() // 最终 flush：三桶扣减与 usage_ledger 落账
@@ -960,6 +1204,9 @@ func main() {
 	if err != nil && err != http.ErrServerClosed {
 		log.Fatalf("服务启动失败: %v", err)
 	}
+	// FIX-F(2026-09-28)：等停机序列真的走完再退（见 shutdownDone 注释）。
+	// 注意顺序：必须先 Wait 再打"服务已退出"，否则那行日志又是一句"报了但没做"的假话。
+	<-shutdownDone
 	log.Println("服务已退出")
 }
 
@@ -1055,6 +1302,25 @@ func registerRoutes(r *gin.Engine) {
 		}})
 	})
 
+	// 请求计数 + 延迟直方图（P1-2/P1-18：P99 来源）中间件
+	// FIX-F(2026-09-28 审计复核批)：挂载位置从"业务路由注册前"上移到 SPA/NoRoute 之前。
+	// 为什么必须上移：gin 的中间件是**注册时刻捕获**——`r.Use` 只作用于其后注册的路由与
+	// 其后的 NoRoute 链。旧位置排在 `r.NoRoute`（SPA 回落）之后，于是所有前端深路由
+	// （/app/xxx、/admin 刷新直达这类）对 Prometheus 完全不可见：页面访问量在监控里恒为 0，
+	// 而 API 计数正常——这种"绿着的盲区"比没有指标更危险（看板会告诉你前端没人用）。
+	// 例外 /metrics：本端点现在也落在中间件之后，若不排除会被自己的抓取流量计数（自娱自乐式虚增）。
+	// /health 与 /status 注册在本中间件之前，按 gin 语义天然不计，行为与旧版一致。
+	r.Use(func(c *gin.Context) {
+		if c.Request.URL.Path == "/metrics" {
+			c.Next()
+			return
+		}
+		start := time.Now()
+		metrics.IncRequest()
+		c.Next()
+		metrics.RecordRequestLatency(time.Since(start))
+	})
+
 	// ---- 首页导航（根路径，给外部体验者选择入口）----
 	// 修复：之前访问根路径返回404，外部用户不知道要加/client
 	// 现在根路径展示三端导航页，点击即跳转
@@ -1107,14 +1373,6 @@ func registerRoutes(r *gin.Engine) {
 		c.Header("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 		c.String(200, metrics.RenderPrometheus())
 	})
-	// 请求计数 + 延迟直方图（P1-2/P1-18：P99 来源）中间件——全局挂载（覆盖 /health /status /metrics 之外全部入口）
-	r.Use(func(c *gin.Context) {
-		start := time.Now()
-		metrics.IncRequest()
-		c.Next()
-		metrics.RecordRequestLatency(time.Since(start))
-	})
-
 	// ---- 业务路由树（D2a 拆分至 internal/api/routes*.go，按作用域分文件）----
 	api.RegisterRoutes(r)
 }

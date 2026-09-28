@@ -2,31 +2,36 @@
 // C2 拆分(2026-09-21)：原单文件 40,276 字节（14 个菜单视图挤在一个组件里），
 // 现按视图拆到 ./super/*Tab，本文件只保留**状态、数据加载与写操作编排** + 布局骨架（顶栏/左栏菜单/内容区），
 // 各视图的列定义与表单随视图下沉，行为与交互逐字保持不变。
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, Suspense, lazy } from 'react'
 import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Button, MessagePlugin } from 'tdesign-react'
 import { useIsMobile } from '../hooks/useMedia'
 import { AUTH, logoutAndRedirect } from '../lib/api'
-import { MonitorTab } from './super/MonitorTab'
-// §八-6 平台运营 UI 批：发票受理 + 行业包上架/共享管理（独立 Tab 组件，按需挂载）
-import { InvoiceTab } from './super/InvoiceTab'
-import { RefundTab } from './super/RefundTab'
-// D3 批（2026-09-23）：欠费催缴队列——催缴序列是平台侧动作，租户端只读
-import { DunningTab } from './super/DunningTab'
-import { PackTab } from './super/PackTab'
-// P1-9 零UI补齐批（2026-09-20）：素材审核——/super/materials 三端点此前前端零消费者
-import { MaterialsTab } from './super/MaterialsTab'
-// C2 拆分新增的 8 个视图组件 + 共享菜单数据源
+// C2 拆分新增的视图组件的数据契约类型 + 共享菜单数据源（SUPER_MENUS 是左栏/下拉菜单本体，
+// 属首屏必读，刻意保持静态 import 不 lazy——菜单渲染不该等一个异步 chunk）
 import { SUPER_MENUS, type Ag, type Audit, type BdForm, type Cost, type Fb, type PackQualityRow, type Pending, type Pkg, type PlanOpt, type Tenant } from './super/shared'
-import TenantsTab from './super/TenantsTab'
-import PackagesTab from './super/PackagesTab'
-import PackQualityTab from './super/PackQualityTab'
-import CostTab from './super/CostTab'
-import FeedbacksTab from './super/FeedbacksTab'
-import PendingTab from './super/PendingTab'
-import AuditLogsTab from './super/AuditLogsTab'
-import AgreementsTab from './super/AgreementsTab'
-import BrandingTab from './super/BrandingTab'
+// FIX-D 代码分割(2026-09-28)：15 个 Tab 全部 lazy 化，对齐 Admin.tsx 的 P2-13 口径——
+// 旧形态 15 个静态 import 打进同一个 SuperAdmin-*.js（实测 ~49KB），访问 /super 首屏
+// 无论看不看得到某个 Tab 都要为全部视图买单。命名导出的 Tab 经 .then 映射成 default
+// （与 Admin.tsx 同款写法），默认导出的 Tab 直接 lazy(import(...))。
+// §八-6 平台运营 UI 批：发票受理 + 退款受理 + 行业包上架/共享管理（独立 Tab 组件，按需挂载）
+const MonitorTab = lazy(() => import('./super/MonitorTab').then(m => ({ default: m.MonitorTab })))
+const InvoiceTab = lazy(() => import('./super/InvoiceTab').then(m => ({ default: m.InvoiceTab })))
+const RefundTab = lazy(() => import('./super/RefundTab').then(m => ({ default: m.RefundTab })))
+// D3 批（2026-09-23）：欠费催缴队列——催缴序列是平台侧动作，租户端只读
+const DunningTab = lazy(() => import('./super/DunningTab').then(m => ({ default: m.DunningTab })))
+const PackTab = lazy(() => import('./super/PackTab').then(m => ({ default: m.PackTab })))
+// P1-9 零UI补齐批（2026-09-20）：素材审核——/super/materials 三端点此前前端零消费者
+const MaterialsTab = lazy(() => import('./super/MaterialsTab').then(m => ({ default: m.MaterialsTab })))
+const TenantsTab = lazy(() => import('./super/TenantsTab'))
+const PackagesTab = lazy(() => import('./super/PackagesTab'))
+const PackQualityTab = lazy(() => import('./super/PackQualityTab'))
+const CostTab = lazy(() => import('./super/CostTab'))
+const FeedbacksTab = lazy(() => import('./super/FeedbacksTab'))
+const PendingTab = lazy(() => import('./super/PendingTab'))
+const AuditLogsTab = lazy(() => import('./super/AuditLogsTab'))
+const AgreementsTab = lazy(() => import('./super/AgreementsTab'))
+const BrandingTab = lazy(() => import('./super/BrandingTab'))
 
 // 布局解构（与租户后台一致：左侧正式菜单 + 右侧内容区）
 const { Header, Aside, Content } = Layout
@@ -136,6 +141,8 @@ export default function SuperAdmin() {
   }
 
   // 超管守卫：非 super_admin 直接跳登录；加载各模块并每 30s 刷新待确认收款
+  // FIX-D(2026-09-28)：路由侧 RequireRole(allow=[super_admin]) 为第一闸，此处页内判定为
+  // 兜底（防深链进入时 localStorage 尚未纠偏/缓存态残留——与 /admin 双闸口径一致，保留不删）。
   useEffect(() => {
     if (localStorage.getItem('role') !== 'super_admin') { location.href = '/login'; return }
     load(); loadPkgs(); loadPackQuality(); loadCost(); loadPending(); loadFeedbacks(); loadAudit(); loadAgreements()
@@ -158,6 +165,8 @@ export default function SuperAdmin() {
   const [planDlg, setPlanDlg] = useState<Tenant | null>(null)
   const [planOpts, setPlanOpts] = useState<PlanOpt[]>([])
 
+  // FIX-D(2026-09-28)：路由侧 RequireRole 为第一闸，此处渲染兜底双闸保留（非超管渲染 null，
+  // 防缓存态/深链下页内数据请求带着错误身份发出）
   if (localStorage.getItem('role') !== 'super_admin') return null
 
   // 给租户发放一次性试用额度（幂等，已发放过的后端拒绝）
@@ -251,46 +260,60 @@ export default function SuperAdmin() {
         </Aside>
         )}
         <Content style={{ padding: isMobile ? 12 : '20px 24px', minWidth: 0 }}>
-          <div style={{ maxWidth: 1100, margin: '0 auto' }}>
-            {view === 'monitor' && <MonitorTab />}
-            {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
-            {view === 'invoices' && <InvoiceTab />}
-            {view === 'refunds' && <RefundTab />}
-            {view === 'dunning' && <DunningTab />}
-            {view === 'industry_packs' && <PackTab />}
-            {view === 'materials' && <MaterialsTab />}
-            {view === 'tenants' && (
-              <TenantsTab
-                tenants={tenants} kw={kw} onKw={setKw}
-                onGrant={grantTrial} onSetStatus={setStatus} onOpenPlan={openPlan}
-                planDlg={planDlg} planOpts={planOpts} onClosePlan={() => setPlanDlg(null)} onConfirmPlan={doChangePlan}
-              />
-            )}
-            {view === 'packages' && <PackagesTab pkgs={pkgs} onToggle={togglePkg} onCreate={createPkg} />}
-            {view === 'pack_quality' && (
-              <PackQualityTab rows={packQuality} days={packQualityDays} onDays={setPackQualityDays} onRefresh={loadPackQuality} />
-            )}
-            {view === 'cost' && <CostTab cost={cost} />}
-            {view === 'feedbacks' && (
-              <FeedbacksTab fbs={fbs} status={fbStatus} onStatus={setFbStatus} target={fbTarget} onTarget={setFbTarget} onResolve={resolveFb} />
-            )}
-            {view === 'pending' && <PendingTab pendings={pendings} onConfirm={confirmOrder} />}
-            {view === 'audit' && (
-              <AuditLogsTab
-                audits={audits} page={auditPage} total={auditTotal} onPage={setAuditPage}
-                onQuery={() => { if (auditPage === 1) void loadAudit(1); else setAuditPage(1) }}
-              />
-            )}
-            {view === 'agreements' && <AgreementsTab ags={ags} type={agType} onType={setAgType} />}
-            {view === 'branding' && (
-              <BrandingTab
-                tenants={tenants} tenant={bdTenant} onTenant={setBdTenant}
-                bd={bd} onBd={setBd} msg={bdMsg} onLoad={loadBdTenant} onSave={saveBd}
-              />
-            )}
-          </div>
+          {/* FIX-D：Suspense 包在 Tab 内容区外层（与 Admin.tsx PanelContent 调用点同形态）。
+              条件渲染按 view 切换天然卸载旧 Tab，lazy 模块未就位时整块显示骨架而非白屏；
+              数据状态（tenants/pkgs/cost…）全部持有在本组件父层，切 Tab 不丢状态。 */}
+          <Suspense fallback={<TabLoading />}>
+            <div style={{ maxWidth: 1100, margin: '0 auto' }}>
+              {view === 'monitor' && <MonitorTab />}
+              {/* §八-6 平台运营 UI 批：两个新 Tab 仅在选中时挂载（各自内部懒加载接口） */}
+              {view === 'invoices' && <InvoiceTab />}
+              {view === 'refunds' && <RefundTab />}
+              {view === 'dunning' && <DunningTab />}
+              {view === 'industry_packs' && <PackTab />}
+              {view === 'materials' && <MaterialsTab />}
+              {view === 'tenants' && (
+                <TenantsTab
+                  tenants={tenants} kw={kw} onKw={setKw}
+                  onGrant={grantTrial} onSetStatus={setStatus} onOpenPlan={openPlan}
+                  planDlg={planDlg} planOpts={planOpts} onClosePlan={() => setPlanDlg(null)} onConfirmPlan={doChangePlan}
+                />
+              )}
+              {view === 'packages' && <PackagesTab pkgs={pkgs} onToggle={togglePkg} onCreate={createPkg} />}
+              {view === 'pack_quality' && (
+                <PackQualityTab rows={packQuality} days={packQualityDays} onDays={setPackQualityDays} onRefresh={loadPackQuality} />
+              )}
+              {view === 'cost' && <CostTab cost={cost} />}
+              {view === 'feedbacks' && (
+                <FeedbacksTab fbs={fbs} status={fbStatus} onStatus={setFbStatus} target={fbTarget} onTarget={setFbTarget} onResolve={resolveFb} />
+              )}
+              {view === 'pending' && <PendingTab pendings={pendings} onConfirm={confirmOrder} />}
+              {view === 'audit' && (
+                <AuditLogsTab
+                  audits={audits} page={auditPage} total={auditTotal} onPage={setAuditPage}
+                  onQuery={() => { if (auditPage === 1) void loadAudit(1); else setAuditPage(1) }}
+                />
+              )}
+              {view === 'agreements' && <AgreementsTab ags={ags} type={agType} onType={setAgType} />}
+              {view === 'branding' && (
+                <BrandingTab
+                  tenants={tenants} tenant={bdTenant} onTenant={setBdTenant}
+                  bd={bd} onBd={setBd} msg={bdMsg} onLoad={loadBdTenant} onSave={saveBd}
+                />
+              )}
+            </div>
+          </Suspense>
         </Content>
       </Layout>
     </Layout>
+  )
+}
+
+/** 超管台 Tab 按需加载的骨架态（FIX-D lazy 化配套，与 Admin.tsx 同名组件同形态，避免切 Tab 白屏）。 */
+function TabLoading() {
+  return (
+    <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
+      <p style={{ color: '#9ca3af' }}>模块加载中…</p>
+    </div>
   )
 }

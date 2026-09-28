@@ -6,25 +6,20 @@ import "ai-scrm/internal/notify"
 import "ai-scrm/internal/pii"
 
 import (
-	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/cdp"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/logx"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/service"
-	"ai-scrm/internal/webhook"
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"math/rand"
 	"regexp"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 // ============================================================
@@ -47,6 +42,11 @@ var PhoneRegex = regexp.MustCompile(`\b1[3-9]\d{9}\b`)
 // DetectLeadCapture 内部写库后，调用方应刷新内存 customer 以同步 journey_stage（P1-23）
 // DetectLeadCapture 留资检测 + OneID合并
 // 返回值：0=未留资, -1=已留资但无需合并, >0=合并后的老客户ID（前端需切换）
+// 2026-09-28 拆分说明：原 157 行函数按 2026-09-22 chatSessionCtx 先例拆为 chat_lead_split.go 的
+// 步骤函数（publishLeadCapturedUserEvent / assignSalesWithFewestCustomers / applyLeadCapturedUpdates /
+// upsertLeadCapturedFollowUp），本函数只剩编排——判据、条件顺序、SQL、错误分支、文案逐字未动。
+// 留资两分支口径不变：已留资（本函数落 phone/阶段/顾问）→ 人工接管+分配顾问；未留资 → AI 接管不给顾问；
+// 人工锁定态裁决仍单点在 HumanTakeoverDecide，本函数不旁路。
 func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	phoneMatch := PhoneRegex.FindString(customerInput)
 
@@ -81,37 +81,12 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	updates["assignment_reason"] = "lead_captured"
 
 	// P3：留资行为上行事件 → CDP + 流程引擎（one_id 暂用客户占位键）
-	if err := mq.Publish(context.Background(), mq.TopicUserEvent, customer.TenantID,
-		fmt.Sprintf("c:%d", customer.ID), "lead_captured",
-		mq.UserEvent{
-			EventType:  "behavior",
-			EventName:  "lead_captured",
-			AnchorType: "phone",
-			Attributes: map[string]any{"customer_id": customer.ID, "phone": phoneMatch},
-			OccurredAt: time.Now(),
-		}); err != nil {
-		log.Printf("[MQ] lead_captured 事件发布失败: %v", err)
-	}
+	publishLeadCapturedUserEvent(customer, phoneMatch)
 
 	// 分配给当前客户数最少的顾问（轮询分配）
 	// 业务规则：留资成功后自动分配，顾问端立即可见
-	// 修复：原来硬编码assigned_user_id=1，改为选当前客户数最少的顾问
 	if customer.AssignedUserID == 0 {
-		var salesUsers []model.User
-		// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量。
-		// 根因：组织迁移把 sales 改名为 user 后，硬编码"sales"永远查不到 → 永远走兜底分支
-		db.DB.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, customer.TenantID).Find(&salesUsers)
-		if len(salesUsers) > 0 {
-			minCount := -1
-			var bestUserID uint = salesUsers[0].ID
-			for _, u := range salesUsers {
-				var count int64
-				db.DB.Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count)
-				if minCount < 0 || int(count) < minCount {
-					minCount = int(count)
-					bestUserID = u.ID
-				}
-			}
+		if bestUserID, found := assignSalesWithFewestCustomers(db.DB, customer.TenantID); found {
 			updates["assigned_user_id"] = bestUserID
 		} else {
 			// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，
@@ -121,72 +96,11 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	}
 
 	if len(updates) > 0 {
-		db.DB.Model(customer).Updates(updates)
-		// 同步更新内存中的customer对象（修复Bug1：断言改安全形式）
-		if v, ok := updates["phone"]; ok {
-			customer.Phone, _ = v.(string)
-		}
-		if v, ok := updates["journey_stage"]; ok {
-			customer.JourneyStage, _ = v.(string)
-		}
-		if v, ok := updates["assigned_user_id"]; ok {
-			if uid, uok := v.(uint); uok {
-				customer.AssignedUserID = uid
-			} else {
-				log.Printf("[留资检测-告警] assigned_user_id 类型异常(%T)，保持原值: %v", v, customer.AssignedUserID)
-			}
-		}
-		log.Printf("[留资检测] 客户%d留资成功: phone=%s, stage=%v, assigned=%v",
-			customer.ID, pii.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"])
-		// D6：出站事件 webhook 扇出（旁路，不阻塞）。载荷只带 customer_id/阶段，不外发手机号明文（商户可凭 OpenAPI Key 取详情）
-		webhook.Emit(customer.TenantID, model.WebhookEventLeadCaptured, map[string]interface{}{
-			"customer_id": customer.ID,
-			"stage":       updates["journey_stage"],
-		})
-		if v, ok := updates["assigned_user_id"].(uint); ok && v > 0 {
-			webhook.Emit(customer.TenantID, model.WebhookEventHumanAssigned, map[string]interface{}{
-				"customer_id":      customer.ID,
-				"assigned_user_id": v,
-			})
-			_ = attribution.MarkPendingHuman(customer.TenantID, 0, customer.ID)
-		}
-		// D9：把留资结果回填到最近一条已归因 AI 回复。
-		_ = attribution.MarkLeadCaptured(customer.TenantID, 0, customer.ID)
+		applyLeadCapturedUpdates(customer, phoneMatch, updates)
 	}
 
 	// 修复：留资成功后生成线索记录（已留资线索，分配给顾问）
-	// 业务规则：已留资线索 → 人工接管 → 顾问端可见
-	// 修复问题3：按客户ID合并线索——先查是否已有lead_captured类型的线索，有则更新不新建
-	// P2-27 修复：FollowUp content 统一脱敏（手机号+原文内嵌号码），库内不落明文
-	var existingFollowUp model.FollowUp
-	// P1-5 修复(2026-09-15)：既有记录查询补租户条件——原仅靠 customer_id 全局唯一
-	// 兜底，属脆弱不变量（同文件 437 行已有正确示范）。
-	result := db.DB.Where("customer_id = ? AND tenant_id = ? AND result = ?", customer.ID, customer.TenantID, "lead_captured").First(&existingFollowUp)
-	if result.Error != nil {
-		// 没有已有线索，创建新的
-		leadFollowUp := model.FollowUp{
-			TenantID: customer.TenantID, // P1-5 修复(2026-09-15)：C7 红线再命中——db.DB 无请求 ctx，
-			// 盖章回调取到 0 → 留资线索落 tenant_id=0（租户侧 RQ 查询看不见 + 平台视图混入）。
-			// 后台/回调路径必须显式传租户，与 billing/privacy/webhook 域同款纪律。
-			CustomerID: customer.ID,
-			UserID:     customer.AssignedUserID, // 归属顾问
-			Type:       "ai_triggered",          // AI触发生成
-			Method:     "store",                 // 到店渠道
-			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
-			Result:     "lead_captured", // 已留资线索
-		}
-		db.DB.Create(&leadFollowUp)
-		log.Printf("[留资检测-线索生成] 客户%d 已留资线索已生成(FollowUp ID=%d)，分配顾问%d",
-			customer.ID, leadFollowUp.ID, customer.AssignedUserID)
-	} else {
-		// 已有线索，更新内容（按客户ID合并，不新建）
-		db.DB.Model(&existingFollowUp).Updates(map[string]interface{}{
-			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
-			"user_id": customer.AssignedUserID, // 更新归属顾问
-		})
-		log.Printf("[留资检测-线索合并] 客户%d 已有线索(FollowUp ID=%d)，更新内容，不新建",
-			customer.ID, existingFollowUp.ID)
-	}
+	upsertLeadCapturedFollowUp(customer, phoneMatch, customerInput)
 
 	// 通知顾问（当前简化为日志，后续可接WebSocket/邮件/飞书）
 	log.Printf("[通知顾问] 顾问%d 有新的已留资线索：客户%d，手机号%s",
@@ -256,6 +170,10 @@ func IsLeadCaptured(customer *model.Customer) bool {
 
 // MergeCustomerByPhone 访客留资时OneID合并
 // 返回：合并后的目标客户ID，0表示不需要合并
+// 2026-09-28 拆分说明：原 240 行函数按 chatSessionCtx 先例拆为 chat_lead_split.go 的 mergeXxx 步骤函数，
+// 本函数只剩编排。所有步骤函数只接收下面 db.DB.Transaction 闭包的同一个 tx 句柄——
+// 「锁定读 → G1 预收拢 → 迁移归属 → 字段级保存 → 收拢 active」仍在一个事务内按原顺序执行，
+// 预收拢与迁移的同事务性（013 ux_conv_one_active 护栏）没有被拆散。
 func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	// 租户守卫（P2）：OneID 合并只在同一租户内进行，绝不通租
 	// 以访客客户所属租户为锚；跨租户同号客户视为不同自然人
@@ -272,179 +190,45 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 	var survivorID uint
 	var existingCustomer model.Customer
 	txErr := db.DB.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
-			Where("phone = ? AND id != ? AND status = 1 AND tenant_id = ?", phone, guestCustomer.ID, tid).
-			First(&existingCustomer).Error; err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil // 无匹配老客户（含锁等窗口内已被并发合并）：不合并，空转成功
-			}
-			return fmt.Errorf("锁定老客户: %w", err)
+		survivor, err := lockMergeSurvivor(tx, guestCustomer, phone, tid)
+		if err != nil {
+			return err
 		}
+		if survivor == nil {
+			return nil // 无匹配老客户（含锁等窗口内已被并发合并）：不合并，空转成功
+		}
+		existingCustomer = *survivor
 		survivorID = existingCustomer.ID // 提前登记；失败回滚时整体作废
 		log.Printf("[OneID合并] 检测到同手机号老客户: 访客%d → 老客户%d, 手机号=%s, 租户=%d",
 			guestCustomer.ID, existingCustomer.ID, logx.Mask(phone), tid)
-		// 1.0 G1 收口(2026-09-16C，迁移013 唯一索引 ux_conv_one_active 配套)：迁移归属前
-		// 预收拢双方 active——013 后"同客户多条 active"在 DB 层已不可能，若直接把访客
-		// active 会话改挂到老客户名下会当场撞约束、整个合并事务回滚（OneID 合并反而失效）。
-		// 规则与 012/9.2 一致：按 (updated_at, id) 定序保留最新一条，另一方的先关账。
-		if err := tx.Exec(`UPDATE conversations s SET status = 'closed'
-			WHERE s.tenant_id = ? AND s.customer_id = ? AND s.status = 'active'
-			  AND EXISTS (SELECT 1 FROM conversations g
-				WHERE g.tenant_id = ? AND g.customer_id = ? AND g.status = 'active'
-				  AND (g.updated_at, g.id) > (s.updated_at, s.id))`,
-			tid, existingCustomer.ID, tid, guestCustomer.ID).Error; err != nil {
-			return fmt.Errorf("预收拢(关老客户active): %w", err)
-		}
-		if err := tx.Exec(`UPDATE conversations g SET status = 'closed'
-			WHERE g.tenant_id = ? AND g.customer_id = ? AND g.status = 'active'
-			  AND EXISTS (SELECT 1 FROM conversations s
-				WHERE s.tenant_id = ? AND s.customer_id = ? AND s.status = 'active'
-				  AND (s.updated_at, s.id) >= (g.updated_at, g.id))`,
-			tid, guestCustomer.ID, tid, existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("预收拢(关访客active): %w", err)
+
+		// G1 预收拢（必须排在迁移之前，见 mergePreactiveConversations 注释）
+		if err := mergePreactiveConversations(tx, guestCustomer, &existingCustomer, tid); err != nil {
+			return err
 		}
 
-		// 1. 迁移会话 → 老客户（租户守卫：只迁本租户数据）
-		// D2 注(2026-09-16B)：用 UpdateColumn 跳过自动时间戳——归属重指不是业务活动，
-		// 覆写 updated_at 会把访客旧会话顶到顾问端"最近更新"列表顶端，且践踏 9.2 收拢的最新判定。
-		if err := tx.Model(&model.Conversation{}).
-			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-			UpdateColumn("customer_id", existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("迁移会话: %w", err)
+		// 1~3.5 迁移会话/消息/线索/试驾 → 老客户
+		if err := mergeMigrateOwnedRows(tx, guestCustomer, &existingCustomer, tid); err != nil {
+			return err
 		}
 
-		// 2. 迁移消息 → 老客户
-		if err := tx.Model(&model.Message{}).
-			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-			Update("customer_id", existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("迁移消息: %w", err)
+		// 3.6 迁移客户标签关联（去重，事务内唯一 Create）
+		if err := mergeMigrateCustomerTags(tx, guestCustomer, &existingCustomer, tid); err != nil {
+			return err
 		}
 
-		// 2.5 迁移线索(FollowUp) → 老客户
-		if err := tx.Model(&model.FollowUp{}).
-			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-			Update("customer_id", existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("迁移线索: %w", err)
+		// 4~7 内存合并：标签集/T向量、最高阶段、取高数值、补缺字段（写库统一在第8步）
+		mergeTagStringsInMemory(&existingCustomer, guestCustomer)
+		mergeCombineProfileFields(&existingCustomer, guestCustomer)
+
+		// 8. 保存老客户更新（字段级 Updates，列集合冻结——勿合并回整行 Save）
+		if err := mergeSaveSurvivorProfile(tx, &existingCustomer, tid); err != nil {
+			return err
 		}
 
-		// 3.5 迁移试驾(TestDrive) → 老客户
-		if err := tx.Model(&model.TestDrive{}).
-			Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).
-			Update("customer_id", existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("迁移试驾: %w", err)
-		}
-
-		// 3.6 迁移客户标签关联(customer_tags) → 老客户（去重）
-		var guestTagRecords []model.CustomerTag
-		if err := tx.Where("customer_id = ? AND tenant_id = ?", guestCustomer.ID, tid).Find(&guestTagRecords).Error; err != nil {
-			return fmt.Errorf("查访客标签: %w", err)
-		}
-		for _, gtr := range guestTagRecords {
-			var count int64
-			if err := tx.Model(&model.CustomerTag{}).
-				Where("customer_id = ? AND tag_id = ? AND tenant_id = ?", existingCustomer.ID, gtr.TagID, tid).
-				Count(&count).Error; err != nil {
-				return fmt.Errorf("查标签冲突: %w", err)
-			}
-			if count == 0 {
-				gtr.ID = 0
-				gtr.CustomerID = existingCustomer.ID
-				gtr.TenantID = tid
-				if err := tx.Create(&gtr).Error; err != nil {
-					return fmt.Errorf("迁标签落库: %w", err)
-				}
-			}
-		}
-
-		// 4. 合并标签（去重）
-		existingTags := existingCustomer.GetTags()
-		guestTags := guestCustomer.GetTags()
-		mergedTags := existingTags
-		tagSet := make(map[string]bool)
-		for _, t := range existingTags {
-			tagSet[t] = true
-		}
-		for _, t := range guestTags {
-			if !tagSet[t] {
-				mergedTags = append(mergedTags, t)
-			}
-		}
-		if len(mergedTags) > 0 {
-			existingCustomer.SetTags(mergedTags)
-			tVector := existingCustomer.GetTVector()
-			existingCustomer.SaveTVector(tVector)
-		}
-
-		// 5. 取最高旅程阶段
-		guestStageOrder := model.JourneyStageOrder[guestCustomer.JourneyStage]
-		existingStageOrder := model.JourneyStageOrder[existingCustomer.JourneyStage]
-		if guestStageOrder > existingStageOrder {
-			existingCustomer.JourneyStage = guestCustomer.JourneyStage
-		}
-
-		// 6. 合并意向分等数值（取更高值）
-		if guestCustomer.IntentScore > existingCustomer.IntentScore {
-			existingCustomer.IntentScore = guestCustomer.IntentScore
-		}
-		if guestCustomer.TrustLevel > existingCustomer.TrustLevel {
-			existingCustomer.TrustLevel = guestCustomer.TrustLevel
-		}
-
-		// 7. 补充老客户缺失信息（访客有的字段老客户没有的）
-		if existingCustomer.WechatID == "" && guestCustomer.WechatID != "" {
-			existingCustomer.WechatID = guestCustomer.WechatID
-		}
-		if existingCustomer.Source == "" && guestCustomer.Source != "" {
-			existingCustomer.Source = guestCustomer.Source
-		}
-
-		// 8. 保存老客户更新
-		// P1-3 修复(2026-09-19 审计批二)：tx.Save 整行覆写改字段级 Updates——
-		// 只写本次合并真正变更的列（标签/T向量/阶段/意向/信任/微信ID/来源），
-		// phone/name/接管态等列即便行锁窗口外被改也不进覆写集合（复核批 9 处收口同族红线，此路径补齐）。
-		if err := tx.Model(&model.Customer{}).Where("id = ? AND tenant_id = ?", existingCustomer.ID, tid).Updates(map[string]interface{}{
-			"tags":          existingCustomer.Tags,
-			"t_vector":      existingCustomer.TVectorJSON, // 列名 t_vector（model/customer.go:45）
-			"journey_stage": existingCustomer.JourneyStage,
-			"intent_score":  existingCustomer.IntentScore,
-			"trust_level":   existingCustomer.TrustLevel,
-			"wechat_id":     existingCustomer.WechatID,
-			"source":        existingCustomer.Source,
-		}).Error; err != nil {
-			return fmt.Errorf("保存老客户: %w", err)
-		}
-
-		// 8.5 老客户无顾问时，轮询分配给当前客户最少的销售
-		if existingCustomer.AssignedUserID == 0 {
-			var salesUsers []model.User
-			// 修复Bug1（2026-08-22）：角色改用 model.RoleSales 常量（同 DetectLeadCapture 主路径）
-			if err := tx.Where("role = ? AND status = 1 AND tenant_id = ?", model.RoleSales, existingCustomer.TenantID).Find(&salesUsers).Error; err != nil {
-				return fmt.Errorf("查销售: %w", err)
-			}
-			if len(salesUsers) > 0 {
-				minCount := -1
-				var bestUserID uint = salesUsers[0].ID
-				for _, u := range salesUsers {
-					var count int64
-					tx.Model(&model.Customer{}).Where("assigned_user_id = ? AND status = 1", u.ID).Count(&count)
-					if minCount < 0 || int(count) < minCount {
-						minCount = int(count)
-						bestUserID = u.ID
-					}
-				}
-				if err := tx.Model(&existingCustomer).Update("assigned_user_id", bestUserID).Error; err != nil {
-					return fmt.Errorf("分配顾问: %w", err)
-				}
-				existingCustomer.AssignedUserID = bestUserID
-				log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，轮询分配给顾问%d", existingCustomer.ID, bestUserID)
-			} else {
-				// I3修复(2026-08-26)：无可用顾问时不写死跨租户脏值(uint(2))，置 assigned_user_id=0 待人工池认领
-				if err := tx.Model(&existingCustomer).Update("assigned_user_id", uint(0)).Error; err != nil {
-					return fmt.Errorf("顾问置零: %w", err)
-				}
-				existingCustomer.AssignedUserID = 0
-				log.Printf("[OneID合并-分配顾问] 老客户%d 无顾问，置 assigned_user_id=0 待人工池认领", existingCustomer.ID)
-			}
+		// 8.5 老客户无顾问时轮询分配
+		if err := mergeAssignSurvivorSales(tx, &existingCustomer); err != nil {
+			return err
 		}
 
 		// 9. 标记访客为无效（不物理删除，保留审计）
@@ -452,17 +236,9 @@ func MergeCustomerByPhone(guestCustomer *model.Customer, phone string) uint {
 			return fmt.Errorf("访客置无效: %w", err)
 		}
 
-		// 9.2 D2 修复(2026-09-16B)：合并后收拢 active 会话——访客会话迁过来后同一客户
-		// 可能挂多条 active（多入口/多通道各开一条），顾问端计数虚高、上下文分裂。
-		// 保留最近更新的一条，其余关账（closed，历史仍完整可查）。
-		if err := tx.Exec(`UPDATE conversations SET status = 'closed'
-			WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
-			  AND id NOT IN (
-				SELECT id FROM conversations
-				WHERE tenant_id = ? AND customer_id = ? AND status = 'active'
-				ORDER BY updated_at DESC LIMIT 1)`,
-			tid, existingCustomer.ID, tid, existingCustomer.ID).Error; err != nil {
-			return fmt.Errorf("收拢active会话: %w", err)
+		// 9.2 合并后收拢 active 会话（与开头预收拢成对，见 mergeCollapseSurvivorActives 注释）
+		if err := mergeCollapseSurvivorActives(tx, &existingCustomer, tid); err != nil {
+			return err
 		}
 
 		return nil

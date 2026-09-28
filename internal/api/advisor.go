@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ============================================================
@@ -589,6 +590,10 @@ func canOperateCustomer(c *gin.Context, assignedUserID uint) bool {
 // GetAdvisorCustomers GET /api/v1/advisor/customers 工作台客户列表（按角色数据范围裁剪）
 // apidump:ts Paginated<AdvisorCustomerRow>
 // 顾问客户列表：model.Customer 展开 + last_message/conv_mode/lead_status 等附加列。
+//
+// 行为零变化说明（2026-09-28 结构拆分）：原 164 行函数体拆为
+// buildAdvisorCustomerQuery（筛选判据装配）+ enrichAdvisorCustomerRow（逐行附加列回查）两个阶段，
+// 条件顺序、SQL、旁路留痕键与响应体键序逐字不变。
 func GetAdvisorCustomers(c *gin.Context) {
 	var req advisorCustomerListRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
@@ -610,6 +615,36 @@ func GetAdvisorCustomers(c *gin.Context) {
 	// 不再各自硬写 200/500（那样只会静默截断）。
 	req.PageSize = schema.NormalizePageSize(req.PageSize)
 
+	query := buildAdvisorCustomerQuery(c, &req)
+
+	var total int64
+	query.Count(&total)
+
+	var customers []model.Customer
+	query.Order("updated_at DESC").
+		Offset((req.Page - 1) * req.PageSize).
+		Limit(req.PageSize).
+		Find(&customers)
+
+	result := make([]customerWithExtra, 0, len(customers))
+	for _, cust := range customers {
+		result = append(result, enrichAdvisorCustomerRow(c, cust))
+	}
+
+	RespOK(c, "success", schema.PageResponse{
+		Total:    total,
+		Page:     req.Page,
+		PageSize: req.PageSize,
+		List:     result,
+	})
+}
+
+// buildAdvisorCustomerQuery 装配客户列表的筛选查询（租户隔离 + 四级数据范围 + 状态/关键词条件）。
+// 单独成段是因为这条链是"同一个 clone=0 句柄上的条件累加"——Count 与 Find 必须共用
+// 装配完的这一棵 Where 树才能保证"名单条数==total"；把装配挪回主函数只会让分页两步
+// 各自重搭条件、漂移出不一致。req 用指针传人是刻意的：RoleUser 视角强制改写
+// req.UserID 必须发生在 assigned 过滤之前，顺序即语义。
+func buildAdvisorCustomerQuery(c *gin.Context, req *advisorCustomerListRequest) *gorm.DB {
 	// 租户隔离（SaaS 安全红线）：Customer 表已含 tenant_id 列，
 	// 经 TenantConsistency 后 Context 中必为生效租户，此处强制注入过滤
 	query := db.RQ(c).Model(&model.Customer{}).Scopes(db.T(c), db.DataScope(c))
@@ -668,90 +703,79 @@ func GetAdvisorCustomers(c *gin.Context) {
 		kw := "%" + req.Keyword + "%"
 		query = query.Where("name LIKE ? OR phone LIKE ?", kw, kw)
 	}
+	return query
+}
 
-	var total int64
-	query.Count(&total)
+// customerWithExtra 顾问列表行：model.Customer 展开 + 附加列（最后消息/会话模式/线索状态/顾问名）。
+type customerWithExtra struct {
+	model.Customer
+	LastMessage      string `json:"last_message"`       // 最近一条消息
+	ConvMode         string `json:"conv_mode"`          // 当前会话模式 ai/human
+	LeadStatus       string `json:"lead_status"`        // 线索状态
+	LeadSubStatus    string `json:"lead_sub_status"`    // 到店子状态描述
+	AssignedUserName string `json:"assigned_user_name"` // 分配顾问姓名（修复问题3：销售端显示分配给哪个顾问）
+	LastMessageAt    string `json:"last_message_at"`    // 最近消息时间，前端用来判断是否有新消息
+}
 
-	var customers []model.Customer
-	query.Order("updated_at DESC").
-		Offset((req.Page - 1) * req.PageSize).
-		Limit(req.PageSize).
-		Find(&customers)
-
+// enrichAdvisorCustomerRow 为单个客户回查附加列（顾问名/最近消息/活跃会话/子状态文案）。
+// 单独成段是因为这段是"每行最多三次旁路读"：任何一次失败只让那一格显示为空
+// （persistBypass advisor_list_enrich 留痕），绝不打断整张列表——与主查询"失败即整页无数据"
+// 的必查语义是两类，混在主函数里容易让人误给旁路读加上错误中断。
+// ⚠ 句柄纪律：三次读各自独立取 `db.RQ(c)`（clone=0 句柄不得跨查询复用，见 AGENTS.md 红线）。
+func enrichAdvisorCustomerRow(c *gin.Context, cust model.Customer) customerWithExtra {
 	// 为每个客户附加最后一条消息、会话模式、线索状态和分配顾问姓名
-	type customerWithExtra struct {
-		model.Customer
-		LastMessage      string `json:"last_message"`       // 最近一条消息
-		ConvMode         string `json:"conv_mode"`          // 当前会话模式 ai/human
-		LeadStatus       string `json:"lead_status"`        // 线索状态
-		LeadSubStatus    string `json:"lead_sub_status"`    // 到店子状态描述
-		AssignedUserName string `json:"assigned_user_name"` // 分配顾问姓名（修复问题3：销售端显示分配给哪个顾问）
-		LastMessageAt    string `json:"last_message_at"`    // 最近消息时间，前端用来判断是否有新消息
-	}
+	extra := customerWithExtra{Customer: cust}
 
-	result := make([]customerWithExtra, 0, len(customers))
-	for _, cust := range customers {
-		extra := customerWithExtra{Customer: cust}
-
-		// 修复问题3：查分配顾问的姓名
-		if cust.AssignedUserID > 0 {
-			var assignedUser model.User
-			// 旁路（advisor_list_enrich）：列表的附加列读失败只让这一格显示为空，
-			// 不打断整张列表——客户名单本身已经读出来了。
-			persistBypass("advisor_list_enrich", cust.ID, 0, db.RQ(c).Select("id, real_name, username").Limit(1).Find(&assignedUser, cust.AssignedUserID))
-			if assignedUser.ID > 0 {
-				extra.AssignedUserName = assignedUser.RealName
-				if extra.AssignedUserName == "" {
-					extra.AssignedUserName = assignedUser.Username
-				}
+	// 修复问题3：查分配顾问的姓名
+	if cust.AssignedUserID > 0 {
+		var assignedUser model.User
+		// 旁路（advisor_list_enrich）：列表的附加列读失败只让这一格显示为空，
+		// 不打断整张列表——客户名单本身已经读出来了。
+		persistBypass("advisor_list_enrich", cust.ID, 0, db.RQ(c).Select("id, real_name, username").Limit(1).Find(&assignedUser, cust.AssignedUserID))
+		if assignedUser.ID > 0 {
+			extra.AssignedUserName = assignedUser.RealName
+			if extra.AssignedUserName == "" {
+				extra.AssignedUserName = assignedUser.Username
 			}
 		}
-
-		// 查最近一条消息
-		// 旁路（advisor_list_enrich）+ 按**字符**截断（FIX-5(2026-09-27) 顺带真修）：
-		// 旧写法 `content[:50]` 是**字节**切片，客户发中文时 50 字节正好落在多字节字符中间，
-		// 列表预览尾部稳定出现一个乱码方块（U+FFFD）——冒烟抓不到（它断的是接口不是渲染），
-		// 但每一家中文租户的顾问列表天天看得见。改用与 E8 存档摘要同一口径的 truncateRunes。
-		var lastMsg model.Message
-		lastMsgRes := db.RQ(c).Where("customer_id = ?", cust.ID).
-			Order("created_at DESC").Limit(1).Find(&lastMsg)
-		persistBypass("advisor_list_enrich", cust.ID, 0, lastMsgRes)
-		if lastMsgRes.Error == nil && lastMsg.ID > 0 {
-			extra.LastMessage = truncateRunes(lastMsg.Content, 50)
-		}
-
-		// 查当前会话模式 + 最后消息时间
-		var conv model.Conversation
-		persistBypass("advisor_list_enrich", cust.ID, 0, db.RQ(c).Where("customer_id = ? AND status = ?", cust.ID, "active").
-			Order("updated_at DESC").Limit(1).Find(&conv))
-		if conv.ID > 0 {
-			extra.ConvMode = conv.Mode
-			if conv.LastMessageAt != nil {
-				extra.LastMessageAt = conv.LastMessageAt.Format("2006-01-02T15:04:05Z07:00")
-			}
-		}
-
-		// 线索状态：从journey_stage映射中文显示名
-		extra.LeadStatus = cust.GetJourneyStageName()
-		// 到店子状态描述
-		switch cust.JourneySubStage {
-		case model.SubStageTestDrive:
-			extra.LeadSubStatus = "已试驾"
-		case model.SubStageQuoted:
-			extra.LeadSubStatus = "已报价"
-		default:
-			extra.LeadSubStatus = ""
-		}
-
-		result = append(result, extra)
 	}
 
-	RespOK(c, "success", schema.PageResponse{
-		Total:    total,
-		Page:     req.Page,
-		PageSize: req.PageSize,
-		List:     result,
-	})
+	// 查最近一条消息
+	// 旁路（advisor_list_enrich）+ 按**字符**截断（FIX-5(2026-09-27) 顺带真修）：
+	// 旧写法 `content[:50]` 是**字节**切片，客户发中文时 50 字节正好落在多字节字符中间，
+	// 列表预览尾部稳定出现一个乱码方块（U+FFFD）——冒烟抓不到（它断的是接口不是渲染），
+	// 但每一家中文租户的顾问列表天天看得见。改用与 E8 存档摘要同一口径的 truncateRunes。
+	var lastMsg model.Message
+	lastMsgRes := db.RQ(c).Where("customer_id = ?", cust.ID).
+		Order("created_at DESC").Limit(1).Find(&lastMsg)
+	persistBypass("advisor_list_enrich", cust.ID, 0, lastMsgRes)
+	if lastMsgRes.Error == nil && lastMsg.ID > 0 {
+		extra.LastMessage = truncateRunes(lastMsg.Content, 50)
+	}
+
+	// 查当前会话模式 + 最后消息时间
+	var conv model.Conversation
+	persistBypass("advisor_list_enrich", cust.ID, 0, db.RQ(c).Where("customer_id = ? AND status = ?", cust.ID, "active").
+		Order("updated_at DESC").Limit(1).Find(&conv))
+	if conv.ID > 0 {
+		extra.ConvMode = conv.Mode
+		if conv.LastMessageAt != nil {
+			extra.LastMessageAt = conv.LastMessageAt.Format("2006-01-02T15:04:05Z07:00")
+		}
+	}
+
+	// 线索状态：从journey_stage映射中文显示名
+	extra.LeadStatus = cust.GetJourneyStageName()
+	// 到店子状态描述
+	switch cust.JourneySubStage {
+	case model.SubStageTestDrive:
+		extra.LeadSubStatus = "已试驾"
+	case model.SubStageQuoted:
+		extra.LeadSubStatus = "已报价"
+	default:
+		extra.LeadSubStatus = ""
+	}
+	return extra
 }
 
 // ============================================================

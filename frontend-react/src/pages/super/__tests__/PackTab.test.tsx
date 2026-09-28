@@ -36,8 +36,12 @@ function rowInput(container: HTMLElement, rowText: string): HTMLInputElement | u
 
 /** 点开某行的「可绑档位」下拉（选项浮层挂在 body，不在行内）。 */
 async function openTierPanel(container: HTMLElement, rowText: string) {
+  // 保留弱断言（toBeTruthy）：这是 waitFor 轮询「行输入是否挂上」好让下一步能点，浮层没开前除了"节点在不在"钉不了任何值；
+  // 真正选中哪档的值由调用方的 rowInput(...).value 精确钉（见首个用例的 企业版+/全部档位 断言）
   await waitFor(() => expect(rowInput(container, rowText)).toBeTruthy())
   fireEvent.click(rowInput(container, rowText) as HTMLInputElement)
+  // 保留弱断言（length 轮询大于 0）：TDesign 选项浮层挂在 body、异步挂载，这里只需确认"浮层出现"即可往下点；
+  // 具体选项数量/文案在调用方用 optionByText('企业版+' / '全部档位') 精确命中，不在此处钉死以免与包内选项耦合
   await waitFor(() => expect(document.querySelectorAll('.t-select-option').length).toBeGreaterThan(0))
 }
 
@@ -53,6 +57,7 @@ beforeEach(() => {
 describe('PackTab（超管档位门槛）', { timeout: 15000 }, () => {
   it('逐行回显 min_tier：企业版行显示企业版，空值行显示"全部档位"', async () => {
     const { container } = render(<PackTab />)
+    // 保留弱断言（length 轮询大于 0）：只等「首帧列表请求已发出」这个异步门闩，不是业务数值；请求次数不该钉死（刷新会再发）
     await waitFor(() => expect(listCalls()).toBeGreaterThan(0))
     // waitFor 而非直接取值：TDesign Select 把 value→label 的映射放在一次 effect 里，
     // 行刚渲染出来那一刻读到的还是原始码。真浏览器上同理（首帧闪原始码），
@@ -64,6 +69,8 @@ describe('PackTab（超管档位门槛）', { timeout: 15000 }, () => {
 
   it('改档位 PUT 对应包并重拉列表', async () => {
     const { container } = render(<PackTab />)
+    // 保留弱断言（toBeTruthy）：异步等「汽车」行的下拉输入挂上再点开，属就绪门闩；
+    // 改档位的真实结果由下方 PUT body（min_tier:'enterprise'）与回拉次数（before+1）精确钉
     await waitFor(() => expect(rowInput(container, '汽车')).toBeTruthy())
     const before = listCalls()
     await openTierPanel(container, '汽车')
@@ -75,6 +82,8 @@ describe('PackTab（超管档位门槛）', { timeout: 15000 }, () => {
 
   it('清除门槛也要发请求（PUT 空串），不是就地不发', async () => {
     const { container } = render(<PackTab />)
+    // 保留弱断言（toBeTruthy）：异步等「奢侈品」行的下拉输入挂上再点开，属就绪门闩；
+    // 清除门槛的真实结果由下方 PUT body（min_tier:''）精确钉——不发请求才是缺陷
     await waitFor(() => expect(rowInput(container, '奢侈品')).toBeTruthy())
     await openTierPanel(container, '奢侈品')
     fireEvent.click(optionByText('全部档位') as HTMLElement)

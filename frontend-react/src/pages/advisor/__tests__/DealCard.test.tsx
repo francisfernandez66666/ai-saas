@@ -63,8 +63,10 @@ function openCreate() {
 describe('DealCard 顾问台商机卡', () => {
   it('一张单都没有时给开单入口，并留一句为什么要开单', () => {
     render(<DealCard deals={[]} cfg={CFG} onCreate={vi.fn()} onMove={vi.fn()} onQuote={vi.fn()} />)
-    expect(screen.getByTestId('deal-open-btn')).toBeTruthy()
-    expect(screen.getByText(/还没开过单/)).toBeTruthy()
+    // 原来弱在哪：只证明开单入口存在；现在钉按钮文案「+ 开单」
+    expect(screen.getByTestId('deal-open-btn')).toHaveTextContent('+ 开单')
+    // 原来弱在哪：正则只命中半句；现在钉空态提示整句（DealCard.tsx:66 文案）
+    expect(screen.getByText('还没开过单。谈到钱就记一张，别留在聊天记录里。')).toBeInTheDocument()
     // 反证：没有单子就不能凭空长出"在途提示"或商机行
     expect(screen.queryByTestId('deal-open-hint')).toBeNull()
     expect(screen.queryAllByTestId(/^deal-row-/).length).toBe(0)
@@ -75,14 +77,18 @@ describe('DealCard 顾问台商机卡', () => {
     const live = row({})
     render(<DealCard deals={[closed, live]} cfg={CFG} onCreate={vi.fn()} onMove={vi.fn()} onQuote={vi.fn()} />)
     expect(screen.queryByTestId('deal-open-btn')).toBeNull()
-    expect(screen.getByTestId('deal-open-hint')).toBeTruthy()
+    // 原来弱在哪：只证明在途提示存在；现在钉整句文案（DealCard.tsx:67）
+    expect(screen.getByTestId('deal-open-hint')).toHaveTextContent('这个客户有一张在途商机，在原单上推进就行。')
     // 终局单**照列**（藏起来他就会重复开一张一样的单），但两个写入口都不给
-    expect(screen.getByTestId('deal-row-500')).toBeTruthy()
+    // 原来弱在哪：只证明行存在；现在钉这行列出了终局单的标题与「流失」阶段名
+    expect(screen.getByTestId('deal-row-500')).toHaveTextContent('上一次的置换单')
+    expect(screen.getByTestId('deal-row-500')).toHaveTextContent('流失')
     expect(screen.queryByTestId('deal-move-500')).toBeNull()
     expect(screen.queryByTestId('deal-newquote-500')).toBeNull()
     // 在途单两个入口都在
-    expect(screen.getByTestId('deal-move-501')).toBeTruthy()
-    expect(screen.getByTestId('deal-newquote-501')).toBeTruthy()
+    // 原来弱在哪：只证明按钮存在；现在钉两个按钮的文案（有活报价时是「另出一版报价」）
+    expect(screen.getByTestId('deal-move-501')).toHaveTextContent('推进')
+    expect(screen.getByTestId('deal-newquote-501')).toHaveTextContent('另出一版报价')
   })
 
   it('金额按元展示（千分位），终局单不显示停滞天数，流失原因读后端中文名', () => {
@@ -145,7 +151,8 @@ describe('DealCard 顾问台商机卡', () => {
     fireEvent.change(screen.getByPlaceholderText('如 极石 01 四驱版 · 置换'), { target: { value: '秋季置换单' } })
     await clickConfirm('创建')
     await waitFor(() => expect(screen.getByTestId('deal-form-err').textContent).toBe('阶段不能往回退'))
-    expect(screen.getByText('开一张商机')).toBeTruthy() // 窗还开着，允许改完再交
+    // 原来弱在哪：只证明弹窗标题还在；现在用 toBeInTheDocument 明确「窗没关」这一状态
+    expect(screen.getByText('开一张商机')).toBeInTheDocument() // 窗还开着，允许改完再交
 
     onCreate.mockResolvedValue({ ok: false, message: '已有在途单', dismiss: true })
     await clickConfirm('创建')
@@ -220,7 +227,8 @@ describe('DealCard 顾问台商机卡', () => {
 
   it('cfg 未就位时列表照常显示、但不给写入口（下拉无选项即无意义弹窗）', () => {
     render(<DealCard deals={[row({})]} cfg={null} onCreate={vi.fn()} onMove={vi.fn()} onQuote={vi.fn()} />)
-    expect(screen.getByTestId('deal-row-501')).toBeTruthy()
+    // 原来弱在哪：只证明列表行存在；现在钉这行仍照常渲染出标题与金额（读展示不依赖 cfg）
+    expect(screen.getByTestId('deal-row-501')).toHaveTextContent('极石 01 四驱版 · 置换')
     expect(screen.queryByTestId('deal-move-501')).toBeNull()
     expect(screen.queryByTestId('deal-open-btn')).toBeNull()
   })

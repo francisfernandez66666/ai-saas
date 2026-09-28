@@ -21,19 +21,32 @@ beforeEach(() => {
 
 describe('DashboardTab', () => {
   it('渲染经营指标和模型健康', async () => {
+    // 命名夹具：mock 与断言共用一份，期望串按 DashboardTab.tsx 的渲染口径推导
+    const OVERVIEW = { total_customers: 12, new_customers_today: 3, active_conversations: 4, conversion_rate: 0.25, avg_intent_score: 0.67, human_transfer_rate: 0.18 }
+    const ADVISOR = [{ label: '跟进中', value: 8, color: 'blue' }]
+    const MODEL = { display_name: 'GLM-4-9B (硅基流动免费)', provider: 'siliconflow', available: false, consecutive_fails: 5, cooldown_left_sec: 120 }
+    const fmtPct = (v: number) => `${(v * 100).toFixed(1)}%` // 镜像 DashboardTab.tsx:40 pct()
+    const fmtCd = (sec: number) => (!sec ? '-' : sec < 60 ? `${sec}s` : `${Math.ceil(sec / 60)}min`) // 镜像 :45 formatCooldown()
     authMock.mockImplementation(async (url: string) => {
-      if (url.includes('/stats/overview')) return { code: 0, data: { total_customers: 12, new_customers_today: 3, active_conversations: 4, conversion_rate: 0.25, avg_intent_score: 0.67, human_transfer_rate: 0.18 } }
-      if (url.includes('/advisor/stats')) return { code: 0, data: [{ label: '跟进中', value: 8, color: 'blue' }] }
-      if (url.includes('/admin/models')) return { code: 0, data: { models: [{ display_name: 'GLM-4-9B (硅基流动免费)', provider: 'siliconflow', available: false, consecutive_fails: 5, cooldown_left_sec: 120 }] } }
+      if (url.includes('/stats/overview')) return { code: 0, data: OVERVIEW }
+      if (url.includes('/advisor/stats')) return { code: 0, data: ADVISOR }
+      if (url.includes('/admin/models')) return { code: 0, data: { models: [MODEL] } }
       return { code: 0, data: { list: [] } }
     })
     render(<DashboardTab />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith('/api/v1/stats/overview'))
-    expect(await screen.findByText('12')).toBeTruthy()
-    expect(screen.getByText('25.0%')).toBeTruthy()
-    expect(screen.getByText('跟进中')).toBeTruthy()
-    expect(screen.getByText('GLM-4-9B (硅基流动免费)')).toBeTruthy()
-    expect((await screen.findAllByText('冷却')).length).toBeGreaterThan(0)
+    // 原来弱在哪：toBeTruthy 只证明查到；现在钉「有效客户」格子读到的就是 overview.total_customers
+    expect(await screen.findByText(String(OVERVIEW.total_customers))).toBeInTheDocument()
+    // 原来弱在哪：字面量 '25.0%'；现在由 conversion_rate 按组件 pct() 口径推导
+    expect(screen.getByText(fmtPct(OVERVIEW.conversion_rate))).toBeInTheDocument()
+    // 原来弱在哪：字面量；现在钉顾问漏斗卡片标签就是 advisor/stats 回包的 label
+    expect(screen.getByText(ADVISOR[0].label)).toBeInTheDocument()
+    // 原来弱在哪：字面量；现在钉模型健康表第一行展示名来自 models 回包
+    expect(screen.getByText(MODEL.display_name)).toBeInTheDocument()
+    // 原来弱在哪：length>0；现在钉「冷却」= 表头 + available=false 的状态 Tag，恰好 2 处
+    expect((await screen.findAllByText('冷却')).length).toBe(2)
+    // 顺带钉冷却倒计时列按 formatCooldown(120s) 渲染成「2min」
+    expect(screen.getByText(fmtCd(MODEL.cooldown_left_sec))).toBeInTheDocument()
   })
 
   it('把 AI 贡献度的下钻点击原样递给持有者（指标 + 当前窗口）', async () => {

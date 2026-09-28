@@ -947,7 +947,31 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedGenerateReply() {
 }
 
 // chatUnauthorizedSaveAndReturn 落库 AI 回复、施加模拟延迟、归还批次、更新会话/客户、写归因与打标，并返回响应。
+//
+// 行为零变化说明（2026-09-28 结构拆分）：原 177 行函数体按既有注释段"剪切-粘贴"为下列阶段方法，
+// 依原顺序串行执行；aiMsg/newIntent 这两个原本同作用域的局部变量改为显式传参，
+// 所有条件顺序、SQL、Redis 键、延迟参数、文案与响应体键序均与原实现逐字一致。
 func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
+	aiMsg, done := s.chatUnauthorizedPersistAIReply()
+	if done {
+		return true
+	}
+	s.chatUnauthorizedWaitHumanlikeDelay()
+
+	// 回复写入队列缓存，唤醒所有等待的请求
+	s.releaseProcessingBatch(s.aiReply)
+
+	s.chatUnauthorizedSyncConversationState(aiMsg)
+	newIntent := s.chatUnauthorizedSyncCustomerProfile()
+	s.chatUnauthorizedRecordAttribution(aiMsg, newIntent)
+	s.chatUnauthorizedAutoTag()
+	return s.chatUnauthorizedRespond(aiMsg)
+}
+
+// chatUnauthorizedPersistAIReply 保存 AI 回复行并向实时链路扇出（会话消息事件 + WS 推送）。
+// 单独成段是因为这是本阶段唯一"可能已应答（500）后中止后续"的一步——
+// 它的失败路径（persistRequired 回 true）决定整条回复链是否继续，其余段都只在成功后可达。
+func (s *chatUnauthorizedCtx) chatUnauthorizedPersistAIReply() (model.Message, bool) {
 	// 保存AI回复消息
 	aiMsg := model.Message{
 		ConversationID: s.conversation.ID,
@@ -965,12 +989,19 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 	// 批次交给 chatUnauthorizedProcessing 的 defer 以空回复归还——
 	// 不能让同批被合并的其它请求拿到一份"库里不存在的答复"。
 	if persistRequired(s.c, "ai_reply", s.customer.ID, s.conversation.ID, db.RQ(s.c).Create(&aiMsg)) {
-		return true
+		return aiMsg, true
 	}
 	publishConversationMsg(s.tenantID, s.customer.ID, s.strategyOutput.RouteResult, s.conversation.GetState().Emotion)
 	// P1-1 实时推送：AI回复即时可见
 	notifyWSWithContent(s.tenantID, s.customer.ID, s.conversation.ID, "ai", aiMsg.ID, s.aiReply, "AI顾问", aiMsg.CreatedAt.Format("2006-01-02T15:04:05Z"))
+	return aiMsg, false
+}
 
+// chatUnauthorizedWaitHumanlikeDelay 模拟真人回复延迟：延迟计算 + 胡搅蛮缠降速 + 2 分钟硬顶 + 可取消 sleep。
+// 单独成段是因为这是全链路唯一的阻塞步（最长 120s），且判据来自三个不同数据面
+// （租户热配延迟参数 / chatflow 话题计数 / reply_delay_mode 热开关）——
+// 它不写库、不应答，失败模式是"多等/少等"，与前后"落库/应答"段完全不同。
+func (s *chatUnauthorizedCtx) chatUnauthorizedWaitHumanlikeDelay() {
 	// 模拟真人回复延迟
 	isStoreVisit := service.IsStoreVisitIntentForTenant(s.tenantID, s.mergedContent) && !chatflow.IsLeadCaptured(&s.customer)
 	log.Printf("[ChatUnauthorized] 客户%d 到店倾向检测: %v, 合并内容: %q", s.customer.ID, isStoreVisit, pii.MaskPhoneInText(s.mergedContent))
@@ -1009,10 +1040,12 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 		chatflow.CancellableSleep(s.customer.ID, humanlikeDelay)
 	}
 	log.Printf("[ChatUnauthorized] 客户%d 延迟结束，返回回复", s.customer.ID)
+}
 
-	// 回复写入队列缓存，唤醒所有等待的请求
-	s.releaseProcessingBatch(s.aiReply)
-
+// chatUnauthorizedSyncConversationState 更新会话状态（接钩计数/锚点/情绪/阶段快照）并字段级落库。
+// 单独成段是因为它只走旁路写（persistBypass）——失败不打断应答，
+// 且整段是对 *s.conversation 内存态的"改完再存"，与回复行的必查落库量纲不同。
+func (s *chatUnauthorizedCtx) chatUnauthorizedSyncConversationState(aiMsg model.Message) {
 	// 更新会话状态
 	s.conversation.LastMessageAt = &aiMsg.CreatedAt
 	s.conversation.LastTid = s.strategyOutput.TemplateID
@@ -1033,7 +1066,12 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 		"state_json":         s.conversation.StateJSON,
 		"last_message_at":    s.conversation.LastMessageAt,
 	}))
+}
 
+// chatUnauthorizedSyncCustomerProfile 更新客户画像（意向分反哺 + T 向量回写），返回收敛后的新意向分。
+// 单独成段是因为 newIntent 是跨段值（本段落库、下段归因快照要读 IntentAfter），
+// 显式返回值比挂 ctx 字段更能钉住"先画像后归因"的依赖方向。
+func (s *chatUnauthorizedCtx) chatUnauthorizedSyncCustomerProfile() float64 {
 	// 更新客户画像（意向分反哺）
 	newIntent := s.tVector[0] + s.strategyOutput.IntentDelta
 	if newIntent < 0 {
@@ -1050,7 +1088,13 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 		"intent_score": s.customer.IntentScore,
 		"t_vector":     s.customer.TVectorJSON,
 	}))
+	return newIntent
+}
 
+// chatUnauthorizedRecordAttribution 写入包/模板/意向变化归因快照（D9），含待人工标记回填。
+// 单独成段是因为它是纯旁路记账（返回值刻意丢弃、永不影响应答），
+// 与"更新画像/会话"那些"客户可见状态"的写段在失败语义上不是一类。
+func (s *chatUnauthorizedCtx) chatUnauthorizedRecordAttribution(aiMsg model.Message, newIntent float64) {
 	// D9：测试链路也写入包/模板/意向变化归因快照。
 	_ = attribution.RecordReply(attribution.RecordReplyInput{
 		TenantID:       s.tenantID,
@@ -1066,7 +1110,12 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 	if s.strategyOutput.RouteResult == strategy.RoutePendingHuman {
 		_ = attribution.MarkPendingHuman(s.tenantID, s.conversation.ID, s.customer.ID)
 	}
+}
 
+// chatUnauthorizedAutoTag 自动打标并把标签权重反哺进 T 向量。
+// 单独成段是因为它自带一次"重读客户行→按最新标签算权重→只更新 t_vector"的闭环，
+// 读的是打标服务写完的状态，与本函数其余段的内存态写不共享事务、也不该共享。
+func (s *chatUnauthorizedCtx) chatUnauthorizedAutoTag() {
 	// 自动打标（测试接口也集成，方便验证打标效果）
 	newTags := []string{}
 	autoTags, tagErr := service.DefaultTagService.AutoTagFromText(s.customer.TenantID, s.customer.ID, s.mergedContent)
@@ -1081,7 +1130,12 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 		}
 	}
 	s.newTags = newTags
+}
 
+// chatUnauthorizedRespond 组装并返回响应体（应答段）。
+// 单独成段是因为这 40 行是一整块"响应体键序即契约"的字面量——
+// 它的任何改动都直接打在前端 /chat/test 消费面上，与前面各写库段的失败语义毫无关系。
+func (s *chatUnauthorizedCtx) chatUnauthorizedRespond(aiMsg model.Message) bool {
 	// 返回结果
 	RespOK(s.c, "success", gin.H{
 		"conversation_id":     s.conversation.ID,
@@ -1089,7 +1143,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedSaveAndReturn() bool {
 		"merged_content":      s.mergedContent,
 		"ai_reply":            s.aiReply,
 		"assistant_messages":  []model.Message{aiMsg},
-		"new_tags":            newTags,
+		"new_tags":            s.newTags,
 		"is_new_conversation": s.isNewConversation,
 		"customer_msg_id":     s.testCustomerMsgID,
 		"anchor": gin.H{

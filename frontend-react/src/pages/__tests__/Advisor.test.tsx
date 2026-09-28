@@ -37,9 +37,16 @@ describe('Advisor 通道侧边栏', () => {
     })
     render(<Advisor />)
     await waitFor(() => expect(authMock).toHaveBeenCalledWith(expect.stringContaining('/channel/wecom/context?corpid=ww_test&external_userid=wm_test_1')))
-    expect(await screen.findByText('企业微信客户')).toBeTruthy()
-    expect(screen.getByText('wm_test_1')).toBeTruthy()
-    expect(screen.getAllByText('Model X').length).toBeGreaterThan(0)
+    // 原来弱在哪：findByText 配 truthy 只证明标题出现过，不证明落在渠道卡上；
+    // getAllByText('Model X').length>0 更是" anywhere 渲染过一次"的口径——DetailView 里
+    // 也渲染同一车型，计数断言会在错误的那一处命中也照样绿。
+    // 现在钉：逐格钉 ChannelCard 的「标签→值」邻接关系（卡片源码 advisor/ChannelCard.tsx
+    // 每格是 <div><span>标签</span><div>值</div></div>），值取自本用例夹具。
+    const title = await screen.findByText('企业微信客户')
+    expect(title).toHaveTextContent('企业微信客户')
+    const idCell = screen.getByText('wm_test_1')
+    expect(idCell.parentElement).toHaveTextContent('企业微信IDwm_test_1')
+    expect(screen.getByText('关注产品').parentElement).toHaveTextContent('Model X')
     expect(screen.queryByText(/AI/)).toBeNull()
   })
 })

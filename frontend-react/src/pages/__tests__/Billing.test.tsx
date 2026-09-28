@@ -4,6 +4,8 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import Billing from '../Billing'
+// 期望串不抄字面量：徽标文案由 lib/money.fenToYuan 单点换算（复制 '99.00' 即双维护）
+import { fenToYuan } from '../../lib/money'
 
 
 vi.mock('../../lib/api', () => ({
@@ -47,8 +49,10 @@ describe('Billing 收银台 E1 static_qr 渲染', () => {
     const img = await screen.findByAltText('平台收款码', undefined, { timeout: 4000 })
     expect(img.getAttribute('src')).toBe(DATA_URI)
     // 收款模式提示 + 我已付费入口（static_qr 非 sdk 走人工确认）
-    expect(screen.getByText(/扫码转账/)).toBeTruthy()
-    expect(screen.getByText('我已付费')).toBeTruthy()
+    // 原来弱在哪：/扫码转账/ 会被任何含这四个字的节点喂绿；现在钉 Billing.tsx
+    // static_qr 分支的完整文案「收款方式：扫码转账+平台人工确认」。
+    expect(screen.getByText(/扫码转账/)).toHaveTextContent('收款方式：扫码转账+平台人工确认')
+    expect(screen.getByText('我已付费')).toHaveTextContent('我已付费')
   })
 })
 
@@ -72,21 +76,31 @@ describe('Billing 续费触达 banner', () => {
   it('status=expired 展示到期停服红色横幅', async () => {
     vi.stubGlobal('fetch', bannerFetch({ status: 'expired' }))
     render(<Billing />)
-    expect(await screen.findByText(/已到期.*续费到账后立即恢复/s, undefined, { timeout: 4000 })).toBeTruthy()
+    // 原来弱在哪：正则命中「已到期…恢复」子串即绿，横幅整句被改写也看不见。
+    // 现在钉 Billing.tsx expired 分支的完整文案。
+    expect(await screen.findByText(/已到期.*续费到账后立即恢复/s, undefined, { timeout: 4000 }))
+      .toHaveTextContent('企业空间已到期，AI 会话与新登录已暂停，数据保留——续费到账后立即恢复。')
   })
 
   it('剩余不足 7 天展示临期横幅', async () => {
     const soon = new Date(Date.now() + 3 * 86400000).toISOString()
     vi.stubGlobal('fetch', bannerFetch({ status: 'active', expired_at: soon }))
     render(<Billing />)
-    expect(await screen.findByText(/3 天后到期/, undefined, { timeout: 4000 })).toBeTruthy()
+    // 原来弱在哪：/3 天后到期/ 不区分试用/套餐两分支文案。夹具 status='active' →
+    // 走 Billing.tsx「套餐将于 N 天后到期」分支，N=ceil(3天窗口)=3，整句钉死。
+    // 不断精确到期时刻（nowMs 取数与夹具生成间有毫秒级漂移），但档位与文案是确定的。
+    expect(await screen.findByText(/3 天后到期/, undefined, { timeout: 4000 }))
+      .toHaveTextContent('套餐将于 3 天后到期，请及时续费以免影响使用。')
   })
 
   it('无到期风险但有待支付订单时提示继续支付', async () => {
     const far = new Date(Date.now() + 300 * 86400000).toISOString()
     vi.stubGlobal('fetch', bannerFetch({ status: 'active', expired_at: far }, [pendingOrder]))
     render(<Billing />)
-    expect(await screen.findByText(/1 笔订单待支付/, undefined, { timeout: 4000 })).toBeTruthy()
+    // 原来弱在哪：/1 笔订单待支付/ 只数了个"1"，后半句丢了也绿。
+    // pending 计数=orders 里 status==='pending' 的行数=1（夹具恰一条），整句钉死。
+    expect(await screen.findByText(/1 笔订单待支付/, undefined, { timeout: 4000 }))
+      .toHaveTextContent('您有 1 笔订单待支付，在下方订单区点击"继续支付"完成。')
   })
 })
 
@@ -131,12 +145,20 @@ describe('Billing 发票预填与退款终态按钮门（P2-11/P2-12）', () => 
     localStorage.clear(); localStorage.setItem('role', 'admin')
     vi.stubGlobal('fetch', routeFetch2([paidOrder, refundedOrder]))
     render(<Billing />)
-    // 终态行渲染可见（状态列"已退款"）
-    await screen.findByText(/已退款/, undefined, { timeout: 4000 })
+    // 原来弱在哪：findByText(/已退款/) 只证明这三个字在页面上；按钮 truthy 只证明
+    // 有个节点。现在钉：终态行状态徽标整句「已退款 ¥99」（Billing.tsx 按
+    // `'已退款 ¥' + fenToYuan(o.refund_amount_cents)` 拼接，夹具退了 9900 分），
+    // 且按钮断到 tagName/文案/可用态（BUTTON + "退款"/"发票"），不是"任何带该 label 的节点"。
+    const refundChip = await screen.findByText(/已退款/, undefined, { timeout: 4000 })
+    expect(refundChip).toHaveTextContent(`已退款 ¥${fenToYuan(refundedOrder.refund_amount_cents)}`)
     expect(screen.queryByLabelText('申请退款订单BOR1TEST')).toBeNull()
     expect(screen.queryByLabelText('申请发票订单BOR1TEST')).toBeNull()
     // 对照：paid 行两键仍在（门不能一刀切）
-    expect(screen.queryByLabelText('申请退款订单BOP1TEST')).toBeTruthy()
-    expect(screen.queryByLabelText('申请发票订单BOP1TEST')).toBeTruthy()
+    const refundBtn = screen.getByLabelText('申请退款订单BOP1TEST')
+    expect(refundBtn.tagName).toBe('BUTTON')
+    expect(refundBtn).toHaveTextContent('退款')
+    const invoiceBtn = screen.getByLabelText('申请发票订单BOP1TEST')
+    expect(invoiceBtn.tagName).toBe('BUTTON')
+    expect(invoiceBtn).toHaveTextContent('发票')
   })
 })

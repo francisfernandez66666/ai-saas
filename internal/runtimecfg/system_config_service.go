@@ -446,6 +446,15 @@ func SafeCfgInt(key string, defaultValue int) int {
 	return DefaultSystemConfigService.GetInt(key, defaultValue)
 }
 
+// SafeCfgIntForTenant 安全读租户级 int 配置（P2-52 同口径：单例未初始化一律回退默认值）。
+// 与 SafeCfgInt 的区别只在读法：本函数走 GetIntForTenant，租户覆盖优先、无覆盖回落系统层。
+func SafeCfgIntForTenant(tenantID uint, key string, defaultValue int) int {
+	if DefaultSystemConfigService == nil {
+		return defaultValue
+	}
+	return DefaultSystemConfigService.GetIntForTenant(tenantID, key, defaultValue)
+}
+
 // SafeCfgFloat 安全读 float 配置（P2-52）
 func SafeCfgFloat(key string, defaultValue float64) float64 {
 	if DefaultSystemConfigService == nil {

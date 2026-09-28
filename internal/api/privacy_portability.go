@@ -75,6 +75,10 @@ func fetchPortableRows(gdb *gorm.DB, table string, customerID, afterID uint, n i
 // 返回本人数据副本：身份与画像（对本人不掩码）+ 会话清单 + 消息流（含冷归档）。
 // 鉴权口径与删除权受理完全一致：匿名必须 visitor_key 与目标客户一致；登录态必须该客户
 // 落在本人数据范围内（删除权那边 B8 已把"登录即放行且不看归属"封掉，这里同一判据）。
+//
+// 行为零变化说明（2026-09-28 结构拆分）：原 166 行函数体拆为身份闸（privacyMyDataAuthorize）、
+// 消息流取数（fetchPortablePage）、两个投影段（projectPortableMessages/readPortableConversations），
+// 判据、错误码、游标语义与响应体键序逐字不变。
 func PrivacyMyData(c *gin.Context) {
 	var req struct {
 		CustomerID uint   `json:"customer_id"`
@@ -85,30 +89,8 @@ func PrivacyMyData(c *gin.Context) {
 	_ = c.ShouldBindJSON(&req)
 
 	tid := db.EffectiveTenantIDFromGin(c)
-	if tid == 0 {
-		RespErr(c, http.StatusBadRequest, 400, "缺少租户上下文")
-		return
-	}
-	if req.CustomerID == 0 {
-		RespErr(c, http.StatusBadRequest, 400, "customer_id 必填")
-		return
-	}
-
-	// ① 身份闸：先认人再取数（顺序反了会把几十万行读进内存才被拒）。
-	//    跨租户/不存在的客户统一 404 不回显差异，与删除权一致。
-	var cust model.Customer
-	if err := db.RQ(c).Where("id = ?", req.CustomerID).First(&cust).Error; err != nil {
-		RespErr(c, http.StatusNotFound, 404, "客户不存在")
-		return
-	}
-	_, logged := c.Get("user_id")
-	if !logged {
-		if req.VisitorKey == "" || !hashEqual(cust.VisitorKey, req.VisitorKey) {
-			RespErr(c, http.StatusForbidden, 403, "visitor_key 校验失败")
-			return
-		}
-	} else if !customerInDataScope(c, cust.AssignedUserID) {
-		RespErr(c, http.StatusForbidden, 403, "该客户不在你的数据范围内，无权导出本人副本")
+	cust, logged, ok := privacyMyDataAuthorize(c, tid, req.CustomerID, req.VisitorKey)
+	if !ok {
 		return
 	}
 
@@ -118,82 +100,15 @@ func PrivacyMyData(c *gin.Context) {
 		limit = req.Limit
 	}
 
-	// ③ 消息流：热表 + 冷归档表**都要读**。只读 messages 的话，message_archive_days 一开，
-	//    客户的副本就少一截历史且没有任何地方报错——这是"静默不完整"，比不给更糟。
-	//
-	//    句柄纪律（AGENTS.md 红线）：`db.RQ(c)` 是 clone=0 句柄，同一句柄连着跑第二条查询会把
-	//    第一条的 Where/Model 一起带进去（outreach 批的 42703 恒 500 就是这么来的）。
-	//    所以循环里**每跑一条查询就重新取一次 db.RQ(c)**，绝不把句柄提到循环外复用。
-	//
-	//    每表各取 limit+1 条（不是 limit 条）：多要那一条**不返回**，只用来判断"这张表后面还有没有"。
-	//    若只取 limit 条，则"热表还有第 limit+1 条"这种情况在合并后看不出来——归档表这一轮
-	//    可能一条都没有，merged 长度恰好等于 limit，于是 truncated=false，游标就此停住，
-	//    客户拿到的是一份"看起来给完了、其实少了尾巴"的副本。这属于静默不完整，比不给更糟。
-	var merged []portableRow
-	for _, src := range []struct {
-		table    string
-		archived bool
-	}{
-		{table: "messages", archived: false},
-		{table: "messages_archive", archived: true},
-	} {
-		rows, err := fetchPortableRows(db.RQ(c), src.table, req.CustomerID, req.AfterID, limit+1)
-		if err != nil {
-			// 归档表缺失/查询故障都**不返回半成品**：一份"看起来完整、其实少了一半"的个人数据副本
-			// 会被客户当成全量交给另一个服务商，缺陷就转嫁给了当事人。
-			log.Printf("[PIPL可携带] 租户%d 客户%d 读取 %s 失败: %v", tid, req.CustomerID, src.table, err)
-			RespErr(c, http.StatusInternalServerError, 500, "副本读取失败，请稍后重试")
-			return
-		}
-		for i := range rows {
-			rows[i].Archived = src.archived
-		}
-		merged = append(merged, rows...)
-	}
-	// 先排序、后截断——顺序反过来就是丢数据：append 序是"热表全部 + 归档全部"，
-	// 而归档行是**更早**的消息，生产搬移保留原主键所以它们的 id 普遍**小于**热表行。
-	// 按 append 序砍尾巴，砍掉的正是这批最小的 id，而 next_after_id 又取自砍完之后的最大值，
-	// 于是游标直接跳过那批小 id 且永不回头（用例 TestPortabilityCursor 首跑即抓到：
-	// 种子三条 8360(归档)/8361/8362，limit=2 时第一页回 [8361,8362]、第二页空，8360 永久丢失）。
-	sort.Slice(merged, func(i, j int) bool { return merged[i].ID < merged[j].ID })
-	truncated := len(merged) > limit
-	if truncated {
-		merged = merged[:limit]
-	}
-
-	msgList := make([]gin.H, 0, len(merged))
-	var nextID uint
-	for i := range merged {
-		r := &merged[i]
-		nextID = r.ID
-		msgList = append(msgList, gin.H{
-			"id":              r.ID,
-			"conversation_id": r.ConversationID,
-			"sender_type":     r.SenderType,
-			"content":         r.Content, // 本人副本不掩码：掩码会得到一份"我自己说的话被改掉"的假副本
-			"message_type":    r.MessageType,
-			"archived":        r.Archived,
-			"created_at":      r.CreatedAt,
-		})
-	}
-
-	var convs []model.Conversation
-	if err := db.RQ(c).Where("customer_id = ?", req.CustomerID).Order("id ASC").Limit(portableRowCap).
-		Find(&convs).Error; err != nil {
-		RespErr(c, http.StatusInternalServerError, 500, "副本读取失败，请稍后重试")
+	merged, truncated, ok := fetchPortablePage(c, req.CustomerID, req.AfterID, limit)
+	if !ok {
 		return
 	}
-	convList := make([]gin.H, 0, len(convs))
-	for i := range convs {
-		cv := &convs[i]
-		convList = append(convList, gin.H{
-			"id":              cv.ID,
-			"status":          cv.Status,
-			"channel":         cv.Channel,
-			"created_at":      cv.CreatedAt,
-			"updated_at":      cv.UpdatedAt,
-			"last_message_at": cv.LastMessageAt,
-		})
+	msgList, nextID := projectPortableMessages(merged)
+
+	convList, ok := readPortableConversations(c, req.CustomerID)
+	if !ok {
+		return
 	}
 
 	// 留痕但不落敏感值：visitor_key 是凭证，绝不进日志（本行只有租户/客户/条数/游标）。
@@ -240,4 +155,138 @@ func PrivacyMyData(c *gin.Context) {
 			"truncated":     truncated,
 		},
 	})
+}
+
+// privacyMyDataAuthorize 身份闸（①）：先认人再取数（顺序反了会把几十万行读进内存才被拒）。
+// 单独成段是因为这一段承载本端点全部的越权防线（租户缺失 400 / 跨租户与不存在同形 404 /
+// 匿名假 visitor_key 403 / 登录态范围外 403），失败即整页终止——
+// 与后面"任一读失败也只是 500 重试"的取数段是两种失败语义，混排容易在改动时被稀释。
+// 返回 logged 供主体留痕用；ok=false 表示已应答。
+func privacyMyDataAuthorize(c *gin.Context, tid, customerID uint, visitorKey string) (model.Customer, bool, bool) {
+	if tid == 0 {
+		RespErr(c, http.StatusBadRequest, 400, "缺少租户上下文")
+		return model.Customer{}, false, false
+	}
+	if customerID == 0 {
+		RespErr(c, http.StatusBadRequest, 400, "customer_id 必填")
+		return model.Customer{}, false, false
+	}
+	// ① 身份闸：先认人再取数（顺序反了会把几十万行读进内存才被拒）。
+	//    跨租户/不存在的客户统一 404 不回显差异，与删除权一致。
+	var cust model.Customer
+	if err := db.RQ(c).Where("id = ?", customerID).First(&cust).Error; err != nil {
+		RespErr(c, http.StatusNotFound, 404, "客户不存在")
+		return model.Customer{}, false, false
+	}
+	_, logged := c.Get("user_id")
+	if !logged {
+		if visitorKey == "" || !hashEqual(cust.VisitorKey, visitorKey) {
+			RespErr(c, http.StatusForbidden, 403, "visitor_key 校验失败")
+			return model.Customer{}, false, false
+		}
+	} else if !customerInDataScope(c, cust.AssignedUserID) {
+		RespErr(c, http.StatusForbidden, 403, "该客户不在你的数据范围内，无权导出本人副本")
+		return model.Customer{}, false, false
+	}
+	return cust, logged, true
+}
+
+// fetchPortablePage ③ 消息流取数：热表 + 冷归档表各取 limit+1 条，合并排序后截断到 limit。
+// 单独成段是因为"排序必须先于截断"是这段的唯一正确性命门（游标跳号即静默不完整），
+// 把取数、排序、截断拆在调用方两处会让顺序约束失去物理保障。
+// ok=false 表示查询已失败并应答 500（绝不返回半成品副本）。
+//
+// 句柄纪律（AGENTS.md 红线）保留原样：循环里每跑一条查询就重新取一次 db.RQ(c)，绝不提到循环外复用。
+func fetchPortablePage(c *gin.Context, customerID, afterID uint, limit int) ([]portableRow, bool, bool) {
+	tid := db.EffectiveTenantIDFromGin(c)
+	// ③ 消息流：热表 + 冷归档表**都要读**。只读 messages 的话，message_archive_days 一开，
+	//    客户的副本就少一截历史且没有任何地方报错——这是"静默不完整"，比不给更糟。
+	//
+	//    句柄纪律（AGENTS.md 红线）：`db.RQ(c)` 是 clone=0 句柄，同一句柄连着跑第二条查询会把
+	//    第一条的 Where/Model 一起带进去（outreach 批的 42703 恒 500 就是这么来的）。
+	//    所以循环里**每跑一条查询就重新取一次 db.RQ(c)**，绝不把句柄提到循环外复用。
+	//
+	//    每表各取 limit+1 条（不是 limit 条）：多要那一条**不返回**，只用来判断"这张表后面还有没有"。
+	//    若只取 limit 条，则"热表还有第 limit+1 条"这种情况在合并后看不出来——归档表这一轮
+	//    可能一条都没有，merged 长度恰好等于 limit，于是 truncated=false，游标就此停住，
+	//    客户拿到的是一份"看起来给完了、其实少了尾巴"的副本。这属于静默不完整，比不给更糟。
+	var merged []portableRow
+	for _, src := range []struct {
+		table    string
+		archived bool
+	}{
+		{table: "messages", archived: false},
+		{table: "messages_archive", archived: true},
+	} {
+		rows, err := fetchPortableRows(db.RQ(c), src.table, customerID, afterID, limit+1)
+		if err != nil {
+			// 归档表缺失/查询故障都**不返回半成品**：一份"看起来完整、其实少了一半"的个人数据副本
+			// 会被客户当成全量交给另一个服务商，缺陷就转嫁给了当事人。
+			log.Printf("[PIPL可携带] 租户%d 客户%d 读取 %s 失败: %v", tid, customerID, src.table, err)
+			RespErr(c, http.StatusInternalServerError, 500, "副本读取失败，请稍后重试")
+			return nil, false, false
+		}
+		for i := range rows {
+			rows[i].Archived = src.archived
+		}
+		merged = append(merged, rows...)
+	}
+	// 先排序、后截断——顺序反过来就是丢数据：append 序是"热表全部 + 归档全部"，
+	// 而归档行是**更早**的消息，生产搬移保留原主键所以它们的 id 普遍**小于**热表行。
+	// 按 append 序砍尾巴，砍掉的正是这批最小的 id，而 next_after_id 又取自砍完之后的最大值，
+	// 于是游标直接跳过那批小 id 且永不回头（用例 TestPortabilityCursor 首跑即抓到：
+	// 种子三条 8360(归档)/8361/8362，limit=2 时第一页回 [8361,8362]、第二页空，8360 永久丢失）。
+	sort.Slice(merged, func(i, j int) bool { return merged[i].ID < merged[j].ID })
+	truncated := len(merged) > limit
+	if truncated {
+		merged = merged[:limit]
+	}
+	return merged, truncated, true
+}
+
+// projectPortableMessages 把截断后的消息行投影为响应体清单（手写白名单键，见文件头红线），
+// 并顺带取游标终点 next_after_id。纯函数无 IO，单独成段只为把"哪些列进副本"这份
+// 显式清单收进一个可整体审视的作用域。
+func projectPortableMessages(merged []portableRow) ([]gin.H, uint) {
+	msgList := make([]gin.H, 0, len(merged))
+	var nextID uint
+	for i := range merged {
+		r := &merged[i]
+		nextID = r.ID
+		msgList = append(msgList, gin.H{
+			"id":              r.ID,
+			"conversation_id": r.ConversationID,
+			"sender_type":     r.SenderType,
+			"content":         r.Content, // 本人副本不掩码：掩码会得到一份"我自己说的话被改掉"的假副本
+			"message_type":    r.MessageType,
+			"archived":        r.Archived,
+			"created_at":      r.CreatedAt,
+		})
+	}
+	return msgList, nextID
+}
+
+// readPortableConversations 读会话清单并投影。单独成段是因为它和消息流一样是必查读
+// （失败即 500 不应答半成品），但表不同、钳制口径不同（整表 Limit(portableRowCap)），
+// 与纯投影段 projectPortableMessages 的失败语义不是一类，故读+投放在一起来、消息的读在彼处。
+func readPortableConversations(c *gin.Context, customerID uint) ([]gin.H, bool) {
+	var convs []model.Conversation
+	if err := db.RQ(c).Where("customer_id = ?", customerID).Order("id ASC").Limit(portableRowCap).
+		Find(&convs).Error; err != nil {
+		RespErr(c, http.StatusInternalServerError, 500, "副本读取失败，请稍后重试")
+		return nil, false
+	}
+	convList := make([]gin.H, 0, len(convs))
+	for i := range convs {
+		cv := &convs[i]
+		convList = append(convList, gin.H{
+			"id":              cv.ID,
+			"status":          cv.Status,
+			"channel":         cv.Channel,
+			"created_at":      cv.CreatedAt,
+			"updated_at":      cv.UpdatedAt,
+			"last_message_at": cv.LastMessageAt,
+		})
+	}
+	return convList, true
 }

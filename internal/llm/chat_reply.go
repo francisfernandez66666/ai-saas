@@ -2,27 +2,16 @@
 // 智谱已从路由移除——频繁 429，见 AGENTS.md；跨模型自动降级详见 ai/ai_router.go）、计量与兜底
 package llm
 
-import "ai-scrm/internal/billing"
-
-import "ai-scrm/internal/metrics"
-
-import "ai-scrm/internal/pii"
-
 import (
-	"ai-scrm/config"
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/cache"
-	"ai-scrm/internal/chatflow"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/runtimecfg"
-	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"context"
 	"log"
-	"math/rand"
 	"strings"
-	"time"
 )
 
 // ============================================================
@@ -49,124 +38,43 @@ func GenerateAIReply(ctx context.Context, customer *model.Customer, conversation
 func generateAIReplyInner(ctx context.Context, customer *model.Customer, conversationID uint, userInput string,
 	strategyOutput *strategytypes.StrategyOutput, features []model.Feature) string {
 
+	// 阶段上下文：跨段共享的局部变量全部收口为字段（拆分形态见 chat_reply_stages.go，
+	// 纯结构性重构，各阶段执行顺序与短路语义与原函数体逐字一致）
+	s := &aiReplyStage{
+		ctx:            ctx,
+		customer:       customer,
+		conversationID: conversationID,
+		userInput:      userInput,
+		strategyOutput: strategyOutput,
+		features:       features,
+	}
+
 	// 加载会话，检查引导式反问状态
-	var genConv model.Conversation
-	db.DB.First(&genConv, conversationID)
+	s.loadConversation()
 
 	// P2-60 修复(2026-09-09)：引导式反问递减改 defer 统一出口——
 	// 原只在"真实AI成功路径"末尾递减，配额耗尽/降级/硬拦截等提前 return 的路径
 	// 永不递减，租户永久卡在 GuidedRemainingRounds=1，反问永不关闭。
 	// defer 保证所有出口（成功/兜底/降级/硬拦截）都会消耗一轮。
-	defer func() {
-		if genConv.GuidedRemainingRounds > 0 {
-			genConv.GuidedRemainingRounds--
-			updates := map[string]interface{}{
-				"guided_remaining_rounds": genConv.GuidedRemainingRounds,
-			}
-			if genConv.GuidedRemainingRounds == 0 {
-				genConv.GuidedDisabled = true
-				updates["guided_disabled"] = true
-				log.Printf("[引导轮数耗尽] 会话%d 引导式反问轮数已用完，关闭引导", conversationID)
-			}
-			db.DB.Model(&genConv).Updates(updates)
-		}
-	}()
+	defer s.consumeGuidedRound()
 
-	// ---- 话题硬边界拦截 ----
-	// 修复：只靠提示词软约束不够，AI还是会回答无关话题
-	// 硬边界 = 代码层拦截，命中无关话题直接返回引导话术，不走AI
-	// 白名单优先：消息含车相关词则放行（"帮我写个试驾报告"→含"试驾"→不拦截）
-	if service.IsOffTopicForTenant(customer.TenantID, userInput) {
-		reply := service.GetOffTopicReplyForTenant(customer.TenantID, userInput)
-		log.Printf("[硬边界] 拦截无关话题，引导回车")
+	// 话题硬边界拦截（命中即终稿，不走AI）
+	if reply, blocked := s.offTopicHardBlock(); blocked {
 		return reply
 	}
 
-	// ---- 询价硬拦截：客户问价格，一律引导到店/体验后报价，不进AI ----
-	// 泛行业化（P2.4）：关键词从 industry.price_keywords 读取，行业包可配置；空回退汽车默认
-	// P1-29(2026-09-09)：话术整体迁入 industry.price_reply_lead/nolead 行业键（行业包可覆盖）；
-	// P1-30：已留资分支不再出现"约试驾"（与 prompt 硬规则【已留资禁止促到店】矛盾）
-	priceKeywords := service.IndustryPriceKeywordsForTenant(customer.TenantID)
-	if service.ContainsKeywordForTenant(userInput, priceKeywords) {
-		log.Printf("[询价硬拦截] 客户%d 触发询价硬拦截, 引导体验后报价", customer.ID)
-		leadCapturedGuiding := chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0
-		replies := service.IndustryPriceRepliesForTenant(customer.TenantID, leadCapturedGuiding)
-		return replies[rand.Intn(len(replies))]
+	// 询价硬拦截（命中即随机取一条行业话术，不进AI）
+	if reply, blocked := s.priceHardBlock(); blocked {
+		return reply
 	}
 
-	// 促单锁：提前计算canPromote，确保所有路径（含兜底）都受控
-	// 修复：原来canPromote声明在MockMode检查之后，前两处BuildFallbackReply调用无法传入
-	canPromote := customer.CanPromote()
-
-	// 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计 used_ai_calls），
-	// 真正的计费闸是下方 CheckTokenAvailability（前置拦截） + SinkRecordUsage（批量扣减）
-	tenantID := customer.TenantID
-
-	// 网关模式：计费权已上收 AI 网关（网关侧做 fail-closed 计量），本地跳过自身计量避免重复扣减
-	gatewayMode := ai.DefaultGatewayClient != nil && tenantID != 0
-	if !gatewayMode {
-		billing.ConsumeAIQuota(tenantID) // 统计旁路：恒放行，仅累计计数
-
-		// P1.5 Token三桶引擎前置检查（2026-08-26）：总闸/强制未开时恒放行；
-		// 三桶均空 → 降级规则话术（扣减优先级 ③免费桶→①订阅额度→②余额 在 DeductTokensActual 落地）
-		if !billing.CheckTokenAvailability(tenantID) {
-			log.Printf("[TokenBilling] 租户%d 三桶余额不足，本次降级规则话术", tenantID)
-			// G-5(2026-09-24)：降级同步进 /metrics 计数器，回归断言不再 grep 日志文件
-			metrics.IncAIFallback("quota_exhausted")
-			return ai.BuildFallbackReply(strategyOutput, canPromote)
-		}
+	// 计费闸 + 模式闸：三桶余额/模拟模式/无可用模型，任一命中降级为模板兜底
+	if fallback, hit := s.billingAndModePrecheck(); hit {
+		return fallback
 	}
 
-	// 模拟模式：直接用策略中心的模板话术兜底
-	// 修复：从SystemConfigService读取mock_mode，后台开关即时生效
-	// 修复：AI_MOCK_MODE 环境变量应作为模拟模式的权威信号。
-	// 原有 GetBool("mock_mode", env) 会被种子写死的系统配置 false 覆盖，导致 env 失效、
-	// 开发环境实际走真实 LLM 调用（慢且可能无 key 报错）。改为 env 或 系统配置任一为真即模拟。
-	if config.GlobalConfig.AI.MockMode || runtimecfg.SafeCfgBool("mock_mode", false) {
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
-	}
-
-	// 检查是否有任何可用的AI模型（降级链中任一 provider 存活即可）
-	hasAnyAI := ai.DefaultClient.APIKey != ""
-	if ai.SiliconFlowDefaultClient != nil && ai.SiliconFlowDefaultClient.Enabled {
-		hasAnyAI = true
-	}
-	if !hasAnyAI {
-		log.Printf("[AI] 无可用AI模型，使用模板兜底")
-		metrics.IncAIFallback("no_ai_model") // G-5(2026-09-24)：同上，降级原因走指标不走日志
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
-	}
-
-	// 确认走多模型降级路由
-	log.Printf("[AI] 走多模型降级链路，当前路由模型数: %d", len(ai.Router.GetModels()))
-
-	// 真实AI模式：用高质量Prompt构建器
-	// 修复问题4+6：检测对话轮数和重复话题，动态注入策略指令
-	// 4. 引导式对话在冷启动用户N次关键需求回答后关闭（默认5轮，后台可调）
-	//    达到阈值后：关闭反问，专注解答+适当介绍ROX品牌/车型/能力
-	// 4b. 客户重复性问题超过3次，关闭反问引导式语句，直接走解决陈述
-	// 6. 非车话题重复3次及以上后，改语气，关闭引导式反问，认真说回聊到车上
-	guidedDialogMaxRounds := runtimecfg.SafeCfgInt("guided_dialog_max_rounds", 5)
-	repeatQuestionMaxTimes := runtimecfg.SafeCfgInt("repeat_question_max_times", 3)
-	offtopicRepeatMaxTimes := runtimecfg.SafeCfgInt("offtopic_repeat_max_times", 3)
-
-	// 检测对话轮数（客户发了多少条消息）
-	// P2-61 修复：原全历史 Find 进内存；dialogRoundCount 仅用于引导式对话阈值判断，
-	// 收敛到最近 50 条足够（阈值 5~10 轮）
-	dialogRoundCount := 0
-	var customerMsgCount []model.Message
-	db.DB.Where("customer_id = ? AND sender_type = ?", customer.ID, "customer").
-		Order("id DESC").Limit(50).Find(&customerMsgCount)
-	dialogRoundCount = len(customerMsgCount)
-
-	// 检测重复问题（客户最近的消息和之前的消息相似度）
-	repeatCount := chatflow.CountSimilarQuestions(customer.ID, userInput)
-
-	// 检测非车话题重复次数
-	offtopicRepeatCount := chatflow.CountOffTopicRepeats(customer.ID)
-	// 胡搅蛮缠分支：总非车话题数和连续在话题数
-	totalOffTopic := chatflow.CountTotalOffTopic(customer.ID)
-	consecutiveOnTopic := chatflow.CountConsecutiveOnTopic(customer.ID)
+	// 对话信号检测：轮数/重复问题/非车话题计数与三个热配置阈值
+	s.detectDialogSignals()
 
 	// 全硬拦截，不依赖prompt指令。
 	// 所有规则流程在下面硬编码的interceptor中执行：
@@ -175,210 +83,38 @@ func generateAIReplyInner(ctx context.Context, customer *model.Customer, convers
 	//   - offtopicRepeatCount → 固定回复+降权
 	//   - GuidedDisabled → 顶部return确认语
 
-	// 1. 系统Prompt（人设 + 卖点知识 + 价格管控 + 促单锁 + 到店转化策略）
-	hasArrived := customer.HasArrived() // 判断客户是否已到店，用于价格管控
-	// canPromote已在函数顶部声明，此处不再重复
-	isStoreVisit := service.IsStoreVisitIntentForTenant(customer.TenantID, userInput) && !chatflow.IsLeadCaptured(customer) // 到店意图且未留资才注入到店策略
-	modelID := getCustomerModelID(customer)
-	systemPrompt := ai.BuildSystemPrompt(customer.TenantID, features, modelID, hasArrived, strategyOutput.FinalAnchor, canPromote, isStoreVisit, chatflow.IsLeadCaptured(customer))
+	// 1. 系统Prompt（人设 + 卖点知识 + 价格管控 + 促单锁 + 到店转化策略 + KB 注入）
+	s.buildSystemPromptWithKB()
 
-	// P2 双层KB：租户自有资料融合检索注入（二元组打分 top3；无命中不加段）
-	if kbHits := service.SearchTenantKnowledge(customer.TenantID, userInput, 3); len(kbHits) > 0 {
-		var kbs strings.Builder
-		kbs.WriteString("\n【企业知识库参考】以下为该企业自有资料片段，仅供参考；与客户问题相关就自然融入，无关或不确定就别硬套：\n")
-		for _, f := range kbHits {
-			content := []rune(f.Content)
-			if len(content) > 300 {
-				content = content[:300]
-			}
-			kbs.WriteString("- [" + f.Title + "] " + string(content) + "\n")
-		}
-		systemPrompt += kbs.String()
-		log.Printf("[KB] 租户%d 命中 %d 条自有知识片段注入 prompt", customer.TenantID, len(kbHits))
+	// 2. 策略指令（锚方向 + 话术参考 + 条件交换 + 知识库素材 + 销售路径决策段）
+	s.buildStrategyPrompt()
+
+	// 3+4. 组装消息列表：system → 历史对话 → 当前策略+用户消息
+	s.assembleMessages()
+
+	// 5+6. 调用AI（多模型降级路由）+ 落账；失败/空回复降级为模板兜底
+	if fallback, hit := s.callAIAndBill(); hit {
+		return fallback
 	}
 
-	// 2. 策略指令（锚方向 + 话术参考 + 条件交换 + 知识库素材）
-	strategyPrompt := ai.BuildStrategyPrompt(strategyOutput, customer.GetTags(), modelID, hasArrived, canPromote, chatflow.IsLeadCaptured(customer))
+	// 7/7b. 硬拦截：留资反问剥离 + 引导关闭条件剥离
+	s.stripGuidedQuestionsGuards()
 
-	// A4 实装(2026-09-23)：销售路径机（engine/flow）输出的每轮消费点——
-	// 决策由 OrchestrateReply 评估后经 ctx 下传（strategytypes 中立承载，避免 llm→flow 反向依赖）。
-	// 热开关 sales_path_enabled 默认关，关闭时 ctx 恒无值、本段整体跳过，prompt 逐字节等价现状；
-	// 开启时仅向策略指令追加「当前阶段→推进目标→下一步动作」结构化约束，不改既有指令分节。
-	if sp := strategytypes.SalesPathFromContext(ctx); sp != nil && sp.PromptDirective != "" {
-		strategyPrompt += "\n\n" + sp.PromptDirective
-		log.Printf("[销售路径] customer=%d 注入路径决策 %s→%s(信号=%s)",
-			customer.ID, sp.CurrentStage, sp.TargetStage, sp.ConversionSignal)
-	}
+	// 7c. 硬拦截：胡搅蛮缠分支（固定回复替换 + 意向分降权/恢复）
+	s.enforceOffTopicGuards()
 
-	// 3. 构建对话上下文
-	// 对话历史轮数由 system_configs 的 chat_history_rounds 控制（DB 默认 3 轮）
-	// =0 时改用核心内容摘要注入 system prompt，避免模型记忆偏移
-	// 核心摘要提取：用户需求、看过哪些车、在开什么车、关注点等
-	chatHistoryRounds := runtimecfg.SafeCfgInt("chat_history_rounds", 3)
-	var historyMessages []ai.ChatMessage
-	if chatHistoryRounds > 0 {
-		// 如果配置了>0轮，仍用传统对话历史注入
-		historyMessages = getConversationHistory(customer.TenantID, conversationID, chatHistoryRounds)
-	}
+	// 7d. 硬拦截：引导关闭后全面剥离反问句
+	s.stripAllQuestionsWhenGuidedClosed()
 
-	// 4. 组装消息列表：system → 历史对话 → 当前策略+用户消息
-	messages := make([]ai.ChatMessage, 0, len(historyMessages)+2)
-
-	// 修复问题7：当关闭对话历史注入(chat_history_rounds=0)时，注入客户核心信息摘要
-	// 摘要来源：客户画像字段 + 最近消息中的关键信息
-	// 不注入完整历史，只提取核心需求/兴趣/关注点，避免模型记忆偏移
-	customerContextSummary := ""
-	if chatHistoryRounds == 0 {
-		customerContextSummary = chatflow.BuildCustomerContextSummary(customer, conversationID)
-	}
-
-	// system prompt：如果有核心摘要+策略调整，追加到system prompt末尾
-	systemPromptFinal := systemPrompt
-	if customerContextSummary != "" {
-		systemPromptFinal = systemPrompt + "\n\n【客户核心信息摘要】\n" + customerContextSummary
-	}
-
-	messages = append(messages, ai.ChatMessage{
-		Role:    "system",
-		Content: systemPromptFinal,
-	})
-	// 历史对话
-	messages = append(messages, historyMessages...)
-	// 当前轮（策略prompt + 用户输入）
-	messages = append(messages, ai.ChatMessage{
-		Role: "user",
-		Content: strategyPrompt + "\n\n" +
-			"客户最新说的话：\n" + userInput + "\n\n" +
-			"请直接回复客户：",
-	})
-
-	// 5. 调用AI（走多模型路由，自动降级；stage_models 可为 reply 阶段覆盖专属模型）
-	// 修复：从SystemConfigService读取temperature，后台调参即时生效
-	aiTemp := runtimecfg.SafeCfgFloat("ai_temperature", ai.DefaultClient.Temperature)
-	callStart := time.Now()
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(ctx, "reply", tenantID, messages, aiTemp)
-	if err != nil {
-		metrics.IncAIFailure() // P1-2：全模型失败计为 AI 失败（成功率分母）
-		log.Printf("[AI] 所有模型均调用失败: %v, 降级使用模板回复", err)
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
-	}
-	metrics.IncAISuccess() // P1-2：真模型成功返回计为 AI 成功
-	// M3 计量落账（异步best-effort）：请求级 token/成本/延迟 → usage_ledger
-	// C3 修复(2026-09-14)：gatewayMode 是调用前的预判；降级链若实际落到本地直连 key
-	// （provider != gateway），旧逻辑仍跳过计量 → 真实 token 消耗零落账零扣减（漏钱洞）。
-	// 以"实际服务的 provider"为准：仅网关侧服务时才免本地计量。
-	billedByGateway := gatewayMode && provider == string(ai.ProviderGateway)
-	if !billedByGateway {
-		billing.RecordUsage(tenantID, customer.ID, 0, "reply", provider, modelName,
-			usage.PromptTokens, usage.CompletionTokens, time.Since(callStart).Milliseconds())
-		// P1.5 按实际用量三桶顺序扣减（③→①→②；总闸/灰度未开时 no-op）
-		// 2026-09-03 计费统一：由异步 `go DeductTokensActual` 改为投递 UsageSink 批量落库，
-		// 消除并发下扣减顺序不保证的竞态（每租户每 flush 周期单事务扣减）
-		billing.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
-	}
-
-	// 数据飞轮：脱敏对话素材回流（P3，供行业包自动迭代）；未配置 Collector.URL 自动丢弃
-	service.Collect("material", tenantID, map[string]any{
-		"stage":        "reply",
-		"user_message": userInput,
-		"reply":        reply,
-		"model":        modelName,
-	})
-	if modelName != "" {
-		log.Printf("[AI] 实际使用模型: %s (tokens=%d)", modelName, usage.TotalTokens)
-	}
-
-	// 6. 空回复兜底
-	if reply == "" {
-		return ai.BuildFallbackReply(strategyOutput, canPromote)
-	}
-
-	// 7. 硬拦截：已留资客户AI回复中不能含反问句
-	// 硬编码：GuidedRemainingRounds>0时表示这是留资后第一条回复，允许反问句通过
-	// 留资后第一条反问句由分支B直接回复固定句或AI注入，后续轮次全部剥离
-	if chatflow.IsLeadCaptured(customer) && genConv.GuidedRemainingRounds == 0 {
-		stripped := chatflow.StripGuidedQuestions(reply)
-		if stripped != reply {
-			log.Printf("[留资硬拦截] 客户%d 已留资，AI回复含反问句，已剥离: %q → %q", customer.ID, pii.MaskPhoneInText(reply), pii.MaskPhoneInText(stripped))
-			reply = stripped
-		}
-	}
-
-	// 7b. 硬拦截：引导式反问关闭条件触发时剥离反问句
-	if !chatflow.IsLeadCaptured(customer) {
-		closeGuided := (dialogRoundCount >= guidedDialogMaxRounds && strategyOutput.FinalAnchor == strategytypes.AnchorNoThrow) ||
-			(repeatCount >= repeatQuestionMaxTimes)
-		if closeGuided {
-			stripped := chatflow.StripGuidedQuestions(reply)
-			if stripped != reply {
-				log.Printf("[引导关闭硬拦截] 客户%d 触发反问关闭条件，已剥离: %q → %q", customer.ID, pii.MaskPhoneInText(reply), pii.MaskPhoneInText(stripped))
-				reply = stripped
-			}
-		}
-	}
-
-	// 7c. 硬拦截：胡搅蛮缠分支
-	// 3轮非车话题后关闭引导+固定回复
-	// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：固定文案曾硬编码"只能回答你车和品牌"，
-	// 任何行业租户都返回汽车版且绕开行业分流——改走 GetOffTopicReplyForTenant，
-	// 汽车族仍是行业口径兜底、非 auto 包/无绑定回中立句；租户配置 industry.offtopic_replies 优先级最高。
-	if offtopicRepeatCount >= offtopicRepeatMaxTimes {
-		reply = service.GetOffTopicReplyForTenant(customer.TenantID, userInput)
-		log.Printf("[胡搅蛮缠-硬拦截] 客户%d 非车话题%d次 >= 阈值%d，已替换回复",
-			customer.ID, offtopicRepeatCount, offtopicRepeatMaxTimes)
-	}
-	// 10轮以上总非车话题：降低意向分+放慢回复
-	if totalOffTopic > 10 && consecutiveOnTopic < 3 {
-		customer.IntentScore = customer.IntentScore * 0.5
-		if customer.IntentScore < 0.05 {
-			customer.IntentScore = 0.05
-		}
-		db.DB.Model(customer).Update("intent_score", customer.IntentScore)
-		log.Printf("[胡搅蛮缠-降权] 客户%d 非车话题总数%d>10, 意向分降至%.2f",
-			customer.ID, totalOffTopic, customer.IntentScore)
-	}
-	// 恢复：连续3轮以上回到车话题
-	if consecutiveOnTopic >= 3 {
-		restoredScore := customer.IntentScore * 2.0
-		if restoredScore > 1.0 {
-			restoredScore = 1.0
-		}
-		if restoredScore > customer.IntentScore {
-			customer.IntentScore = restoredScore
-			db.DB.Model(customer).Update("intent_score", customer.IntentScore)
-			log.Printf("[胡搅蛮缠-恢复] 客户%d 连续%d轮在话题, 意向分恢复至%.2f",
-				customer.ID, consecutiveOnTopic, customer.IntentScore)
-		}
-	}
-
-	// 7d. 硬拦截：引导关闭后，全面剥离所有反问句（无论是否已留资）
-	// 覆盖更多中文反问模式：什么、怎么、哪、有没有、是不是等
-	// 引导关闭后AI只做陈述句介绍产品/了解需求，不再反问
-	if genConv.GuidedDisabled && genConv.GuidedRemainingRounds == 0 {
-		oldReply := reply
-		reply = chatflow.StripAllQuestions(reply)
-		if reply != oldReply {
-			log.Printf("[引导关闭-全面剥离] 客户%d 引导已关闭，全面剥离反问句: %q → %q", customer.ID, pii.MaskPhoneInText(oldReply), pii.MaskPhoneInText(reply))
-		}
-	}
-
-	// 8. 知识库盲点兜底检测
-	// 修复问题5：触及知识库盲点后，模型一直在瞎回复兜圈子
-	// 检测AI回复中是否包含不确定/兜圈子的信号词，触发后用盲点兜底话术替换
-	// 兜底话术：关闭引导式提问，直接回"好的，稍等，这个问题我查一下"
-	// 如果客户继续提问相关问题："不好意思我现在忙，要不您到店来体验下？"
-	if runtimecfg.SafeCfgBool("knowledge_blindspot_fallback_enabled", true) {
-		blindspotReply := chatflow.DetectKnowledgeBlindspot(reply, userInput)
-		if blindspotReply != "" {
-			log.Printf("[知识库盲点兜底] 客户提问触及盲点，原始AI回复含不确定信号，替换为兜底话术")
-			return blindspotReply
-		}
+	// 8. 知识库盲点兜底检测（命中即整体替换为兜底话术）
+	if blindspotReply, hit := s.knowledgeBlindspotFallback(); hit {
+		return blindspotReply
 	}
 
 	// 注：引导式反问递减已上移到 defer 统一出口（P2-60），所有 return 路径统一消耗
 
 	// 微修复（2026-08-22）：实测AI回复带前导换行（模型输出习惯），统一去除首尾空白
-	return strings.TrimSpace(reply)
+	return strings.TrimSpace(s.reply)
 }
 
 // getConversationHistory 获取会话的历史对话消息
