@@ -27,12 +27,19 @@
 #
 # 用法：
 #   ./tools/test_all.sh            # 完整回归（含 uat，耗时约 20-40 分钟）
-#   ./tools/test_all.sh --fast     # 快回归：单测+构建+smoke/org/saas，跳过 uat
+#   ./tools/test_all.sh --fast     # 快回归：阶段零+单测+构建+tsc+契约+九套 E2E+playwright（跳过 uat）
 #   ./tools/test_all.sh --unit     # 仅单元测试层（go test -cover + 前端 vitest）
+#   ./tools/test_all.sh --static   # 仅阶段零静态门禁（14 项，不起服务、不跑单测/E2E，分钟级）
 #   ./tools/test_all.sh --capacity # 单测+构建+T7契约+C5 双实例 WS/Redis 广播矩阵（本地环境）
 #   SERVER_PORT=9090 ./tools/test_all.sh   # 指定服务端口（默认 9090）
 #
-# 阶段顺序：单元层 → 构建 → E2E 层（八套） → 汇总。每阶段失败继续跑后续
+# 为什么要有 --static（2026-09-28 FIX-A 后续）：阶段零门禁本身也可能是空转的，而"没人去复查"
+#   的结构性原因是——想只看一眼静态门禁有没有真在拦东西，却要等十几分钟跑完整回归。有了
+#   --static，改完门禁脚本能立刻单跑它自己那一档（deploy_preflight / ops_daily / backup.sh
+#   三套反证用例都在这一档里）。
+#
+# 阶段顺序：阶段零静态门禁（14 项）→ 单元层 → 构建+tsc+契约 → E2E 层（九套断言脚本
+#   + playwright）→ 汇总。每阶段失败继续跑后续
 #（除非 --failfast），最终以总账定 exit code。
 # ============================================================
 set -u
