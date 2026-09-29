@@ -99,6 +99,13 @@ func Complete(tenantID uint, flowInstanceID uint) error {
 		Updates(map[string]interface{}{"status": model.SMStatusCompleted, "heartbeat_ts": time.Now()}).Error
 }
 
+// sweepHeartbeatWriter FIX-7(2026-09-29 审计批二)：巡检里两处心跳/标记写入的单点，抽成包级
+// 变量只为让单测能桩成"必失败"来验证写失败必出 WARN——吞错曾把"发布 requeue 后心跳没刷、
+// 下轮会重发"（at-least-once，消费端需幂等）变成"没人知道"。发布语义不变。
+var sweepHeartbeatWriter = func(id uint, fields map[string]interface{}) error {
+	return db.DB.Model(&model.FlowStateMachine{}).Where("id = ?", id).Updates(fields).Error
+}
+
 // SweepOnce 单轮巡检：将心跳超时的 running 实例重新入队
 //
 // 修复Bug3（2026-08-22）：
@@ -124,12 +131,14 @@ func SweepOnce(heartbeatTimeout time.Duration) int {
 				log.Printf("[状态机巡检] 实例%d(租户%d) 心跳超时（waiting 语义，未启用requeue，仅记录）",
 					sm.FlowInstanceID, sm.TenantID)
 			}
-			_ = db.DB.Model(&model.FlowStateMachine{}).
-				Where("id = ?", sm.ID).
-				Updates(map[string]interface{}{
-					"heartbeat_ts":  time.Now(),
-					"last_event_id": "sweep_noticed",
-				}).Error
+			// FIX-7(2026-09-29)：写失败不再吞——刷不上心跳+标记意味着下轮还会重扫重打这条日志，
+			// 必须看得见（原先静默时表现为"同一实例反复超时告警"却查不出为什么没被压下去）
+			if err := sweepHeartbeatWriter(sm.ID, map[string]interface{}{
+				"heartbeat_ts":  time.Now(),
+				"last_event_id": "sweep_noticed",
+			}); err != nil {
+				log.Printf("[状态机巡检] 实例%d 心跳/标记写入失败: %v —— 下轮将重新扫描该实例", sm.FlowInstanceID, err)
+			}
 			continue
 		}
 		log.Printf("[状态机巡检] 实例%d(租户%d) 心跳超时，发 flow_drive 断点续跑", sm.FlowInstanceID, sm.TenantID)
@@ -143,9 +152,11 @@ func SweepOnce(heartbeatTimeout time.Duration) int {
 			continue // 发布失败不重置心跳，下轮重试
 		}
 		// 重置心跳防重复发布
-		_ = db.DB.Model(&model.FlowStateMachine{}).
-			Where("id = ?", sm.ID).
-			Updates(map[string]interface{}{"heartbeat_ts": time.Now()}).Error
+		// FIX-7(2026-09-29)：发布成功但心跳没刷上 = 下轮会对同一实例再发一条 flow_requeue。
+		// 这是 at-least-once 的既定语义（发布语义不动），但必须 WARN 出声，消费端需幂等。
+		if err := sweepHeartbeatWriter(sm.ID, map[string]interface{}{"heartbeat_ts": time.Now()}); err != nil {
+			log.Printf("[状态机巡检] 实例%d 心跳未刷新: %v —— 下轮将重发（消费端需幂等）", sm.FlowInstanceID, err)
+		}
 		requeued++
 	}
 	if len(stale) > 0 {

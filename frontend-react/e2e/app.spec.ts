@@ -1,9 +1,14 @@
-// Playwright 真浏览器 E2E（19 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
+// Playwright 真浏览器 E2E（22 项）：落地页/定价/注册/登录漏斗/受保护路由/端点连通/E10 文档站渲染，
 // 外加 390px 窄屏三台（Admin/Super 折叠下拉、Org 单栏不炸版，P1-10 批二）、D2 AI 贡献度卡片、
 // D4 看板数字下钻（第 19 项）、主动触达队列 Tab（第 18 项）、
-// S2 找回密码通道文案（2026-09-23 批二：页面上不得再出现"服务端日志"这类内部实现提示）。需 9090 服务在跑。
+// S2 找回密码通道文案（2026-09-23 批二：页面上不得再出现"服务端日志"这类内部实现提示）、
+// C 端 PIPL 可携带副本下载（第 22 项，FIX-10 批 2026-09-29）。需 9090 服务在跑。
 import { test, expect } from '@playwright/test';
 import type { APIRequestContext } from '@playwright/test';
+// FIX-12/10 批次（2026-09-29）：第 22 项要读 download 落盘的文件内容，用 node:fs
+// （走 ESM import 而非 require：playwright 的 TS 变换按 import 处理，混用 require 在部分
+//  Node 版本下会直接 ReferenceError，那份"测试自己坏了"的红看起来像产品坏了）
+import { readFileSync } from 'node:fs';
 
 const BASE = 'http://localhost:9090';
 
@@ -594,4 +599,71 @@ test('超管代管租户检索走服务端且换批结果不丢当前代管', as
   await page.getByRole('button', { name: '搜索' }).click();
   await expect.poll(optionValues, { timeout: 15000 }).toEqual([tid]);
   await expect(impSel).toHaveValue(tid);
+});
+
+// 22. PIPL 可携带副本：匿名访客在对话页点「我的数据」，浏览器真拿到一份含本人消息的 JSON
+// （FIX-10，2026-09-29 端到端审计批）。后端那段翻页/投影由 smoke §四十六 与
+// internal/api 单测钉；本项钉的是**前端这条链是否真通**，四件事各不重复：
+//  ① 按钮接的是下载事件，不是"点了没反应"（旧页面只有删除入口，可携带权在 UI 上等于不存在）；
+//  ② 落盘文件解得开、`customer.id` 就是本机这个访客身份（拿错人＝最严重的错位，
+//     空 href 或错 id 在 toast 上都长得像"成功"）；
+//  ③ 本人刚发过的那句**逐字**在 messages 里（副本不含正文=这项权利没给，
+//     而掩码后的正文同样没给——所以这里比对的是原文）；
+//  ④ 商家内部字段一个都不许出现（intent_score/remark/assigned_user_id/visitor_key）：
+//     后端是手写白名单投影，前端一旦有人图省事改成整行直出，这条就是唯一的现场抓得住。
+// ⚠ /privacy/my-data 免登录且限流是 3/分钟·租户+IP 桶（防按客户 ID 枚举拖库），
+//    所以本项全程只发**一次**导出请求；先轮询 /chat/history 确认那句已落库再点按钮，
+//    把"落库竞态"和"下载链断"分开——没这一步，翻不到消息时报的是后者、真相是前者。
+test('C 端访客可下载含本人消息的数据副本且不含商家内部字段', async ({ page, request }) => {
+  const phrase = `我想看看自己的数据副本 e2e-${Date.now()}`;
+  await page.goto('/client');
+  await expect(page.getByLabel('消息输入框')).toBeVisible({ timeout: 15000 });
+
+  // 访客身份由页面自己申请（/chat/guest），键存在本地即代表身份就绪
+  await expect.poll(async () => page.evaluate(() => localStorage.getItem('scrm_customer_id') || ''), { timeout: 20000 }).not.toBe('');
+  const cid = await page.evaluate(() => localStorage.getItem('scrm_customer_id') || '');
+  const vk = await page.evaluate(() => localStorage.getItem('scrm_visitor_key') || '');
+  expect(vk, '访客密钥缺失，本项前置不成立（导出请求会被身份闸拒）').toBeTruthy();
+
+  // 发一句自己的话（不await 页面里的 AI 往返：副本里有这句就行，回复快慢与本项无关）
+  await page.getByLabel('消息输入框').fill(phrase);
+  await page.getByRole('button', { name: '发送' }).click();
+
+  // 等这句真落库（读 history 不占导出桶）
+  await expect.poll(async () => {
+    const r = await request.get(`${BASE}/api/v1/chat/history?customer_id=${cid}&visitor_key=${encodeURIComponent(vk)}&limit=50`);
+    if (!r.ok()) return `HTTP ${r.status()}`;
+    const j = await r.json();
+    // /chat/history 的 data **就是消息数组**（不是 {messages:[…]}），按数组读；
+    // 读成对象会得到 undefined → 恒 false → 本项在"前置自检"里空转到超时，报错像"没落库"
+    const list = (Array.isArray(j?.data) ? j.data : []) as { content?: string }[];
+    return list.some((m) => m.content === phrase);
+  }, { timeout: 30000, message: '本句始终没进 history：导出链还没开始测，先查是不是写库那步没成' }).toBe(true);
+
+  const exportResp = page.waitForResponse((r) => r.url().includes('/privacy/my-data'), { timeout: 30000 });
+  const downloadPromise = page.waitForEvent('download', { timeout: 30000 });
+  await page.getByLabel('下载我的数据副本').click();
+  const resp = await exportResp;
+  expect(resp.status(), `导出请求被拒：HTTP ${resp.status()}（429＝撞上 3/分钟桶，403＝身份闸没通过）`).toBe(200);
+  const download = await downloadPromise;
+  const fp = await download.path();
+  expect(fp, 'download 事件没有落盘路径').toBeTruthy();
+  const raw = readFileSync(fp as string, 'utf8');
+  const doc = JSON.parse(raw);
+
+  // ② 是本人这一份
+  expect(String(doc?.customer?.id)).toBe(cid);
+  expect(doc?.export_coverage?.complete).toBe(true);
+  // ③ 逐字含本人那句（不掩码、不改写）
+  const own = ((doc?.messages ?? []) as { content?: string; sender_type?: string; archived?: boolean }[])
+    .filter((m) => m.content === phrase);
+  expect(own.length, '副本里没有本人刚发的那句（消息流没进 JSON）').toBeGreaterThan(0);
+  expect(own[0].sender_type).toBe('customer');
+  expect(doc?.page?.truncated, '单页就被截断却当成全量下载了').toBe(false);
+  // ④ 商家内部字段零出现（整份 JSON 原文扫，不只看某个对象）
+  for (const forbidden of ['intent_score', 'assigned_user_id', 't_vector', 'state_json', 'route_result']) {
+    expect(raw, `副本里出现了商家内部字段 ${forbidden}`).not.toContain(forbidden);
+  }
+  // 凭证不外泄：visitor_key 是身份凭据，不该出现在自己拿到的副本里（后端显式清单已排除）
+  expect(raw).not.toContain(vk);
 });

@@ -112,10 +112,17 @@ export function setToken(t: string) {
 /**
  * 清除登录 token（退出登录时调用）
  */
-/** 清理本地登录 token。 */
+/** 清理本地登录态：token + 代管租户键（单点，FIX-9）。 */
 export function clearToken() {
   localStorage.removeItem(TOKEN_KEY)
   invalidateSession() // P1-50：清会话缓存，防登出后残留旧 me 身份
+  // FIX-9(2026-09-29)：代管租户键是**登录态键**，必须跟着"任何清登录态的路径"一起清。
+  // FIX-6(2026-09-27) 只在主动登出 logoutAndRedirect 里清了它——封了一半：
+  // 401/403 被动登出走的是 clearToken，超管 token 过期重登后首个 /admin 请求
+  // 仍带**上一世**的 X-Tenant-ID，界面显示平台视图、请求却往没选的租户发。
+  // 收进 clearToken 单点后，主动/被动四条登出路径共用同一清理面；
+  // P2-85 语义原样保持：这里绝不碰 scrm_visitor_key（访客身份不是登录态）。
+  localStorage.removeItem(IMPERSONATE_TENANT_KEY)
 }
 
 // 访客身份键（C 端客户本地持久化，退出登录不得清除——P2-85）
@@ -159,7 +166,8 @@ export function logoutAndRedirect() {
   // 留着不换的后果很具体：同一浏览器下次登录超管，第一个 /admin/* 请求就带着**上一世**的
   // X-Tenant-ID，而界面显示的是平台视图；若那家租户已被换/停用，就是"请求往一个界面上没选的租户发"
   // 这种最危险的错位形态（本仓 2026-09-24 代管检索批已因同族问题改过一次 UI 侧）。
-  setImpersonateTenant('')
+  // FIX-9(2026-09-29)：这条清理已上移到 clearToken 单点（上一行已生效）——
+  // 因为漏它的不是主动登出而是 401/403 被动登出，只在 logoutAndRedirect 补等于永远封不住被动路径。
   invalidateSession()
   location.href = '/login'
 }

@@ -58,10 +58,12 @@ func IsSimpleMessage(content string) bool {
 // GetSimpleReplyDelay 简单消息的延迟时间
 // 修复：用户明确要求简单消息快速通道固定8秒延迟
 // 修复：改为从后台配置读取(simple_msg_delay)，无需发版即可调节
+// FIX-3（2026-09-29 审计批二）：改走 GetIntForTenant——写侧 BatchUpdateForTenant
+// 允许租户覆盖该键，旧写法只读系统层，租户在后台改了延迟数字永远不生效。
 // 不看工作时间，不分工作日/周末，统一固定值——简单消息的核心是"快速接住"
 // 简单消息（"你好"/"在吗"等）先独立回复，不跟正式消息混排队
-func GetSimpleReplyDelay() time.Duration {
-	sec := runtimecfg.DefaultSystemConfigService.GetInt("simple_msg_delay", 8)
+func GetSimpleReplyDelay(tenantID uint) time.Duration {
+	sec := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "simple_msg_delay", 8)
 	return time.Duration(sec) * time.Second
 }
 
@@ -283,25 +285,28 @@ func GetLeadCapturedConfirmReply(tenantID uint) string {
 // 修复：改为从后台配置读取(store_visit_first_delay)，[min,max]区间随机
 // 到店倾向必须快速接住，第一段延迟默认10-15秒
 // 比简单消息(8秒)略长——因为需要表现"确认安排"的思考感
-func GetStoreVisitFirstDelay() time.Duration {
+// FIX-3（2026-09-29 审计批二）：tenantID 入参，模式与区间都改走 *ForTenant——
+// 各家门店的接住节奏本来就不同且写侧允许租户覆盖，只读系统层等于覆盖永不生效。
+func GetStoreVisitFirstDelay(tenantID uint) time.Duration {
 	// 秒回模式下到店快速通道零延迟
-	mode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	mode := runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, "reply_delay_mode", "normal")
 	if mode == "instant" {
 		return 0
 	}
-	sec := runtimecfg.DefaultSystemConfigService.GetInterval("store_visit_first_delay", 10, 15)
+	sec := runtimecfg.DefaultSystemConfigService.GetIntervalForTenant(tenantID, "store_visit_first_delay", 10, 15)
 	return time.Duration(sec) * time.Second
 }
 
 // GetStoreVisitSecondDelay 到店倾向第二段追问延迟
 // 修复：改为从后台配置读取(store_visit_second_delay)，[min,max]区间随机
 // 第二段在第一段之后发出，模拟顾问"查档后追问"，默认25-45秒
-func GetStoreVisitSecondDelay() time.Duration {
+// FIX-3（2026-09-29 审计批二）：同第一段，tenantID 入参 + *ForTenant 读取。
+func GetStoreVisitSecondDelay(tenantID uint) time.Duration {
 	// 秒回模式下到店快速通道零延迟
-	mode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	mode := runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, "reply_delay_mode", "normal")
 	if mode == "instant" {
 		return 0
 	}
-	sec := runtimecfg.DefaultSystemConfigService.GetInterval("store_visit_second_delay", 25, 45)
+	sec := runtimecfg.DefaultSystemConfigService.GetIntervalForTenant(tenantID, "store_visit_second_delay", 25, 45)
 	return time.Duration(sec) * time.Second
 }

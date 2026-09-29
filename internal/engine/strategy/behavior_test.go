@@ -198,14 +198,14 @@ func TestIsGreetingBehavior(t *testing.T) {
 func TestSoftDowngradeBehavior(t *testing.T) {
 	// 高攻击性 + 低接钩率 → 应降级
 	state := model.SessionState{HookRate: 0.1}
-	_, downgraded := Step3_SoftDowngrade(5, state)
+	_, downgraded := Step3_SoftDowngrade(5, state, 0)
 	if !downgraded {
 		t.Log("SoftDowngrade: 高agg+低hookRate 未降级（可能配置不同）")
 	}
 
 	// 高接钩率 → 不应降级
 	state.HookRate = 0.9
-	_, downgraded = Step3_SoftDowngrade(5, state)
+	_, downgraded = Step3_SoftDowngrade(5, state, 0)
 	if downgraded {
 		t.Error("SoftDowngrade: 高hookRate 不应降级")
 	}

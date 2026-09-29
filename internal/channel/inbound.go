@@ -262,8 +262,9 @@ func runInboundWorker(ch *model.Channel, in *InboundMessage, customerID uint, co
 // 串行锁，相对外层 worker defer（done 台账收尾）的先后次序与拆分前一致（LIFO：先放串行锁、后写台账）。
 func runInboundSimpleBranch(ch *model.Channel, in *InboundMessage, tid uint, conv *model.Conversation, customerID uint) {
 	defer service.DefaultMessageQueueService.SimpleMessageDone(tid, customerID)
-	if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
-		chatflow.CancellableSleep(customerID, service.GetSimpleReplyDelay())
+	// FIX-3（2026-09-29 审计批二）：通道链与 web 链同口径走 *ForTenant，租户覆盖两侧同生效
+	if runtimecfg.DefaultSystemConfigService.GetStringForTenant(tid, "reply_delay_mode", "normal") != "instant" {
+		chatflow.CancellableSleep(customerID, service.GetSimpleReplyDelay(tid))
 	}
 	simpleReply := service.GetSimpleReply(in.Content)
 	saveAndDeliver(ch, conv, customerID, simpleReply, "channel_simple")
@@ -393,7 +394,9 @@ func inboundGenerateAndDeliver(workerCtx context.Context, tid uint, ch *model.Ch
 	if humanlikeDelay < 0 {
 		humanlikeDelay = 0
 	}
-	if runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal") != "instant" {
+	// FIX-3（2026-09-29 审计批二）：处理者主流程的延迟闸同样走 *ForTenant，
+	// 与上面简单消息分支一条口径——租户设了 instant 就不该只有简单消息秒回。
+	if runtimecfg.DefaultSystemConfigService.GetStringForTenant(tid, "reply_delay_mode", "normal") != "instant" {
 		chatflow.CancellableSleep(customerID, humanlikeDelay)
 	}
 

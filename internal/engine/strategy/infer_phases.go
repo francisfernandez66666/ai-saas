@@ -228,7 +228,8 @@ func (p *inferPhase) chooseAnchor(stage int) {
 	// Step3：软降级修锚（基于接钩率/沉默时长/情绪等动态信号）
 	// 注意：输入是Step2.5降级后的锚，不是softmax的原始锚
 	// ============================================================
-	finalAnchor, isSoftDowngraded := Step3_SoftDowngrade(anchorAfterStageLock, p.input.State)
+	// FIX-3（2026-09-29 审计批二）：软降级阈值走 *ForTenant，传 request 级 TenantID
+	finalAnchor, isSoftDowngraded := Step3_SoftDowngrade(anchorAfterStageLock, p.input.State, p.input.TenantID)
 	p.finalAnchor = finalAnchor
 	p.output.FinalAnchor = finalAnchor
 	p.output.SoftDowngrade = isSoftDowngraded

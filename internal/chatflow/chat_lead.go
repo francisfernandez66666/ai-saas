@@ -96,7 +96,14 @@ func DetectLeadCapture(customerInput string, customer *model.Customer) int {
 	}
 
 	if len(updates) > 0 {
-		applyLeadCapturedUpdates(customer, phoneMatch, updates)
+		// FIX-2（2026-09-29 审计批）：画像落库失败 = 本次留资没有发生。
+		// 旧写法吞掉错误继续往下——线索生成、顾问通知日志、企微群推"新留资"、
+		// 流程回流全部建立在一行没写进去的更新上，商户收到假事件而真线索蒸发。
+		// 现在提前返回 0（未留资）：客户下一句再带同号会重新走检测（同字段重写幂等），
+		// 失败本身已有 ERROR 日志 + ai_scrm_lead_capture_write_fail_total 计数可见。
+		if err := applyLeadCapturedUpdates(customer, phoneMatch, updates); err != nil {
+			return 0
+		}
 	}
 
 	// 修复：留资成功后生成线索记录（已留资线索，分配给顾问）

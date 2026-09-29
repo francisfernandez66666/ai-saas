@@ -20,6 +20,7 @@ import (
 	"gorm.io/gorm"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
 	"ai-scrm/pkg/crypto"
 )
@@ -138,11 +139,21 @@ func ProcessDue() (delivered, retried, dead int) {
 		}
 		status, err := deliver(&wh, d.Event, d.Payload)
 		if err == nil && status >= 200 && status < 300 {
-			db.DB.Model(d).Updates(map[string]interface{}{
+			// FIX-5（2026-09-29 审计批）：投递终态回写不再吞错。口径是**宁重投不可丢**——
+			// 回写失败时不动已发出去的那次投递，行留在 sending，由 claimDueDeliveries
+			// 的陈旧复活路径转回 pending 再投（接收端可能收到两次）。这比"标记死了但
+			// 其实送达了"（丢事件）好；但重投必须**可见**，所以失败计数 + WARN 都要落。
+			if werr := db.DB.Model(d).Updates(map[string]interface{}{
 				"status": model.WebhookDeliveryDelivered, "delivered_at": now, "last_error": "",
-			})
+			}).Error; werr != nil {
+				metrics.IncWebhookWritebackFail()
+				log.Printf("[webhook][WARN] 投递%d 已送达(http=%d)但 delivered 终态回写失败: %v（该行将被复活重投，接收端需幂等）", d.ID, status, werr)
+			}
 			// 成功清零该订阅连续失败计数
-			db.DB.Model(&model.TenantWebhook{}).Where("id = ?", wh.ID).Update("fail_count", 0)
+			if werr := db.DB.Model(&model.TenantWebhook{}).Where("id = ?", wh.ID).Update("fail_count", 0).Error; werr != nil {
+				metrics.IncWebhookWritebackFail()
+				log.Printf("[webhook][WARN] 订阅%d 失败计数清零回写失败: %v（熔断计数偏高，可能导致本订阅提前停用）", wh.ID, werr)
+			}
 			delivered++
 			continue
 		}
@@ -155,9 +166,13 @@ func ProcessDue() (delivered, retried, dead int) {
 		} else {
 			nt := now.Add(nextBackoff(d.Attempts))
 			// P2-3：行取单时已置 sending，退避回炉必须显式写回 pending
-			db.DB.Model(d).Updates(map[string]interface{}{
+			// FIX-5：回写失败该行滞留 sending → 陈旧复活照样回 pending 重投，但要计数可见
+			if werr := db.DB.Model(d).Updates(map[string]interface{}{
 				"status": model.WebhookDeliveryPending, "attempts": d.Attempts, "next_retry_at": nt, "last_error": truncate(msg, 280),
-			})
+			}).Error; werr != nil {
+				metrics.IncWebhookWritebackFail()
+				log.Printf("[webhook][WARN] 投递%d 退避回炉(pending)回写失败: %v（滞留 sending 等陈旧复活，attempts 进度可能丢一档）", d.ID, werr)
+			}
 			retried++
 		}
 		// 订阅熔断
@@ -167,10 +182,15 @@ func ProcessDue() (delivered, retried, dead int) {
 			db.DB.Model(&model.TenantWebhook{}).Where("id = ?", wh.ID).Select("fail_count").Scan(&cnt)
 			if cnt >= circuitFailN {
 				dis := time.Now()
-				db.DB.Model(&model.TenantWebhook{}).Where("id = ?", wh.ID).Updates(map[string]interface{}{
+				// FIX-5：熔断停用写失败 = 日志说停了、实际还在投，必须点名
+				if werr := db.DB.Model(&model.TenantWebhook{}).Where("id = ?", wh.ID).Updates(map[string]interface{}{
 					"active": false, "disabled_at": dis,
-				})
-				log.Printf("[webhook] 订阅 id=%d 连续失败 %d 次已熔断停用", wh.ID, cnt)
+				}).Error; werr != nil {
+					metrics.IncWebhookWritebackFail()
+					log.Printf("[webhook][ERROR] 订阅%d 熔断停用落库失败: %v（下轮仍会对其投递，直到写成功）", wh.ID, werr)
+				} else {
+					log.Printf("[webhook] 订阅 id=%d 连续失败 %d 次已熔断停用", wh.ID, cnt)
+				}
 			}
 		}
 	}
@@ -178,10 +198,16 @@ func ProcessDue() (delivered, retried, dead int) {
 }
 
 // markDead 将投递记录标记为死信并写入失败原因。
+// FIX-5（2026-09-29）：写失败不再吞——旧写法失败后行滞留 sending，
+// 被陈旧复活路径再次投递（接收端可能已收过 N 次），死信台账却永远看不见这条。
+// 现在回写失败计数 + ERROR 点名，死信可观测面（webhook_deliveries status=dead）恢复可信。
 func markDead(d *model.WebhookDelivery, reason string) {
-	db.DB.Model(d).Updates(map[string]interface{}{
+	if err := db.DB.Model(d).Updates(map[string]interface{}{
 		"status": model.WebhookDeliveryDead, "last_error": truncate(reason, 280),
-	})
+	}).Error; err != nil {
+		metrics.IncWebhookWritebackFail()
+		log.Printf("[webhook][ERROR] 投递%d 死信终态回写失败(%s): %v（该行将被复活重投）", d.ID, reason, err)
+	}
 }
 
 // deliver 发送单次回调：签名头 + body，返回 HTTP 状态码与网络错误。

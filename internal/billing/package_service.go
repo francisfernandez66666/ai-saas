@@ -242,7 +242,7 @@ func ExpireCheck() int {
 				t.Name, t.Code, t.ExpiredAt.Format("2006-01-02"), daysLeft))
 			// 商业缺口批（2026-09-16）：续费不能只靠销售人肉盯群——同档同去重窗口直达租户管理员邮箱
 			notify.TenantExpiringEmail(t.ID, t.Name, t.Code, *t.ExpiredAt, daysLeft)
-			db.DB.Create(&model.TenantAuditLog{
+			createAuditLog(model.TenantAuditLog{
 				TenantID: t.ID, Action: b.action, Resource: fmt.Sprintf("tenant:%d", t.ID),
 				Detail: fmt.Sprintf(`{"expired_at":"%s","days_left":%d}`, t.ExpiredAt.Format(time.RFC3339), daysLeft),
 			})

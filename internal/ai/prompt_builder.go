@@ -3,9 +3,9 @@ package ai
 
 import (
 	"ai-scrm/internal/cache"
+	"ai-scrm/internal/industrycfg"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/runtimecfg"
-	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"fmt"
 	"strings"
@@ -331,7 +331,7 @@ const neutralPersona = "你是经验丰富的销售顾问，微信聊天风格�
 
 // priceReplyRef 取询价话术参考（Prompt 注入用）：行业键优先，兜底按有无包绑定分流（F3）
 func priceReplyRef(tenantID uint, lead bool) string {
-	if replies := service.IndustryPriceRepliesForTenant(tenantID, lead); len(replies) > 0 {
+	if replies := industrycfg.IndustryPriceRepliesForTenant(tenantID, lead); len(replies) > 0 {
 		return replies[0]
 	}
 	return "价格得看你的具体需求来定，你说说你的情况，我给你做个详细报价"
@@ -343,10 +343,10 @@ func priceReplyRef(tenantID uint, lead bool) string {
 // 绑定车企包的租户保持汽车文案不变。
 // 批四 P2 修正：汽车文案兜底仅限汽车族绑定，非 auto 包租户回中立（同谓词收口）。
 func domainConstraintText(tenantID uint) string {
-	if s := service.IndustryDomainConstraintForTenant(tenantID); s != "" {
+	if s := industrycfg.IndustryDomainConstraintForTenant(tenantID); s != "" {
 		return s
 	}
-	if !service.TenantUsesAutoTalk(tenantID) {
+	if !industrycfg.TenantUsesAutoTalk(tenantID) {
 		return "只聊咱们家的产品、服务和使用场景相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回来：「这个我还真不太懂，不过你说的这个让我想到，你是不是对这方面有需求？咱可以细聊」或「哈哈这块我不太行，咱们还是说你关心的事吧」。绝不装全能、绝不硬答无关领域"
 	}
 	return "你只聊车、品牌、用车生活相关的话题。客户问算法题、火箭发射、股票量化、写代码等无关话题时，不正面回答，自然引导回车：「这个我还真不太懂，不过你说的这个让我想到，你是不是对智能化挺感兴趣的？咱车的智能座舱你可能会有兴趣」或「哈哈这块我不太行，咱们还是聊聊你用车的事吧」。绝不装全能、绝不硬答无关领域"

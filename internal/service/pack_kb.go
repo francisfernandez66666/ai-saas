@@ -1,215 +1,33 @@
-// 双层 KB 与行业包 Prompt 消费、租户资料二元组融合检索（pgvector 前朴素方案）。
+// 双层 KB：租户资料二元组融合检索（pgvector 前朴素方案）。
 package service
 
 // ============================================================
-// 双层KB与行业包 Prompt 消费（P2，2026-08-26）
+// 双层KB（P2，2026-08-26）
 //
-// GetBoundPackPrompts：读取租户绑定包的 prompts.json 定制指令
-//   （apply 阶段存证于 system_configs 键 pack_prompts_{code}）
 // SearchTenantKnowledge：租户自有资料融合检索（二元组打分，pgvector 前的朴素方案）
+// 行业包 Prompt 消费（GetBoundPack* 与绑定缓存）已于 FIX-14 迁至 internal/industrycfg。
 // ============================================================
 
 import (
-	"encoding/json"
-	"fmt"
-	"sort"
 	"strings"
-	"sync"
-	"time"
 	"unicode"
 
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/industrycfg"
 	"ai-scrm/internal/model"
 )
 
-// boundPackCodes 取租户绑定包的行业+企业 code（去重）
-// 一个租户可绑定行业包和企业包，返回去重后的code列表
-// P2-51 修复：加短TTL进程缓存——检索/提 prompt 每次会话都查绑定表（每片段、每 prompt 各一次）
-func boundPackCodes(tenantID uint) []string {
-	if tenantID == 0 {
-		return nil
-	}
-	// F3 修复(2026-09-15)：db 未初始化（纯逻辑单测环境）直接返回无绑定，
-	// 防止 nil 指针 panic——与 TenantUsesAutoTalk 的 nil 防护口径一致
-	if db.DB == nil {
-		return nil
-	}
-	if v, ok := packBindCache.Load(tenantID); ok {
-		e := v.(packBindCacheEntry)
-		if time.Now().Before(e.expireAt) {
-			return e.codes
-		}
-		packBindCache.Delete(tenantID)
-	}
-	var bind model.TenantPackBinding
-	if err := db.DB.Where("tenant_id = ?", tenantID).First(&bind).Error; err != nil {
-		packBindCache.Store(tenantID, packBindCacheEntry{codes: nil, expireAt: time.Now().Add(packBindCacheTTL)})
-		return nil
-	}
-	codes := []string{bind.PackCode}
-	if bind.EnterpriseCode != "" && bind.EnterpriseCode != bind.PackCode {
-		codes = append(codes, bind.EnterpriseCode)
-	}
-	packBindCache.Store(tenantID, packBindCacheEntry{codes: codes, expireAt: time.Now().Add(packBindCacheTTL)})
-	return codes
-}
-
-// packBindCache 租户绑定包 code 短TTL缓存（P2-51）
-const packBindCacheTTL = 30 * time.Second
-
-type packBindCacheEntry struct {
-	codes    []string
-	expireAt time.Time
-}
-
-var packBindCache sync.Map // tenantID(uint) → packBindCacheEntry
-
-// GetBoundPackPrompts 收集租户绑定包（行业+企业）的定制系统指令
-// 从 system_configs 表读取 pack_prompts_{code} 键值，解析 persona 和 system_instruction
-// 返回拼接后的指令列表，用于构建LLM系统提示
-func GetBoundPackPrompts(tenantID uint) []string {
-	if tenantID == 0 {
-		return nil
-	}
-	codes := boundPackCodes(tenantID)
-	var out []string
-	for _, c := range codes {
-		var cfg model.SystemConfig
-		if err := db.DB.Where("tenant_id = ? AND \"key\" = ?", tenantID, "pack_prompts_"+c).
-			First(&cfg).Error; err != nil {
-			continue
-		}
-		var pj struct {
-			SystemInstruction string `json:"system_instruction"`
-			Persona           string `json:"persona"`
-		}
-		if json.Unmarshal([]byte(cfg.Value), &pj) != nil {
-			continue
-		}
-		if s := strings.TrimSpace(pj.Persona); s != "" {
-			out = append(out, s)
-		}
-		if s := strings.TrimSpace(pj.SystemInstruction); s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// GetBoundPackParams 收集租户绑定包（行业+企业）的 params.json 参数约束
-// 支持 {"params": {...}} 或裸对象；扁平化为可读 "key: value" 行
-// 用于注入LLM提示的参数约束信息
-func GetBoundPackParams(tenantID uint) []string {
-	if tenantID == 0 {
-		return nil
-	}
-	var out []string
-	for _, c := range boundPackCodes(tenantID) {
-		var cfg model.SystemConfig
-		if err := db.DB.Where("tenant_id = ? AND \"key\" = ?", tenantID, "pack_params_"+c).
-			First(&cfg).Error; err != nil {
-			continue
-		}
-		out = append(out, flattenJSONLines(cfg.Value, "")...)
-	}
-	return out
-}
-
-// GetBoundPackMindset 收集租户绑定包（行业+企业）的 mindset.json 心态/策略指引
-// 支持 {"mindset": ["...","..."]} / {"guidance": "..."} / 字符串数组
-// 用于注入LLM提示的心态和策略指引
-func GetBoundPackMindset(tenantID uint) []string {
-	if tenantID == 0 {
-		return nil
-	}
-	var out []string
-	for _, c := range boundPackCodes(tenantID) {
-		var cfg model.SystemConfig
-		if err := db.DB.Where("tenant_id = ? AND \"key\" = ?", tenantID, "pack_mindset_"+c).
-			First(&cfg).Error; err != nil {
-			continue
-		}
-		var raw any
-		if json.Unmarshal([]byte(cfg.Value), &raw) != nil {
-			continue
-		}
-		switch v := raw.(type) {
-		case []any:
-			for _, it := range v {
-				if s := strings.TrimSpace(fmt.Sprint(it)); s != "" {
-					out = append(out, s)
-				}
-			}
-		case map[string]any:
-			if arr, ok := v["mindset"].([]any); ok {
-				for _, it := range arr {
-					if s := strings.TrimSpace(fmt.Sprint(it)); s != "" {
-						out = append(out, s)
-					}
-				}
-			}
-			if g, ok := v["guidance"].(string); ok && strings.TrimSpace(g) != "" {
-				out = append(out, strings.TrimSpace(g))
-			}
-		}
-	}
-	return out
-}
+// FIX-14(2026-09-29 端到端审计批)：本文件原有的 boundPackCodes / GetBoundPackPrompts /
+// GetBoundPackParams / GetBoundPackMindset / flattenJSONLines（含 packBindCache 30s 缓存与
+// packBindCacheTTL）整体迁至叶子包 internal/industrycfg——internal/ai 的 prompt_builder
+// 是它们唯一的外部消费者，旧依赖让它隔着 service 把 mq/notify/metrics 整棵业务树拖进
+// AI 底座层。真源单点已换址，本包只保留一个私有别名给回归测试（pack_flatten_order_test.go）
+// 按旧名调用；GetBoundPack* 的对外入口现在 industrycfg，service 不再转发。
+// 口径与实现注释（P2-51 缓存、F3 nil 防护、2026-09-25 行序确定性）随实现同住真源文件。
 
 // flattenJSONLines 将 JSON 值扁平化为 "k: v" 行（嵌套以 parent.k 表达）
-// 递归解析JSON，将嵌套结构展平为可读的键值对
-//
-// 2026-09-25 残项收口：**map 分支的键必须先排序再递归**。这里的排序不是美观问题——
-// 扁平化的产物会被 prompt_builder 逐行拼进【行业包参数约束】段，Go 的 map 迭代序
-// 每进程每轮随机，同一份 params.json 于是每次输出的行序都在漂：
-// ① 系统提示词前缀不稳定，模型侧/prompt cache 白烧；
-// ② 同一租户同一份包参数在两次请求里长得不一样，排查"回复为什么变了"时无从比对。
-// 键值配对本身没错（键名随递归下传），错的是**行序**——所以修法就是让序确定。
-// 对照 internal/industrypack/format.go 的 sortStrings：打包侧早就按这个口径做确定性输出，
-// 只是读侧的 flatten 路径漏了。
-func flattenJSONLines(raw, prefix string) []string {
-	var v any
-	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		// 非 JSON 则原样返回
-		if s := strings.TrimSpace(raw); s != "" {
-			return []string{s}
-		}
-		return nil
-	}
-	var out []string
-	var walk func(val any, p string)
-	walk = func(val any, p string) {
-		switch t := val.(type) {
-		case map[string]any:
-			keys := make([]string, 0, len(t))
-			for k := range t {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys) // 确定性行序：同输入必同输出（见函数头注释）
-			for _, k := range keys {
-				key := k
-				if p != "" {
-					key = p + "." + k
-				}
-				walk(t[k], key)
-			}
-		case []any:
-			for i, sub := range t {
-				walk(sub, fmt.Sprintf("%s[%d]", p, i))
-			}
-		default:
-			out = append(out, fmt.Sprintf("%s: %v", p, t))
-		}
-	}
-	if m, ok := v.(map[string]any); ok {
-		if inner, ok := m["params"].(map[string]any); ok {
-			walk(inner, "")
-			return out
-		}
-	}
-	walk(v, prefix)
-	return out
-}
+// FIX-14：真源为 industrycfg.FlattenJSONLines，此别名仅保持包内回归测试零改名。
+var flattenJSONLines = industrycfg.FlattenJSONLines
 
 // isHanOrWordR 判断是否为汉字/字母/数字（用于关键词切分，过滤标点空格）
 func isHanOrWordR(r rune) bool {

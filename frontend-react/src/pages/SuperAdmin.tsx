@@ -7,6 +7,8 @@ import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Button, MessagePlugin } from 'tdesign-react'
 import { useIsMobile } from '../hooks/useMedia'
 import { AUTH, logoutAndRedirect } from '../lib/api'
+// FIX-11(2026-09-29)：商业包售价改「界面是元、提交体是分」——换算走 lib/money 单点，勿在本页再写一份 ×100
+import { yuanToFen } from '../lib/money'
 // C2 拆分新增的视图组件的数据契约类型 + 共享菜单数据源（SUPER_MENUS 是左栏/下拉菜单本体，
 // 属首屏必读，刻意保持静态 import 不 lazy——菜单渲染不该等一个异步 chunk）
 import { SUPER_MENUS, type Ag, type Audit, type BdForm, type Cost, type Fb, type PackQualityRow, type Pending, type Pkg, type PlanOpt, type Tenant } from './super/shared'
@@ -205,7 +207,18 @@ export default function SuperAdmin() {
     const name = (document.getElementById('pName') as HTMLInputElement).value.trim()
     const p_type = (document.getElementById('pType') as HTMLSelectElement).value
     const ai_calls = parseInt((document.getElementById('pCalls') as HTMLInputElement).value) || 0
-    const price_cents = parseInt((document.getElementById('pPrice') as HTMLInputElement).value) || 0
+    // FIX-11(2026-09-29)：输入框从前收"分"（placeholder 售价分），既绕开 lib/money.ts
+    // 「界面是元、提交体是分」的单点，又和同页列表展示（fenToYuanCompact 显示元）单位打架；
+    // 且旧写法 parseInt(x)||0 把 '99.9' 截成 99、把乱码静默归 0——建出来的包价格错但创建成功。
+    // 现在：空=0（保留免费/试用包口径）；非空必须先过形态校验（元、最多两位小数、非负），
+    // 三位小数等非法形态拦在卡内提示，绝不进提交体；合法才经 yuanToFen 字符串拆位换算，
+    // 0.29 元得 29 分而不是 28.999…（浮点往返是 money.ts 头注释点名的事故形态）。
+    const priceRaw = ((document.getElementById('pPrice') as HTMLInputElement).value || '').trim()
+    if (priceRaw !== '' && !/^\d+(\.\d{1,2})?$/.test(priceRaw)) {
+      MessagePlugin.warning('售价请填写元，最多两位小数')
+      return
+    }
+    const price_cents = priceRaw === '' ? 0 : (yuanToFen(priceRaw) ?? 0)
     let duration_days = parseInt((document.getElementById('pDays') as HTMLInputElement).value) || 0
     if (!code || !name) { MessagePlugin.warning('标识和名称必填'); return }
     if (p_type === 'free') duration_days = 0

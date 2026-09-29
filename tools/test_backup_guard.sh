@@ -129,8 +129,18 @@ run_case() {
 
 dump_count() { ls "$BACKUP_DIR"/*.dump 2>/dev/null | wc -l | tr -d ' '; }
 env_count() { ls "$BACKUP_DIR"/*.env 2>/dev/null | wc -l | tr -d ' '; }
-# 快照权限（BSD/GNU 通用口径：看 ls -l 的权限串，不依赖 stat 方言）
-env_mode() { ls -l "$BACKUP_DIR"/*.env 2>/dev/null | head -1 | awk '{print $1}'; }
+# 快照权限（FIX-13，2026-09-29）：改用 stat 的**数字模式**直接比对，不再拿 `ls -l` 的权限串做等值。
+# 现场教训（本反证组自己把自己判红过一次）：macOS 上带 xattr 的文件 `ls -l` 权限串末尾多一个 '@'，
+# 真 0600 的快照读成 '-rw-------@' ≠ '-rw-------'，守卫对着**正确交付**报"把密钥群发了"。
+# 这属检查器假红，但**判据不许退化为字符串包含**——stat 数字模式照样是逐位等值（600 vs 644 必红），
+# 只是把"串形态"这个与权限无关的自由度剥掉。BSD/GNU 两种 stat 方言按可用性回落，两者都没有则回空串
+# （空串 ≠ 600，宁可判红也不放行"读不出权限"）。
+env_mode() {
+  local f
+  f=$(ls "$BACKUP_DIR"/*.env 2>/dev/null | head -1)
+  [ -z "$f" ] && return 0
+  stat -f %Lp "$f" 2>/dev/null || stat -c %a "$f" 2>/dev/null || true
+}
 
 echo "=== backup.sh 守卫自证（RLS 预检 / 半成品不留盘 / 探测失败不拦）==="
 
@@ -211,10 +221,10 @@ if [ "$(env_count)" = "1" ]; then
 else
   bad "⑤·补 快照份数异常（$(env_count) 个）——多份密钥文件会让「恢复时该配哪一份」重新变成猜"
 fi
-if [ "$(env_mode)" = "-rw-------" ]; then
+if [ "$(env_mode)" = "600" ]; then
   ok "⑤·补 快照权限 0600（备份目录常被别的账号/备份代理读走）"
 else
-  bad "⑤·补 快照权限是 '$(env_mode)'，不是 0600——把库备份的口径扩大到把密钥也群发了"
+  bad "⑤·补 快照权限是 '$(env_mode)'，不是 600——把库备份的口径扩大到把密钥也群发了"
 fi
 if cmp -s "$WORK/fake.env" "$BACKUP_DIR"/*.env 2>/dev/null; then
   ok "⑤·补 快照内容与源 .env 逐字相同（不是截断或空文件）"
@@ -240,6 +250,37 @@ if [ "$(env_count)" = "0" ]; then
 else
   bad "⑤反·补 源 .env 不在场却写出了 $(env_count) 份快照——空快照比没有更危险"
 fi
+
+# ⑥ 读法自证（FIX-13，2026-09-29 审计批）：⑤·补 那条权限判据自己也得有判别力。
+# 现场教训有两层：第一版用 `ls -l` 的权限串做等值，macOS 上带 xattr 的真 0600 文件会读成
+# '-rw-------@'，于是守卫对着**正确交付**判红（本批唯一一次回归红就是它）；而"改成字符串包含"
+# 是把守卫弱化成没有——所以这里钉的是**读法本身**：
+#   ⑥·a 带 xattr 的 0600 必须仍读成 600（假红不再复发生）
+#   ⑥·b 同一个文件 chmod 644 后必须读成 644（等值锁仍然认得出走漏的密钥）
+# 两条一起才说明"数字模式"既没被形态干扰、也没被放宽。
+SAVE_BACKUP_DIR="$BACKUP_DIR"
+PC_DIR="$WORK/permcheck"
+mkdir -p "$PC_DIR"
+printf 'JWT_SECRET=permcheck-not-a-real-secret\n' > "$PC_DIR/x.dump.env"
+chmod 600 "$PC_DIR/x.dump.env"
+if command -v xattr >/dev/null 2>&1; then
+  xattr -w com.apple.test 1 "$PC_DIR/x.dump.env" 2>/dev/null || true
+elif command -v setfattr >/dev/null 2>&1; then
+  setfattr -n user.test -v 1 "$PC_DIR/x.dump.env" 2>/dev/null || true
+fi
+BACKUP_DIR="$PC_DIR"
+if [ "$(env_mode)" = "600" ]; then
+  ok "⑥·a 权限读法：带 xattr 的 0600 仍读成 600（ls -l 串形态不再参与判据）"
+else
+  bad "⑥·a 权限读法把带 xattr 的 0600 读成 '$(env_mode)'——⑤·补 会在正确交付上假红"
+fi
+chmod 644 "$PC_DIR/x.dump.env"
+if [ "$(env_mode)" = "644" ]; then
+  ok "⑥·b 权限读法：同一文件放宽到 644 必须读成 644（等值锁没被放宽成字符串包含）"
+else
+  bad "⑥·b 权限读法把 644 读成 '$(env_mode)'——判据失效，密钥 0644 也会被判绿"
+fi
+BACKUP_DIR="$SAVE_BACKUP_DIR"
 
 rm -rf "$WORK"
 echo "==== 结果: PASS=$PASS FAIL=$FAILN ===="

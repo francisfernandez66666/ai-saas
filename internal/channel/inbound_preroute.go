@@ -85,7 +85,7 @@ func channelLeadConfirmFast(ch *model.Channel, in *InboundMessage, customerID ui
 	conv.PendingHandoff = true
 
 	// 与 web 分支B 同款节奏：先等一下再回（回太快是机器人的味道）
-	chatflow.CancellableSleep(deliverCustomerID, service.GetStoreVisitFirstDelay())
+	chatflow.CancellableSleep(deliverCustomerID, service.GetStoreVisitFirstDelay(ch.TenantID))
 	log.Printf("[通道-已留资线索] 客户%d 留资完成: stage=%s assigned=%d",
 		deliverCustomerID, cust.JourneyStage, cust.AssignedUserID)
 	saveAndDeliver(ch, conv, deliverCustomerID, pre.Reply, string(pre.Kind))
@@ -108,7 +108,7 @@ func channelStoreVisitFast(ch *model.Channel, in *InboundMessage, conv *model.Co
 	}
 	conv.GuidedDisabled = true
 
-	chatflow.CancellableSleep(cust.ID, service.GetStoreVisitFirstDelay())
+	chatflow.CancellableSleep(cust.ID, service.GetStoreVisitFirstDelay(ch.TenantID))
 	saveAndDeliver(ch, conv, cust.ID, pre.Reply, string(pre.Kind))
 
 	// 第二段：异步补，收预约信息（客户在这 25-45s 里可能已经回手机号，那条走下一轮的分支B）
@@ -123,7 +123,7 @@ func channelStoreVisitFast(ch *model.Channel, in *InboundMessage, conv *model.Co
 				metrics.IncStoreVisitSecondFail()
 			}
 		}()
-		sd := service.GetStoreVisitSecondDelay()
+		sd := service.GetStoreVisitSecondDelay(tid)
 		chatflow.CancellableSleep(cid, sd)
 		// 醒来先复核"AI 还有没有说话权"：这 25-45s 里顾问可能已经接管、客户也可能已经留资。
 		// 判据在 chatflow 单点（web 侧同一条），这里只执行"跳过就什么都不发"。

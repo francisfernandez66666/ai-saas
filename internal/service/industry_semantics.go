@@ -6,17 +6,17 @@
 // 读取链：租户覆盖层(industry.*) → 系统默认层(tenant_id=0, industry.*) → 代码兜底。
 // 当前兜底=汽车行业既有硬编码（carRelatedKeywords/offTopicKeywords/...），
 // 保证未配置行业键时行为与改造前完全一致。
+//
+// FIX-14(2026-09-29 审计批)：Prompt 侧读取的函数真源已抽到叶子包
+// internal/industrycfg（含 TenantUsesAutoTalk、询价话术、包 prompt/params/mindset），
+// 让 internal/ai 不再 import service。本文件保留同名导出包装与私有别名，
+// service 既有调用点与回归测试零改名零行为变化；判据仍是单点，只是住在下面。
 package service
 
 import (
-	"ai-scrm/internal/db"
-	"ai-scrm/internal/model"
-	"ai-scrm/internal/runtimecfg"
+	"ai-scrm/internal/industrycfg"
 	"ai-scrm/internal/strategytypes"
-	"encoding/json"
 	"strings"
-	"sync"
-	"time"
 )
 
 // 行业语义配置键（industry.*，system_configs 内 category="industry"）
@@ -35,38 +35,23 @@ const (
 	// 与 P1-29（到店第一/二段改行业键）是同一类残量。而且通道入站补同一条快速通道时
 	// 只能把这三句再抄一遍：文案从此有两份，改一处漏一处。收成行业键单点。
 	IndustryLeadCapturedConfirm = "industry.lead_captured_confirm" // 到店倾向已留资确认话术（JSON 数组）
-	IndustryPriceReplyLead      = "industry.price_reply_lead"      // 询价回复：已留资（体验后报价，不含"约试驾"）
-	IndustryPriceReplyNoLead    = "industry.price_reply_nolead"    // 询价回复：未留资（引导到店后报价）
-	IndustrySalesperson         = "industry.salesperson"           // 销售顾问人设（Prompt 人设兜底）
-	IndustryDomainConstraint    = "industry.domain_constraint"     // 领域约束句子（Prompt 内"只聊X"指令）
 	IndustryHumanReply          = "industry.human_reply"           // 人工接管/待接管话术（JSON 数组；P2-21）
+)
+
+// FIX-14(2026-09-29)：以下四个键的真源在 internal/industrycfg（Prompt 侧读取所需），
+// 此处为同源常量别名——键字符串字面量全仓仍只有一份定义，service 既有引用面零改动。
+const (
+	IndustryPriceReplyLead   = industrycfg.IndustryPriceReplyLead   // 询价回复：已留资（体验后报价，不含"约试驾"）
+	IndustryPriceReplyNoLead = industrycfg.IndustryPriceReplyNoLead // 询价回复：未留资（引导到店后报价）
+	IndustrySalesperson      = industrycfg.IndustrySalesperson      // 销售顾问人设（Prompt 人设兜底）
+	IndustryDomainConstraint = industrycfg.IndustryDomainConstraint // 领域约束句子（Prompt 内"只聊X"指令）
 )
 
 // industryKeywordList 解析行业关键词列表（JSON 数组）
 // 优先级：租户覆盖 → 系统默认(tenant_id=0) → fallback（代码内置）
-func industryKeywordList(tenantID uint, key string, fallback []string) []string {
-	if runtimecfg.DefaultSystemConfigService == nil {
-		return fallback
-	}
-	list := industryListFrom(runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, key, ""))
-	if len(list) > 0 {
-		return list
-	}
-	return fallback
-}
-
-// industryListFrom 反序列化 JSON 数组字符串；非法/空数组返回 nil
-func industryListFrom(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	var list []string
-	if err := json.Unmarshal([]byte(raw), &list); err != nil || len(list) == 0 {
-		return nil
-	}
-	return list
-}
+// FIX-14：真源已迁 industrycfg.IndustryKeywordList，此别名让本文件与 mq_policy.go
+// 的调用点零改动（判据单点，勿在此复制实现）。
+var industryKeywordList = industrycfg.IndustryKeywordList
 
 // containsKeyword 朴素子串命中（统一小写匹配）
 func containsKeyword(text string, words []string) bool {
@@ -129,83 +114,27 @@ func IndustryVisitKeywordsForTenant(tenantID uint) []string {
 }
 
 // IndustryPriceRepliesForTenant 租户级询价回复话术
-// P1-29 修复(2026-09-09)：询价硬拦截话术迁入行业键（JSON 数组）。
-// lead=true 为已留资分支（体验后报价，严禁"约试驾"——P1-30），lead=false 为未留资引导分支。
-// UATFOLLOWUP F2 修复(2026-09-15)：兜底按「有无行业包绑定」分流——
-// 有绑定（车企等既有租户）→ 保持汽车口径不变（兼容既有行为与 UAT 断言）；
-// 无绑定（general/新行业未上架包）→ 行业中立口径，不再让通用行业租户
-// 收到"约试驾/车价"等汽车销售话术（UAT 字节级实测复现：general 租户询价
-// 硬拦截返回试驾话术）。行业键已配置时两口径均被覆盖，优先级不变。
-// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：分流谓词收紧为「汽车族绑定」（TenantUsesAutoTalk），
-// 非 auto 包（edu/wedding/realty/…）绑定租户同走中立口径。
+// FIX-14(2026-09-29)：真源在 industrycfg（Prompt 与策略两层共用一份判据），此包装让
+// internal/llm 等既有 `service.IndustryPriceRepliesForTenant` 调用点零改动。
+// 口径注释（P1-29/UATFOLLOWUP F2/批四 P2）随实现同住 industrycfg。
 func IndustryPriceRepliesForTenant(tenantID uint, lead bool) []string {
-	key := IndustryPriceReplyNoLead
-	if lead {
-		key = IndustryPriceReplyLead
-	}
-	if list := industryKeywordList(tenantID, key, nil); len(list) > 0 {
-		return list
-	}
-	return priceReplyFallback(tenantID, lead)
+	return industrycfg.IndustryPriceRepliesForTenant(tenantID, lead)
 }
 
-// priceReplyFallback 询价回复兜底口径分流（F2）：
-// 绑定汽车族包 → 汽车版（兼容既有车企租户）；无绑定/非 auto 包 → 行业中立版（批四 P2）。
-func priceReplyFallback(tenantID uint, lead bool) []string {
-	if TenantUsesAutoTalk(tenantID) {
-		if lead {
-			return defaultPriceRepliesLead
-		}
-		return defaultPriceRepliesNoLead
-	}
-	if lead {
-		return neutralPriceRepliesLead
-	}
-	return neutralPriceRepliesNoLead
-}
-
-// neutralPriceRepliesLead 中立口径·已留资询价回复（不提试驾/车，行业无关）
-var neutralPriceRepliesLead = []string{
-	"价格得看具体方案和你的需求来定，你体验之后就清楚了",
-	"费用跟方案组合有关，确认好需求我按你的情况出个详细报价",
-	"具体价格看你选什么方案，你定好了我按需求给你报价",
-}
-
-// neutralPriceRepliesNoLead 中立口径·未留资询价回复（引导进一步沟通，不提行业专属动作）
-var neutralPriceRepliesNoLead = []string{
-	"价格得看你的需求来定，要不我先了解下你的情况，再给你做个详细报价",
-	"费用要看具体方案，你说说主要想解决什么，我按需求给你报个准数",
-	"价格跟方案配置有关，我先帮你捋一下需求，然后给你个合适的报价",
-}
-
-// defaultPriceRepliesLead 已留资询价回复（体验后报价，不约试驾，与 prompt 硬规则一致）
-var defaultPriceRepliesLead = []string{
-	"价格得看具体配置和您的需求来定，您体验后就知道了",
-	"车价跟配置和选装方案有关，确认好后我按您的需求出个详细报价",
-	"具体价格看您选什么配置，您定好了我按需求给您报价",
-}
-
-// defaultPriceRepliesNoLead 未留资询价回复（引导到店试驾后报价）
-var defaultPriceRepliesNoLead = []string{
-	"要不帮您约个试驾，体验过后我再根据您的配置需求做个报价，怎么样呀",
-	"价格得看配置来定，要不先帮您约个试驾，您试完车我按您的需求做个详细报价，行不",
-	"车价跟具体配置有关，要不我帮您安排个试驾，体验好了我按您的需求出个报价，您看咋样",
-}
+// priceReplyFallback 询价回复兜底口径分流别名（真源 industrycfg.PriceReplyFallback）。
+// 保留私有名供 tenant_auto_talk_test.go 直接回归分流谓词。
+var priceReplyFallback = industrycfg.PriceReplyFallback
 
 // IndustrySalespersonForTenant 租户级销售顾问人设（行业包可配置；空=空串由调用方回退内置）
+// FIX-14：真源在 industrycfg，此包装保持 service 对外 API 不变。
 func IndustrySalespersonForTenant(tenantID uint) string {
-	if runtimecfg.DefaultSystemConfigService == nil {
-		return ""
-	}
-	return runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, IndustrySalesperson, "")
+	return industrycfg.IndustrySalespersonForTenant(tenantID)
 }
 
 // IndustryDomainConstraintForTenant 租户级领域约束句子（Prompt 内"只聊X"指令；空=空串由调用方回退内置）
+// FIX-14：真源在 industrycfg，此包装保持 service 对外 API 不变。
 func IndustryDomainConstraintForTenant(tenantID uint) string {
-	if runtimecfg.DefaultSystemConfigService == nil {
-		return ""
-	}
-	return runtimecfg.DefaultSystemConfigService.GetStringForTenant(tenantID, IndustryDomainConstraint, "")
+	return industrycfg.IndustryDomainConstraintForTenant(tenantID)
 }
 
 // IsOffTopicForTenant 租户级无关话题判定：白名单优先放行，黑名单拦截
@@ -249,41 +178,12 @@ var neutralOffTopicReplies = []string{
 }
 
 // TenantUsesAutoTalk 租户兜底话术是否走汽车领域口径（批四 P2，DEFECT_VERIFY_2026-09-20）。
-// 旧口径「绑定任意行业包即汽车话术」对非 auto 包错位：包加载器（pack_kb.go）只写
-// pack_prompts/params/mindset 键、从不写 industry.*，于是绑了 edu/wedding/realty 包的租户
-// 人设是"越野SUV销售"、跑题回"聊车吧"、询价回"约试驾"。
-// 新口径按绑定包在 industry_packs.industry 字段的族别分流：仅汽车族（auto/auto_rox/
-// auto_rox_sales 等 industry=auto 的行业包及其企业/部门子包）保留汽车兜底；
-// 非 auto 包与无绑定同走行业中立口径。db 未初始化（单测环境）按中立兜底；结果 30s 进程缓存。
+// FIX-14(2026-09-29)：判据真源（含 30s 进程缓存与 boundPackCodes 依赖）已迁
+// internal/industrycfg.TenantUsesAutoTalk；此包装保持 service 对外 API 与本文件
+// priceKeywordsFallback/GetOffTopicReplyForTenant 的调用零改动。口径注释见真源。
 func TenantUsesAutoTalk(tenantID uint) bool {
-	if tenantID == 0 || db.DB == nil {
-		return false
-	}
-	if v, ok := autoTalkCache.Load(tenantID); ok {
-		if e, good := v.(autoTalkCacheEntry); good && time.Now().Before(e.expireAt) {
-			return e.auto
-		}
-	}
-	auto := false
-	if codes := boundPackCodes(tenantID); len(codes) > 0 {
-		var n int64
-		// 任一绑定包（行业或企业码）属汽车族即算汽车租户；查询失败按中立（保守向，宁中性不错位）
-		if err := db.DB.Model(&model.IndustryPack{}).
-			Where("code IN ? AND industry = ?", codes, "auto").Count(&n).Error; err == nil {
-			auto = n > 0
-		}
-	}
-	autoTalkCache.Store(tenantID, autoTalkCacheEntry{auto: auto, expireAt: time.Now().Add(30 * time.Second)})
-	return auto
+	return industrycfg.TenantUsesAutoTalk(tenantID)
 }
-
-// autoTalkCache 汽车族判定短TTL进程缓存（与 boundPackCodes 同 30s 口径，检索/建 prompt 高频调用）
-type autoTalkCacheEntry struct {
-	auto     bool
-	expireAt time.Time
-}
-
-var autoTalkCache sync.Map // tenantID(uint) → autoTalkCacheEntry
 
 // GetHumanTakeoverReplyForTenant 人工接管/待接管话术（P2-21）
 // 行业键 industry.human_reply 可配置；缺省回退内置文案（与站内 chat_main 硬编码语义一致）。

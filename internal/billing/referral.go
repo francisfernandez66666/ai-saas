@@ -190,9 +190,19 @@ func ApplyReferralBinding(tx *gorm.DB, newTenant *model.Tenant, refCode, invitee
 //  1. ReferralPaidRewarded 条件 UPDATE（false→true，RowsAffected=1 才继续）——单受邀限一次
 //  2. invited_by_tenant_id IS NOT NULL —— 无主不发放
 //  3. increment/free 等非 paid 包类型由调用方过滤（业务规则：必须冲套餐）
-func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
+//
+// FIX-1（2026-09-29 审计批）：本函数改为返回 error。旧写法把台账行 RewardClaim 的
+// `tx.Create` 错误吞掉（`_ = tx.Create(...)`），而 ClawbackPaidReferralReward 的回收腿
+// 完全靠 grant_type='referral_paid' 台账行定位金额——台账没落上时回收只剩
+// "无 referral_paid 台账行（存量数据），仅重置闸门不动 token" 这条保守分支，
+// 于是那 50 万永久奖励**永远收不回**，且界面与对账都看不出它存在过。
+// 现在：台账落不上 → 先补偿（扣回刚入账的 bonus、重置闸门），再把 error 上抛；
+// 调用方 GrantOrderEntitlement 在事务内收到 error 会回滚整笔发放，
+// 对账器按"paid 缺台账行"的既有信号下轮补发——奖励发放从"吞掉就当没有"
+// 变成"要么台账与余额同时成立，要么整笔重来"。
+func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) error {
 	if invitedTenantID == 0 {
-		return
+		return nil
 	}
 	if tx == nil { // 调用方可能传 nil（如 api/billing.go mock-pay 直调路径），与 GrantPackage 同款兜底
 		tx = db.DB
@@ -202,34 +212,60 @@ func RewardPaidReferral(tx *gorm.DB, invitedTenantID uint) {
 		Update("referral_paid_rewarded", true)
 	if gate.Error != nil {
 		log.Printf("[Referral] 付费奖励幂等闸门更新失败 invited=%d: %v", invitedTenantID, gate.Error)
-		return
+		// FIX-1：上抛让整笔发放事务回滚。PG 里事务内一条语句失败即整笔 aborted，
+		// 吞掉继续只会把后面的语句全变成连锁错误；回滚后对账器下轮按缺台账补发。
+		return gate.Error
 	}
 	if gate.RowsAffected == 0 {
-		return // 已发放过 / 无邀请关系：静默跳过（正常路径）
+		return nil // 已发放过 / 无邀请关系：静默跳过（正常路径）
 	}
 
 	var invited model.Tenant
 	if err := tx.Select("id", "invited_by_tenant_id", "contact_email").First(&invited, invitedTenantID).Error; err != nil {
-		return
+		return err
 	}
 	inviteeEmailLower := strings.ToLower(strings.TrimSpace(invited.ContactEmail))
 	bonus := int64(cfgInt("referral_paid_bonus_tokens", 500000))
 	if err := tx.Model(&model.Tenant{}).Where("id = ?", *invited.InvitedByTenantID).
 		Update("token_balance", gorm.Expr("COALESCE(token_balance,0) + ?", bonus)).Error; err != nil {
 		// 发放失败要可见可追溯：回滚幂等标记，让下次到账重试
-		tx.Model(&model.Tenant{}).Where("id = ?", invitedTenantID).Update("referral_paid_rewarded", false)
+		// FIX-16 同批收口（2026-09-29）：闸门重置本身失败也必须点名——吞掉它就是
+		// "闸门停 true、奖励没发"，这条奖励永久失去重试资格。
+		if rbErr := tx.Model(&model.Tenant{}).Where("id = ?", invitedTenantID).Update("referral_paid_rewarded", false).Error; rbErr != nil {
+			log.Printf("[Referral][ERROR] 发放失败后闸门重置失败 invited=%d: %v（闸门滞留 true，须人工重开才有重试）", invitedTenantID, rbErr)
+		}
 		log.Printf("[Referral] 付费永久奖励发放失败 invited=%d → inviter=%d: %v（已回滚闸门待重试）",
 			invitedTenantID, *invited.InvitedByTenantID, err)
-		return
+		return err
 	}
 	log.Printf("[Referral] 付费永久奖励到账：受邀=%d 的邀请人=%d +%d token(永久)", invitedTenantID, *invited.InvitedByTenantID, bonus)
 	InvalidateShadow(*invited.InvitedByTenantID) // 计费统一：奖励入账后失效影子余额
-	_ = tx.Create(&model.RewardClaim{
+	if err := tx.Create(&model.RewardClaim{
 		GrantType: "referral_paid", TenantID: *invited.InvitedByTenantID,
 		Email: inviteeEmailLower, RefID: &invitedTenantID,
 		// R7(2026-09-11)：Note 记录实发金额，退款回收按台账口径而非"当前配置"（配置调价后不错账）
 		Note: fmt.Sprintf("bonus:%d", bonus),
-	})
+	}).Error; err != nil {
+		// FIX-1 核心现场：台账行是回收腿定位"该收多少、向谁收"的唯一依据，
+		// 吞掉这里的错误 = 余额已加而台账缺席 = 这笔奖励永久收不回。
+		// 补偿顺序：扣回刚入账的 bonus → 重置闸门（让下笔到账能完整重试）→ 上抛。
+		// 事务路径下这三步会随调用方回滚一起消失（幂等无害）；非事务兜底路径
+		// （tx==nil 落 db.DB 逐语句自动提交）就靠这套补偿把账面收回原状。
+		if rb := tx.Model(&model.Tenant{}).Where("id = ?", *invited.InvitedByTenantID).
+			Update("token_balance", gorm.Expr("COALESCE(token_balance,0) - ?", bonus)).Error; rb != nil {
+			log.Printf("[Referral][ERROR] 台账失败后的余额回冲也失败 inviter=%d 应回冲=%d: %v（须人工核对②桶）",
+				*invited.InvitedByTenantID, bonus, rb)
+		}
+		if gb := tx.Model(&model.Tenant{}).Where("id = ?", invitedTenantID).
+			Update("referral_paid_rewarded", false).Error; gb != nil {
+			log.Printf("[Referral][ERROR] 台账失败后的闸门重置也失败 invited=%d: %v（须人工核对闸门）", invitedTenantID, gb)
+		}
+		log.Printf("[Referral][ERROR] 付费推荐台账落库失败 invited=%d inviter=%d bonus=%d: %v（已回冲余额并重置闸门，整笔待重试）",
+			invitedTenantID, *invited.InvitedByTenantID, bonus, err)
+		InvalidateShadow(*invited.InvitedByTenantID) // 回冲后余额已变，影子须重算
+		return err
+	}
+	return nil
 }
 
 // ClawbackPaidReferralReward R7 修复(2026-09-11)：受邀人首笔包月订单退款时回收邀请人奖励。
@@ -301,7 +337,15 @@ func ClawbackPaidReferralReward(tx *gorm.DB, invited model.Tenant) {
 			log.Printf("[Referral][WARN] 邀请人%d 余额不足以即时回收推荐奖：即时扣 %d、挂账 %d tokens（待补扣）",
 				claim.TenantID, collected, shortfall)
 		}
-		tx.Delete(&model.RewardClaim{}, claim.ID)
+		// FIX-16 同批收口（2026-09-29）：台账删除错误不再被吞。
+		// 删失败却继续重置闸门 = "钱已扣、台账还在"——下一笔退款触发回收会对着
+		// 同一行台账**再扣一次**（双倍追扣邀请人）。就地返回、闸门保持 true
+		// （即"已回收"标记不被假象清掉），差额与滞留行由 ERROR 日志点名人工核对。
+		if delErr := tx.Delete(&model.RewardClaim{}, claim.ID).Error; delErr != nil {
+			log.Printf("[Referral][ERROR] 回收后台账行删除失败 claim=%d invited=%d: %v（跳过闸门重置防二次追扣，须人工核对台账）",
+				claim.ID, invited.ID, delErr)
+			return
+		}
 		InvalidateShadow(claim.TenantID)
 		log.Printf("[Referral] R7 付费推荐奖励已回收：invited=%d 退款触发，inviter=%d 即时扣 %d / 挂账 %d token",
 			invited.ID, claim.TenantID, collected, shortfall)

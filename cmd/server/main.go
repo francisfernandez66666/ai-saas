@@ -70,7 +70,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.40.0"
+const appVersion = "v2.41.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -434,6 +434,10 @@ func main() {
 	// 9.44 数据飞轮回流上报器（P3，2026-08-26）：每小时把上一窗口的配置调参/包操作
 	// 审计增量 POST 到 feedback_collector_url（空=关闭）。失败仅告警不影响业务。
 	// FIX-F(2026-09-28)：登记后台循环（停机时等它把当前这一轮跑完，见优雅停机段）
+	// FIX-4(2026-09-29 审计批二)：17 处后台循环中唯一有外部副作用（POST collector）却无选主的一处——
+	// lastID 是进程内变量，多实例各扫各的增量会把同一批审计行外发 N 次。现在 Redis 可用时经
+	// TryLock("lock:flywheel:report") 选主，抢不到跳过本轮；未启用 Redis 退回单实例行为并如实 WARN
+	// 一次（对齐双轨口径：勿把无 Redis 单实例拦死，但"多实例会重复外发"这个前提必须看得见）。
 	bgLoops.Add(1)
 	go func() {
 		defer bgLoops.Done() // 循环退出腿：bgCtx 取消 → Stop → Done
@@ -442,18 +446,45 @@ func main() {
 		// 慢任务期间到点的 tick 照旧丢弃不追赶，其余语义与原循环逐字一致。
 		var lastID uint
 		db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
+		var noRedisWarned sync.Once
+		// 每一轮的动作收进包级函数 flywheelRound（下面四个依赖全注入）：
+		// 裸 ticker 没有 HTTP 触发端点是刻意的（一触发就往云端 POST 审计增量，测试不该真发信），
+		// 于是"选主"这条新加的腿必须能在单测里被逐路打中——否则 FIX-4 等于只加了一句注释。
+		runRound := func() {
+			flywheelRound(&lastID,
+				redisclient.IsEnabled,
+				func() func() {
+					h := redisclient.TryLock("lock:flywheel:report", 50*time.Minute)
+					if h == nil {
+						return nil // 锁被别的实例持有：本轮跳过，不重复外发
+					}
+					return h.Unlock
+				},
+				func() {
+					noRedisWarned.Do(func() {
+						log.Printf("[飞轮回流] Redis 未启用：本循环无选主锁，多实例部署下审计增量会重复外发（单实例不受影响）")
+					})
+				},
+				// 外层包 safeRun：上报里若有 panic 只丢本轮，不能把整条后台循环带走
+				// （与抽取前的 `safeRun("flywheel:report", …)` 逐字同语义）
+				func(id uint) bool {
+					var ok bool
+					safeRun("flywheel:report", func() { ok = billing.ReportAuditIncrement(id) })
+					return ok
+				},
+				func() uint {
+					var maxID uint
+					db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&maxID)
+					return maxID
+				})
+		}
 		for {
 			select {
 			case <-bgCtx.Done():
 				ticker.Stop()
 				return
 			case <-ticker.C:
-				// K8修复(2026-08-26)：上报成功才推进 lastID，失败保留以重试，避免增量审计数据漏传
-				var ok bool
-				safeRun("flywheel:report", func() { ok = billing.ReportAuditIncrement(lastID) })
-				if ok {
-					db.DB.Table("tenant_audit_logs").Select("COALESCE(MAX(id),0)").Scan(&lastID)
-				}
+				runRound()
 			}
 		}
 	}()

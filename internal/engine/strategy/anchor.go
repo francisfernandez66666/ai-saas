@@ -303,7 +303,10 @@ func Step2_SoftmaxAnchor(scores [AnchorCount]float64) (probs [AnchorCount]float6
 //   - 降低一级aggressiveness，用更温和的方式沟通
 //
 // 注意：这是"软"降级，不是直接换锚，而是在选定锚的基础上微调
-func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnchor int, isDowngraded bool) {
+//
+// FIX-3（2026-09-29 审计批二）：tenantID 入参，theta_hookrate_low/theta_silent
+// 改走 *ForTenant（租户覆盖 > 系统默认；tenantID=0 与旧 SafeCfg* 逐字节等价）。
+func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState, tenantID uint) (finalAnchor int, isDowngraded bool) {
 	finalAnchor = selectedAnchor
 	isDowngraded = false
 
@@ -315,13 +318,13 @@ func Step3_SoftDowngrade(selectedAnchor int, state model.SessionState) (finalAnc
 
 	// 判据1：接钩率低（低于阈值θ_hookrate_low）
 	// 修复：从SystemConfigService读取，后台调参即时生效
-	hookRateLow := state.Attempts >= 2 && state.HookRate < runtimecfg.SafeCfgFloat("theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
+	hookRateLow := state.Attempts >= 2 && state.HookRate < runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_hookrate_low", config.GlobalConfig.Strategy.ThetaHookRateLow)
 	if hookRateLow {
 		needDowngrade = true
 	}
 
 	// 判据2：沉默时长超过阈值
-	silentLong := state.SilentDuration > runtimecfg.SafeCfgInt("theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
+	silentLong := state.SilentDuration > runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "theta_silent", config.GlobalConfig.Strategy.ThetaSilent)
 	if silentLong {
 		needDowngrade = true
 	}

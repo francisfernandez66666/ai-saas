@@ -142,7 +142,7 @@ func ReconcileBilling() int {
 			log.Printf("[Billing] 对账重发失败 tenant=%d order=%d: %v", *order.TenantID, order.ID, err)
 			continue
 		}
-		db.DB.Create(&model.TenantAuditLog{
+		createAuditLog(model.TenantAuditLog{
 			TenantID: *order.TenantID, Action: fmt.Sprintf("billing_reconcile_%d", order.ID),
 			Resource: fmt.Sprintf("order:%d", order.ID),
 			Detail:   `{"reconcile":"regrant_entitlement"}`,
@@ -225,8 +225,12 @@ func GrantOrderEntitlement(tx *gorm.DB, order *model.BillingOrder) error {
 		}
 		// M-R 邀请推广（2026-08-25）：受邀人首笔 paid 包月套餐到账 →
 		// 邀请人获永久 token（幂等闸门 ReferralPaidRewarded，单受邀限一次；increment/free 不触发）
+		// FIX-1（2026-09-29）：奖励发放的任一写库失败都上抛回滚整笔发放——
+		// "钱收了、奖励台账却没落上"从此不再可能；对账器按"paid 缺台账"下轮补发。
 		if pkg.PType == model.PackageTypePaid {
-			RewardPaidReferral(tx, *order.TenantID)
+			if err := RewardPaidReferral(tx, *order.TenantID); err != nil {
+				return err
+			}
 		}
 		return nil
 	}

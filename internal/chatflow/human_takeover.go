@@ -69,8 +69,11 @@ func HumanTakeoverDecideAt(conv *model.Conversation, now time.Time) TakeoverDeci
 		return TakeoverDecision{Action: TakeoverAReply}
 	}
 	// 与免登录链同源的两个热配键：超时阈值默认 300s、AI 自动代答默认开
-	timeout := time.Duration(runtimecfg.SafeCfgInt("assigned_lead_ai_timeout", 300)) * time.Second
-	autoReply := runtimecfg.SafeCfgBool("assigned_lead_ai_auto_reply", true)
+	// FIX-3（2026-09-29 审计批二）：改走 *ForTenant——admin/config 对这两键写的是
+	// 租户覆盖层（不在 PlatformLevelKeys），旧 SafeCfg* 只查系统层，门店调了
+	// "顾问超时"档位对裁决永不生效。lookupTenant 自带 nil 防护，语义与 SafeCfg 等价。
+	timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(conv.TenantID, "assigned_lead_ai_timeout", 300)) * time.Second
+	autoReply := runtimecfg.DefaultSystemConfigService.GetBoolForTenant(conv.TenantID, "assigned_lead_ai_auto_reply", true)
 
 	if !conv.IsAiReplyEnabled {
 		// 单人模式：只有"待接管且顾问超时无响应"才打破（客户已交到人手上，不能无限等）

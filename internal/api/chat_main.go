@@ -498,9 +498,11 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 	// 简单消息（"在吗"/"那我撤了"等）直接走快速回复通道
 	if isSimple {
 		defer service.DefaultMessageQueueService.SimpleMessageDone(s.tenantID, s.customer.ID)
-		replyDelayModeSimple := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+		// FIX-3（2026-09-29 审计批二）：reply_delay_mode/simple_msg_delay 走 *ForTenant——
+		// 写侧 admin/config 把这两键存进租户覆盖层，旧读法只查系统层，租户设了秒回也不生效。
+		replyDelayModeSimple := runtimecfg.DefaultSystemConfigService.GetStringForTenant(s.tenantID, "reply_delay_mode", "normal")
 		if replyDelayModeSimple != "instant" {
-			simpleDelay := service.GetSimpleReplyDelay()
+			simpleDelay := service.GetSimpleReplyDelay(s.tenantID)
 			chatflow.CancellableSleep(s.customer.ID, simpleDelay)
 		}
 
@@ -560,7 +562,7 @@ func (s *chatSessionCtx) chatInferRoute() bool {
 func (s *chatSessionCtx) chatStoreVisitFast(pre chatflow.PreRoute) bool {
 	// ====== 分支C：未留资线索（关闭引导+两段式AI快速回复，推迟分配顾问） ======
 	firstReply := pre.Reply
-	firstDelay := service.GetStoreVisitFirstDelay() // 10-15秒
+	firstDelay := service.GetStoreVisitFirstDelay(s.tenantID) // 10-15秒
 
 	log.Printf("[到店倾向-未留资线索] 客户%d 关闭引导+两段式回复, 推迟分配顾问", s.customer.ID)
 
@@ -592,7 +594,7 @@ func (s *chatSessionCtx) chatStoreVisitFast(pre chatflow.PreRoute) bool {
 	secondReply := service.GetStoreVisitSecondReply(s.tenantID, s.req.Content)
 	goroutineTenantID := s.tenantID
 	go func(cid, convID uint, content string, tid uint) {
-		sd := service.GetStoreVisitSecondDelay()
+		sd := service.GetStoreVisitSecondDelay(s.tenantID)
 		chatflow.CancellableSleep(cid, sd)
 		// 醒来先复核"AI 还有没有说话权"（25-45s 里顾问可能已接管、客户可能已留资）。
 		// 判据与通道侧共用 chatflow 单点，两条入口不会再一套语义。
@@ -749,7 +751,7 @@ func (s *chatSessionCtx) chatLeadCapture(pre chatflow.PreRoute) bool {
 	}))
 
 	// 5. 固定引导式反问（硬编码文案，不走AI避免延迟）
-	firstDelay := service.GetStoreVisitFirstDelay()
+	firstDelay := service.GetStoreVisitFirstDelay(s.tenantID)
 	chatflow.CancellableSleep(s.customer.ID, firstDelay)
 
 	// FIX-9(2026-09-27)：这三句原先内联在此处（汽车口径"有没有老车要置换"），非 auto 行业租户
@@ -887,10 +889,12 @@ func (s *chatSessionCtx) chatRunStrategyAndRoute() {
 	case strategy.RouteAI:
 		if !s.conversation.IsAiReplyEnabled {
 			// 5分钟无人回复自动重开AI（仅到店场景生效）
+			// FIX-3（2026-09-29 审计批二）：assigned_lead_ai_timeout 改走 *ForTenant，
+			// 与 chatflow.HumanTakeoverDecide 同源同层——租户在后台调的超时档位两侧都要生效。
 			aiTimedOut := s.conversation.PendingHandoff &&
 				s.conversation.LastHumanReplyAt != nil &&
 				time.Since(*s.conversation.LastHumanReplyAt) >=
-					time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300))*time.Second
+					time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(s.tenantID, "assigned_lead_ai_timeout", 300))*time.Second
 			if aiTimedOut {
 				s.conversation.IsAiReplyEnabled = true
 				s.conversation.IsHumanLocked = false
@@ -1131,7 +1135,8 @@ func (s *chatSessionCtx) chatSaveReplyAndUpdate() (string, model.Message, bool) 
 
 	log.Printf("[Chat] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", s.customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
 	// instant模式跳过CancellableSleep，秒回无延迟
-	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	// FIX-3（2026-09-29 审计批二）：reply_delay_mode 改走 *ForTenant，与简单消息分支同一口径。
+	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetStringForTenant(s.tenantID, "reply_delay_mode", "normal")
 	if replyDelayMode == "instant" {
 		log.Printf("[Chat] 客户%d instant模式，跳过延迟直接回复", s.customer.ID)
 	} else {

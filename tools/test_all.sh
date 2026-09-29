@@ -29,7 +29,7 @@
 #   ./tools/test_all.sh            # 完整回归（含 uat，耗时约 20-40 分钟）
 #   ./tools/test_all.sh --fast     # 快回归：阶段零+单测+构建+tsc+契约+九套 E2E+playwright（跳过 uat）
 #   ./tools/test_all.sh --unit     # 仅单元测试层（go test -cover + 前端 vitest）
-#   ./tools/test_all.sh --static   # 仅阶段零静态门禁（14 项，不起服务、不跑单测/E2E，分钟级）
+#   ./tools/test_all.sh --static   # 仅阶段零静态门禁（20 项，不起服务、不跑单测/E2E，分钟级）
 #   ./tools/test_all.sh --capacity # 单测+构建+T7契约+C5 双实例 WS/Redis 广播矩阵（本地环境）
 #   SERVER_PORT=9090 ./tools/test_all.sh   # 指定服务端口（默认 9090）
 #
@@ -38,9 +38,32 @@
 #   --static，改完门禁脚本能立刻单跑它自己那一档（deploy_preflight / ops_daily / backup.sh
 #   三套反证用例都在这一档里）。
 #
-# 阶段顺序：阶段零静态门禁（14 项）→ 单元层 → 构建+tsc+契约 → E2E 层（九套断言脚本
-#   + playwright）→ 汇总。每阶段失败继续跑后续
+# 阶段顺序：阶段零静态门禁（20 项）→ 单元层 → 构建+tsc+契约 → E2E 层（九套断言脚本
+#   + playwright；--full 再加 uat 共十套）→ 汇总。每阶段失败继续跑后续
 #（除非 --failfast），最终以总账定 exit code。
+#
+# 2026-09-29 端到端审计批（FIX-3/14/16）新增三道结构门禁：
+#   · 吞写库错误（tools/check_swallowed_db.sh）：`tx.Create/Save/Exec` 的返回值既不判错也不
+#     显式 `_ =` 的写法一律点名——本批实锤的两处（推荐奖台账、留资落库）都是"接口回 200、
+#     库里没这行"，靠人眼读代码永远抓不完，只有静态扫得到全仓。
+#   · 配置读写配对（tools/check_config_tenant_pairing.sh）：登记表里的租户级键禁被
+#     `SafeCfg*` 系统层裸读（读系统层=租户覆盖永不生效，"策略挂着但永不生效"的同族缺陷）。
+#   · AI 底座分层（tools/check_ai_decoupling.sh）：`internal/ai` 的依赖闭包不得含
+#     `internal/service`（反向依赖让 AI 层没法被 gateway 独立复用），检查器自带 2 例自证。
+#
+# 同批还给端到端层补了三处「今日开发内容」的判据（本编排的实收数字以各段输出为准）：
+#   · smoke_org 11 → 31 项：部门移动这条腿自合入起恒 500（PG 扩展协议下 CONCAT 的未定型参数报
+#     42P18），单测走的是简化句柄、其余九套冒烟都不碰它——于是组织台拖拽「一直用不了」这件事
+#     在代码里活了很久也没人知道。补的 20 项在 HTTP 层逐字比路径与深度，并抓出第二个缺陷：
+#     子树批量重写的前缀匹配把被移动节点自己也算进去，深度被平移两次（2→4）。
+#   · playwright 21 → 22 项：C 端访客下载本人数据副本（后端端点与类型早就在，前端零消费者，
+#     等于对外声明了一件界面里做不到的事）。
+#   · backup 守卫反证 14 → 16 项：权限位的读法自检（macOS 上 `ls -l` 在文件带扩展属性时串尾多
+#     一个 @，拿它判 0600 会把真红读成绿——这是本批唯一一次回归红，红在检查器而不是产品）。
+#   · 飞轮回流选主与 webhook 终态回写这两条**没有 HTTP 触发端点**（有端点就等于一触发就往云端
+#     POST / 真投递，测试不该真发信），故按 D3 催缴 sweep 的既有口径改成"把判据抽成可注入单元、
+#     逐路打中"：cmd/server/flywheel_round_test.go 6 例、internal/webhook/writeback_fail_test.go
+#     用 GORM 回调做失败注入（断事件已发出、行仍留在 sending、失败计数 +1，再验陈旧复活真重投）。
 # ============================================================
 set -u
 
@@ -286,6 +309,51 @@ bash tools/check_withcontext_ratchet.sh
 CTX_RC=$?
 verdict "显式 DB ctx 透传棘轮" $CTX_RC
 
+# ---------- 阶段零：吞写库错误静态门禁（FIX-16，2026-09-29 审计批）----------
+# 钉的是本轮两起实锤事故的共同形态：写库结果被丢弃（`_ = tx.Create(...)` / 裸
+# `db.DB.Model(x).Updates(...)`），系统"对外宣称成功、对内没写进去"——
+# 推荐奖台账吞错=回收腿找不到行、钱永久收不回；留资画像吞错=日志报"留资成功"
+# 而线索在库里蒸发。作用域只圈钱与线索路径（billing/webhook/chat_lead），
+# 白名单必须带行尾理由（无理由的 `db-swallow-ok:` 本身就判红）。
+# 自带 --selftest：注入 4 条违例必须全被点名、检错写法/说明注释/带理由白名单必须放行。
+step "静态门禁：吞写库错误（tools/check_swallowed_db.sh，FIX-16）"
+bash tools/check_swallowed_db.sh --selftest
+SW_SELFTEST=$?
+bash tools/check_swallowed_db.sh
+SW_RC=$?
+verdict "吞错检查器自证" $SW_SELFTEST
+verdict "吞写库错误门禁（billing/webhook/chat_lead）" $SW_RC
+
+# ---------- 阶段零：配置读写配对门禁（FIX-3，2026-09-29 审计批二）----------
+# 钉的是"配置挂着但永不生效"的配置面形态：写侧 admin/config 把非 PlatformLevelKeys
+# 的键落进**租户覆盖层**，读侧却用只查系统层缓存的 Get*/SafeCfg*——租户改了参数，
+# 判定代码永远读系统默认值，且系统层通常有值、功能"看起来是好的"，只有租户真去
+# 覆盖时才暴露。与吞错门禁同教训：这类跨包错位（读写隔五六个包、函数名只差一个
+# ForTenant 后缀）靠 review 抓不住，必须机器对账。登记表 21 键逐一核过写侧可达租户层。
+# 自带 --selftest：三种系统层裸读必须全被点名，*ForTenant/未登记键/带理由豁免/注释行必须放行。
+step "静态门禁：配置读写配对（tools/check_config_tenant_pairing.sh，FIX-3）"
+bash tools/check_config_tenant_pairing.sh --selftest
+CP_SELFTEST=$?
+bash tools/check_config_tenant_pairing.sh
+CP_RC=$?
+verdict "配置配对检查器自证" $CP_SELFTEST
+verdict "配置读写配对门禁（登记表 21 键禁系统层裸读）" $CP_RC
+
+# ---------- 阶段零：AI 底座分层结构锁（FIX-14，2026-09-29 审计批三）----------
+# 钉的是分层方向的倒退：internal/ai（底座层）历史上 import internal/service
+# （业务编排层），把 mq/notify/metrics 整棵树拖进 AI 层闭包；FIX-14 已把行业语义/
+# 包 prompt 读取真源抽到叶子包 internal/industrycfg。方向没有任何编译器强制，
+# 下一行 `service.XXX` 就能静默复原且功能照常——所以判据取 `go list -deps` 传递
+# 闭包（直接 import 与中转环都判红），闭包含 service 即 FAIL。
+# 自带 --selftest：合成违规闭包必须被点名、干净闭包必须放行（防空转/恒红两种死法）。
+step "静态门禁：AI 底座分层结构锁（tools/check_ai_decoupling.sh，FIX-14）"
+bash tools/check_ai_decoupling.sh --selftest
+AD_SELFTEST=$?
+bash tools/check_ai_decoupling.sh
+AD_RC=$?
+verdict "AI 分层检查器自证" $AD_SELFTEST
+verdict "internal/ai 依赖闭包不含 service" $AD_RC
+
 # ---------- 阶段零：工作树卫生护栏（O2 配套，2026-09-23 批六）----------
 # 钉三件本次审计实际踩到过的事，全部 fail-closed（缺 git 时 SKIP 不假红）：
 #   1. 未跟踪的 .go/.sh 没有对应文档条目 —— 新工具/新包不写进 AGENTS.md 就等于不存在；
@@ -327,7 +395,7 @@ verdict "ops_daily 反证用例（FIX-7）" $ODS_RC
 # 接进来的是三条守卫各自的判别力：RLS 预检（必须拦、且拦在 pg_dump 之前）、未通电库不得被误杀、
 # 半截归档不留盘、探针失明只 WARN。全部跑在 stub 的 psql/pg_dump/pg_restore 上，不碰真库。
 # 这一组判据自己也被变异检验过（六刀，见该文件头），因为第一版就有"删掉 exit 1 仍全绿"的空转。
-step "静态门禁：backup.sh 守卫反证用例（tools/test_backup_guard.sh，14 断言）"
+step "静态门禁：backup.sh 守卫反证用例（tools/test_backup_guard.sh，16 断言：14 条产物/接线 + ⑥·a/⑥·b 两条权限读法自检〔FIX-13：macOS 的 ls -l 在文件带扩展属性时权限串多出 @，拿它判 0600 会把 600 读成 600@、把真红的权限位读成绿的〕）"
 bash tools/test_backup_guard.sh >/tmp/test_all_backup_guard_selftest.log 2>&1
 BGS_RC=$?
 if [ "$BGS_RC" -ne 0 ]; then tail -15 /tmp/test_all_backup_guard_selftest.log; fi
@@ -567,7 +635,7 @@ step "E2E 层：smoke_perm.sh（角色权限矩阵 33 项）"
 step "E2E 层：smoke_chat_identity.sh（聊天身份缺口+clear-delay 身份闸+A1 锁定超时落库+§8.11 归属门禁 fail-closed 30 项）"
 ./tools/smoke_chat_identity.sh "$PORT" >/tmp/test_all_identity.log 2>&1; verdict "smoke_chat_identity.sh" $?; tail -2 /tmp/test_all_identity.log
 
-step "E2E 层：smoke_org.sh（11 项）"
+step "E2E 层：smoke_org.sh（31 项：多组织隔离 11 项 + 2026-09-29 批二补的部门移动/子树重写 HTTP 层护栏 20 项。这条腿此前因 CONCAT 里的未定型参数在 PG 扩展协议下报 42P18 而**恒 500**，组织台的拖拽从没真的成功过，而单测走简化句柄、其余十套冒烟都不碰它——只有真接口打一发才看得见。移动自身还被抓到第二个缺陷：子树批量重写的前缀匹配把被移动的节点自己也匹配进去了，于是它的深度被平移两次（2→4）；本段因此把「父部门不被自己孩子的移动波及」「后代 +1」「兄弟不受损」三件事分格逐字比，且**前提读数一律取在移动之前**（取在移动之后，一旦实现把父节点深度也顺带平移，等式两边一起漂移照样绿））"
 ./tools/smoke_org.sh "$PORT" >/tmp/test_all_org.log 2>&1; verdict "smoke_org.sh" $?; tail -2 /tmp/test_all_org.log
 
 step "E2E 层：smoke_saas.sh（注册漏斗+组织管理 E2E 12 项）"
@@ -594,7 +662,7 @@ else
   verdict "smoke_redis.sh（Redis 双轨）" $REDIS_RC; tail -2 /tmp/test_all_redis.log
 fi
 
-step "E2E 层：playwright 真浏览器 E2E（21 项，D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言；2026-09-23 批二补 S2 找回密码文案、第 9/10 项改断 S1 匿名写 400；2026-09-23 触达批补主动触达 Tab 渲染，且 D2/触达两项改为先探一个真进得去的代管租户——按下标取 option 会在清库后命中过期 trial 租户，断言打成 402；2026-09-23 D3/D4 批补第 19 项看板数字下钻〔卡片值取自响应 JSON 而非页面文本，且必须等响应而非等请求——只等请求会在数据回来前读到 0，实测 flake 过一次〕；2026-09-23 获客批补第 20 项活码建码→扫码归因→漏斗下钻，扫码格子必须不可点〔单位是次不是人〕，二维码链接断言必须作用域到 .t-dialog__body〔列表每行渲染同一条链接，全局 getByText 会 strict-mode 命中多元素〕；2026-09-24 残项批补第 21 项超管代管检索——把当年"直接写 localStorage 绕过下拉"的 e2e 收回界面：请求必须带 q=、候选必须收窄成搜索结果、选定后 X-Tenant-ID 必须真的进请求头、搜无命中时不得把当前代管冲掉）"
+step "E2E 层：playwright 真浏览器 E2E（22 项；2026-09-29 批三补第 22 项 C 端访客下载本人数据副本〔FIX-10：后端这个端点早就在、类型也生成了，前端却零消费者——对外写着「可携带权可行使」，界面上一个按钮都没有，声明与能力分叉。用例走匿名访客链路，点下载必须真拿到含本人消息、且不含商家内部字段的 JSON〕；D3 修复：孤儿套件接门禁；E10 补 /docs/api 文档站渲染；P1-10 补 390px 响应式；2026-09-21 D2 补 AI 贡献度卡片真浏览器断言；2026-09-23 批二补 S2 找回密码文案、第 9/10 项改断 S1 匿名写 400；2026-09-23 触达批补主动触达 Tab 渲染，且 D2/触达两项改为先探一个真进得去的代管租户——按下标取 option 会在清库后命中过期 trial 租户，断言打成 402；2026-09-23 D3/D4 批补第 19 项看板数字下钻〔卡片值取自响应 JSON 而非页面文本，且必须等响应而非等请求——只等请求会在数据回来前读到 0，实测 flake 过一次〕；2026-09-23 获客批补第 20 项活码建码→扫码归因→漏斗下钻，扫码格子必须不可点〔单位是次不是人〕，二维码链接断言必须作用域到 .t-dialog__body〔列表每行渲染同一条链接，全局 getByText 会 strict-mode 命中多元素〕；2026-09-24 残项批补第 21 项超管代管检索——把当年"直接写 localStorage 绕过下拉"的 e2e 收回界面：请求必须带 q=、候选必须收窄成搜索结果、选定后 X-Tenant-ID 必须真的进请求头、搜无命中时不得把当前代管冲掉）"
 # 真浏览器渲染/跳转/登录漏斗断言，jsdom 冒烟与 curl 断言都覆盖不了的白屏级回归。
 # ⚠ 9090 托管的是 frontend-react/dist **产物**而非源码：改完 .tsx 必须先 build 再跑本套件，
 #   否则断言打的是旧 bundle（2026-09-23 实踩：S2 文案已改、页面仍渲染"服务端日志"，误判成修复无效）。

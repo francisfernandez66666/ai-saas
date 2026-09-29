@@ -25,13 +25,17 @@ import (
 //   - L1：意向分 < θ_urgency_L1（常规跟进）
 //   - L2：θ_urgency_L1 ≤ 意向分 < θ_urgency_L2（加快节奏）
 //   - L3：意向分 ≥ θ_urgency_L2（高意向，需重点关注）
-func Step5_CalcUrgency(intentScore float64, highIntentRounds int) string {
+//
+// FIX-3（2026-09-29 审计批二）：tenantID 入参，theta_* 走 *ForTenant 读取——
+// 写侧 admin/config 允许租户覆盖这些阈值（均不在 PlatformLevelKeys），旧 SafeCfg*
+// 只查系统层缓存，租户调了档位在策略里永不生效。
+func Step5_CalcUrgency(intentScore float64, highIntentRounds int, tenantID uint) string {
 	// 修复：从SystemConfigService读取阈值，后台调参即时生效
-	L1 := runtimecfg.SafeCfgFloat("theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
-	L2 := runtimecfg.SafeCfgFloat("theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
+	L1 := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_urgency_l1", config.GlobalConfig.Strategy.ThetaUrgencyL1)
+	L2 := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_urgency_l2", config.GlobalConfig.Strategy.ThetaUrgencyL2)
 
 	// L3：高意向持续多轮
-	if intentScore >= L2 && highIntentRounds >= runtimecfg.SafeCfgInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
+	if intentScore >= L2 && highIntentRounds >= runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds) {
 		return UrgencyL3
 	}
 
@@ -100,11 +104,13 @@ func Step6_RouteDecision(
 	intentScore := tVector[0]
 	trustLevel := tVector[6]
 	// 修复：从SystemConfigService读取路由阈值，后台调参即时生效
-	thetaTrust := runtimecfg.DefaultSystemConfigService.GetFloat("theta_trust", config.GlobalConfig.Strategy.ThetaTrust)
-	thetaRounds := runtimecfg.DefaultSystemConfigService.GetInt("theta_rounds", config.GlobalConfig.Strategy.ThetaRounds)
-	thetaHookRateCrit := runtimecfg.DefaultSystemConfigService.GetFloat("theta_hook_rate_crit", config.GlobalConfig.Strategy.ThetaHookRateCrit)
-	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
-	thetaL3Rounds := runtimecfg.DefaultSystemConfigService.GetInt("theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds)
+	// FIX-3（2026-09-29 审计批二）：改走 *ForTenant，与 Step5 同一口径——
+	// 这五个 theta 键都允许租户覆盖且不在 PlatformLevelKeys，只读系统层等于覆盖失效。
+	thetaTrust := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_trust", config.GlobalConfig.Strategy.ThetaTrust)
+	thetaRounds := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "theta_rounds", config.GlobalConfig.Strategy.ThetaRounds)
+	thetaHookRateCrit := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_hook_rate_crit", config.GlobalConfig.Strategy.ThetaHookRateCrit)
+	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
+	thetaL3Rounds := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "theta_l3_rounds", config.GlobalConfig.Strategy.ThetaL3Rounds)
 
 	// ============================================================
 	// 先判断是否需要转人工（优先级最高）

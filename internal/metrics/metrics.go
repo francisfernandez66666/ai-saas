@@ -203,6 +203,32 @@ func IncContentSafetyHit() { atomic.AddUint64(&contentSafetyHitTotal, 1) }
 // IncContentSafetyBlock 内容安全 enforce 拦截 +1
 func IncContentSafetyBlock() { atomic.AddUint64(&contentSafetyBlockTotal, 1) }
 
+// ---- FIX-2（2026-09-29 审计批）留资落库失败计数 ----
+// leadCaptureWriteFailTotal 留资客户画像 Updates 写库失败次数。
+// 单独计数而不是只打日志的原因：留资是本系统最高价值事件，旧实现写失败也照样打
+// "留资成功"日志、发 webhook、通知顾问——失败完全不可见。收口后失败路径必须
+// "可见"：日志 ERROR + 本计数，/metrics 上非 0 即说明有线索在库里没落成。
+var leadCaptureWriteFailTotal uint64
+
+// IncLeadCaptureWriteFail 留资画像落库失败 +1（chatflow.applyLeadCapturedUpdates 调用）
+func IncLeadCaptureWriteFail() { atomic.AddUint64(&leadCaptureWriteFailTotal, 1) }
+
+// ---- FIX-5（2026-09-29 审计批）webhook 投递终态回写失败计数 ----
+// webhookWritebackFailTotal 投递结果已产生但执行状态/计数回写失败的次数。
+// 口径与"宁重投不可丢"配套：回写失败会导致 claimDueDeliveries 把 sending 复活成
+// pending 重投（可能重复送达），这是刻意的取舍——但必须数得出来重投了多少次。
+var webhookWritebackFailTotal uint64
+
+// IncWebhookWritebackFail webhook 投递终态回写失败 +1（internal/webhook 调用）
+func IncWebhookWritebackFail() { atomic.AddUint64(&webhookWritebackFailTotal, 1) }
+
+// WebhookWritebackFailCount 读「投递终态回写失败」累计次数。
+// 为什么要单独开一个读函数（FIX-5，2026-09-29 审计批）：这条计数是"宁重投不可丢"取舍的
+// 唯一可见面——回写失败时事件已经真发出去了，库里状态却没落成，下一轮会重投。
+// 单测必须能**增量比对**它（跑一次前后差值恰为 1），只看 /metrics 文本的话，
+// "计数器从来没被 + 过"和"渲染坏了"这两种坏法分不开。
+func WebhookWritebackFailCount() uint64 { return atomic.LoadUint64(&webhookWritebackFailTotal) }
+
 // ---- D9 行业包质量指标（带 pack/template 标签）----
 type packMetricKey struct {
 	Pack     string
@@ -740,6 +766,13 @@ func appendComplianceSignalLines(b []byte) []byte {
 	b = append(b, "# HELP ai_scrm_contentsafety_block_total AI replies blocked in enforce mode\n"...)
 	b = append(b, "# TYPE ai_scrm_contentsafety_block_total counter\n"...)
 	b = append(b, fmt.Sprintf("ai_scrm_contentsafety_block_total %d\n", atomic.LoadUint64(&contentSafetyBlockTotal))...)
+	// ---- FIX-2 / FIX-5（2026-09-29 审计批）吞错收口观测 ----
+	b = append(b, "# HELP ai_scrm_lead_capture_write_fail_total lead-captured customer profile DB writes that failed (lead not persisted)\n"...)
+	b = append(b, "# TYPE ai_scrm_lead_capture_write_fail_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_lead_capture_write_fail_total %d\n", atomic.LoadUint64(&leadCaptureWriteFailTotal))...)
+	b = append(b, "# HELP ai_scrm_webhook_writeback_fail_total webhook delivery outcome writebacks that failed (event may be re-delivered)\n"...)
+	b = append(b, "# TYPE ai_scrm_webhook_writeback_fail_total counter\n"...)
+	b = append(b, fmt.Sprintf("ai_scrm_webhook_writeback_fail_total %d\n", atomic.LoadUint64(&webhookWritebackFailTotal))...)
 	return b
 }
 

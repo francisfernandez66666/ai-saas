@@ -32,7 +32,10 @@ export default function PackagesTab({ pkgs, onToggle, onCreate }: {
           <option value="paid">包月</option><option value="increment">增量买断</option><option value="free">试用</option>
         </select>
         <input id="pCalls" placeholder="AI次数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
-        <input id="pPrice" placeholder="售价分" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
+        {/* FIX-11(2026-09-29)：这里从前收"分"，绕开了 lib/money.ts「界面是元、提交体是分」
+            的单点——列表展示那半边(:20)早走 fenToYuanCompact，输入这半边却让人肉算分，
+            同一个页面两个单位口径。改元后提交处经 yuanToFen 换算并拦三位小数。 */}
+        <input id="pPrice" placeholder="售价元" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
         <input id="pDays" placeholder="有效天数" style={{ width: 90, padding: 8, border: '1px solid #e2e8f0', borderRadius: 6 }} />
         <Button theme="primary" onClick={onCreate}>新增</Button>
       </div>

@@ -10,6 +10,7 @@ package chatflow
 import (
 	"ai-scrm/internal/attribution"
 	"ai-scrm/internal/db"
+	"ai-scrm/internal/metrics"
 	"ai-scrm/internal/model"
 	"ai-scrm/internal/mq"
 	"ai-scrm/internal/pii"
@@ -76,8 +77,23 @@ func assignSalesWithFewestCustomers(gdb *gorm.DB, tenantID uint) (uint, bool) {
 // applyLeadCapturedUpdates 留资无合并分支：客户画像落库 + 内存同步 + 出站副作用。
 // 单独成段原因：这是本路径唯一的客户写面（字段级 Updates + 内存镜像 + webhook + 归因回填），
 // 五段副作用必须整体在场且顺序不变，聚成一段方便核对"落库列集合没被顺手改"。
-func applyLeadCapturedUpdates(customer *model.Customer, phoneMatch string, updates map[string]interface{}) {
-	db.DB.Model(customer).Updates(updates)
+//
+// FIX-2（2026-09-29 审计批）：Updates 的错误不再被吞。旧写法写库失败也照样
+// 打「客户%d留资成功」、同步内存镜像、发 lead_captured / human_assigned webhook、
+// 回填归因——对外一切"留资已成"，而库里 phone/阶段/顾问根本没变。后果不是脏数据
+// 而是**线索静默蒸发**：顾问端看不见（assigned 未落库）、商户 webhook 收到假事件、
+// 日志里是一行成功， nobody 知道这条留资没落上。现在失败路径：ERROR 日志 +
+// metrics 计数 + 返回 error，成功日志/webhook/内存镜像/归因**一律不发**；
+// 调用侧 DetectLeadCapture 按"本条未留资"提前返回，后续线索生成/群推/流程回流
+// 全部不再建立在一次没发生的写库上。本轮刻意不做重试队列：落库瞬时失败客户会在
+// 下一句对话里重新触发检测（同号码幂等重写），加后台重试反而引入"重复线索"新面。
+func applyLeadCapturedUpdates(customer *model.Customer, phoneMatch string, updates map[string]interface{}) error {
+	if err := db.DB.Model(customer).Updates(updates).Error; err != nil {
+		metrics.IncLeadCaptureWriteFail()
+		log.Printf("[留资检测-ERROR] 客户%d留资落库失败(phone=%s stage=%v assigned=%v)，本次留资不成立、不发外呼事件: %v",
+			customer.ID, pii.MaskPhone(phoneMatch), updates["journey_stage"], updates["assigned_user_id"], err)
+		return err
+	}
 	// 同步更新内存中的customer对象（修复Bug1：断言改安全形式）
 	if v, ok := updates["phone"]; ok {
 		customer.Phone, _ = v.(string)
@@ -108,6 +124,7 @@ func applyLeadCapturedUpdates(customer *model.Customer, phoneMatch string, updat
 	}
 	// D9：把留资结果回填到最近一条已归因 AI 回复。
 	_ = attribution.MarkLeadCaptured(customer.TenantID, 0, customer.ID)
+	return nil
 }
 
 // upsertLeadCapturedFollowUp 留资线索按客户ID合并（有则更新不新建）。
@@ -135,15 +152,25 @@ func upsertLeadCapturedFollowUp(customer *model.Customer, phoneMatch, customerIn
 			Content:    fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
 			Result:     "lead_captured", // 已留资线索
 		}
-		db.DB.Create(&leadFollowUp)
+		// FIX-2 同族收口（2026-09-29）：Create 错误不再被吞——旧写法失败也打
+		// 「已留资线索已生成(FollowUp ID=0)」，顾问端看不见线索、日志却报喜。
+		// 画像写面（applyLeadCapturedUpdates）此时已成功，留资事实成立，本行失败
+		// 不反转判定，只 ERROR 留痕可见（线索可由顾问端客户列表兜底看到）。
+		if err := db.DB.Create(&leadFollowUp).Error; err != nil {
+			log.Printf("[留资检测-ERROR] 客户%d 留资线索落库失败: %v", customer.ID, err)
+			return
+		}
 		log.Printf("[留资检测-线索生成] 客户%d 已留资线索已生成(FollowUp ID=%d)，分配顾问%d",
 			customer.ID, leadFollowUp.ID, customer.AssignedUserID)
 	} else {
 		// 已有线索，更新内容（按客户ID合并，不新建）
-		db.DB.Model(&existingFollowUp).Updates(map[string]interface{}{
+		if err := db.DB.Model(&existingFollowUp).Updates(map[string]interface{}{
 			"content": fmt.Sprintf("客户已留资，手机号:%s，触发来源:%s", pii.MaskPhone(phoneMatch), pii.MaskPhoneInText(customerInput)),
 			"user_id": customer.AssignedUserID, // 更新归属顾问
-		})
+		}).Error; err != nil {
+			log.Printf("[留资检测-ERROR] 客户%d 既有线索(FollowUp ID=%d)更新失败: %v", customer.ID, existingFollowUp.ID, err)
+			return
+		}
 		log.Printf("[留资检测-线索合并] 客户%d 已有线索(FollowUp ID=%d)，更新内容，不新建",
 			customer.ID, existingFollowUp.ID)
 	}

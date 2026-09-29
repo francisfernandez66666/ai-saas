@@ -11,7 +11,7 @@ vi.mock('tdesign-react', () => ({
 }))
 
 import { MessagePlugin } from 'tdesign-react'
-import { AUTH, ERROR_CODE_MESSAGES, IMPERSONATE_TENANT_KEY, VISITOR_KEY, clearToken, getImpersonateTenant, getToken, invalidateSession, logoutAndRedirect, redirectByRole, setImpersonateTenant, setToken, toastError, verifySession } from '../api'
+import { AUTH, ERROR_CODE_MESSAGES, IMPERSONATE_TENANT_KEY, VISITOR_KEY, apiFetch, clearToken, getImpersonateTenant, getToken, invalidateSession, logoutAndRedirect, redirectByRole, setImpersonateTenant, setToken, toastError, verifySession } from '../api'
 // 后端码清单的**生成物**（go run ./cmd/apidump -format errorcodes），不是本文件手抄的清单——
 // 手抄那份与后端源码之间没有机制约束，后端加码而前端没登记时它会跟着一起漏，护栏就在最该响的时候沉默。
 import { BACKEND_ERROR_CODES } from '../../types/error_codes.generated'
@@ -271,5 +271,39 @@ describe('logoutAndRedirect 键白名单（FIX-6 + P2-85）', () => {
     // 反向半边：访客身份必须活着
     expect(localStorage.getItem(VISITOR_KEY)).toBe('vk-c-visitor')
     expect(href.href).toBe('/login')
+  })
+})
+
+// FIX-9(2026-09-29)：401/403 被动登出也必须清代管租户键。
+// FIX-6 只在 logoutAndRedirect 清了它——但缺陷现场恰恰是被动路径：超管 token 过期，
+// handleUnauthorized→clearToken 只清 token，重登后首个 /admin 请求带上一世 X-Tenant-ID。
+// 清理点收进 clearToken 单点后，这里断的是"两条腿都要答对"：
+// 只断主动登出会把 FIX-6 的覆盖面原样保留（它本来就绿）；只断 apiFetch 又测不到单点本身。
+describe('clearToken 清代管租户键（FIX-9 单点收口）', () => {
+  it('直接调用：代管键清空，访客身份键不动（P2-85 语义保持）', () => {
+    setToken('jwt-passive')
+    setImpersonateTenant('42')
+    localStorage.setItem(VISITOR_KEY, 'vk-c-visitor')
+    clearToken()
+    expect(getImpersonateTenant()).toBe('')
+    expect(localStorage.getItem(IMPERSONATE_TENANT_KEY)).toBeNull()
+    expect(localStorage.getItem(VISITOR_KEY)).toBe('vk-c-visitor')
+  })
+
+  it('apiFetch 撞 401 被动登出：代管键随 clearToken 一起清', async () => {
+    // jsdom location.href 只读，换可写对象（与 FIX-6 用例同款处理）
+    const href = { href: '', pathname: '/admin' } as unknown as Location
+    Object.defineProperty(window, 'location', { value: href, configurable: true })
+    setToken('jwt-expired')
+    localStorage.setItem('role', 'super_admin')
+    setImpersonateTenant('7')
+    localStorage.setItem(VISITOR_KEY, 'vk-c-visitor')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('{}', { status: 401 }))))
+    await apiFetch('/api/v1/customers')
+    expect(getToken()).toBe('')
+    expect(getImpersonateTenant()).toBe('')
+    expect(localStorage.getItem(VISITOR_KEY)).toBe('vk-c-visitor')
+    expect(href.href).toBe('/login')
+    vi.unstubAllGlobals()
   })
 })

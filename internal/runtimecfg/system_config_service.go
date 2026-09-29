@@ -772,3 +772,17 @@ func (s *SystemConfigService) GetInterval(key string, defaultMin, defaultMax int
 	// fallback：用默认区间
 	return defaultMin + rand.Intn(defaultMax-defaultMin+1)
 }
+
+// GetIntervalForTenant 租户级 [min,max] 区间配置（租户覆盖 > 系统默认 > 出厂区间）。
+// FIX-3（2026-09-29 审计批二）：写侧 BatchUpdateForTenant 已允许租户覆盖
+// store_visit_*_delay 这类节奏键，而旧 GetInterval 只咨询系统层缓存——"租户改了值、
+// 读侧从不咨询"即配置永不生效。lookupTenant 未命中租户层自动回落系统层，
+// 与原 GetInterval 在纯系统层配置下行为逐字节一致。
+func (s *SystemConfigService) GetIntervalForTenant(tenantID uint, key string, defaultMin, defaultMax int) int {
+	var interval [2]int
+	if v, ok := s.lookupTenant(tenantID, key); ok && json.Unmarshal([]byte(v), &interval) == nil &&
+		interval[0] >= 0 && interval[1] > interval[0] {
+		return interval[0] + rand.Intn(interval[1]-interval[0]+1)
+	}
+	return defaultMin + rand.Intn(defaultMax-defaultMin+1)
+}

@@ -406,39 +406,83 @@ func UpdateDepartment(c *gin.Context) {
 	}
 
 	err := db.DB.Transaction(func(tx *gorm.DB) error {
-		if len(updates) > 0 {
-			if err := tx.Model(&model.Department{}).Where("id = ?", dept.ID).Updates(updates).Error; err != nil {
-				return err
-			}
-		}
-		// 子树路径重写：newPath = 新父path + 自身ID；后代 REPLACE(oldPrefix,newPrefix)
-		if moving {
-			var newParentPath string
-			if pid, ok := updates["parent_id"].(uint); ok {
-				var p model.Department
-				tx.Select("path").First(&p, pid)
-				newParentPath = p.Path
-			}
-			oldPrefix := dept.Path
-			newPrefix := fmt.Sprintf("%s%d/", newParentPath, dept.ID)
-			if err := tx.Exec(
-				`UPDATE departments SET path = CONCAT(?, SUBSTRING(path, LENGTH(?)+1)),
-				 depth = depth + ?
-				 WHERE tenant_id = ? AND path LIKE ?`,
-				newPrefix, oldPrefix, updates["depth"].(int)-dept.Depth, s.TenantID, oldPrefix+"%").Error; err != nil {
-				return err
-			}
-			service.InvalidateTenantUsers(s.TenantID) // 路径变化 → 全员组织缓存失效
-		} else if len(updates) > 0 {
-			// 改名/排序不影响 path
-		}
-		return nil
+		return applyDeptUpdateTx(tx, &dept, updates, moving, s.TenantID)
 	})
 	if err != nil {
 		RespErrInternal(c, err, "更新失败")
 		return
 	}
 	RespOK(c, "更新成功", nil)
+}
+
+/*
+applyDeptUpdateTx 在调用方事务内落部门更新：改名/排序是普通列更新；移动则加一步子树物化路径整体重写。
+从 UpdateDepartment 抽出（FIX-8 配套，2026-09-29 审计批二）：事务内"读新父 path"这次查询原先不查错，
+读失败时 newParentPath 为空串，子树会被按根前缀整体重写（部门"挂到根下"且无任何报错），
+前置 404 校验只覆盖事务外那一次读，拦不住"校验后父被删/事务内读抖动"。抽出后该分支可被单测直接命中。
+参数：tx - 事务句柄；dept - 被移动/更新的部门（读快照）；updates - 列更新集；
+moving - 是否移动分支；tenantID - 子树重写 WHERE 的租户范围
+返回：任一步失败原样上抛，由外层 Transaction 回滚整笔（改父+子树重写本就是原子意图）
+口径（FIX-8 配套批，2026-09-29 smoke_org 第五段实锤）：本节点的 path/parent_id/depth 一次 UPDATE 落定，
+批量语句只平移**后代**（`id <> 本节点`）——两者混在一条里会让本节点 depth 被加两次。
+*/
+func applyDeptUpdateTx(tx *gorm.DB, dept *model.Department, updates map[string]interface{}, moving bool, tenantID uint) error {
+	// 移动分支：先把"本节点自己的新前缀"算出来，和 parent_id/depth 一起走同一条 UPDATE。
+	// 为什么要在批量重写之前算：批量那条 UPDATE 的匹配条件是 `path LIKE 旧前缀%`，
+	// 而**本节点自己的 path 也以旧前缀开头**——旧写法把"改本节点"和"改后代"混在一条语句里，
+	// 于是本节点的 depth 被加两次（先由 updates 显式设成 新父depth+1，再被批量 +delta）。
+	// smoke_org 第五段首跑即抓到：A(depth2) 下的 B(depth2) 移到 A 后应为 3，实得 4，
+	// 而 path 却是对的——path/depth 从此不自洽，任何按 depth 画的组织树都会错位一层。
+	// 修法：本节点的 path 进 updates 一次落定；批量语句只处理后代（显式排除自身 id）。
+	newPrefix := ""
+	if moving {
+		var newParentPath string
+		if pid, ok := updates["parent_id"].(uint); ok {
+			// FIX-8(2026-09-29 审计批二)：事务内这次读原先不查错——读失败（或前置 404
+			// 校验之后、事务提交之前父被删）时 newParentPath=""，子树会按根前缀整体重写：
+			// 部门"挂到根下"且无任何报错。改父+子树重写本就是原子意图，读失败必须回滚整笔。
+			var p model.Department
+			if err := tx.Select("path").First(&p, pid).Error; err != nil {
+				return fmt.Errorf("读取新父部门路径失败（回滚整笔移动）: %w", err)
+			}
+			newParentPath = p.Path
+		}
+		newPrefix = fmt.Sprintf("%s%d/", newParentPath, dept.ID)
+		updates["path"] = newPrefix
+	}
+	if len(updates) > 0 {
+		if err := tx.Model(&model.Department{}).Where("id = ?", dept.ID).Updates(updates).Error; err != nil {
+			return err
+		}
+	}
+	// 子树路径重写：后代 newPath = 新父path + 自身ID 前缀替换；depth 整体平移 delta
+	if moving {
+		oldPrefix := dept.Path
+		// delta = 本节点新深度 − 快照深度；快照必须是移动前的值，否则后代平移量算错
+		newDepth, ok := updates["depth"].(int)
+		if !ok {
+			newDepth = dept.Depth
+		}
+		delta := newDepth - dept.Depth
+		// FIX-8 配套（2026-09-29 单测首跑实锤的第二条真缺陷）：CONCAT(?,…) 的 $1 在 PG 扩展
+		// （prepared）协议下"could not determine data type of parameter $1"（42P18）——
+		// CONCAT 收 VARIADIC "any"，无法为未显式类型的参数定身。也就是说这条移动 UPDATE 自写入起
+		// 在事务里从未真的成功过（前端 /org 的移动入口一直 500），只是此前没有任何断言打到这条腿。
+		// 修法：给两个文本参数显式 ::text 转型，不改任何拼接/匹配语义。
+		// `id <> ?` 把本节点排除在外：它的 path/depth 上面那条 UPDATE 已经落定，
+		// 再进这条批量语句就是"depth 加两次"的现场（自证见 org_move_tx_test.go 深度断言）。
+		if err := tx.Exec(
+			`UPDATE departments SET path = CONCAT(?::text, SUBSTRING(path, LENGTH(?::text)+1)),
+			 depth = depth + ?
+			 WHERE tenant_id = ? AND id <> ? AND path LIKE ?`,
+			newPrefix, oldPrefix, delta, tenantID, dept.ID, oldPrefix+"%").Error; err != nil {
+			return err
+		}
+		service.InvalidateTenantUsers(tenantID) // 路径变化 → 全员组织缓存失效
+	} else if len(updates) > 0 {
+		// 改名/排序不影响 path
+	}
+	return nil
 }
 
 /*

@@ -8,8 +8,8 @@ package ai
 
 import (
 	"ai-scrm/internal/cache"
+	"ai-scrm/internal/industrycfg"
 	"ai-scrm/internal/model"
-	"ai-scrm/internal/service"
 	"ai-scrm/internal/strategytypes"
 	"fmt"
 	"strings"
@@ -25,9 +25,9 @@ func appendPersonaSection(sb *strings.Builder, tenantID uint, toneStyle string) 
 	// 不再硬编码"越野SUV品牌的销售顾问"——绑定车企包的租户行为不变。
 	// 批四 P2 修正(DEFECT_VERIFY_2026-09-20)：分流谓词收紧为「汽车族绑定」——绑 edu/wedding 等
 	// 非 auto 包且未配 industry.salesperson 的租户同样回中立人设（旧口径误给汽车销售人设）。
-	if persona := service.IndustrySalespersonForTenant(tenantID); persona != "" {
+	if persona := industrycfg.IndustrySalespersonForTenant(tenantID); persona != "" {
 		sb.WriteString(persona)
-	} else if !service.TenantUsesAutoTalk(tenantID) {
+	} else if !industrycfg.TenantUsesAutoTalk(tenantID) {
 		sb.WriteString(neutralPersona)
 	} else {
 		sb.WriteString(getTonePersona(toneStyle))
@@ -41,21 +41,21 @@ func appendPersonaSection(sb *strings.Builder, tenantID uint, toneStyle string) 
 func appendPackSections(sb *strings.Builder, tenantID uint) {
 	// P2 双层KB（2026-08-26）：行业/企业包定制指令注入（prompts.json → pack_prompts_{code} 键）
 	// 顺序：行业在前、企业在后（企业更贴近该租户，放后面权重感更强）
-	for _, instruction := range service.GetBoundPackPrompts(tenantID) {
+	for _, instruction := range industrycfg.GetBoundPackPrompts(tenantID) {
 		sb.WriteString("【定制指令】\n")
 		sb.WriteString(instruction)
 		sb.WriteString("\n\n")
 	}
 
 	// P2 行业包参数约束 + 话术心态（params.json / mindset.json → pack_params_/pack_mindset_{code} 键）
-	if params := service.GetBoundPackParams(tenantID); len(params) > 0 {
+	if params := industrycfg.GetBoundPackParams(tenantID); len(params) > 0 {
 		sb.WriteString("【行业包参数约束】\n")
 		for _, p := range params {
 			sb.WriteString("· " + p + "\n")
 		}
 		sb.WriteString("\n")
 	}
-	if mindsets := service.GetBoundPackMindset(tenantID); len(mindsets) > 0 {
+	if mindsets := industrycfg.GetBoundPackMindset(tenantID); len(mindsets) > 0 {
 		sb.WriteString("【行业包话术心态】\n")
 		for _, m := range mindsets {
 			sb.WriteString("· " + m + "\n")

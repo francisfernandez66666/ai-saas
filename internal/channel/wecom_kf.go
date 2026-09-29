@@ -12,6 +12,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 
@@ -183,16 +184,28 @@ func SyncPullOnce(ctx context.Context, ch *model.Channel) int {
 	}
 	// D2 修复(2026-09-14)：旧实现无条件推进 next_cursor——ProcessInbound 报错的客户消息被永久跳过（丢消息）。
 	// 现：整批全成功才推进；有失败保留旧游标，下轮重拉同批，已成功的靠 channel_inbound_msgs 幂等跳过。
+	// FIX-6(2026-09-29 审计批二)：游标推进本身失败原先被吞——下轮从旧游标重拉是正确行为（入站幂等吸收），
+	// 但"游标停滞"不可见时，量大表现为同步永远在同一区间打转且无人知晓。现在失败即 WARN 点名通道与原因。
 	if r.NextCursor != "" && !failed {
-		updateKfCursor(ch.ID, r.NextCursor)
+		if err := updateKfCursor(ch.ID, r.NextCursor); err != nil {
+			log.Printf("[wecom_kf] 通道%d 游标推进失败: %v —— 下轮将从旧游标重拉，靠入站幂等去重（持续出现即游标停滞，需查 kf_cursor 列写入）", ch.ID, err)
+		}
 	}
 	return n
 }
 
-// updateKfCursor 将 next_cursor 写入 config_json（简单文本替换：无则加，有则换）。
-func updateKfCursor(channelID uint, cursor string) {
-	// D14 修复(2026-09-14)：游标独立列原子写，不再读改写 config_json（防与凭据编辑并发丢键）
-	db.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("kf_cursor", cursor)
+// updateKfCursor 将 next_cursor 写入独立列 kf_cursor（D14：原子写，不再读改写 config_json）。
+// FIX-6(2026-09-29 审计批二)：返回 error 供调用方判读——写失败或通道行已不存在（RowsAffected=0）
+// 都如实回错，吞错会让"游标永远不前进"这种停滞在界面上和"没有新消息"同一个形状。
+func updateKfCursor(channelID uint, cursor string) error {
+	res := db.DB.Model(&model.Channel{}).Where("id = ?", channelID).Update("kf_cursor", cursor)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return fmt.Errorf("kf_cursor 未落库：通道 %d 不存在或已被删除", channelID)
+	}
+	return nil
 }
 
 // setCfgStr 在 config_json 中 set 一个字符串键（简易：读入 map→写回，避免依赖大 jsonb 表达式）。

@@ -215,7 +215,8 @@ func (e *Engine) Infer(input StrategyInput) StrategyOutput {
 	// Step5：紧迫等级判定
 	// ============================================================
 	intentScore := p.tVector[0]
-	urgencyLevel := Step5_CalcUrgency(intentScore, input.State.HighIntentRounds)
+	// FIX-3（2026-09-29 审计批二）：theta_* 阈值读取租户化，判定入参照 Step6 传 request 级 TenantID
+	urgencyLevel := Step5_CalcUrgency(intentScore, input.State.HighIntentRounds, input.TenantID)
 	p.output.UrgencyLevel = urgencyLevel
 
 	log.Printf("[策略引擎] Step5: 紧迫等级=%s, 意向分=%.2f, 高意向轮数=%d",

@@ -28,7 +28,9 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 	if conversation.PendingHandoff && conversation.HandoffNotifiedAt != nil {
 		since := time.Since(*conversation.HandoffNotifiedAt)
 		// 修复：从SystemConfigService读取超时时间，后台调参即时生效
-		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+		// FIX-3（2026-09-29 审计批二）：human_timeout_seconds 走 *ForTenant——写侧
+		// admin/config 允许租户覆盖该键，只读系统层等于"门店调了超时、判定永不生效"。
+		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(conversation.TenantID, "human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 		if since > timeout {
 			log.Printf("[对话] 软接管超时，AI完全接管会话: %d", conversation.ID)
 			conversation.PendingHandoff = false
@@ -57,12 +59,12 @@ func CheckHumanTimeout(conversation *model.Conversation) bool {
 		// 还没有人工回复过，检查最后消息时间
 		if conversation.LastMessageAt != nil {
 			since := time.Since(*conversation.LastMessageAt)
-			timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+			timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(conversation.TenantID, "human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 			timedOut = since > timeout
 		}
 	} else {
 		since := time.Since(*conversation.LastHumanReplyAt)
-		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetInt("human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
+		timeout := time.Duration(runtimecfg.DefaultSystemConfigService.GetIntForTenant(conversation.TenantID, "human_timeout_seconds", config.GlobalConfig.Strategy.HumanTimeoutSeconds)) * time.Second
 		timedOut = since > timeout
 	}
 	if timedOut {
@@ -114,7 +116,11 @@ func UpdateConversationState(
 	// 高意向持续轮数
 	intentScore := customer.IntentScore + strategyOutput.IntentDelta
 	// 修复：从SystemConfigService读取L3阈值，后台调参即时生效
-	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloat("theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
+	// FIX-3（2026-09-29 审计批二）：theta_l3_intent 与下方 mental_stage 四键都改走
+	// *ForTenant（租户覆盖 > 系统默认）——这些键 admin/config 允许租户写入覆盖层，
+	// 旧读法只查系统层缓存，租户档位形同虚设。tenant 取自会话归属，与判据同库同源。
+	tenantID := conv.TenantID
+	thetaL3Intent := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "theta_l3_intent", config.GlobalConfig.Strategy.ThetaL3Intent)
 	if intentScore >= thetaL3Intent {
 		state.HighIntentRounds++
 	} else {
@@ -123,10 +129,10 @@ func UpdateConversationState(
 
 	// 心智阶段推进——严格逐级递进，禁止跳跃
 	// 修复：从SystemConfigService读取心智阶段参数，后台调参即时生效
-	stageStepEnabled := runtimecfg.DefaultSystemConfigService.GetBool("stage_step_enabled", true)
-	stageMaxIncrement := runtimecfg.DefaultSystemConfigService.GetInt("stage_max_increment", 1)
-	hookRateStage1Threshold := runtimecfg.DefaultSystemConfigService.GetFloat("hook_rate_stage1_threshold", 0.3)
-	forceStage0Attempts := runtimecfg.DefaultSystemConfigService.GetInt("force_stage0_attempts", 1)
+	stageStepEnabled := runtimecfg.DefaultSystemConfigService.GetBoolForTenant(tenantID, "stage_step_enabled", true)
+	stageMaxIncrement := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "stage_max_increment", 1)
+	hookRateStage1Threshold := runtimecfg.DefaultSystemConfigService.GetFloatForTenant(tenantID, "hook_rate_stage1_threshold", 0.3)
+	forceStage0Attempts := runtimecfg.DefaultSystemConfigService.GetIntForTenant(tenantID, "force_stage0_attempts", 1)
 	// 修复"平A开大"根因之二：旧代码用IntentScore直接算阶段，一轮对话后
 	// intentScore从0.4涨到0.5+，直接从stage=0跳到stage=2甚至3，
 	// 导致阶段锁的天花板很高（ceiling=3或4），对比锚完全合法。

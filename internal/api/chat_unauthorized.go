@@ -360,7 +360,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedStoreVisit() bool {
 
 		// ====== 分支C：未留资线索（关闭引导+两段式AI快速回复，推迟分配顾问） ======
 		firstReply := s.pre.Reply // FIX-9(2026-09-27)：第一段话术取裁决结果（行业键单点），不再在此重挑
-		firstDelay := service.GetStoreVisitFirstDelay()
+		firstDelay := service.GetStoreVisitFirstDelay(s.tenantID)
 
 		log.Printf("[到店倾向-未留资线索-测试接口] 客户%d 关闭引导+两段式回复, 推迟分配顾问", s.customer.ID)
 
@@ -390,7 +390,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedStoreVisit() bool {
 		// 第二段追问（异步，25-45秒后发出，收集预约信息）
 		secondReply := service.GetStoreVisitSecondReply(s.tenantID, s.req.Content)
 		go func(cid, convID uint, content string, tid uint) {
-			sd := service.GetStoreVisitSecondDelay()
+			sd := service.GetStoreVisitSecondDelay(tid)
 			chatflow.CancellableSleep(cid, sd)
 			secondMsg := model.Message{
 				TenantID:       tid,
@@ -415,7 +415,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedStoreVisit() bool {
 			"route_result":       "store_visit_fast",
 			"customer_msg_id":    customerMsg.ID,
 			"assistant_messages": []model.Message{storeVisitMsg},
-			"follow_up":          gin.H{"delay_seconds": int(service.GetStoreVisitSecondDelay().Seconds())},
+			"follow_up":          gin.H{"delay_seconds": int(service.GetStoreVisitSecondDelay(s.tenantID).Seconds())},
 		})
 		return true
 	}
@@ -530,7 +530,7 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedLeadCapture(phoneMatchTest string,
 	}))
 
 	// 5. 丝滑确认回复（预定义模板随机选，不走AI）
-	firstDelay := service.GetStoreVisitFirstDelay()
+	firstDelay := service.GetStoreVisitFirstDelay(s.tenantID)
 	chatflow.CancellableSleep(s.customer.ID, firstDelay)
 
 	// FIX-9(2026-09-27)：这五句是「已留资确认」文案的第二份手抄，且与正式链**内容不同**
@@ -659,9 +659,10 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedEnqueue() bool {
 
 	if isSimple {
 		defer service.DefaultMessageQueueService.SimpleMessageDone(s.tenantID, s.customer.ID)
-		replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+		// FIX-3（2026-09-29 审计批二）：reply_delay_mode/simple_msg_delay 走 *ForTenant，与正式链同口径
+		replyDelayMode := runtimecfg.DefaultSystemConfigService.GetStringForTenant(s.tenantID, "reply_delay_mode", "normal")
 		if replyDelayMode != "instant" {
-			simpleDelay := service.GetSimpleReplyDelay()
+			simpleDelay := service.GetSimpleReplyDelay(s.tenantID)
 			chatflow.CancellableSleep(s.customer.ID, simpleDelay)
 		}
 
@@ -799,7 +800,9 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedEnsureProcessing() bool {
 // 命中早退路径 return true，否则 return false 继续走 AI 生成。
 func (s *chatUnauthorizedCtx) chatUnauthorizedHumanTakeover() bool {
 	// 人工接管模式：顾问超时未回则AI回复，已回则跳过AI
-	aiTimeout := runtimecfg.DefaultSystemConfigService.GetInt("assigned_lead_ai_timeout", 300)
+	// FIX-3（2026-09-29 审计批二）：超时档位取数与 chatflow.HumanTakeoverDecide 同一层
+	// （本值只用于日志与应答文案里的秒数展示，判定的那份在裁决函数里）
+	aiTimeout := runtimecfg.DefaultSystemConfigService.GetIntForTenant(s.tenantID, "assigned_lead_ai_timeout", 300)
 	// A1(2026-09-22)：本函数原有的三段判定（单人模式超时重开 / 单人模式静默 / 顾问窗内已回静默）
 	// 已抽到 chatflow.HumanTakeoverDecide，此处只保留"跳过 AI 时怎么应答"的链路副作用。
 	dec := chatflow.HumanTakeoverDecide(&s.conversation)
@@ -1033,7 +1036,8 @@ func (s *chatUnauthorizedCtx) chatUnauthorizedWaitHumanlikeDelay() {
 	}
 
 	log.Printf("[ChatUnauthorized] 客户%d 模拟延迟: %.1fs, 已用: %.1fs, 总计: %.1fs, 开始sleep...", s.customer.ID, humanlikeDelay.Seconds(), elapsed.Seconds(), (elapsed + humanlikeDelay).Seconds())
-	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetString("reply_delay_mode", "normal")
+	// FIX-3（2026-09-29 审计批二）：reply_delay_mode 走 *ForTenant，与正式链同口径
+	replyDelayMode := runtimecfg.DefaultSystemConfigService.GetStringForTenant(s.tenantID, "reply_delay_mode", "normal")
 	if replyDelayMode == "instant" {
 		log.Printf("[ChatUnauthorized] 客户%d instant模式，跳过延迟直接回复", s.customer.ID)
 	} else {

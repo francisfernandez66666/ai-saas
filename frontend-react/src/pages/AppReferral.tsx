@@ -58,12 +58,15 @@ export default function AppReferral() {
   }, [])
 
   /**
-   * 复制邀请链接到剪贴板
-   * 优先用后端返回的链接，否则本地拼装（origin + /register?ref=）
+   * 复制邀请链接到剪贴板（FIX-12，2026-09-29：只信后端 invite_url）
+   * 旧写法在后端没给链接时本地拼 `location.origin + /register?ref=`——域名口径出现两份：
+   * 白标/换域后服务端 invite_url 已指向新域，本地兜底仍拼当前页 origin，
+   * 复制出去的是一条"看着能用、归因却打在旧域"的链接，这种错位没人报错。
+   * 链接由服务端单点决定；invite_url 为空时复制按钮明确不可用（与展示位同口径）。
    */
   const copy = () => {
-    const url = inviteUrl || (typeof window !== 'undefined' ? location.origin + '/register?ref=' + (info?.invite_code || '') : '')
-    navigator.clipboard?.writeText(url)
+    if (!inviteUrl) return
+    navigator.clipboard?.writeText(inviteUrl)
   }
 
   return (
@@ -73,8 +76,12 @@ export default function AppReferral() {
       <div className="bg-white rounded-lg shadow-sm p-5" style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)', marginBottom: 16 }}>
         <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>我的邀请码</h3>
         <p style={{ fontSize: 14, color: '#475569' }}>邀请码：<b style={{ fontSize: 18, color: '#4f46e5' }}>{info?.invite_code || '—'}</b></p>
-        <p style={{ fontSize: 13, color: '#475569', wordBreak: 'break-all' }}>邀请链接：<a href={inviteUrl} target="_blank" rel="noreferrer">{inviteUrl || '—'}</a></p>
-        <button onClick={copy} style={{ marginTop: 8, padding: '8px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', fontSize: 13, cursor: 'pointer' }}>复制邀请链接</button>
+        {/* FIX-12：invite_url 缺失时不给空 href 锚点——href='' 点击等于跳回当前页，
+            看起来"有链接"其实哪也去不了；空态如实说"生成中"（与复制按钮 disabled 同口径） */}
+        <p style={{ fontSize: 13, color: '#475569', wordBreak: 'break-all' }}>邀请链接：{inviteUrl
+          ? <a href={inviteUrl} target="_blank" rel="noreferrer">{inviteUrl}</a>
+          : <span style={{ color: '#9ca3af' }}>生成中…</span>}</p>
+        <button onClick={copy} disabled={!inviteUrl} style={{ marginTop: 8, padding: '8px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', fontSize: 13, cursor: inviteUrl ? 'pointer' : 'not-allowed', opacity: inviteUrl ? 1 : 0.5 }}>复制邀请链接</button>
         {/* 邀请二维码：扫码直达注册页，自动携带邀请码 */}
         {qr && <div style={{ marginTop: 14 }}><img src={qr} alt="邀请二维码" style={{ width: 180, height: 180, border: '1px solid #e2e8f0', borderRadius: 8 }} /><p style={{ fontSize: 12, color: '#9ca3af', marginTop: 6 }}>扫码直达注册页（自动携带邀请码）</p></div>}
       </div>

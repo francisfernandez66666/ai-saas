@@ -211,7 +211,11 @@ func runDunningForTenant(t model.Tenant, dueAt time.Time, steps []int, suspendAf
 	// 宽限期终点落到 tenants.grace_period_end_at：那列此前是死列，本轮起作为
 	// 后台/超管看到的"还能撑到哪天"唯一展示值（状态机自身只用派生时间，不回头读它）。
 	if graceEnd != nil && (t.GracePeriodEndAt == nil || !t.GracePeriodEndAt.Equal(*graceEnd)) {
-		db.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Update("grace_period_end_at", *graceEnd)
+		// FIX-16（2026-09-29）：展示列写失败不阻断催缴（状态机不回头读它），但要点名——
+		// 后台"还能撑到哪天"会停在旧值，这是唯一会被运营看到的偏差。
+		if err := db.DB.Model(&model.Tenant{}).Where("id = ?", t.ID).Update("grace_period_end_at", *graceEnd).Error; err != nil {
+			log.Printf("[催缴][WARN] 租户%d 宽限期终点落库失败: %v（展示列滞留旧值，状态机不受影响）", t.ID, err)
+		}
 	}
 
 	sent := d3.DunningEmail(notify.DunningEmailInput{
@@ -326,8 +330,12 @@ func suspendTenantByDunning(t model.Tenant, row model.BillingDunning, now time.T
 	if res.RowsAffected == 0 {
 		return // 状态已被并发改走（例如刚好续费到账），不抢
 	}
-	db.DB.Model(&model.BillingDunning{}).Where("id = ? AND tenant_id = ?", row.ID, row.TenantID).Update("suspended_at", now)
-	db.DB.Create(&model.TenantAuditLog{
+	// FIX-16（2026-09-29）：suspended_at 是封禁归因双证之一（"只解本序列自己封的那次"），
+	// 写失败=以后续费到账时自动解封认不出这次封禁，超管人工封禁与本封禁不可区分。必须点名。
+	if err := db.DB.Model(&model.BillingDunning{}).Where("id = ? AND tenant_id = ?", row.ID, row.TenantID).Update("suspended_at", now).Error; err != nil {
+		log.Printf("[催缴][ERROR] 租户%d 封禁归因列 suspended_at 落库失败: %v（续费自动解封将认不出本次封禁，须人工核对）", t.ID, err)
+	}
+	createAuditLog(model.TenantAuditLog{
 		TenantID: t.ID, UserID: 0, Action: dunningAuditSuspendAction,
 		Resource: fmt.Sprintf("tenant:%d", t.ID),
 		Detail:   fmt.Sprintf(`{"reason":"dunning_grace_expired","stage":%d,"at":"%s"}`, row.Stage, now.Format(time.RFC3339)),
@@ -380,7 +388,10 @@ func DunningOnPaid(tenantID uint, orderNo string) {
 		log.Printf("[催缴] 解除序列失败 tenant=%d: %v", tenantID, err)
 	}
 	// 宽限期终点随序列一起归零：留着会让后台对一家已不欠费的租户显示"宽限期还剩 X 天"
-	db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).Update("grace_period_end_at", nil)
+	// FIX-16（2026-09-29）：写失败只 WARN——展示列偏差，序列本体已 resolved。
+	if err := db.DB.Model(&model.Tenant{}).Where("id = ?", tenantID).Update("grace_period_end_at", nil).Error; err != nil {
+		log.Printf("[催缴][WARN] 租户%d 宽限期终点清零失败: %v（后台将对已结清租户继续显示宽限期）", tenantID, err)
+	}
 }
 
 // manualSuspendAfter 该租户在 at 之后是否存在超管人工封禁审计
@@ -426,10 +437,18 @@ func reconcileRecoveredDunning(now time.Time, scope []uint) {
 		}
 		if row.SuspendedAt != nil {
 			if t.Status == "suspended" && !manualSuspendAfter(t.ID, *row.SuspendedAt) {
-				db.DB.Model(&model.Tenant{}).Where("id = ? AND status = 'suspended'", t.ID).Update("status", "expired")
+				// FIX-16（2026-09-29）：对账回退封禁写失败必须点名——这家租户被催缴封着、
+				// 账却已结清，写失败=它继续被挡在门外且没人知道是为什么。
+				if err := db.DB.Model(&model.Tenant{}).Where("id = ? AND status = 'suspended'", t.ID).Update("status", "expired").Error; err != nil {
+					log.Printf("[催缴][ERROR] 租户%d 对账收口回退 suspended→expired 失败: %v（已结清却仍被停用，下轮对账会重试）", t.ID, err)
+					continue
+				}
 				log.Printf("[催缴] 租户%d 序列对账收口，催缴停用已回退为 expired（可登录、写侧仍拦）", t.ID)
 			}
-			db.DB.Model(&model.BillingDunning{}).Where("id = ? AND tenant_id = ?", row.ID, row.TenantID).Update("suspended_at", nil)
+			// FIX-16：清归因列失败=下轮还会看见"本序列封过"，收口不彻底；点名后下轮重试。
+			if err := db.DB.Model(&model.BillingDunning{}).Where("id = ? AND tenant_id = ?", row.ID, row.TenantID).Update("suspended_at", nil).Error; err != nil {
+				log.Printf("[催缴][ERROR] 租户%d 序列对账收口清 suspended_at 失败: %v（下轮对账重试）", row.TenantID, err)
+			}
 		}
 		if err := db.DB.Model(&model.BillingDunning{}).Where("id = ? AND tenant_id = ?", row.ID, row.TenantID).
 			Updates(map[string]any{"status": model.DunningStatusResolved, "next_notify_at": nil}).Error; err != nil {
@@ -561,7 +580,7 @@ func NudgeDunningNow(tenantID, operatorID uint, ip string) error {
 		Updates(map[string]any{"last_notified_at": now, "sent_to": maskEmailList(d3.AdminEmails(tenantID))}).Error; err != nil {
 		return err
 	}
-	db.DB.Create(&model.TenantAuditLog{
+	createAuditLog(model.TenantAuditLog{
 		TenantID: tenantID, UserID: operatorID, Action: "dunning_manual_nudge",
 		Resource: fmt.Sprintf("tenant:%d", tenantID),
 		Detail:   fmt.Sprintf(`{"day_past":%d,"stage":%d}`, dayPast, stage), IP: ip,
@@ -588,7 +607,7 @@ func ResetDunning(tenantID, operatorID uint, ip string) error {
 		Updates(map[string]any{"status": model.DunningStatusResolved, "next_notify_at": nil, "detail": string(detail)}).Error; err != nil {
 		return err
 	}
-	db.DB.Create(&model.TenantAuditLog{
+	createAuditLog(model.TenantAuditLog{
 		TenantID: tenantID, UserID: operatorID, Action: "dunning_manual_reset",
 		Resource: fmt.Sprintf("tenant:%d", tenantID),
 		Detail:   fmt.Sprintf(`{"stage":%d,"suspended":%t}`, row.Stage, row.SuspendedAt != nil), IP: ip,

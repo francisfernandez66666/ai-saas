@@ -10,6 +10,8 @@ import { useClientWS } from '../lib/realtime'
 import { apiFetch, getToken } from '../lib/api'
 import { ConfirmDialog } from '../lib/ui'
 import { confirmDialog, uiAlert } from '../lib/confirm'
+// FIX-10(2026-09-29)：可携带副本的游标翻页取数收在 lib 单点（判据与后端逐字对齐，见该文件头）
+import { fetchPortableCopy, downloadPortableDoc, PortableCopyError, type PortablePage } from '../lib/portability'
 import { Msg } from '../types'
 import { collectFreshMessages, filterReplyMessages, promoteTempAndRegister, dropSystemNotice } from '../lib/chat'
 
@@ -81,6 +83,8 @@ export default function Client() {
   // 输入框内容
   const [input, setInput] = useState('')
   const [privacyBusy, setPrivacyBusy] = useState(false)
+  // FIX-10：副本导出进行中（与删除申请分开计时——一个是拉全量翻页，可能十几秒；一个是单次写）
+  const [exportBusy, setExportBusy] = useState(false)
   // 当前会话 ID（用于历史记录查询）
   const [convId, setConvId] = useState<number>(0)
   // 会话 ID 引用：轮询/欢迎判断走 ref，避免闭包捕获首帧旧值导致逻辑错乱
@@ -350,6 +354,41 @@ export default function Client() {
   useClientWS(wsCid, wsVk, () => poll())
 
   /**
+   * FIX-10（2026-09-29 端到端审计批）：PIPL 可携带权——本人下载自己的数据副本。
+   *
+   * 与删除权是一对：一个是"把这些抹掉"，一个是"把这些给我，我要换一家继续用"。
+   * 后端 `/privacy/my-data` 单页只给 5000 条、多出来靠游标续取，所以这里**不自己拼 fetch 循环**，
+   * 交给 lib/portability.ts 那个可单测的取数单点（任一页失败就整体失败、游标不推进即报错停手、
+   * 拉完才允许下载）。这三条一旦在页面上"顺手写成 while 里 append"，
+   * 得到的就是一份看起来完整、其实少尾巴的副本——比不给更糟，所以判据必须钉在能被测到的地方。
+   *
+   * 身份口径与删除权完全一致：匿名带 visitor_key 自证，登录态由 apiFetch 带 Authorization、
+   * 后端按数据范围放行；两者都不给前端"换个 customer_id 看看别人"的机会。
+   */
+  async function downloadMyDataCopy() {
+    if (!custId.current) { uiAlert('请先开始对话'); return }
+    if (exportBusy) return
+    setExportBusy(true)
+    try {
+      const doc = await fetchPortableCopy(custId.current, localStorage.getItem(LS_KEY) || '', async (body) => {
+        // timeoutMs=0：副本是"读全量"，默认 15s 会把大客户的第三页掐在半路——
+        // 掐了不会得到错误文件，只会得到"点了没反应"，那比慢更糟。
+        const r = await apiFetch(`${API}/privacy/my-data`, { method: 'POST', body: JSON.stringify(body), timeoutMs: 0 })
+        const j = await r.json().catch(() => null)
+        if (j?.code !== 0) throw new PortableCopyError(j?.message || '副本读取失败，请稍后重试')
+        return (j.data || null) as PortablePage | null
+      })
+      downloadPortableDoc(doc)
+      setMsgs((m) => [...m, { sender_type: 'system', content: `已导出你的数据副本（共 ${doc.export_coverage.message_count} 条消息）` }])
+      scrollBottom()
+    } catch (e) {
+      uiAlert(e instanceof PortableCopyError ? e.message : '副本读取失败，请稍后重试')
+    } finally {
+      setExportBusy(false)
+    }
+  }
+
+  /**
    * F13/C2：C 端 PIPL 删除权入口。
    * 匿名访客用 visitor_key 自证；登录态可额外带 Authorization，后端按 user_id 放行本人关联客户。
    */
@@ -395,6 +434,9 @@ export default function Client() {
           <span style={{ fontWeight: 600 }}>{brand.brandName}</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {/* FIX-10：可携带权入口。与删除并排放是刻意的——"给我一份"和"抹掉"是一对权利，
+              只留后者等于把选择权收走一半。aria-label 供屏幕阅读器识别（与相邻按钮同口径） */}
+          <button onClick={downloadMyDataCopy} disabled={exportBusy} aria-label="下载我的数据副本" style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{exportBusy ? '导出中' : '我的数据'}</button>
           <button onClick={requestCustomerDeletion} disabled={privacyBusy} aria-label="申请删除我的资料" style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{privacyBusy ? '提交中' : '删除资料'}</button>
           {/* G-20：aria-label 无障碍标注——屏幕阅读器可识别在线/离线状态 */}
           <span style={{ fontSize: 12 }} aria-label={online ? '当前在线' : '当前离线'}>{online ? '🟢 在线' : '🌙 离线'}</span>
