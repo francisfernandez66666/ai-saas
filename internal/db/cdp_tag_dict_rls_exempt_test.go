@@ -1,18 +1,19 @@
 // 034（2026-10-16）豁免的行为契约：cdp_tag_definitions 是双层字典表，等值策略会掐断系统层读腿。
 //
 // 现场还原（RLS 本机激活后 uat_advisor G-19 实锤，非推断）：
-//   builtin 原子标签行 tenant_id=0 由 StartIngestConsumer 启动播种、全租户共用；
-//   ListTagDefinitions 按 tenant_id IN (0,tid) 读——字典本就设计成"系统层+租户自定义"双层。
-//   摄入事务 processEvent 内 SetTenantRLS(tx, tid) 之后，ApplyTagTx 按 code 查字典被
-//   策略 tenant_id = current_setting(...) 过滤，tenant_id=0 行不可见 → First not found →
-//   只 WARN 不中断 → 全部内置标签静默丢失（G-19 beh_* 四条期望=y 实际=n，事件落库全 PASS）。
-//   休眠态策略恒真，故缺陷只在 RLS_ENABLED=true 形态现身——休眠式设计"藏到激活才炸"的又一例。
+//
+//	builtin 原子标签行 tenant_id=0 由 StartIngestConsumer 启动播种、全租户共用；
+//	ListTagDefinitions 按 tenant_id IN (0,tid) 读——字典本就设计成"系统层+租户自定义"双层。
+//	摄入事务 processEvent 内 SetTenantRLS(tx, tid) 之后，ApplyTagTx 按 code 查字典被
+//	策略 tenant_id = current_setting(...) 过滤，tenant_id=0 行不可见 → First not found →
+//	只 WARN 不中断 → 全部内置标签静默丢失（G-19 beh_* 四条期望=y 实际=n，事件落库全 PASS）。
+//	休眠态策略恒真，故缺陷只在 RLS_ENABLED=true 形态现身——休眠式设计"藏到激活才炸"的又一例。
 //
 // 本文件两条用例分工：
 //   - TestCdpTagDictExemptFromTenantIsolationPolicy：钉**落地形态**（库内无策略未通电 +
 //     Go 清单在豁免集），带 customers 反向对照防"查询失配的假绿"；
 //   - TestTenantIsolationPolicyHidesDictionaryBuiltinRows：钉**因果链**——探针表上挂策略时
-//    激活事务里 builtin 行必然不可见（缺陷复现），摘策略后必然可见（034 修法）。
+//     激活事务里 builtin 行必然不可见（缺陷复现），摘策略后必然可见（034 修法）。
 //     在探针表上做而非真表：真表按 034 必须保持无策略，本用例只证明"若挂上会怎样"。
 package db
 
@@ -48,7 +49,7 @@ func TestCdpTagDictExemptFromTenantIsolationPolicy(t *testing.T) {
 		t.Fatalf("查询字典表 relrowsecurity 失败: %v", err)
 	}
 	if rlsOn {
-		t.Errorf("cdp_tag_definitions 仍被 ENABLE ROW LEVEL SECURITY：034 的 DISABLE 未落地——"+
+		t.Errorf("cdp_tag_definitions 仍被 ENABLE ROW LEVEL SECURITY：034 的 DISABLE 未落地——" +
 			"无策略+通电的形态对非 owner 连接是默认拒绝，比挂着策略更危险")
 	}
 

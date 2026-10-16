@@ -329,7 +329,7 @@ export function redirectByRole(role: string) {
 /** 调用需要鉴权的后台接口，并复用统一错误和登录态处理。 */
 // P2-10：默认泛型 T=any 有意保留，判据同 apiJSON——裸调 AUTH(url) 后直接读
 // `j.code/j.data/j.message` 是本站主流写法；默认 unknown 会把这些全部变成编译错误。
-// 精确类型走 AUTH<ApiEnvelope<'/api/v1/...'>>(url)（P2-8c 契约泛型）。
+// 精确类型走 AUTH<ApiEnvelope<T>>(url)，T 为后端响应类型（P2-8c 契约泛型）。
 export async function AUTH<T = any>(
   url: string,
   // P2-10：body 只被 JSON.stringify 消费，unknown 足够；此前 any 会让任意形态

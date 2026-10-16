@@ -1,9 +1,9 @@
+import type { Dictionary } from '../translator'
+
 // 繁体中文词典（zh-TW）。2026-10-16 由 opencc-js 从 zh-CN.ts 自动转写（cn→tw）。
 // ⚠ 机器转写，非逐条人工校对；术语若与贵司繁体用语规范不符，以本文件为可改入口。
 // 本文件与 zh-CN.ts 必须逐键对齐（键集/占位符由 dictionaries.test.ts 门禁校验）。
 // 新增键只在 zh-CN.ts 源真相上加，本文件同步重跑生成脚本补齐。
-import type { Dictionary } from '../translator'
-
 export const zhTW = {
   "common.language": "語言",
   "common.id": "ID",

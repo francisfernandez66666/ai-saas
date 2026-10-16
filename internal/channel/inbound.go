@@ -560,7 +560,7 @@ func gateReply(reply string, tenantID, convID uint) string {
 	if !cfg.GetBoolForTenant(0, "contentsafety_enabled", true) {
 		return reply
 	}
-	mode := cfg.GetStringForTenant(0, "contentsafety_mode", "shadow")
+	mode := cfg.GetStringForTenant(0, "contentsafety_mode", "enforce")
 	res := contentsafety.CheckFull(reply)
 	if !res.Hit {
 		return reply

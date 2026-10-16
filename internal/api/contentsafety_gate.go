@@ -31,7 +31,7 @@ func ContentsafetyGate(reply string, convID uint) (action GateAction, out string
 	if !cfg.GetBoolForTenant(0, "contentsafety_enabled", true) {
 		return GatePass, reply
 	}
-	mode := cfg.GetStringForTenant(0, "contentsafety_mode", "shadow")
+	mode := cfg.GetStringForTenant(0, "contentsafety_mode", "enforce")
 	res := contentsafety.CheckFull(reply)
 	if !res.Hit {
 		return GatePass, reply
