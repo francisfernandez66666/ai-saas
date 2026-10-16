@@ -74,6 +74,7 @@ func TestGatewayClientTraceHeaders(t *testing.T) {
 	}
 }
 
+// hexOf 把字节串转成十六进制文本，用于比对 trace 落库内容。
 func hexOf(b []byte) string {
 	const digits = "0123456789abcdef"
 	out := make([]byte, 0, len(b)*2)

@@ -340,6 +340,8 @@ func SweepExpiredQuotes(gdb *gorm.DB, now time.Time) (int64, error) {
 // 内部：读取与形态转换
 // ============================================================
 
+// loadQuote 按租户 + ID 读一张报价单：不存在或跨租户一律 ErrNotFound（对外 404，不回显"别家有没有"），
+// 其余 DB 错误原样上抛。句柄先过 isolate()；发/答复/作废/编辑都靠它做状态机前置读取。
 func loadQuote(gdb *gorm.DB, tenantID, quoteID uint) (*model.Quote, error) {
 	var q model.Quote
 	err := isolate(gdb).Where("tenant_id = ? AND id = ?", tenantID, quoteID).First(&q).Error
@@ -352,6 +354,8 @@ func loadQuote(gdb *gorm.DB, tenantID, quoteID uint) (*model.Quote, error) {
 	return &q, nil
 }
 
+// summaryOf 报价单行 → 列表摘要（版本/状态/金额 + 四个时间字段，时间统一走 fmtTime*，
+// 状态名查 model.QuoteStatusNames——未知状态码回空串，不编名字）；quoteDetail 内嵌它，不另写一套。
 func summaryOf(q *model.Quote) *QuoteSummary {
 	return &QuoteSummary{
 		ID: q.ID, Version: q.Version, Status: q.Status,

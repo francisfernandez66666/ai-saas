@@ -97,7 +97,7 @@ chmod +x "$BIN/psql" "$BIN/pg_dump" "$BIN/pg_restore"
 FAKE_JWT="STUBJWTDONTLEAK0123456789"
 printf 'JWT_SECRET=%s\nDB_HOST=stub-host-only\n' "$FAKE_JWT" >"$WORK/fake.env"
 
-# run_case <用例名> 之后由调用方自己断言 $OUT/$RC；BACKUP_DIR 每次换新目录防陈旧产物干扰
+# run_case <用例名> 之后由调用方自己断言 ${OUT}/${RC}；BACKUP_DIR 每次换新目录防陈旧产物干扰
 BACKUP_DIR=""
 OUT=""
 RC=0

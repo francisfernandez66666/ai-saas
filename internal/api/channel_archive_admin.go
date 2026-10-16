@@ -83,6 +83,8 @@ type archiveStatusView struct {
 	SDKReason string `json:"sdk_reason"`
 }
 
+// toArchiveStatusView 把 channel 层存档状态平移到接口视图（字段一一对应，依旧不含任何密钥材料）。
+// 唯一加工项是 SDKReason：取数器未就绪时填 ErrArchiveSDKNotBuilt 的稳定原因码，就绪时留空串。
 func toArchiveStatusView(v channel.ArchiveStatusView) archiveStatusView {
 	reason := ""
 	if !v.FetcherReady {

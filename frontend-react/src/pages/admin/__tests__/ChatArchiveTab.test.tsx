@@ -63,6 +63,7 @@ const DETAIL_OK = {
 // 解不开的留痕（原内联在"解不开"用例里）：钉整句文案与所在行时按字段引用
 const RECORD_BROKEN = { ...RECORD, decrypt_error: 'decrypt_failed: key version mismatch', text_preview: '', has_full_text: false }
 
+// RouteOpts route() mock 的分流参数：按端点覆盖默认 fixture（未传的项走内置响应）。
 type RouteOpts = { channels?: unknown; status?: unknown; sync?: unknown; key?: unknown; records?: unknown; detail?: unknown }
 
 /** 按 URL 分流并记录调用（断言"密钥字段到底有没有提交"要看真实 body）。 */

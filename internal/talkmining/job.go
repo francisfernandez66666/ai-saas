@@ -28,6 +28,8 @@ func cfgBoolForTenant(tid uint, key string, def bool) bool {
 	return svc.GetBoolForTenant(tid, key, def)
 }
 
+// cfgIntForTenant 读取租户级 int 配置（talkmining_* 键的租户覆盖层），未配置或解析失败时回落 def；
+// 配置服务未注入（svc 为 nil）时原样返回 def，不会 panic。
 func cfgIntForTenant(tid uint, key string, def int) int {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {

@@ -70,6 +70,9 @@ var builtinTagDefs = []model.CdpTagDefinition{
 	{Code: "env_utm_source", Name: "UTM来源", Category: "environment"}, // 属性 utm_source
 	{Code: "env_landing_page", Name: "落地页", Category: "environment"}, // 属性 landing_page
 	{Code: "env_browser", Name: "浏览器", Category: "environment"},      // 属性 browser
+	// P2-4 派生标签字典（配置驱动计算标签的目标，业务在 cdp_computed_tag_rules 写规则触发）
+	{Code: "cmp_high_value", Name: "高价值客户", Category: "derived"},     // 例：已付费 且 复访 → 派生
+	{Code: "cmp_price_sensitive", Name: "价格敏感", Category: "derived"}, // 例：价格探询 且 未付费 → 派生
 }
 
 // 事件生产端现状（G-19 收口批 2026-09-24 逐项核实，防止下一轮审计把"消费端支持"当成"链路已通"）：
@@ -363,6 +366,11 @@ func processEvent(ctx context.Context, env mq.Envelope) error {
 
 		// P1-3 态度维标签：仅当事件属性显式携带 NLP/零方情绪/意向/异议时打（红线见段注释）
 		att = applyAttitudeTagsTx(tx, ev.Attributes, tid, profile.ID)
+
+		// P2-4 计算标签层（配置驱动，红线护栏在 computed_tag.go 内）：业务在
+		// cdp_computed_tag_rules 配规则，命中即派生标签，无需改代码。原子标签已在本
+		// 事务写入、同事务可见，故计算标签可消费最新原子标签状态。
+		applyComputedTagsTx(tx, ev, tid, profile.ID)
 		return nil
 	})
 	if err != nil {

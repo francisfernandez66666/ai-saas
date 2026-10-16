@@ -58,6 +58,7 @@ func cfgBoolForTenant(tid uint, key string, def bool) bool {
 	return svc.GetBoolForTenant(tid, key, def)
 }
 
+// cfgIntForTenant 读取租户级 int 配置，未配置或解析失败时回落 def。
 func cfgIntForTenant(tid uint, key string, def int) int {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {
@@ -66,6 +67,7 @@ func cfgIntForTenant(tid uint, key string, def int) int {
 	return svc.GetIntForTenant(tid, key, def)
 }
 
+// cfgStringForTenant 读取租户级 string 配置，未配置时回落 def。
 func cfgStringForTenant(tid uint, key, def string) string {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {

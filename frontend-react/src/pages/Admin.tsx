@@ -6,9 +6,10 @@ import { Button, Layout, Menu, MessagePlugin } from 'tdesign-react'
 import { useBrand } from '../lib/branding'
 import { useIsMobile } from '../hooks/useMedia'
 import { getToken, setToken, logoutAndRedirect, AUTH, apiJSON, getImpersonateTenant, setImpersonateTenant, apiFetch } from '../lib/api'
-import { isSuperAdmin, ROLES } from '../lib/roles'
+import { isSuperAdmin } from '../lib/roles'
 import type { ContributionDrill } from '../types'
 import { CONFIG_CATS, MENU_GROUPS, type Cfg, type MenuItemDef } from './admin/shared'
+import { useI18n } from '../i18n/useI18n'
 
 // P2-13(2026-09-22)：后台各业务 Tab 全量 lazy 化（数目随菜单增长，此处刻意不写死计数——
 // 原注释写"18 个"，加一个 Tab 就静默失真）——/admin 首屏 chunk 从 177KB 降到骨架级，
@@ -45,15 +46,17 @@ const ZERO_DELAY_KEYS = [
 ]
 
 // 代管下拉的一项。后端字段历史上叫过 name/company_name 两个名，归一在这里做一次，
-// 不在渲染处再写一遍 || 链。
+// 不在渲染处再写一遍 || 链。无名的兜底前缀由调用方按当前语言传入（本函数在组件外，拿不到 t）。
 type TenantOpt = { id: number; name: string; code?: string }
-function toTenantOpt(t: { id: number; name?: string; company_name?: string; code?: string }): TenantOpt {
-  return { id: t.id, name: t.name || t.company_name || ('租户' + t.id), code: t.code }
+// toTenantOpt 把租户行归一成下拉选项（name/company_name 合一，无名兜底 fallback+id）。
+function toTenantOpt(x: { id: number; name?: string; company_name?: string; code?: string }, fallback: string): TenantOpt {
+  return { id: x.id, name: x.name || x.company_name || (fallback + x.id), code: x.code }
 }
 
 // Admin 租户管理端页面入口：按 Tab 组织知识库、行业包、CDP、租户等后台功能。
 export default function Admin() {
   const brand = useBrand()
+  const { t } = useI18n()
   const [tab, setTab] = useState('dashboard')
   const [logged, setLogged] = useState(!!getToken())
   const [username, setUsername] = useState('')
@@ -88,32 +91,32 @@ export default function Admin() {
     const url = '/api/v1/super/tenants?page_size=100' + (kw ? '&q=' + encodeURIComponent(kw) : '')
     const { json: j } = await apiJSON(url)
     const list: Array<{ id: number; name?: string; company_name?: string; code?: string }> = j?.data?.list || j?.data || []
-    setTenants(Array.isArray(list) ? list.map(toTenantOpt) : [])
+    setTenants(Array.isArray(list) ? list.map((x) => toTenantOpt(x, t('adminPage.tenantFallback'))) : [])
   }
   // 刷新后代管上下文来自 localStorage，但它多半不在当前这一批搜索结果里——按 ID 单点回查，
   // 让下拉框老实说出"现在在管谁"（q 传纯数字时后端按 ID 精确命中，见 SuperTenantList）
   useEffect(() => {
     if (!logged || !isSuper || !impTenant) return
-    if (tenants.some((t) => String(t.id) === impTenant)) return
+    if (tenants.some((x) => String(x.id) === impTenant)) return
     if (picked && String(picked.id) === impTenant) return
     let dead = false
     void (async () => {
       const { json: j } = await apiJSON('/api/v1/super/tenants?q=' + encodeURIComponent(impTenant))
-      const hit = ((j?.data?.list) || []).find((t: { id: number }) => String(t.id) === impTenant)
-      if (!dead && hit) setPicked(toTenantOpt(hit))
+      const hit = ((j?.data?.list) || []).find((x: { id: number }) => String(x.id) === impTenant)
+      if (!dead && hit) setPicked(toTenantOpt(hit, t('adminPage.tenantFallback')))
     })()
     return () => { dead = true }
     // picked 入依赖是自限的：回查成功那次才会改它，改完下一轮命中"已经记住了"就早退，不会来回打
-  }, [logged, isSuper, impTenant, tenants, picked])
+  }, [logged, isSuper, impTenant, tenants, picked, t])
   // 下拉的候选 = 搜索结果 + 当前代管但不在结果里的那一家
-  const tenantOptions = picked && !tenants.some((t) => t.id === picked.id) ? [picked, ...tenants] : tenants
+  const tenantOptions = picked && !tenants.some((x) => x.id === picked.id) ? [picked, ...tenants] : tenants
   // 选定代管租户：写入全局注入键 + 本地态 + 自增 impReload 强制各 Tab 重挂载刷新
   function pickTenant(id: string) {
     setImpersonateTenant(id)
     setImpTenant(id)
     // 换人就把上一家的缓存标签交出去：清空选择（id 为空）时不留残余，
     // 从搜索结果里选则直接记住它的名字，免得再检索一次就变成空白
-    setPicked(id ? (tenants.find((t) => String(t.id) === id) || null) : null)
+    setPicked(id ? (tenants.find((x) => String(x.id) === id) || null) : null)
     setImpReload((n) => n + 1)
   }
 
@@ -132,8 +135,8 @@ export default function Admin() {
       method: 'POST',
       body: JSON.stringify({ username, password, tenant_code: tenantCode }),
     })
-    if (!res) { setLoginErr('网络异常，登录请求未发出，请检查网络后重试'); return }
-    if (j?.code !== 0) { setLoginErr(j?.message || '登录失败'); return }
+    if (!res) { setLoginErr(t('adminPage.networkError')); return }
+    if (j?.code !== 0) { setLoginErr(j?.message || t('adminPage.loginFailed')); return }
     setToken(j.data.token)
     localStorage.setItem('role', j.data.user.role)
     localStorage.setItem('username', j.data.user.username)
@@ -168,20 +171,21 @@ export default function Admin() {
       return { key: c.key, value: String(v) }
     })
     const j = await AUTH('/api/v1/admin/config', { method: 'PUT', body: updates })
-    if (j?.code === 0) { MessagePlugin.success('配置已保存并热加载'); loadAll() }
+    if (j?.code === 0) { MessagePlugin.success(t('adminPage.configSaved')); loadAll() }
   }
   // 恢复全部配置为默认值（不可撤销，二次确认）
   async function resetAll() {
-    if (!(await confirmDialog('确定恢复所有配置为默认值？此操作不可撤销。'))) return
+    if (!(await confirmDialog(t('adminPage.resetConfirm')))) return
     // P2 修复(2026-09-15)：旧版不看响应码——401/500 也 toast"已恢复默认"误导超管。改走 apiFetch 并判 code。
     const j = await (await apiFetch('/api/v1/admin/config/reset', { method: 'POST' })).json().catch(() => null)
-    if (j?.code === 0) { MessagePlugin.success('已恢复默认'); loadAll() }
-    else MessagePlugin.error(j?.message || '恢复失败')
+    if (j?.code === 0) { MessagePlugin.success(t('adminPage.resetDone')); loadAll() }
+    else MessagePlugin.error(j?.message || t('adminPage.resetFailed'))
   }
   // 延迟参数一键归零并切「秒回」模式（仅影响 ZERO_DELAY_KEYS 命中的键，便于调试）
   async function zeroDelayAll() {
     const targets = ZERO_DELAY_KEYS.filter((k) => all.some((c) => c.key === k))
-    if (!(await confirmDialog(`仅将延迟类参数归零并切秒回模式？影响键：${targets.join('、') || '(无)'}`))) return
+    const keys = targets.length ? targets.join('、') : t('adminPage.zeroDelayNone')
+    if (!(await confirmDialog(t('adminPage.zeroDelayConfirm', { keys })))) return
     const e = { ...edits }
     targets.forEach((k) => (e[k] = '0'))
     e['reply_delay_mode'] = 'instant'
@@ -189,21 +193,21 @@ export default function Admin() {
     const updates = all.map((c) => ({ key: c.key, value: String(e[c.key] ?? c.value) }))
     // P2-9 修复(2026-09-15)：同 resetAll——不判响应码恒报成功；且改 apiFetch 统一鉴权/租户头。
     const j = await (await apiFetch('/api/v1/admin/config', { method: 'PUT', body: JSON.stringify(updates) })).json().catch(() => null)
-    if (j?.code === 0) { MessagePlugin.success('延迟已归零'); loadAll() }
-    else MessagePlugin.error(j?.message || '归零失败')
+    if (j?.code === 0) { MessagePlugin.success(t('adminPage.zeroDelayDone')); loadAll() }
+    else MessagePlugin.error(j?.message || t('adminPage.zeroDelayFailed'))
   }
 
   if (!logged) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa' }}>
         <form onSubmit={doLogin} style={card}>
-          <h1 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>后台管理员登录</h1>
-          <input placeholder="租户码 (如 rox-admin)" value={tenantCode} onChange={(e) => setTenantCode(e.target.value)} style={inp} />
-          <input placeholder="用户名" value={username} onChange={(e) => setUsername(e.target.value)} style={inp} />
-          <input placeholder="密码" type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inp} />
+          <h1 style={{ fontSize: 18, fontWeight: 600, marginBottom: 16 }}>{t('adminPage.loginTitle')}</h1>
+          <input placeholder={t('adminPage.tenantCodePh')} value={tenantCode} onChange={(e) => setTenantCode(e.target.value)} style={inp} />
+          <input placeholder={t('adminPage.usernamePh')} value={username} onChange={(e) => setUsername(e.target.value)} style={inp} />
+          <input placeholder={t('adminPage.passwordPh')} type="password" value={password} onChange={(e) => setPassword(e.target.value)} style={inp} />
           {loginErr && <div style={{ color: '#dc2626', fontSize: 12, marginBottom: 8 }}>{loginErr}</div>}
-          <Button theme="primary" type="submit" style={{ width: '100%' }}>登录</Button>
-          <div style={{ marginTop: 12, fontSize: 13 }}><a href="/register">没有账号？免费开通</a></div>
+          <Button theme="primary" type="submit" style={{ width: '100%' }}>{t('adminPage.loginSubmit')}</Button>
+          <div style={{ marginTop: 12, fontSize: 13 }}><a href="/register">{t('adminPage.noAccount')}</a></div>
         </form>
       </div>
     )
@@ -240,8 +244,8 @@ export default function Admin() {
       <Header style={header}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           {logo}
-          <h1 style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>管理中心</h1>
-          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{isSuperAdmin(role) ? '平台超管' : '租户后台'}</span>
+          <h1 style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>{t('adminPage.headerTitle')}</h1>
+          <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>{isSuperAdmin(role) ? t('adminPage.roleSuper') : t('adminPage.roleTenant')}</span>
         </div>
         {/* P1-10 补修(2026-09-21 终局回归实证)：390px 下右侧整块不换行+原生 select 固有宽度
             按最长 option 撑开（租户名一多顶栏 scrollWidth 冲到 790）——右侧允许换行、
@@ -250,44 +254,44 @@ export default function Admin() {
           {/* E4：超管代管租户选择器——选定后所有租户作用域接口自动带 X-Tenant-ID */}
           {isSuper && (
             <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, minWidth: 0 }}>
-              代管租户：
-              <select aria-label="代管租户" value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
-                <option value="">（未选择·仅平台级）</option>
-                {tenantOptions.map((t) => <option key={t.id} value={t.id}>{t.name}{t.code ? `（${t.code}）` : ''}</option>)}
+              {t('adminPage.impersonateLabel')}
+              <select aria-label={t('adminPage.impersonateAria')} value={impTenant} onChange={(e) => pickTenant(e.target.value)} style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, maxWidth: 150, textOverflow: 'ellipsis', overflow: 'hidden' }}>
+                <option value="">{t('adminPage.impersonateNone')}</option>
+                {tenantOptions.map((x) => <option key={x.id} value={x.id}>{x.name}{x.code ? `（${x.code}）` : ''}</option>)}
               </select>
               {/* R-4：租户多了以后首页装不下，改服务端检索——名称/编码模糊，纯数字按 ID 直达 */}
               <input
-                aria-label="搜索租户"
+                aria-label={t('adminPage.searchTenantAria')}
                 value={tq}
                 onChange={(e) => setTq(e.target.value)}
                 onKeyDown={(e) => { if (e.key === 'Enter') void loadTenants() }}
-                placeholder="搜名称/编码/ID"
+                placeholder={t('adminPage.searchTenantPh')}
                 style={{ padding: '3px 8px', borderRadius: 6, border: '1px solid #e2e8f0', fontSize: 13, width: 118, minWidth: 0 }}
               />
-              <Button size="small" variant="outline" onClick={() => void loadTenants()}>搜索</Button>
-              {tq && <Button size="small" variant="text" onClick={() => { setTq(''); void loadTenants('') }}>看全部</Button>}
+              <Button size="small" variant="outline" onClick={() => void loadTenants()}>{t('adminPage.searchBtn')}</Button>
+              {tq && <Button size="small" variant="text" onClick={() => { setTq(''); void loadTenants('') }}>{t('adminPage.showAllBtn')}</Button>}
             </span>
           )}
-          <a href="/client" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>客户对话页</a>
-          <a href="/pricing" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>定价</a>
-          <a href="/app" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>移动端</a>
+          <a href="/client" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>{t('adminPage.linkClient')}</a>
+          <a href="/pricing" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>{t('adminPage.linkPricing')}</a>
+          <a href="/app" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>{t('adminPage.linkMobile')}</a>
           <span style={{ fontSize: 13, color: '#6b7280' }}>{userName}</span>
-          <Button size="small" variant="outline" onClick={logoutAndRedirect}>退出</Button>
+          <Button size="small" variant="outline" onClick={logoutAndRedirect}>{t('adminPage.logout')}</Button>
         </div>
       </Header>
       <Layout>
         {isMobile ? (
           /* P1-10：窄屏顶栏菜单——原生 select + optgroup 复用 MENU_GROUPS 同一数据源，选择即切 Tab */
           <div style={{ width: '100%', background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '8px 12px' }}>
-            <select value={tab} onChange={(e) => pickMobileMenu((e.target as HTMLSelectElement).value)} aria-label="管理菜单" style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
+            <select value={tab} onChange={(e) => pickMobileMenu((e.target as HTMLSelectElement).value)} aria-label={t('adminPage.mobileMenuAria')} style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
               {MENU_GROUPS.filter((g) => g.items.length > 0).map((g) => (
                 <optgroup key={g.title} label={g.title}>
                   {g.items.map((it) => <option key={it.k} value={it.k}>{it.label}</option>)}
                 </optgroup>
               ))}
               {isSuperAdmin(role) && (
-                <optgroup label="平台级">
-                  <option value="super_link">平台超管后台</option>
+                <optgroup label={t('adminPage.platformGroup')}>
+                  <option value="super_link">{t('adminPage.superAdminConsole')}</option>
                 </optgroup>
               )}
             </select>
@@ -303,8 +307,8 @@ export default function Admin() {
               </MenuGroup>
             ))}
             {isSuperAdmin(role) && (
-              <MenuGroup title="平台级">
-                <MenuItem value="super_link" onClick={() => { location.href = '/super' }}>平台超管后台</MenuItem>
+              <MenuGroup title={t('adminPage.platformGroup')}>
+                <MenuItem value="super_link" onClick={() => { location.href = '/super' }}>{t('adminPage.superAdminConsole')}</MenuItem>
               </MenuGroup>
             )}
           </Menu>
@@ -317,8 +321,8 @@ export default function Admin() {
               if (isSuper && !impTenant && !isPlatformTab) {
                 return (
                   <div style={{ background: '#fffbeb', border: '1px solid #fbbf24', borderRadius: 10, padding: '16px 20px', marginBottom: 16, color: '#92400e', fontSize: 14 }}>
-                    超级管理员访问<strong>租户作用域</strong>页面（客户/知识库/通道/用量等）需先在右上角选择"代管租户"——
-                    后端对这类路径强制校验 <code>X-Tenant-ID</code>，缺失返回 400。平台参数配置与"平台超管后台"无需选择。
+                    {t('adminPage.warnA')}<strong>{t('adminPage.warnStrong')}</strong>{t('adminPage.warnB')}
+                    <code>X-Tenant-ID</code>{t('adminPage.warnC')}
                   </div>
                 )
               }
@@ -330,11 +334,11 @@ export default function Admin() {
             })()}
             {!noAction && (
               <div style={{ marginTop: 20, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, flexWrap: 'wrap', background: '#fff', border: '1px solid #e5e7eb', borderRadius: 10, padding: '12px 16px' }}>
-                <p style={{ fontSize: 13, color: '#6b7280' }}>修改参数后点击"保存配置"，即时生效，无需重启</p>
+                <p style={{ fontSize: 13, color: '#6b7280' }}>{t('adminPage.saveHint')}</p>
                 <div style={{ display: 'flex', gap: 12 }}>
-                  <Button theme="warning" variant="outline" onClick={zeroDelayAll}>⚡ 延迟归零</Button>
-                  <Button theme="default" variant="outline" onClick={resetAll}>↩ 恢复默认</Button>
-                  <Button theme="primary" onClick={saveAll}>💾 保存配置</Button>
+                  <Button theme="warning" variant="outline" onClick={zeroDelayAll}>{t('adminPage.zeroDelayBtn')}</Button>
+                  <Button theme="default" variant="outline" onClick={resetAll}>{t('adminPage.resetBtn')}</Button>
+                  <Button theme="primary" onClick={saveAll}>{t('adminPage.saveBtn')}</Button>
                 </div>
               </div>
             )}
@@ -347,9 +351,10 @@ export default function Admin() {
 
 /** 后台 Tab 按需加载的骨架态（P2-13 lazy 化配套，避免切 Tab 白屏）。 */
 function TabLoading() {
+  const { t } = useI18n()
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
-      <p style={{ color: '#9ca3af' }}>模块加载中…</p>
+      <p style={{ color: '#9ca3af' }}>{t('adminPage.tabLoading')}</p>
     </div>
   )
 }
@@ -387,10 +392,11 @@ function PanelContent({ tab, configsFor, edits, setEdits, all, drill, onDrill, o
 
 /** 未拆分 Tab 的占位面板，提示后续维护入口。 */
 function Placeholder({ name }: { name: string }) {
+  const { t } = useI18n()
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
       <div style={{ fontSize: 40, color: '#d1d5db' }} className="mb-3">🚧</div>
-      <p style={{ color: '#9ca3af' }}>「{name}」模块正在迁移中，下一轮迭代补齐</p>
+      <p style={{ color: '#9ca3af' }}>{t('adminPage.placeholderModule', { name })}</p>
     </div>
   )
 }

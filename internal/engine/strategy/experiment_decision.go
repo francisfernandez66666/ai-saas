@@ -64,6 +64,7 @@ func cfgBoolFor(tid uint, key string, def bool) bool {
 	return svc.GetBoolForTenant(tid, key, def)
 }
 
+// cfgIntFor 读取租户级 int 配置，未配置或解析失败时回落 def。
 func cfgIntFor(tid uint, key string, def int) int {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {
@@ -72,6 +73,7 @@ func cfgIntFor(tid uint, key string, def int) int {
 	return svc.GetIntForTenant(tid, key, def)
 }
 
+// cfgFloatFor 读取租户级 float64 配置，未配置或解析失败时回落 def。
 func cfgFloatFor(tid uint, key string, def float64) float64 {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {
@@ -80,6 +82,7 @@ func cfgFloatFor(tid uint, key string, def float64) float64 {
 	return svc.GetFloatForTenant(tid, key, def)
 }
 
+// cfgStringFor 读取租户级 string 配置，未配置时回落 def。
 func cfgStringFor(tid uint, key string, def string) string {
 	svc := runtimecfg.DefaultSystemConfigService
 	if svc == nil {

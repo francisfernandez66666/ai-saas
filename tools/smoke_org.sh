@@ -140,7 +140,7 @@ B_ORIG_DEPTH=$(psql $DBU -tAc "SELECT depth FROM departments WHERE id=$RO_B" 2>/
 # 的读数能把它抓住。
 A_DEPTH0=$(psql $DBU -tAc "SELECT depth FROM departments WHERE id=$DEPT_A" 2>/dev/null | tr -d '[:space:]'); A_DEPTH0=${A_DEPTH0:-0}
 SAME_LEVEL=$(psql $DBU -tAc "SELECT CASE WHEN $A_DEPTH0=$B_ORIG_DEPTH THEN 'y' ELSE 'n' END" 2>/dev/null | tr -d '[:space:]')
-check "前提自检：移动前 B 与 A 同层（深度相等 $A_DEPTH0=$B_ORIG_DEPTH）" y "${SAME_LEVEL:-ERR}"
+check "前提自检：移动前 B 与 A 同层（深度相等 $A_DEPTH0=${B_ORIG_DEPTH}）" y "${SAME_LEVEL:-ERR}"
 B_PARENT0=$(psql $DBU -tAc "SELECT parent_id FROM departments WHERE id=$RO_B" 2>/dev/null | tr -d '[:space:]')
 check "前提自检：移动前 B 挂在根下（否则移进 A 是空操作，等式在原地漂移）" "$ROOT_ID" "${B_PARENT0:-ERR}"
 D_DEPTH0=$(psql $DBU -tAc "SELECT depth FROM departments WHERE id=$DEPT_D_ID" 2>/dev/null | tr -d '[:space:]'); D_DEPTH0=${D_DEPTH0:-0}

@@ -3,28 +3,34 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AUTH } from '../lib/api'
 
-/** CRUD 行数据宽松形态：后端各列表字段不一，单元格渲染按列 spec 取值 */
+/** CRUD 行数据宽松形态：后端各列表字段不一，单元格渲染按列 spec 取值。
+ *  P2-10(2026-10-14)：有意保留 Record<string, any>——与 tdesign-react 自身
+ *  TableRowData（底层即 Record<string, any>）对齐；改 unknown 会让全站
+ *  `row.name`/`row.status` 之类的单元格取值在 strict 下全部报错，
+ *  而收益仅是"这里不出现 any 字样"（值仍是动态后端 JSON）。 */
 export type CrudRow = Record<string, any>
 
-/** useCrud 可选项：分页/筛选/自动加载/列表 URL 构造器（默认 base?page=&page_size= 口径） */
+/** useCrud 可选项：分页/筛选/自动加载/列表 URL 构造器（默认 base?page=&page_size= 口径）。
+ *  P2-10：筛选值仅用于 URLSearchParams.set(String(v))，Record<string, unknown> 足够。 */
 export type UseCrudOptions = {
   pageSize?: number
-  initialFilters?: Record<string, any>
+  initialFilters?: Record<string, unknown>
   autoLoad?: boolean
-  buildListUrl?: (base: string, page: number, pageSize: number, filters: Record<string, any>) => string
-  parseList?: (json: any) => { rows: CrudRow[]; total: number }
+  buildListUrl?: (base: string, page: number, pageSize: number, filters: Record<string, unknown>) => string
+  parseList?: (json: unknown) => { rows: CrudRow[]; total: number }
 }
 
 /** 默认列表响应解析器，兼容 rows/data 两类后端分页结构。 */
-function defaultParseList(json: any): { rows: CrudRow[]; total: number } {
-  const data = json?.data
+function defaultParseList(json: unknown): { rows: CrudRow[]; total: number } {
+  const data = (json as { data?: unknown } | null | undefined)?.data
   if (Array.isArray(data)) return { rows: data, total: data.length }
-  const rows = Array.isArray(data?.list) ? data.list : []
-  return { rows, total: Number(data?.total ?? rows.length) }
+  const list = (data as { list?: unknown } | null | undefined)?.list
+  const rows = Array.isArray(list) ? list : []
+  return { rows, total: Number((data as { total?: unknown } | null | undefined)?.total ?? rows.length) }
 }
 
 /** 给列表接口拼接页码、分页大小和筛选条件。 */
-function withQuery(base: string, page: number, pageSize: number, filters: Record<string, any>) {
+function withQuery(base: string, page: number, pageSize: number, filters: Record<string, unknown>) {
   const q = new URLSearchParams()
   if (page > 1 || filters.page === undefined) q.set('page', String(page))
   q.set('page_size', String(pageSize))
@@ -44,7 +50,7 @@ export function useCrud(base: string, opts: UseCrudOptions = {}) {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(initialPageSize)
-  const [filters, setFilters] = useState<Record<string, any>>(initialFilters)
+  const [filters, setFilters] = useState<Record<string, unknown>>(initialFilters)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -83,12 +89,12 @@ export function useCrud(base: string, opts: UseCrudOptions = {}) {
     setPageSize(nextSize)
   }, [])
 
-  const setFilter = useCallback((k: string, v: any) => {
+  const setFilter = useCallback((k: string, v: unknown) => {
     setFilters((prev) => ({ ...prev, [k]: v }))
     setPage(1)
   }, [])
 
-  const resetFilters = useCallback((nextFilters: Record<string, any> = {}) => {
+  const resetFilters = useCallback((nextFilters: Record<string, unknown> = {}) => {
     setFilters(nextFilters)
     setPage(1)
   }, [])

@@ -5,14 +5,20 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import AppLayout from '../AppLayout'
+import { I18nProvider } from '../../i18n/I18nProvider'
 
-// 以指定角色渲染 /app 布局壳（token 恒有值，聚焦角色过滤分支）
-function renderAsRole(role: string) {
+// 以指定角色/语言渲染 /app 布局壳（token 恒有值，聚焦角色过滤分支）。
+// P2-14：必须显式钉 scrm_lang——jsdom 的 navigator.language 默认 en-US，
+// 不钉语言的话 detectLanguage 会走浏览器偏好把界面渲染成英文，中文断言全漂。
+function renderAsRole(role: string, lang = 'zh-CN') {
   localStorage.setItem('scrm_auth_token', 'tk_test')
   localStorage.setItem('role', role)
+  localStorage.setItem('scrm_lang', lang)
   return render(
     <MemoryRouter initialEntries={['/app']}>
-      <AppLayout />
+      <I18nProvider>
+        <AppLayout />
+      </I18nProvider>
     </MemoryRouter>,
   )
 }
@@ -50,5 +56,28 @@ describe('AppLayout 角色导航矩阵（P1-8）', () => {
     expectLink('顾问台', '/app/advisor')
     expectLink('邀请', '/app/referral')
     expect(screen.queryByText('收银台')).toBeNull()
+  })
+})
+
+// P2-14：语言切换经 localStorage 键驱动全站文案——切到 en-US 后同一批导航链
+// 必须变英文且 href 不变（证明 t() 换的是文案不是路由）
+describe('AppLayout 语言切换（P2-14）', () => {
+  beforeEach(() => localStorage.clear())
+  afterEach(() => localStorage.clear())
+
+  it('en-US 下顶栏导航变英文、href 不变', () => {
+    renderAsRole('admin', 'en-US')
+    expectLink('Billing', '/app/billing')
+    expectLink('Advisor', '/app/advisor')
+    expectLink('Invite', '/app/referral')
+    expectLink('Settings', '/app/settings')
+    expect(screen.queryByText('收银台')).toBeNull()
+    expect(screen.queryByText('顾问台')).toBeNull()
+  })
+
+  it('zh-CN 下切回中文（默认语言仍为中文，回归防漂）', () => {
+    renderAsRole('admin', 'zh-CN')
+    expectLink('收银台', '/app/billing')
+    expect(screen.queryByText('Billing')).toBeNull()
   })
 })

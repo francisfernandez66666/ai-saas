@@ -65,6 +65,28 @@ type EventLog struct {
 	CreatedAt   time.Time // 创建时间
 }
 
+// CdpComputedTagRule CDP 计算标签规则表（配置驱动，业务自助配规则，无需改代码）
+// 业务先在 cdp_tag_definitions 登记派生标签，再在此写"何时打该标签"的条件；
+// 摄入流水线按规则评估、命中即 ApplyTag，扩展标签能力不进代码。
+// 红线（与原子标签同）：规则目标标签若属 attitude 维（态度维），一律跳过——
+// 态度严禁由行为/规则派生，只能来自零方渠道或 NLP 语义（见 computed_tag.go）。
+type CdpComputedTagRule struct {
+	ID            uint      `gorm:"primaryKey;autoIncrement"`                                  // 主键ID
+	TenantID      uint      `gorm:"default:0;uniqueIndex:idx_cdp_rule_tenant_name,priority:1"` // 租户ID（0=系统级规则，全租户生效）
+	Name          string    `gorm:"size:64;uniqueIndex:idx_cdp_rule_tenant_name,priority:2"`   // 规则名（租户级唯一）
+	TargetTagCode string    `gorm:"size:32;index"`                                             // 命中后要打的派生标签 code（须先登记进 cdp_tag_definitions）
+	Condition     string    `gorm:"type:json"`                                                 // 条件 DSL（JSON，见 cdp/computed_tag.go evalCondition）
+	Priority      int       `gorm:"default:0"`                                                 // 评估顺序，小优先
+	Status        int       `gorm:"default:1"`                                                 // 1 启用 / 0 禁用
+	CreatedAt     time.Time // 创建时间
+	UpdatedAt     time.Time // 更新时间
+}
+
+// TableName 指定表名
+func (CdpComputedTagRule) TableName() string {
+	return "cdp_computed_tag_rules"
+}
+
 // IdMapping 内部ID到CDP外部ID的映射表
 // 用于维护内部系统ID与CDP系统ID之间的对应关系
 type IdMapping struct {

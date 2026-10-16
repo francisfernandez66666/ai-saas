@@ -210,9 +210,9 @@ ENV_SNAP_STATE="缺失"
 if [ -f "$ENV_FILE" ]; then
   if cp "$ENV_FILE" "$ENV_SNAP" 2>/dev/null && chmod 600 "$ENV_SNAP" 2>/dev/null; then
     ENV_SNAP_STATE="已留存"
-    echo "[$(date '+%F %T')] 凭据快照已随归档留存: $ENV_SNAP（0600，内容不回显）"
+    echo "[$(date '+%F %T')] 凭据快照已随归档留存: ${ENV_SNAP}（0600，内容不回显）"
   else
-    echo "[$(date '+%F %T')] [WARN] 凭据快照留存失败（$ENV_FILE → $ENV_SNAP）：这份归档恢复后通道凭据会全部解不开，请手工补一份 .env" >&2
+    echo "[$(date '+%F %T')] [WARN] 凭据快照留存失败（${ENV_FILE} → ${ENV_SNAP}）：这份归档恢复后通道凭据会全部解不开，请手工补一份 .env" >&2
   fi
 else
   echo "[$(date '+%F %T')] [WARN] $ENV_FILE 不在场：本次归档没有配套凭据快照，恢复库时 JWT_SECRET 无从对齐（通道密文将解不开）" >&2

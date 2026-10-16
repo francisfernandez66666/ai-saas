@@ -603,10 +603,10 @@ func BindSeedDemoTenantPack(tenantCode, indCode, entCode string) {
 	err := db.DB.Where("tenant_id = ?", t.ID).First(&cur).Error
 	if err == nil {
 		if !packAppliedContentExists(t.ID, cur.PackCode) {
-			log.Printf("[IndustryPack] 演示租户 %q 的绑定 %s v%s 是空壳（私有层零内容），删壳重落 %s/%s",
+			log.Printf("[IndustryPack] 演示租户 %d 的绑定 %s v%s 是空壳（私有层零内容），删壳重落 %s/%s",
 				t.ID, cur.PackCode, cur.AppliedVersion, indCode, entCode)
 			if e := db.DB.Where("tenant_id = ?", t.ID).Delete(&model.TenantPackBinding{}).Error; e != nil {
-				log.Printf("[IndustryPack] 演示租户 %q 空壳绑定删除失败，本轮不动手: %v", t.ID, e)
+				log.Printf("[IndustryPack] 演示租户 %d 空壳绑定删除失败，本轮不动手: %v", t.ID, e)
 				return
 			}
 			demoPackApplier(t, indCode, entCode)

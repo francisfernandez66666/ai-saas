@@ -14,6 +14,21 @@ import { confirmDialog, uiAlert } from '../lib/confirm'
 import { fetchPortableCopy, downloadPortableDoc, PortableCopyError, type PortablePage } from '../lib/portability'
 import { Msg } from '../types'
 import { collectFreshMessages, filterReplyMessages, promoteTempAndRegister, dropSystemNotice } from '../lib/chat'
+import { useI18n } from '../i18n/useI18n'
+
+// P2-10(2026-10-14)：Cloudflare Turnstile 脚本以 `?onload=_tsOnload` 注入，
+// 加载完挂在 window 上调用全局回调。此前用 `(window as any)._tsOnload/turnstile`
+// 三连写；改为声明全局面——拼错属性名/漏参数在编译期即报错，运行时行为不变。
+declare global {
+  interface Window {
+    /** Turnstile api.js onload 入口（脚本 query 里写死的名字，不可改名） */
+    _tsOnload?: () => void
+    /** Turnstile 渲染入口；脚本未加载完/被拦截时为 undefined */
+    turnstile?: {
+      render: (el: HTMLElement, opts: { sitekey: string; callback: (token: string) => void }) => string
+    }
+  }
+}
 
 // API 基础路径
 const API = '/api/v1'
@@ -75,6 +90,7 @@ function reportAcquisitionScan(code: string): Promise<void> {
  */
 export default function Client() {
   const brand = useBrand()
+  const { t } = useI18n()
   // 消息列表
   const [msgs, setMsgs] = useState<Msg[]>([])
   // WebSocket 连接用的客户 ID 和访客密钥
@@ -86,6 +102,9 @@ export default function Client() {
   // FIX-10：副本导出进行中（与删除申请分开计时——一个是拉全量翻页，可能十几秒；一个是单次写）
   const [exportBusy, setExportBusy] = useState(false)
   // 当前会话 ID（用于历史记录查询）
+  // setConvId 目前无调用点（切换会话入口未接入），但 convId 供轮询/历史查询读取，
+  // 属"值在用、setter 暂闲置"的正常模式，勿删（2026-10-13 P2-10 收口核实）。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [convId, setConvId] = useState<number>(0)
   // 会话 ID 引用：轮询/欢迎判断走 ref，避免闭包捕获首帧旧值导致逻辑错乱
   const convIdRef = useRef<number>(0)
@@ -107,7 +126,7 @@ export default function Client() {
   const inputRef = useRef<HTMLInputElement>(null)
 
   // 构建人机验证请求头
-  const tsHeaders = () => (tsToken ? { 'X-Turnstile-Token': tsToken } : {})
+  const tsHeaders = (): Record<string, string> => (tsToken ? { 'X-Turnstile-Token': tsToken } : {})
   /**
    * 工作时段判定：9:00~18:00 视为在线
    * 影响"正在输入"等待时长与在线状态展示
@@ -157,7 +176,7 @@ export default function Client() {
       const w = j.data.welcome_message
       if (w) { setMsgs((m) => [...m, w]); localIds.current.add(String(w.id)) }
     } else {
-      setMsgs((m) => [...m, { sender_type: 'system', content: '你好，欢迎咨询！我正在为你匹配专属顾问，请稍候~' }])
+      setMsgs((m) => [...m, { sender_type: 'system', content: t('client.welcomeFallback') }])
     }
     scrollBottom()
   }
@@ -198,14 +217,16 @@ export default function Client() {
   async function send() {
     const content = input.trim(); if (!content) return
     // 安全：开启人机验证（Turnstile）且未通过时禁止发送，防止脚本刷对话
-    if (tsEnabled && !tsOk) { setMsgs((m) => [...m, { sender_type: 'system', content: '请先完成下方人机验证再发送' }]); scrollBottom(); return }
+    if (tsEnabled && !tsOk) { setMsgs((m) => [...m, { sender_type: 'system', content: t('client.turnstileRequired') }]); scrollBottom(); return }
     setInput('')
     // 创建临时消息（乐观更新），使用时间戳作为临时 ID
     const temp: Msg = { id: 'temp_' + Date.now(), sender_type: 'customer', content, created_at: new Date().toISOString() }
     setMsgs((m) => [...m, temp]); localIds.current.add(String(temp.id)); scrollBottom()
-    // 先按节奏展示"正在输入"，超时 60s 仍未回复则提示顾问忙碌（避免用户无限等待）
+    // 先按节奏展示"正在输入"，超时 60s 仍未回复则提示顾问忙碌（避免用户无限等待）。
+    // 占位语与下方 dropSystemNotice 的收走判据必须是**同一份文案**，故取同一个 key。
+    const busyNotice = t('client.busyNotice')
     const t1 = setTimeout(() => setTyping(true), typingDelay())
-    const t2 = setTimeout(() => { setTyping(false); setMsgs((m) => [...m, { sender_type: 'system', content: '顾问可能正在忙碌中，请稍候' }]) }, 60000)
+    const t2 = setTimeout(() => { setTyping(false); setMsgs((m) => [...m, { sender_type: 'system', content: busyNotice }]) }, 60000)
     try {
       const vk = localStorage.getItem(LS_KEY) || ''
       // visitor_key 走 query（CheckVisitorKey 仅读 query），与 history/welcome 一致
@@ -225,7 +246,7 @@ export default function Client() {
         if (dbId) {
           setMsgs((m) => promoteTempAndRegister(m, String(temp.id), dbId, localIds.current))
           // 收到有效响应即清理长延迟插入的"顾问可能正在忙碌中"占位，避免占位+真实回复并存
-          setMsgs((m) => dropSystemNotice(m, '顾问可能正在忙碌中，请稍候'))
+          setMsgs((m) => dropSystemNotice(m, busyNotice))
         }
         // 解析 AI 回复（支持多种响应格式）
         // 修复：过滤 system 型瞬时确认语 + 已由轮询先到达的同 ID 消息，避免重复气泡/引导词循环
@@ -245,7 +266,7 @@ export default function Client() {
           setTimeout(() => { setTyping(true); setTimeout(() => setTyping(false), 15000) }, d > 0 ? d : 0)
         }
       }
-    } catch { setMsgs((m) => [...m, { sender_type: 'system', content: '消息发送失败，请重试~' }]) }
+    } catch { setMsgs((m) => [...m, { sender_type: 'system', content: t('client.sendFailed') }]) }
     finally { clearTimeout(t1); clearTimeout(t2); setTyping(false) }
   }
 
@@ -265,13 +286,13 @@ export default function Client() {
       const j = await r.json()
       if (j?.code === 0) {
         setTyping(false)
-        setMsgs((m) => [...m, { sender_type: 'system', content: j.message || '已为你转接人工顾问，请稍候~' }])
+        setMsgs((m) => [...m, { sender_type: 'system', content: j.message || t('client.humanTransferred') }])
         scrollBottom()
       } else {
-        setMsgs((m) => [...m, { sender_type: 'system', content: j?.message || '转接失败，请稍后再试' }])
+        setMsgs((m) => [...m, { sender_type: 'system', content: j?.message || t('client.humanFailed') }])
       }
     } catch {
-      setMsgs((m) => [...m, { sender_type: 'system', content: '网络异常，请稍后再试' }])
+      setMsgs((m) => [...m, { sender_type: 'system', content: t('client.networkError') }])
     } finally { setHumanBusy(false) }
   }
 
@@ -288,10 +309,11 @@ export default function Client() {
       const s = document.createElement('script')
       s.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?onload=_tsOnload'
       s.async = true
-      ;(window as any)._tsOnload = () => {
+      ;(window._tsOnload = () => {
         const el = document.getElementById('ts-box')
-        if (el && (window as any).turnstile) (window as any).turnstile.render(el, { sitekey: j.data.site_key, callback: (t: string) => { setTsToken(t); setTsOk(true) } })
-      }
+        // 回调形参改名 tok：原 `t` 会遮蔽 useI18n 的翻译函数
+        if (el && window.turnstile) window.turnstile.render(el, { sitekey: j.data.site_key, callback: (tok: string) => { setTsToken(tok); setTsOk(true) } })
+      })
       document.head.appendChild(s)
     } catch { /* Turnstile 加载失败降级无验证码 */ }
   }
@@ -312,7 +334,7 @@ export default function Client() {
       const rawCode = (params.get('code') || '').trim()
       const acqCode = await checkAcquisitionCode(rawCode)
       if (rawCode && !acqCode) {
-        setMsgs((m) => [...m, { sender_type: 'system', content: '这个活动已经结束了，不过你仍然可以直接问我' }])
+        setMsgs((m) => [...m, { sender_type: 'system', content: t('client.acqEnded') }])
       }
       if (cid > 0) {
         custId.current = cid
@@ -344,9 +366,9 @@ export default function Client() {
       // 仅当该客户还没有任何会话/历史时才发欢迎语，避免刷新或切页重复出现"顾问正在接通中"
       if (convIdRef.current === 0 && custId.current) await callWelcome()
     })()
-    // 每 5s 轮询新消息与在线状态
-    const t = setInterval(() => { setOnline(isWork()); poll() }, 5000)
-    return () => clearInterval(t)
+    // 每 5s 轮询新消息与在线状态（局部变量不叫 t——t 是翻译函数）
+    const timer = setInterval(() => { setOnline(isWork()); poll() }, 5000)
+    return () => clearInterval(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -366,7 +388,7 @@ export default function Client() {
    * 后端按数据范围放行；两者都不给前端"换个 customer_id 看看别人"的机会。
    */
   async function downloadMyDataCopy() {
-    if (!custId.current) { uiAlert('请先开始对话'); return }
+    if (!custId.current) { uiAlert(t('client.startChatFirst')); return }
     if (exportBusy) return
     setExportBusy(true)
     try {
@@ -375,14 +397,14 @@ export default function Client() {
         // 掐了不会得到错误文件，只会得到"点了没反应"，那比慢更糟。
         const r = await apiFetch(`${API}/privacy/my-data`, { method: 'POST', body: JSON.stringify(body), timeoutMs: 0 })
         const j = await r.json().catch(() => null)
-        if (j?.code !== 0) throw new PortableCopyError(j?.message || '副本读取失败，请稍后重试')
+        if (j?.code !== 0) throw new PortableCopyError(j?.message || t('client.copyFailed'))
         return (j.data || null) as PortablePage | null
       })
       downloadPortableDoc(doc)
-      setMsgs((m) => [...m, { sender_type: 'system', content: `已导出你的数据副本（共 ${doc.export_coverage.message_count} 条消息）` }])
+      setMsgs((m) => [...m, { sender_type: 'system', content: t('client.copyExported', { n: doc.export_coverage.message_count }) }])
       scrollBottom()
     } catch (e) {
-      uiAlert(e instanceof PortableCopyError ? e.message : '副本读取失败，请稍后重试')
+      uiAlert(e instanceof PortableCopyError ? e.message : t('client.copyFailed'))
     } finally {
       setExportBusy(false)
     }
@@ -393,9 +415,9 @@ export default function Client() {
    * 匿名访客用 visitor_key 自证；登录态可额外带 Authorization，后端按 user_id 放行本人关联客户。
    */
   async function requestCustomerDeletion() {
-    if (!custId.current) { uiAlert('请先开始对话'); return }
+    if (!custId.current) { uiAlert(t('client.startChatFirst')); return }
     if (privacyBusy) return
-    if (!(await confirmDialog('申请删除你的咨询资料？提交后将在到期前匿名化，历史内容不再用于后续服务。'))) return
+    if (!(await confirmDialog(t('client.deletionConfirm')))) return
     setPrivacyBusy(true)
     try {
       const token = getToken()
@@ -413,13 +435,14 @@ export default function Client() {
       const j = await r.json().catch(() => null)
       if (j?.code === 0) {
         const deadline = j.data?.deadline ? new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''
-        setMsgs((m) => [...m, { sender_type: 'system', content: `已受理删除申请${deadline ? '，预计 ' + deadline : ''}` }])
+        const deadlineText = deadline ? t('client.deletionDeadline', { deadline }) : ''
+        setMsgs((m) => [...m, { sender_type: 'system', content: t('client.deletionAccepted', { deadline: deadlineText }) }])
         scrollBottom()
       } else {
-        uiAlert(j?.message || '删除申请提交失败')
+        uiAlert(j?.message || t('client.deletionFailed'))
       }
     } catch {
-      uiAlert('删除申请提交失败')
+      uiAlert(t('client.deletionFailed'))
     } finally {
       setPrivacyBusy(false)
     }
@@ -436,16 +459,16 @@ export default function Client() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           {/* FIX-10：可携带权入口。与删除并排放是刻意的——"给我一份"和"抹掉"是一对权利，
               只留后者等于把选择权收走一半。aria-label 供屏幕阅读器识别（与相邻按钮同口径） */}
-          <button onClick={downloadMyDataCopy} disabled={exportBusy} aria-label="下载我的数据副本" style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{exportBusy ? '导出中' : '我的数据'}</button>
-          <button onClick={requestCustomerDeletion} disabled={privacyBusy} aria-label="申请删除我的资料" style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{privacyBusy ? '提交中' : '删除资料'}</button>
+          <button onClick={downloadMyDataCopy} disabled={exportBusy} aria-label={t('client.exportAria')} style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{exportBusy ? t('client.exporting') : t('client.myData')}</button>
+          <button onClick={requestCustomerDeletion} disabled={privacyBusy} aria-label={t('client.deleteAria')} style={{ background: 'rgba(255,255,255,.16)', border: 'none', color: '#fff', borderRadius: 6, padding: '3px 8px', fontSize: 11 }}>{privacyBusy ? t('client.submitting') : t('client.deleteData')}</button>
           {/* G-20：aria-label 无障碍标注——屏幕阅读器可识别在线/离线状态 */}
-          <span style={{ fontSize: 12 }} aria-label={online ? '当前在线' : '当前离线'}>{online ? '🟢 在线' : '🌙 离线'}</span>
+          <span style={{ fontSize: 12 }} aria-label={online ? t('client.onlineAria') : t('client.offlineAria')}>{online ? t('client.online') : t('client.offline')}</span>
         </div>
       </header>
 
       {/* 消息列表区域：根据 sender_type 区分客户消息（右侧主色）与 AI/系统消息（左侧白色） */}
       {/* G-20：role="log" + aria-label 标注消息列表区域，辅助技术可感知消息流变化 */}
-      <div ref={listRef} role="log" aria-label="对话消息列表" style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div ref={listRef} role="log" aria-label={t('client.msgListAria')} style={{ flex: 1, overflowY: 'auto', padding: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {msgs.map((m, i) => {
           if (m.sender_type === 'system') return <div key={i} style={{ textAlign: 'center', fontSize: 12, color: 'var(--text-muted, #9ca3af)' }}>{m.content}</div>
           const mine = m.sender_type === 'customer'
@@ -459,7 +482,7 @@ export default function Client() {
           )
         })}
         {/* "正在输入"状态提示 */}
-        {typing && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><div style={{ background: '#fff', border: '1px solid var(--border, #e5e7eb)', borderRadius: 12, padding: '10px 14px', fontSize: 14, color: 'var(--text-muted, #9ca3af)' }}>正在输入…</div></div>}
+        {typing && <div style={{ display: 'flex', justifyContent: 'flex-start' }}><div style={{ background: '#fff', border: '1px solid var(--border, #e5e7eb)', borderRadius: 12, padding: '10px 14px', fontSize: 14, color: 'var(--text-muted, #9ca3af)' }}>{t('client.typing')}</div></div>}
       </div>
 
       {/* 人机验证区域（Turnstile）：站点开启时展示 */}
@@ -467,15 +490,15 @@ export default function Client() {
 
       {/* 输入区域：文本输入框 + 发送按钮 */}
       {/* G-20：输入区域无障碍标注——role="form" 标识表单区域，aria-label 说明用途 */}
-      <div style={{ background: '#fff', borderTop: '1px solid var(--border, #e5e7eb)', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }} role="form" aria-label="消息输入区域">
+      <div style={{ background: '#fff', borderTop: '1px solid var(--border, #e5e7eb)', padding: 10, display: 'flex', gap: 8, alignItems: 'center' }} role="form" aria-label={t('client.inputAreaAria')}>
         {/* G-20：输入框 aria-label 供屏幕阅读器识别此为消息输入用途 */}
-        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder="输入你的问题…" aria-label="消息输入框" style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
+        <input ref={inputRef} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') send() }} placeholder={t('client.inputPh')} aria-label={t('client.inputAria')} style={{ flex: 1, padding: '10px 12px', border: '1px solid var(--border, #e5e7eb)', borderRadius: 20, outline: 'none', fontSize: 14 }} />
         {/* G-20：发送按钮 aria-label 标注操作意图；人机验证未通过时 disabled 并降低透明度 */}
-        <button onClick={send} disabled={(tsEnabled && !tsOk)} aria-label="发送消息" style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>发送</button>
+        <button onClick={send} disabled={(tsEnabled && !tsOk)} aria-label={t('client.sendAria')} style={{ background: brand.primaryColor || 'var(--pri, #4f46e5)', color: '#fff', border: 'none', borderRadius: 20, padding: '10px 18px', fontSize: 14, fontWeight: 600, opacity: (tsEnabled && !tsOk) ? 0.5 : 1 }}>{t('common.send')}</button>
         {/* E3：找人工入口——转接后真人接管，AI 停回自动回复 */}
-        <button onClick={() => setHumanConfirm(true)} disabled={humanBusy} aria-label="转接人工顾问" style={{ background: '#fff', color: 'var(--pri, #4f46e5)', border: '1px solid var(--pri, #4f46e5)', borderRadius: 20, padding: '10px 14px', fontSize: 14, fontWeight: 600, opacity: humanBusy ? 0.5 : 1 }}>{humanBusy ? '转接中…' : '找人工'}</button>
+        <button onClick={() => setHumanConfirm(true)} disabled={humanBusy} aria-label={t('client.humanAria')} style={{ background: '#fff', color: 'var(--pri, #4f46e5)', border: '1px solid var(--pri, #4f46e5)', borderRadius: 20, padding: '10px 14px', fontSize: 14, fontWeight: 600, opacity: humanBusy ? 0.5 : 1 }}>{humanBusy ? t('client.humanConnecting') : t('client.human')}</button>
       </div>
-      <ConfirmDialog open={humanConfirm} title="转接人工顾问" message="转接后由真人顾问回复你，AI 助手将暂停自动回复。确认转接？" onConfirm={doRequestHuman} onCancel={() => setHumanConfirm(false)} />
+      <ConfirmDialog open={humanConfirm} title={t('client.humanDialogTitle')} message={t('client.humanDialogMsg')} onConfirm={doRequestHuman} onCancel={() => setHumanConfirm(false)} />
     </div>
   )
 }

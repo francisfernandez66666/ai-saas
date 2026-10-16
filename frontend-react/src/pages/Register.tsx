@@ -7,6 +7,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Button, Input, Select, MessagePlugin } from 'tdesign-react'
 import { apiJSON } from '../lib/api'
 import { useBrand } from '../lib/branding'
+import { useI18n } from '../i18n/useI18n'
 
 /**
  * 租户自助开通页组件
@@ -18,6 +19,7 @@ import { useBrand } from '../lib/branding'
 export default function Register() {
   // 读取品牌配置（用于页脚展示品牌名）
   const brand = useBrand()
+  const { t } = useI18n()
   // 平台是否开启邮箱验证（来自 register-config 热开关）
   const [emailVerifyOn, setEmailVerifyOn] = useState(false)
   // 可选行业列表（来自 register-config；P1-2 2026-09-08：注册选行业 → 落行业包）
@@ -39,6 +41,7 @@ export default function Register() {
   // 提交结果提示文案
   const [msg, setMsg] = useState('')
   // 预留倒计时（当前未启用，保留兼容）
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [cd, setCd] = useState(0)
   // P2-88 修复：防抖定时器与倒计时定时器拆成两个 ref——
   // 原共用一个 timer：输入防抖时 sendCode 的 60s 倒计时 interval 会被 clearTimeout 清掉（或反之），
@@ -89,7 +92,7 @@ export default function Register() {
    */
   async function sendCode() {
     if (!form.admin_email) {
-      MessagePlugin.warning('请先填写邮箱')
+      MessagePlugin.warning(t('register.emailRequired'))
       return
     }
     const btn = document.getElementById('sendBtn') as HTMLButtonElement
@@ -99,7 +102,7 @@ export default function Register() {
       body: JSON.stringify({ email: form.admin_email }),
     })
     if (json?.code === 0) {
-      MessagePlugin.success('验证码已发送，请查收邮箱')
+      MessagePlugin.success(t('register.codeSent'))
       // 60s 倒计时防重复发送
       let left = 60
       if (btn) btn.textContent = left + 's'
@@ -111,12 +114,12 @@ export default function Register() {
           window.clearInterval(countdownTimer.current)
           if (btn) {
             btn.disabled = false
-            btn.textContent = '重新获取'
+            btn.textContent = t('register.resend')
           }
         }
       }, 1000)
     } else {
-      MessagePlugin.error(json?.message || '发送失败')
+      MessagePlugin.error(json?.message || t('register.sendFailed'))
       if (btn) btn.disabled = false
     }
   }
@@ -129,8 +132,9 @@ export default function Register() {
    */
   async function submitForm(e: React.FormEvent) {
     e.preventDefault()
-    setMsg('开通中...')
-    const body: any = { ...form }
+    setMsg(t('register.submitting'))
+    // P2-10：form 全字符串字段，body 从 any 收敛为 Record<string, string>
+    const body: Record<string, string> = { ...form }
     // 将邀请码（统一大写）一并提交，用于防薅返利与幂等发放
     const ref = new URLSearchParams(location.search).get('ref')
     if (ref) body.ref = ref.trim().toUpperCase()
@@ -139,10 +143,10 @@ export default function Register() {
       body: JSON.stringify(body),
     })
     if (json?.code === 0) {
-      setMsg((json.message || '开通成功') + '！即将跳转登录...')
+      setMsg((json.message || t('register.signupOk')) + t('register.redirecting'))
       setTimeout(() => (location.href = (json.data?.login_url || (location.pathname.startsWith('/app') ? '/app/login' : '/login'))), 1500)
     } else {
-      setMsg(json?.message || '开通失败')
+      setMsg(json?.message || t('register.signupFailed'))
     }
   }
 
@@ -152,72 +156,71 @@ export default function Register() {
   return (
     <div style={wrap}>
       <div style={card}>
-        <h2 style={{ marginBottom: 6 }}>免费开通试用</h2>
-        <div style={sub}>7 天全功能试用，无需绑卡</div>
+        <h2 style={{ marginBottom: 6 }}>{t('register.title')}</h2>
+        <div style={sub}>{t('register.sub')}</div>
         {/* 邀请返利横幅：URL 带 ?ref= 时显示 */}
         <div id="refBanner" style={{ display: 'none', background: '#eef2ff', color: '#4f46e5', padding: '8px 12px', borderRadius: 8, fontSize: 13, marginBottom: 14 }}>
-          🎁 已应用好友邀请，注册成功后双方均可获赠 token
+          {t('register.refBanner')}
         </div>
 
         <form onSubmit={submitForm}>
-          <Label>企业名称 *</Label>
+          <Label>{t('register.companyName')}</Label>
           <Input value={form.company_name} onChange={set('company_name')} />
-          <Label>访问标识 *（将作为子域名 acme.example.com）</Label>
-          <Input value={form.code} onChange={(v) => { setForm({ ...form, code: v }); checkCode(v) }} placeholder="小写字母开头，3-20位" />
+          <Label>{t('register.codeLabel')}</Label>
+          <Input value={form.code} onChange={(v) => { setForm({ ...form, code: v }); checkCode(v) }} placeholder={t('register.codePh')} />
           <div style={{ fontSize: 13, minHeight: 18, color: codeTip.ok ? '#38a169' : '#e53e3e' }}>{codeTip.text}</div>
           {/* 所属行业：选填，选择后注册即落对应行业包（默认=通用行业 general） */}
-          <Label>所属行业（选填，决定预置话术/知识包）</Label>
+          <Label>{t('register.industryLabel')}</Label>
           <Select
             value={form.industry || 'general'}
             onChange={(v) => setForm({ ...form, industry: String(v || '') })}
             options={industries.map((i) => ({ label: i.name, value: i.code }))}
             clearable={false}
-            placeholder="请选择所属行业"
+            placeholder={t('register.industryPh')}
           />
-          <Label>管理员账号 *</Label>
-          <Input value={form.username} onChange={set('username')} placeholder="登录用户名" />
+          <Label>{t('register.adminAccount')}</Label>
+          <Input value={form.username} onChange={set('username')} placeholder={t('register.adminAccountPh')} />
           {/* P1 修复(2026-09-18)：文案对齐后端 validatePasswordStrength 真实基线（≥8位+字母+数字），旧"至少6位"必然误导用户提交被拒 */}
-          <Label>管理员密码 *（至少8位，须含字母和数字）</Label>
+          <Label>{t('register.adminPwd')}</Label>
           <Input type="password" value={form.password} onChange={set('password')} />
 
           {/* 邮箱验证模块：平台开启时展示邮箱输入与验证码获取 */}
           {emailVerifyOn && (
             <>
-              <Label>管理员邮箱 *（用于接收验证码与账号找回）</Label>
+              <Label>{t('register.adminEmail')}</Label>
               <div style={{ display: 'flex', gap: 8 }}>
-                <Input style={{ flex: 1 }} value={form.admin_email} onChange={set('admin_email')} placeholder="you@company.com" />
+                <Input style={{ flex: 1 }} value={form.admin_email} onChange={set('admin_email')} placeholder={t('register.emailPh')} />
                 <Button id="sendBtn" variant="outline" theme="primary" onClick={sendCode} style={{ whiteSpace: 'nowrap' }}>
-                  获取验证码
+                  {t('register.sendCodeBtn')}
                 </Button>
               </div>
-              <Label style={{ marginTop: 8 }}>邮箱验证码 *</Label>
-              <Input value={form.email_code} onChange={set('email_code')} placeholder="6位数字验证码" maxlength={6} />
+              <Label style={{ marginTop: 8 }}>{t('register.emailCodeLabel')}</Label>
+              <Input value={form.email_code} onChange={set('email_code')} placeholder={t('register.emailCodePh')} maxlength={6} />
             </>
           )}
 
-          <Label>联系人</Label>
+          <Label>{t('register.contactName')}</Label>
           <Input value={form.contact_name} onChange={set('contact_name')} />
-          <Label>联系手机</Label>
+          <Label>{t('register.contactPhone')}</Label>
           <Input value={form.contact_phone} onChange={set('contact_phone')} />
 
           {/* 法律声明：注册即视为同意用户协议与隐私政策 */}
           <div style={{ fontSize: 12, color: '#64748b', margin: '12px 0', lineHeight: 1.6 }}>
-            注册即代表您已阅读并同意 <a href="/user-agreement">《用户协议》</a> 与 <a href="/privacy-policy">《隐私政策》</a>，
-            平台将记录您的签署时间与状态。
+            {t('register.legalA')}<a href="/user-agreement">{t('register.legalAgreement')}</a>{t('register.legalB')}<a href="/privacy-policy">{t('register.legalPrivacy')}</a>{t('register.legalC')}
           </div>
-          <Button theme="primary" type="submit" style={{ width: '100%' }}>立即开通</Button>
+          <Button theme="primary" type="submit" style={{ width: '100%' }}>{t('register.submitBtn')}</Button>
           <div style={{ fontSize: 13, minHeight: 18, marginTop: 12 }}>{msg}</div>
         </form>
 
         {/* 底部导航：已有账号/查看套餐 */}
         <div style={tip}>
-          已有账号？<a href="/login">直接登录</a>　<a href="/pricing">查看套餐</a>
+          {t('register.footerA')}<a href="/login">{t('register.footerLogin')}</a>{'\u3000'}<a href="/pricing">{t('register.footerPricing')}</a>
         </div>
       </div>
       {/* 页脚：法律链接与品牌名 */}
       <div className="footer-legal">
-        <a href="/user-agreement">用户协议</a> ·{' '}
-        <a href="/privacy-policy">隐私政策</a> · {brand.brandName} AI-SCRM 平台
+        <a href="/user-agreement">{t('login.userAgreement')}</a> ·{' '}
+        <a href="/privacy-policy">{t('login.privacyPolicy')}</a> · {t('login.footer', { brand: brand.brandName })}
       </div>
     </div>
   )

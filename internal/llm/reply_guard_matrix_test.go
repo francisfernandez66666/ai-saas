@@ -196,6 +196,7 @@ func readConvGuided(t *testing.T, id uint) (int, bool) {
 	return row.GuidedRemainingRounds, row.GuidedDisabled
 }
 
+// strategyOut 造一份最小策略输出（锚点为不抛），供硬拦截矩阵用例调 GenerateAIReply 时透传。
 func strategyOut() *strategytypes.StrategyOutput {
 	return &strategytypes.StrategyOutput{FinalAnchor: strategytypes.AnchorNoThrow}
 }

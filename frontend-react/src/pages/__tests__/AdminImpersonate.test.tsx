@@ -34,10 +34,12 @@ if (!('ResizeObserver' in globalThis)) {
 const OLD_TENANT = { id: 7, name: '极石汽车', code: 'rox' }
 const NEW_TENANT = { id: 99, name: '新登记的店', code: 'newshop' }
 
+// envelope 列表端点成功响应：data 带 list/total/分页字段，total 缺省取 list 长度。
 const envelope = (list: unknown[], total?: number) => ({
   ok: true, status: 200,
   json: async () => ({ code: 0, data: { list, total: total ?? list.length, page: 1, page_size: 100 } }),
 })
+// plain 裸数据端点成功响应：data 直接是业务对象（无分页信封）。
 const plain = (data: unknown) => ({ ok: true, status: 200, json: async () => ({ code: 0, data }) })
 
 /** 按 URL 分流打桩；返回捕获到的请求 URL 列表，供"关键字有没有真进查询串"断言。 */

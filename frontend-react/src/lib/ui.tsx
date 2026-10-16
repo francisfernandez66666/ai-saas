@@ -5,6 +5,8 @@
  * 页面禁止再硬编码其他彩色（#16a34a、#6366f1、#ea580c 等），如需强调色用下方令牌。
  */
 
+import { useI18n } from '../i18n/useI18n'
+
 // 主色（与 index.css :root --pri 对齐，TDesign 品牌色）
 export const PRI = '#4f46e5'
 // PRI_LIGHT 主色浅底（选中/悬停背景）。
@@ -54,6 +56,8 @@ export const SHADOW = '0 1px 2px rgba(16,24,40,.06), 0 1px 3px rgba(16,24,40,.1)
 export function ConfirmDialog({ open, title, message, onConfirm, onCancel }: {
   open: boolean; title: string; message: string; onConfirm: () => void; onCancel: () => void;
 }) {
+  // 按钮文案走 i18n（标题/正文由调用方传入，已是各页面自己译好的句子）
+  const { t } = useI18n()
   // 未打开时直接返回 null，不渲染 DOM 节点
   if (!open) return null;
   return (
@@ -65,9 +69,9 @@ export function ConfirmDialog({ open, title, message, onConfirm, onCancel }: {
         <p style={{ margin:'0 0 16px', color:'#4a5568', fontSize:14 }}>{message}</p>
         <div style={{ display:'flex', gap:8, justifyContent:'flex-end' }}>
           {/* 取消按钮：次要操作，白色底+边框样式 */}
-          <button onClick={onCancel} style={{ padding:'6px 16px', borderRadius:6, border:'1px solid #e2e8f0', background:'#fff', cursor:'pointer' }}>取消</button>
+          <button onClick={onCancel} style={{ padding:'6px 16px', borderRadius:6, border:'1px solid #e2e8f0', background:'#fff', cursor:'pointer' }}>{t('common.cancel')}</button>
           {/* 确认按钮：主操作，品牌主色底+白色字，视觉权重更高引导用户确认 */}
-          <button onClick={onConfirm} style={{ padding:'6px 16px', borderRadius:6, border:'none', background:'var(--pri)', color:'#fff', cursor:'pointer' }}>确认</button>
+          <button onClick={onConfirm} style={{ padding:'6px 16px', borderRadius:6, border:'none', background:'var(--pri)', color:'#fff', cursor:'pointer' }}>{t('common.confirm')}</button>
         </div>
       </div>
     </div>

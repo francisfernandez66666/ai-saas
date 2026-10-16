@@ -22,7 +22,8 @@ const errorMock = MessagePlugin.error as ReturnType<typeof vi.fn>
 afterEach(() => {
   localStorage.clear()
   // location.href 是只读赋值，jsdom 下整体替换测试专用（每例重置防串）
-  delete (window as any).location
+  // P2-10：`(window as any).location` → 具名可选面；delete 的运行时行为不变（断言擦除）
+  delete (window as { location?: Location }).location
   warningMock.mockClear()
   errorMock.mockClear()
 })
@@ -78,19 +79,19 @@ describe('业务错误码文案', () => {
   })
 
   it('error_code 命中映射返回去 AI 味短句', () => {
-    const j = toastError({ code: 42901, error_code: 'rate_limited' } as any)
+    const j = toastError({ code: 42901, error_code: 'rate_limited' })
     expect(j).toBe(true)
     expect(warningMock).toHaveBeenCalledWith('操作太频繁，稍后再试')
   })
 
   it('无 error_code 时回退 message 原文', () => {
-    const j = toastError({ code: 400, message: '余额不足' } as any)
+    const j = toastError({ code: 400, message: '余额不足' })
     expect(j).toBe(true)
     expect(warningMock).toHaveBeenCalledWith('余额不足')
   })
 
   it('code=0 成功不弹窗', () => {
-    const j = toastError({ code: 0 } as any)
+    const j = toastError({ code: 0 })
     expect(j).toBe(false)
     expect(warningMock).not.toHaveBeenCalled()
   })
@@ -105,8 +106,11 @@ describe('业务错误码文案', () => {
 
   it('域拒码不写通用话，精确 message 不被覆盖', () => {
     // 后端 deal_rejected 的 message 本身就是"阶段不能往回退…"这种精确文案，
-    // 前端若登记一句"这张单暂时不能这么操作"反而会把它盖掉
-    expect(toastError({ code: 400, error_code: 'deal_rejected', message: '阶段不能往回退', reason: 'stage_backward' })).toBe(true)
+    // 前端若登记一句"这张单暂时不能这么操作"反而会把它盖掉。
+    // 真实响应是解析后的 JSON（非新鲜字面量），可携带 reason 等 toastError 不消费的字段——
+    // 故先落成变量再传，绕开新鲜字面量的 excess-property 检查（结构面本就只保证三字段）
+    const env = { code: 400, error_code: 'deal_rejected', message: '阶段不能往回退', reason: 'stage_backward' }
+    expect(toastError(env)).toBe(true)
     expect(warningMock).toHaveBeenCalledWith('阶段不能往回退')
     expect(errorMock).not.toHaveBeenCalled()
   })
@@ -149,7 +153,7 @@ describe('apiFetch 超时闸门', () => {
   it('挂死请求 30s 后被掐断并返回错误信封（AUTH 不 reject，调用方走 else 分支）', async () => {
     vi.useFakeTimers()
     const fakeFetch = vi.fn(
-      (_u: string, opts: any) =>
+      (_u: string, opts: { signal?: AbortSignal }) =>
         new Promise((_res, reject) => {
           opts?.signal?.addEventListener('abort', () => reject(new Error('AbortError')))
         }),
@@ -157,7 +161,7 @@ describe('apiFetch 超时闸门', () => {
     vi.stubGlobal('fetch', fakeFetch)
     const p = AUTH('/api/v1/hang')
     await vi.advanceTimersByTimeAsync(30_000)
-    const j: any = await p
+    const j = await p
     expect(fakeFetch).toHaveBeenCalledTimes(1)
     expect(j.code).toBe(-1)
     expect(String(j.message)).toContain('网络')
@@ -166,7 +170,7 @@ describe('apiFetch 超时闸门', () => {
   it('timeoutMs=0 不装定时器：长任务永不被本地超时误掐', async () => {
     vi.useFakeTimers()
     let aborted = false
-    vi.stubGlobal('fetch', vi.fn((_u: string, opts: any) => {
+    vi.stubGlobal('fetch', vi.fn((_u: string, opts: { signal?: AbortSignal }) => {
       opts?.signal?.addEventListener('abort', () => { aborted = true })
       return new Promise(() => {})
     }))

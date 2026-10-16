@@ -145,6 +145,9 @@ func SweepUsageAlerts() int { return sweepUsageAlerts(nil) }
 // 客户根本没收到——唯一键还会让这个档在本账期内永不再发。这不是测试洁癖，是防污染账本。
 func SweepUsageAlertsForTenants(tenantIDs []uint) int { return sweepUsageAlerts(tenantIDs) }
 
+// sweepUsageAlerts 巡检 scope 内在用租户的配额/余额水位：越过阈值且本账期未通知过就落一条预警
+// 留痕并尝试投递，返回本轮新落库条数。scope 为空=全平台巡检（Redis 选主）；非空=只巡检指定
+// 租户，不抢锁。邮件与群通道均不可用时命中不落库，配置就绪后下一轮自动补发。
 func sweepUsageAlerts(scope []uint) int {
 	if !runtimecfg.SafeCfgBool("usage_alert_enabled", false) {
 		return 0

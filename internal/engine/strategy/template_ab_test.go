@@ -36,6 +36,7 @@ func abVariant(id, group string, weight, status int) model.Template {
 var abTags = []string{"price"}
 var abZeroT [32]float64
 
+// recallFor 跑一次 Step4 召回并取命中模板 ID（空召回即 Fatal），供 AB 分流各用例断言落点。
 func recallFor(t *testing.T, templates []model.Template, customerID uint) string {
 	t.Helper()
 	got, _ := Step4_RecallTemplate(2, abTags, abZeroT, templates, customerID, 0)

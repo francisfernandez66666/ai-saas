@@ -82,27 +82,27 @@ func (Tenant) TableName() string {
 
 // SubscriptionPlan 订阅套餐表
 type SubscriptionPlan struct {
-	ID                 uint      `gorm:"primaryKey" json:"id"`            // 主键
-	Name               string    `gorm:"size:100;not null" json:"name"`   // 显示名：个人版/企业标准版/企业高级版/定制版
-	Code               string    `gorm:"size:50;uniqueIndex" json:"code"` // 标识：personal/enterprise_std/enterprise_pro/custom
-	Tier               string    `gorm:"size:20" json:"tier"`             // 版本：personal/enterprise/custom
-	Description        string    `json:"description"`                     // 套餐描述（Markdown）
-	PriceMonthlyCents  int       `json:"price_monthly_cents"`             // 月价（分）
-	PriceYearlyCents   int       `json:"price_yearly_cents"`              // 年价（分）
-	TrialDays          int       `json:"trial_days"`                      // 试用天数，默认 7
-	MaxUsers           int       `json:"max_users"`                       // 最大用户数
-	MaxDepartments     int       `json:"max_departments"`                 // 最大部门数配额（个人版=1个根部门）
-	MaxCustomers       int       `json:"max_customers"`                   // 最大客户数
-	MaxAICalls         int       `json:"max_ai_calls_monthly"`            // 每月 AI 调用次数配额
-	MaxStorageMB       int       `json:"max_storage_mb"`                  // 存储空间 MB 配额
-	MaxKnowledgeBrands int       `json:"max_knowledge_brands"`            // 品牌数配额
-	MaxKnowledgeModels int       `json:"max_knowledge_models"`            // 车型数配额
-	Features           string    `json:"features"`                        // 功能列表 JSON
-	Highlights         string    `json:"highlights"`                      // 卖点列表 JSON
-	IsActive           bool      `json:"is_active"`                       // 是否上架
-	SortOrder          int       `json:"sort_order"`                      // 排序
-	CreatedAt          time.Time `json:"created_at"`                      // 创建时间
-	UpdatedAt          time.Time `json:"updated_at"`                      // 更新时间
+	ID                 uint      `gorm:"primaryKey" json:"id"`                             // 主键
+	Name               string    `gorm:"size:100;not null" json:"name"`                    // 显示名：个人版/企业标准版/企业高级版/定制版
+	Code               string    `gorm:"size:50;uniqueIndex" json:"code"`                  // 标识：personal/enterprise_std/enterprise_pro/custom
+	Tier               string    `gorm:"size:20" json:"tier"`                              // 版本：personal/enterprise/custom
+	Description        string    `json:"description"`                                      // 套餐描述（Markdown）
+	PriceMonthlyCents  int       `json:"price_monthly_cents"`                              // 月价（分）
+	PriceYearlyCents   int       `json:"price_yearly_cents"`                               // 年价（分）
+	TrialDays          int       `json:"trial_days"`                                       // 试用天数，默认 7
+	MaxUsers           int       `json:"max_users"`                                        // 最大用户数
+	MaxDepartments     int       `json:"max_departments"`                                  // 最大部门数配额（个人版=1个根部门）
+	MaxCustomers       int       `json:"max_customers"`                                    // 最大客户数
+	MaxAICalls         int       `gorm:"column:max_aic_talls" json:"max_ai_calls_monthly"` // 每月 AI 调用次数配额（列名历史 typo：max_aic_talls，勿改字段；见 FIXPLAN_2026-10-13 P1-5）
+	MaxStorageMB       int       `json:"max_storage_mb"`                                   // 存储空间 MB 配额
+	MaxKnowledgeBrands int       `json:"max_knowledge_brands"`                             // 品牌数配额
+	MaxKnowledgeModels int       `json:"max_knowledge_models"`                             // 车型数配额
+	Features           string    `json:"features"`                                         // 功能列表 JSON
+	Highlights         string    `json:"highlights"`                                       // 卖点列表 JSON
+	IsActive           bool      `json:"is_active"`                                        // 是否上架
+	SortOrder          int       `json:"sort_order"`                                       // 排序
+	CreatedAt          time.Time `json:"created_at"`                                       // 创建时间
+	UpdatedAt          time.Time `json:"updated_at"`                                       // 更新时间
 }
 
 // ============================================================

@@ -4,6 +4,8 @@
  * 面向潜在客户，无登录态要求
  */
 import { useBrand } from '../lib/branding'
+import { useI18n } from '../i18n/useI18n'
+import type { I18nKey } from '../i18n/context'
 
 /**
  * 营销落地首页组件
@@ -15,17 +17,19 @@ import { useBrand } from '../lib/branding'
  */
 export default function Index() {
   const brand = useBrand()
+  // 翻译函数（P2-14）
+  const { t } = useI18n()
   // 品牌 Logo（有则显示图片，无则显示默认图标）
   const logo = brand.logoUrl ? (
     <img src={brand.logoUrl} alt={brand.brandName} style={{ height: 64, marginBottom: 24 }} />
   ) : (
     <div style={{ fontSize: 64, marginBottom: 24 }}>🏔️</div>
   )
-  // 核心能力卡片数据
-  const features = [
-    { icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5', title: '智能接话', desc: 'AI自动接听客户咨询，分钟级响应，永不错过商机' },
-    { icon: 'M2 3h20v2H2V3zm0 4h20v2H2V7zm0 4h20v2H2v-2zm0 4h20v2H2v-2zm0 4h20v2H2v-2z', title: '全链路 AI', desc: '从建联到成单的全流程 AI 驱动，提效 100 倍' },
-    { icon: 'M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm4.93-7.5l1.42-1.42c-.98-.98-2.57-.43-3.54.75L14.5 14.46l-5.33 5.32c-.59.59-.59 1.52 0 2.11zm-11.28.78l1.56 1.56c.39.39 1.02.11 1.41-.7L2.54 9.13c-.47-.66-.79-1.56-.79-2.38 0-1.32.63-2.39 1.28-2.96l2.17-2.17c.38-.38.99-.41 1.41-.19l1.66 1.66L13 15.5l2.66 2.66c.45.45.45 1.06 0 1.51z', title: '多端在线', desc: '客户端/顾问端/管理端 全平台覆盖，随时随地管理客户' },
+  // 核心能力卡片数据（title/desc 存 i18n 键，渲染时 t() 翻译）
+  const features: { icon: string; title: I18nKey; desc: I18nKey }[] = [
+    { icon: 'M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5', title: 'index.feature1Title', desc: 'index.feature1Desc' },
+    { icon: 'M2 3h20v2H2V3zm0 4h20v2H2V7zm0 4h20v2H2v-2zm0 4h20v2H2v-2zm0 4h20v2H2v-2z', title: 'index.feature2Title', desc: 'index.feature2Desc' },
+    { icon: 'M12 22c1.1 0 2-.9 2-2h-4c0 1.1.89 2 2 2zm4.93-7.5l1.42-1.42c-.98-.98-2.57-.43-3.54.75L14.5 14.46l-5.33 5.32c-.59.59-.59 1.52 0 2.11zm-11.28.78l1.56 1.56c.39.39 1.02.11 1.41-.7L2.54 9.13c-.47-.66-.79-1.56-.79-2.38 0-1.32.63-2.39 1.28-2.96l2.17-2.17c.38-.38.99-.41 1.41-.19l1.66 1.66L13 15.5l2.66 2.66c.45.45.45 1.06 0 1.51z', title: 'index.feature3Title', desc: 'index.feature3Desc' },
   ]
   return (
     <div
@@ -47,7 +51,7 @@ export default function Index() {
           {brand.brandName}
         </h1>
         {/* 平台定位语 */}
-        <p style={{ fontSize: 'clamp(14px, 3.5vw, 18px)', color: '#4a5568', marginBottom: 32 }}>车企AI驱动的智能客户关系管理平台</p>
+        <p style={{ fontSize: 'clamp(14px, 3.5vw, 18px)', color: '#4a5568', marginBottom: 32 }}>{t('index.tagline')}</p>
 
         {/* 核心能力卡片网格 */}
         <div
@@ -86,42 +90,42 @@ export default function Index() {
                 </svg>
               </div>
               {/* 能力标题与描述 */}
-              <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>{f.title}</div>
-              <div style={{ color: '#718096', fontSize: 14, lineHeight: 1.6 }}>{f.desc}</div>
+              <div style={{ fontSize: 20, fontWeight: 600, marginBottom: 12 }}>{t(f.title)}</div>
+              <div style={{ color: '#718096', fontSize: 14, lineHeight: 1.6 }}>{t(f.desc)}</div>
             </div>
           ))}
         </div>
 
         {/* 标签区：SaaS 化、多租户、实时数据 */}
         <div style={{ display: 'flex', gap: 16, justifyContent: 'center', marginTop: 32, flexWrap: 'wrap' }}>
-          <span className="badge" style={badgeStyle}>SaaS 化</span>
-          <span className="badge" style={badgeStyle}>多租户</span>
-          <span className="badge" style={badgeStyle}>实时数据</span>
+          <span className="badge" style={badgeStyle}>{t('index.badgeSaas')}</span>
+          <span className="badge" style={badgeStyle}>{t('index.badgeMultiTenant')}</span>
+          <span className="badge" style={badgeStyle}>{t('index.badgeRealtime')}</span>
         </div>
 
         {/* CTA 区：立即体验、免费开通、查看套餐 */}
         <div style={{ marginTop: 64, textAlign: 'center' }}>
-          <a className="cta-btn" style={ctaStyle} href="/client">立即体验</a>
-          <a className="cta-btn" style={ctaStyle} href="/register">免费开通</a>
-          <a className="cta-btn" style={ctaStyle} href="/pricing">查看套餐</a>
+          <a className="cta-btn" style={ctaStyle} href="/client">{t('index.ctaTrial')}</a>
+          <a className="cta-btn" style={ctaStyle} href="/register">{t('index.ctaSignup')}</a>
+          <a className="cta-btn" style={ctaStyle} href="/pricing">{t('index.ctaPricing')}</a>
         </div>
 
         {/* 底部导航：各功能入口链接 */}
         <div style={{ marginTop: 48, display: 'flex', gap: 24, justifyContent: 'center', flexWrap: 'wrap' }}>
-          <a className="nav-link" href="/pricing">套餐定价</a>
-          <a className="nav-link" href="/docs/api">开放 API 文档</a>
-          <a className="nav-link" href="/billing">订阅收银台</a>
-          <a className="nav-link" href="/login">登录工作台</a>
-          <a className="nav-link" href="/admin">管理后台</a>
-          <a className="nav-link" href="/org">组织架构</a>
-          <a className="nav-link" href="/super">平台管理</a>
+          <a className="nav-link" href="/pricing">{t('index.navPricing')}</a>
+          <a className="nav-link" href="/docs/api">{t('index.navApiDocs')}</a>
+          <a className="nav-link" href="/billing">{t('index.navBilling')}</a>
+          <a className="nav-link" href="/login">{t('index.navLogin')}</a>
+          <a className="nav-link" href="/admin">{t('index.navAdmin')}</a>
+          <a className="nav-link" href="/org">{t('index.navOrg')}</a>
+          <a className="nav-link" href="/super">{t('index.navSuper')}</a>
         </div>
       </div>
 
       {/* 页脚：法律链接与品牌名 */}
       <div className="footer-legal">
-        <a href="/user-agreement">用户协议</a> ·{' '}
-        <a href="/privacy-policy">隐私政策</a> · {brand.brandName} AI-SCRM 平台
+        <a href="/user-agreement">{t('login.userAgreement')}</a> ·{' '}
+        <a href="/privacy-policy">{t('login.privacyPolicy')}</a> · {t('index.footerBrand', { brand: brand.brandName })}
       </div>
     </div>
   )

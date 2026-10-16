@@ -212,6 +212,8 @@ func scanCountsByCode(gdb *gorm.DB, tenantID uint, codeIDs []uint, days int) (ma
 	return out, nil
 }
 
+// since 统计窗口起点：当前时刻往前推 days 天（按 24 小时/天折算，不是自然日）。
+// days 由调用方先过 ClampDays，这里不再校验取值范围。
 func since(days int) time.Time {
 	return time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 }

@@ -3,10 +3,12 @@
 import { useEffect, useState } from 'react'
 import { Button, Table, Tag } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+import { useI18n } from '../../i18n/useI18n'
 import type { CellProps, TableRowData } from '../../types'
 
 /** 审计日志 Tab：展示租户内关键操作记录。 */
 export function AuditTab() {
+  const { t } = useI18n()
   const [rows, setRows] = useState<TableRowData[]>([])
   const [action, setAction] = useState('')
   const [from, setFrom] = useState('')
@@ -28,38 +30,38 @@ export function AuditTab() {
   /** 查询按钮：回第 1 页并强制按当前筛选重拉 */
   function search() { if (page === 1) { void load(1) } else setPage(1) }
   const cols = [
-    { colKey: 'created_at', title: '时间', width: 160 },
-    { colKey: 'action', title: '动作', width: 200, cell: (p: CellProps) => <Tag theme={String(p.row.action).includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
-    { colKey: 'username', title: '操作人', width: 120, cell: (p: CellProps) => p.row.username || p.row.user_id },
-    { colKey: 'resource', title: '资源', width: 200 },
-    { colKey: 'detail', title: '详情', width: 280, ellipsis: true },
+    { colKey: 'created_at', title: t('admin.audit.colTime'), width: 160 },
+    { colKey: 'action', title: t('admin.audit.colAction'), width: 200, cell: (p: CellProps) => <Tag theme={String(p.row.action).includes('critical') ? 'danger' : 'primary'}>{p.row.action}</Tag> },
+    { colKey: 'username', title: t('admin.audit.colOperator'), width: 120, cell: (p: CellProps) => p.row.username || p.row.user_id },
+    { colKey: 'resource', title: t('admin.audit.colResource'), width: 200 },
+    { colKey: 'detail', title: t('admin.audit.colDetail'), width: 280, ellipsis: true },
     { colKey: 'ip', title: 'IP', width: 120 },
   ]
   return (
     <div>
       <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
-        <select value={action} onChange={(e) => setAction((e.target as HTMLSelectElement).value)} aria-label="审计动作筛选" className="px-3 py-2 border rounded-lg text-sm">
-          <option value="">全部动作</option>
-          <option value="order_manual_confirm_critical">我已付费(critical)</option>
-          <option value="order_paid_confirm">订单确认发放</option>
-          <option value="order_paid_mock">模拟支付</option>
-          <option value="apikey_create">API Key签发</option>
-          <option value="apikey_disable">API Key停用</option>
-          <option value="super_admin_access">超管访问</option>
-          <option value="tenant_signup">租户注册</option>
+          <select value={action} onChange={(e) => setAction((e.target as HTMLSelectElement).value)} aria-label={t('admin.audit.actionFilterAria')} className="px-3 py-2 border rounded-lg text-sm">
+          <option value="">{t('admin.audit.allActions')}</option>
+          <option value="order_manual_confirm_critical">{t('admin.audit.optOrderPaidCritical')}</option>
+          <option value="order_paid_confirm">{t('admin.audit.optOrderConfirm')}</option>
+          <option value="order_paid_mock">{t('admin.audit.optMockPay')}</option>
+          <option value="apikey_create">{t('admin.audit.optApikeyCreate')}</option>
+          <option value="apikey_disable">{t('admin.audit.optApikeyDisable')}</option>
+          <option value="super_admin_access">{t('admin.audit.optSuperAccess')}</option>
+          <option value="tenant_signup">{t('admin.audit.optTenantSignup')}</option>
         </select>
         <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="px-3 py-2 border rounded-lg text-sm" />
-        <span className="text-gray-400 text-sm">至</span>
+        <span className="text-gray-400 text-sm">{t('admin.audit.to')}</span>
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="px-3 py-2 border rounded-lg text-sm" />
-        <Button theme="primary" onClick={search}>查询</Button>
+        <Button theme="primary" onClick={search}>{t('admin.audit.search')}</Button>
       </div>
       <div className="bg-white rounded-lg shadow-sm overflow-hidden">
         <Table rowKey="id" data={rows} columns={cols} size="small" />
         {/* P2-13 翻页条：总数+上一页/下一页（后端 page_size 上限 100，50/页留余量） */}
         <div className="flex items-center justify-end gap-3 px-4 py-2 text-sm text-gray-500 border-t border-gray-100">
-          <span>共 {total} 条 · 第 {page} 页</span>
-          <Button size="small" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>上一页</Button>
-          <Button size="small" variant="outline" disabled={page * PAGE_SIZE >= total} onClick={() => setPage((p) => p + 1)}>下一页</Button>
+          <span>{t('admin.audit.pageInfo', { total, page })}</span>
+          <Button size="small" variant="outline" disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))}>{t('admin.audit.prevPage')}</Button>
+          <Button size="small" variant="outline" disabled={page * PAGE_SIZE >= total} onClick={() => setPage((p) => p + 1)}>{t('admin.audit.nextPage')}</Button>
         </div>
       </div>
     </div>

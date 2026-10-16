@@ -2,6 +2,8 @@
 // 将散落在各页面的内联 type 收敛到此处，统一前后端字段口径，减少 any 漂移。
 // 字段命名严格对齐 Go 后端 model 的 json tag，便于前后端一致。
 
+import type { PrimaryTableCellParams } from 'tdesign-react'
+
 // ============================================================
 // 通用响应信封
 // ============================================================
@@ -202,7 +204,9 @@ export interface Cust {
 export interface Detail {
   customer: Customer
   tags?: { tag_name: string }[]
-  followups?: any[]
+  // P2-10(2026-10-14)：any[] → unknown[]——前端无任何代码读取 detail.followups
+  // （顾问端跟进列表走独立的 /advisor/followups + Followup 类型），保持接口占位即可
+  followups?: unknown[]
   conversations?: Conversation[]
 }
 
@@ -848,14 +852,15 @@ export interface ArchiveRecordDetailResp {
 // 既收敛类型口径，又保留对任意字段的访问能力。
 export type TableRowData = Record<string, any>
 
-// TDesign PrimaryTableCol.cell 回调入参（取常用字段）。
-// 用此别名替代 (p: any)，消除显式 any 标注。
-export interface CellProps {
-  row: TableRowData
-  rowIndex: number
-  col: { colKey: string; title?: string }
-  colIndex: number
-}
+// TDesign PrimaryTableCol.cell 回调入参别名。
+// 用此别名替代 (p: any)，消除显式 any 标注，且与 TDesign 的 cell 期望类型一致。
+//
+// P2-8 修复(2026-10-13)：strict 下 cell 回调按函数参数逆变校验。
+// 行数据是动态 API 返回（TableRowData = Record<string, any>），统一用 `any` 行泛型——
+// TDesign 各表格的 cell 期望 (p: PrimaryTableCellParams<RowType>) => ReactNode，
+// 而 `any` 行泛型双向可赋值，无论调用方表格是 TableRowData 还是 ChannelView 等自定义行类型，
+// cell 回调都能精确匹配，一举消除全站 cell 渲染器在 strict 下的 TS2322。
+export type CellProps = PrimaryTableCellParams<any>
 
 // ============================================================
 // 契约覆盖补充类型（P2-8c：让 api.d.ts 的 ApiRoutes 映射对高频端点生效）

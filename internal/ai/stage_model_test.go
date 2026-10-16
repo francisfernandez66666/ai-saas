@@ -118,12 +118,14 @@ type recordedModels struct {
 	models []string
 }
 
+// add 记下假端点收到的一次请求 model 字段（handler 在独立 goroutine 里跑，需加锁）。
 func (rec *recordedModels) add(m string) {
 	rec.mu.Lock()
 	rec.models = append(rec.models, m)
 	rec.mu.Unlock()
 }
 
+// all 取已记录 model 字段的副本，供断言厂商端实际收到的模型名。
 func (rec *recordedModels) all() []string {
 	rec.mu.Lock()
 	defer rec.mu.Unlock()

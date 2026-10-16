@@ -8,7 +8,7 @@
 // 数据/口径全部来自后端（含 notes），前端只做展示与窗口切换，不重算任何比率——
 // 比率一旦在前端复算，就会与后端 notes 的声明脱节，这是"两个口径"类缺陷的常见起点。
 //
-// D4(2026-09-23)：六个**客户级**数字可点击，交给调用方切到客户名单并带上当前窗口。
+// D4(2026-09-23)：六个客户级数字可点击，交给调用方切到客户名单并带上当前窗口。
 // 只这六个可点：占比/切换率/转化率是比率，活跃会话/消息量/待接管的单位不是"客户"，
 // 给它们加点击就会出现"卡片写 8、名单 20 行"——那比不能点更糟。
 // 后端 /stats/ai-contribution/customers 与本卡片共用同一份归属谓词（analytics.MatchContributionMetric），
@@ -17,6 +17,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Tag } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+import { useI18n } from '../../i18n/useI18n'
+import type { I18nKey } from '../../i18n/context'
 import type { AIContribution, ContributionDrill } from '../../types'
 
 /** 后端 schema.AIContribution 的展示侧镜像：批五 E 契约批起直接复用 types.ts 的共享口径，
@@ -39,6 +41,7 @@ function num(v?: number) {
   return v === undefined || v === null ? '-' : String(v)
 }
 
+// Props AI 贡献度卡片的入参：默认统计窗口与客户级数字的下钻回调（不传则整卡只读）。
 type Props = {
   /** 默认统计窗口天数，默认 30。 */
   defaultDays?: number
@@ -57,6 +60,7 @@ function Tile({ metric, value, days, onDrill, className, children }: {
   className: string
   children: ReactNode
 }) {
+  const { t } = useI18n()
   const clickable = !!onDrill && value !== undefined && value !== null
   const go = () => onDrill?.({ metric, days })
   return (
@@ -64,7 +68,7 @@ function Tile({ metric, value, days, onDrill, className, children }: {
       className={`${className}${clickable ? ' cursor-pointer hover:ring-2 hover:ring-indigo-300' : ''}`}
       role={clickable ? 'button' : undefined}
       tabIndex={clickable ? 0 : undefined}
-      title={clickable ? '点击查看对应的客户名单' : undefined}
+      title={clickable ? t('admin.ai.drillTitle') : undefined}
       onClick={clickable ? go : undefined}
       onKeyDown={clickable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); go() } } : undefined}
     >
@@ -75,6 +79,7 @@ function Tile({ metric, value, days, onDrill, className, children }: {
 
 /** AI 贡献度卡片：接待量 / 结果归因 / 交互结构 + 口径说明。 */
 export function AIContributionCard({ defaultDays = 30, onDrill }: Props) {
+  const { t } = useI18n()
   const [days, setDays] = useState<number>(defaultDays)
   const [data, setData] = useState<Contribution | null>(null)
   const [loading, setLoading] = useState(false)
@@ -100,20 +105,20 @@ export function AIContributionCard({ defaultDays = 30, onDrill }: Props) {
   const smallSample = served > 0 && served < SMALL_SAMPLE
 
   const msgs = useMemo(() => ([
-    { label: 'AI 消息', value: data?.ai_messages },
-    { label: '人工消息', value: data?.human_messages },
-    { label: '客户消息', value: data?.customer_messages },
+    { label: 'admin.ai.msgAi' as I18nKey, value: data?.ai_messages },
+    { label: 'admin.ai.msgHuman' as I18nKey, value: data?.human_messages },
+    { label: 'admin.ai.msgCustomer' as I18nKey, value: data?.customer_messages },
   ]), [data])
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-5">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-base font-bold text-gray-800 mb-1">AI 贡献度</h3>
-          <p className="text-xs text-gray-400">AI 独立接待与人工参与的对比，以及留资/到店/成交归因。</p>
+          <h3 className="text-base font-bold text-gray-800 mb-1">{t('admin.ai.title')}</h3>
+          <p className="text-xs text-gray-400">{t('admin.ai.desc')}</p>
         </div>
         <div className="flex items-center gap-2">
-          {loading && <span className="text-xs text-gray-400">加载中…</span>}
+          {loading && <span className="text-xs text-gray-400">{t('common.loading')}</span>}
           {WINDOW_OPTIONS.map((d) => (
             <Tag
               key={d}
@@ -122,14 +127,14 @@ export function AIContributionCard({ defaultDays = 30, onDrill }: Props) {
               style={{ cursor: 'pointer' }}
               onClick={() => setDays(d)}
             >
-              近 {d} 天
+              {t('admin.ai.window', { d })}
             </Tag>
           ))}
         </div>
       </div>
 
       {failed && (
-        <p className="text-sm text-red-500 py-6 text-center">AI 贡献度数据加载失败，请点上方窗口重试。</p>
+        <p className="text-sm text-red-500 py-6 text-center">{t('admin.ai.loadFailed')}</p>
       )}
 
       {!failed && (
@@ -138,19 +143,19 @@ export function AIContributionCard({ defaultDays = 30, onDrill }: Props) {
           <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
             <Tile metric="ai_served" value={data?.ai_served_customers} days={days} onDrill={onDrill} className="bg-gray-50 rounded-lg p-4">
               <b className="block text-2xl text-indigo-600">{num(data?.ai_served_customers)}</b>
-              <span className="text-xs text-gray-500">AI 独立接待客户</span>
+              <span className="text-xs text-gray-500">{t('admin.ai.tileAiServed')}</span>
             </Tile>
             <Tile metric="human_served" value={data?.human_served_customers} days={days} onDrill={onDrill} className="bg-gray-50 rounded-lg p-4">
               <b className="block text-2xl text-gray-800">{num(data?.human_served_customers)}</b>
-              <span className="text-xs text-gray-500">人工参与客户</span>
+              <span className="text-xs text-gray-500">{t('admin.ai.tileHumanServed')}</span>
             </Tile>
             <div className="bg-gray-50 rounded-lg p-4">
               <b className="block text-2xl text-gray-800">{pct(data?.ai_serve_share)}</b>
-              <span className="text-xs text-gray-500">AI 独立接待占比</span>
+              <span className="text-xs text-gray-500">{t('admin.ai.shareAiServed')}</span>
             </div>
             <div className="bg-gray-50 rounded-lg p-4">
               <b className="block text-2xl text-gray-800">{pct(data?.handoff_rate)}</b>
-              <span className="text-xs text-gray-500">人机切换率</span>
+              <span className="text-xs text-gray-500">{t('admin.ai.handoffRate')}</span>
             </div>
           </div>
 
@@ -158,57 +163,57 @@ export function AIContributionCard({ defaultDays = 30, onDrill }: Props) {
           <div className="mt-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <Tile metric="ai_lead" value={data?.ai_leads} days={days} onDrill={onDrill} className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{num(data?.ai_leads)}</b>
-              <p className="text-xs text-gray-500 mt-1">AI 留资</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.aiLead')}</p>
             </Tile>
             <div className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{pct(data?.ai_lead_rate)}</b>
-              <p className="text-xs text-gray-500 mt-1">AI 留资转化率</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.aiLeadRate')}</p>
             </div>
             <Tile metric="assisted_lead" value={data?.assisted_leads} days={days} onDrill={onDrill} className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{num(data?.assisted_leads)}</b>
-              <p className="text-xs text-gray-500 mt-1">人工留资（对照）</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.assistedLead')}</p>
             </Tile>
             <div className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{pct(data?.assisted_lead_rate)}</b>
-              <p className="text-xs text-gray-500 mt-1">人工留资转化率</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.assistedLeadRate')}</p>
             </div>
             <Tile metric="ai_arrived" value={data?.ai_arrived} days={days} onDrill={onDrill} className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{num(data?.ai_arrived)}</b>
-              <p className="text-xs text-gray-500 mt-1">AI 到店 {pct(data?.ai_arrive_rate)}</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.aiArrived')} {pct(data?.ai_arrive_rate)}</p>
             </Tile>
             <Tile metric="ai_ordered" value={data?.ai_ordered} days={days} onDrill={onDrill} className="border border-gray-100 rounded-lg p-3 text-center">
               <b className="block text-xl text-gray-800">{num(data?.ai_ordered)}</b>
-              <p className="text-xs text-gray-500 mt-1">AI 成交 {pct(data?.ai_order_rate)}</p>
+              <p className="text-xs text-gray-500 mt-1">{t('admin.ai.aiOrder')} {pct(data?.ai_order_rate)}</p>
             </Tile>
           </div>
 
           {/* 交互结构 + 口径边界 */}
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-gray-500">
-            <span>活跃会话 <b className="text-gray-800">{num(data?.active_conversations)}</b></span>
-            <span>新建会话 <b className="text-gray-800">{num(data?.new_conversations)}</b></span>
+            <span>{t('admin.ai.activeConv')} <b className="text-gray-800">{num(data?.active_conversations)}</b></span>
+            <span>{t('admin.ai.newConv')} <b className="text-gray-800">{num(data?.new_conversations)}</b></span>
             {msgs.map((m) => (
-              <span key={m.label}>{m.label} <b className="text-gray-800">{num(m.value)}</b></span>
+              <span key={m.label}>{t(m.label)} <b className="text-gray-800">{num(m.value)}</b></span>
             ))}
-            <span>AI 消息占比 <b className="text-gray-800">{pct(data?.ai_message_share)}</b></span>
-            <span>待接管 <b className="text-gray-800">{num(data?.pending_handoff_now)}</b></span>
+            <span>{t('admin.ai.aiMsgShare')} <b className="text-gray-800">{pct(data?.ai_message_share)}</b></span>
+            <span>{t('admin.ai.pendingHandoff')} <b className="text-gray-800">{num(data?.pending_handoff_now)}</b></span>
           </div>
 
           {!!onDrill && (
             <p className="mt-2 text-xs text-gray-400">
-              点上方任一「客户数」可核对背后的客户名单（比例与会话/消息量不是客户数，故不可点）。
+              {t('admin.ai.drillHint')}
             </p>
           )}
 
           {smallSample && (
             <p className="mt-3 text-xs text-orange-600">
-              接待样本仅 {served} 人（&lt;{SMALL_SAMPLE}），转化率只作趋势参考，不建议直接用于投放或考核结论。
+              {t('admin.ai.smallSample', { n: served, max: SMALL_SAMPLE })}
             </p>
           )}
 
           {/* 口径说明：原样透出后端 notes，前端不做措辞改写 */}
           {!!data?.notes?.length && (
             <details className="mt-4">
-              <summary className="text-xs text-gray-500 cursor-pointer">口径说明（{data.notes.length} 条）</summary>
+              <summary className="text-xs text-gray-500 cursor-pointer">{t('admin.ai.notesSummary', { n: data.notes.length })}</summary>
               <ul className="mt-2 space-y-1 pl-5 list-disc">
                 {data.notes.map((n, i) => (
                   <li key={i} className="text-xs text-gray-400 leading-relaxed">{n}</li>

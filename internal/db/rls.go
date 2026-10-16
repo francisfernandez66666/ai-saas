@@ -57,6 +57,10 @@ var rlsTenantTables = []string{
 	"cdp_profiles",        // CDP 客户档案表
 	"cdp_tag_definitions", // CDP 标签定义表
 	"cdp_tag_assignments", // CDP 标签分配表（客户←→标签关联）
+	// 2026-10 工作流补登记（P2-4，迁移033）：计算标签规则按租户唯一
+	// （idx_cdp_rule_tenant_name），JSON 条件承载"本租户的派生标签口径"——
+	// 漏登记时 RLS_ENABLED 形态下零策略覆盖，由 rls_coverage_test.go 实锤拦截后补入。
+	"cdp_computed_tag_rules",
 
 	// ---- 事件/消息/流程表 ----
 	"event_logs",          // 事件日志表（业务事件审计）
@@ -75,6 +79,11 @@ var rlsTenantTables = []string{
 	"usage_ledger",      // 用量台账表（M3 计费底座）
 	"usage_flush_retry", // 计量扣减挂账表（P0-1，2026-09-20 审计批）
 	"tenant_audit_logs", // 租户审计日志表
+	// 2026-10 工作流补登记（P1-2，迁移032）：请求级审计（传输层，全量异步）。
+	// 与 tenant_audit_logs（业务语义层）分层：该表按租户时间线检索（含租户自己查
+	// 导出/改配额留痕），未认证请求 tenant_id 落 0——休眠策略下系统行仅在
+	// app.current_tenant 未设置时可见，语义自洽。rls_coverage_test.go 实锤拦截后补入。
+	"request_audit_logs",
 
 	// ---- G-14 补齐：组织/身份/API/流程/标签/行业包相关表 ----
 	"departments",           // 部门表（组织架构）

@@ -32,7 +32,7 @@ FAIL=0
 ok() { echo "  PASS  $1"; PASS=$((PASS + 1)); }
 bad() { echo "  FAIL  $1"; FAIL=$((FAIL + 1)); }
 
-# run_ops <backup_dir> → stdout 落在 $OUT，退出码落在 $RC
+# run_ops <backup_dir> → stdout 落在 ${OUT}，退出码落在 ${RC}
 # 刻意不带 --quiet：--quiet 会连 FAIL 明细一起吞掉（bad() 走的也是 say），
 # 而本用例断的正是"红项文案里出现了那一条判据的话术"——只拿退出码无法区分"红对了"与"红错了事"。
 OUT=""

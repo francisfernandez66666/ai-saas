@@ -8,6 +8,7 @@
 import { useEffect, useState } from 'react'
 import { useBrand } from '../lib/branding'
 import { apiJSON } from '../lib/api'
+import { useI18n } from '../i18n/useI18n'
 
 // ---- 以下为 OpenAPI 3.0 文档结构的窄类型（仅声明本页面渲染用到的字段） ----
 
@@ -71,6 +72,7 @@ function buildCurl(origin: string, base: string, path: string, method: string, o
  * 3. 端点卡片区：按 ORDER 排序逐端点渲染参数表/请求体/响应/curl
  */
 export default function ApiDocs() {
+  const { t } = useI18n()
   const brand = useBrand()
   const [spec, setSpec] = useState<Spec | null>(null)
   const [err, setErr] = useState('')
@@ -79,23 +81,23 @@ export default function ApiDocs() {
     // 规格端点返回裸 OpenAPI JSON（无 code 信封），apiJSON 只负责解析不判业务码
     apiJSON<Spec>('/api/v1/openapi/spec').then(({ res, json }) => {
       // P1-6(2026-09-20)：apiJSON 网络层失败归一为 res=null（不再 reject），res 判空先行
-      if (!res || !res.ok || !json || !json.paths) { setErr('文档规格加载失败，请刷新重试'); return }
+      if (!res || !res.ok || !json || !json.paths) { setErr(t('apiDocs.errSpec')); return }
       setSpec(json)
-    }).catch(() => setErr('网络异常，文档加载失败'))
-  }, [])
+    }).catch(() => setErr(t('apiDocs.errNetwork')))
+  }, [t])
 
   // 加载中 / 失败占位
   if (err) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa', fontFamily: '-apple-system, PingFang SC, sans-serif' }}>
-        <div style={{ textAlign: 'center', color: '#718096' }}>{err}<div style={{ marginTop: 12 }}><a href="/" style={{ color: 'var(--pri)' }}>返回首页</a></div></div>
+        <div style={{ textAlign: 'center', color: '#718096' }}>{err}<div style={{ marginTop: 12 }}><a href="/" style={{ color: 'var(--pri)' }}>{t('apiDocs.backHome')}</a></div></div>
       </div>
     )
   }
   if (!spec) {
     return (
       <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa', fontFamily: '-apple-system, PingFang SC, sans-serif', color: '#6b7280', fontSize: 14 }}>
-        文档加载中…
+        {t('apiDocs.loading')}
       </div>
     )
   }
@@ -111,22 +113,22 @@ export default function ApiDocs() {
         {/* 概览区 */}
         <h1 className="text-xl sm:text-2xl" style={{ marginBottom: 6 }}>{spec.info.title}</h1>
         <div style={{ fontSize: 13, color: '#718096', marginBottom: 16 }}>
-          版本 {spec.info.version} · 规范 OpenAPI {spec.openapi} · 基地址 <code style={{ background: '#edf2f7', padding: '1px 6px', borderRadius: 4 }}>{base}</code>
+          {t('apiDocs.metaLine', { version: spec.info.version, openapi: spec.openapi })} <code style={{ background: '#edf2f7', padding: '1px 6px', borderRadius: 4 }}>{base}</code>
         </div>
         {spec.info.description && (
           <div style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)', marginBottom: 20, fontSize: 14, lineHeight: 1.9 }}>
             {spec.info.description.split('\n\n').map((para, i) => <p key={i} style={{ margin: '0 0 8px' }}>{renderInline(para)}</p>)}
-            {scheme?.description && <p style={{ margin: '8px 0 0', color: '#4a5568' }}>{renderInline('鉴权：' + (scheme.description || ''))}</p>}
+            {scheme?.description && <p style={{ margin: '8px 0 0', color: '#4a5568' }}>{renderInline(t('apiDocs.authPrefix') + (scheme.description || ''))}</p>}
           </div>
         )}
 
         {/* 端点卡片区 */}
         {orderedPaths.map((path) => {
-          const ops = spec.paths[path] || {}
+          const ops: Record<string, SpecOp> = spec.paths[path] || {}
           return Object.keys(ops).map((method) => {
-            const op = ops[method]
-            const params = op.parameters || []
-            const bodySchema = op.requestBody?.content?.['application/json']?.schema
+            const op: SpecOp = ops[method] ?? ({} as SpecOp)
+            const params: SpecParam[] = op.parameters || []
+            const bodySchema: SpecMedia['schema'] = op.requestBody?.content?.['application/json']?.schema
             const bodyExample = op.requestBody?.content?.['application/json']?.example
             const respOk = op.responses?.['200']
             const respExample = respOk?.content?.['application/json']?.example
@@ -145,7 +147,7 @@ export default function ApiDocs() {
                 {params.length > 0 && (
                   <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13, marginTop: 14 }}>
                     <thead><tr style={{ textAlign: 'left', color: '#718096', borderBottom: '1px solid #e2e8f0' }}>
-                      <th style={{ padding: '6px 8px' }}>参数</th><th style={{ padding: '6px 8px' }}>位置</th><th style={{ padding: '6px 8px' }}>类型</th><th style={{ padding: '6px 8px' }}>必填</th><th style={{ padding: '6px 8px' }}>说明</th>
+                      <th style={{ padding: '6px 8px' }}>{t('apiDocs.colParam')}</th><th style={{ padding: '6px 8px' }}>{t('apiDocs.colIn')}</th><th style={{ padding: '6px 8px' }}>{t('apiDocs.colType')}</th><th style={{ padding: '6px 8px' }}>{t('apiDocs.colRequired')}</th><th style={{ padding: '6px 8px' }}>{t('apiDocs.colDesc')}</th>
                     </tr></thead>
                     <tbody>
                       {params.map((p) => (
@@ -153,8 +155,8 @@ export default function ApiDocs() {
                           <td style={{ padding: '6px 8px' }}><code>{p.name}</code></td>
                           <td style={{ padding: '6px 8px', color: '#718096' }}>{p.in}</td>
                           <td style={{ padding: '6px 8px', color: '#718096' }}>{p.schema?.type || '-'}</td>
-                          <td style={{ padding: '6px 8px' }}>{p.required ? '是' : '否'}</td>
-                          <td style={{ padding: '6px 8px', color: '#4a5568' }}>{p.description}{p.schema?.default !== undefined && `（默认 ${p.schema.default}）`}</td>
+                          <td style={{ padding: '6px 8px' }}>{p.required ? t('apiDocs.yes') : t('apiDocs.no')}</td>
+                          <td style={{ padding: '6px 8px', color: '#4a5568' }}>{p.description}{p.schema?.default !== undefined && t('apiDocs.defaultSuffix', { d: String(p.schema.default) })}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -164,32 +166,34 @@ export default function ApiDocs() {
                 {/* 请求体字段 */}
                 {bodySchema?.properties && (
                   <div style={{ marginTop: 14 }}>
-                    <b style={{ fontSize: 13 }}>请求体字段</b>
+                    <b style={{ fontSize: 13 }}>{t('apiDocs.bodyFields')}</b>
                     <ul style={{ margin: '8px 0', paddingLeft: 18, fontSize: 13, color: '#4a5568', lineHeight: 1.9 }}>
                       {Object.entries(bodySchema.properties).map(([k, v]) => (
-                        <li key={k}><code>{k}</code>（{v.type}{(bodySchema.required || []).includes(k) ? '，必填' : ''}）：{v.description}</li>
+                        <li key={k}><code>{k}</code>（{v.type}{(bodySchema.required || []).includes(k) ? t('apiDocs.requiredSuffix') : ''}）：{v.description}</li>
                       ))}
                     </ul>
                   </div>
                 )}
-                {bodyExample && (
+                {/* example 为 unknown（OpenAPI 任意 JSON 值）：strict 下 `unknown && jsx` 假分支是 unknown 不可赋 ReactNode，布尔化收口 */}
+                {!!bodyExample && (
                   <pre style={{ background: '#1a202c', color: '#e2e8f0', fontSize: 12, padding: 14, borderRadius: 8, overflowX: 'auto', marginTop: 8 }}>{JSON.stringify(bodyExample, null, 2)}</pre>
                 )}
 
                 {/* 响应说明 */}
-                {respOk?.description && <div style={{ fontSize: 13, marginTop: 12 }}><b>200 响应</b>　<span style={{ color: '#4a5568' }}>{renderInline(respOk.description)}</span></div>}
-                {respExample && (
+                {respOk?.description && <div style={{ fontSize: 13, marginTop: 12 }}><b>{t('apiDocs.respOk')}</b>　<span style={{ color: '#4a5568' }}>{renderInline(respOk.description)}</span></div>}
+                {/* example 为 unknown（OpenAPI 任意 JSON 值）：strict 下 `unknown && jsx` 假分支是 unknown 不可赋 ReactNode，布尔化收口 */}
+                {!!respExample && (
                   <pre style={{ background: '#1a202c', color: '#e2e8f0', fontSize: 12, padding: 14, borderRadius: 8, overflowX: 'auto', marginTop: 8 }}>{JSON.stringify(respExample, null, 2)}</pre>
                 )}
                 {others.length > 0 && (
                   <div style={{ fontSize: 12, color: '#718096', marginTop: 8 }}>
-                    其它状态码：{others.map((s) => `${s} ${op.responses?.[s]?.description || ''}`).join('；')}
+                    {t('apiDocs.otherStatus')}{others.map((s) => `${s} ${op.responses?.[s]?.description || ''}`).join('；')}
                   </div>
                 )}
 
                 {/* curl 示例 */}
                 <details style={{ marginTop: 12 }}>
-                  <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--pri)' }}>curl 调用示例</summary>
+                  <summary style={{ cursor: 'pointer', fontSize: 13, color: 'var(--pri)' }}>{t('apiDocs.curlExample')}</summary>
                   <pre style={{ background: '#1a202c', color: '#e2e8f0', fontSize: 12, padding: 14, borderRadius: 8, overflowX: 'auto', marginTop: 8, whiteSpace: 'pre-wrap' }}>
                     {buildCurl(location.origin, base, path, method, op)}
                   </pre>
@@ -201,10 +205,10 @@ export default function ApiDocs() {
 
         {/* 底部导航与页脚 */}
         <div style={{ textAlign: 'center', marginTop: 28 }}>
-          <a href="/" style={{ color: 'var(--pri)' }}>首页</a>　<a href="/pricing" style={{ color: 'var(--pri)' }}>定价</a>　<a href="/register" style={{ color: 'var(--pri)' }}>免费开通</a>
+          <a href="/" style={{ color: 'var(--pri)' }}>{t('apiDocs.navHome')}</a>　<a href="/pricing" style={{ color: 'var(--pri)' }}>{t('apiDocs.navPricing')}</a>　<a href="/register" style={{ color: 'var(--pri)' }}>{t('apiDocs.navSignup')}</a>
         </div>
         <footer style={{ textAlign: 'center', padding: 16, color: '#94a3b8', fontSize: 12, borderTop: '1px solid #e5e7eb', marginTop: 28, lineHeight: 2 }}>
-          <a href="/user-agreement" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 开放平台
+          <a href="/user-agreement" style={{ color: 'var(--pri)' }}>{t('login.userAgreement')}</a> · <a href="/privacy-policy" style={{ color: 'var(--pri)' }}>{t('login.privacyPolicy')}</a> · {t('apiDocs.footerBrand', { brand: brand.brandName })}
         </footer>
       </div>
     </div>

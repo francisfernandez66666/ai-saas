@@ -7,6 +7,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Select, Table, Tag, MessagePlugin } from 'tdesign-react'
 import { AUTH } from '../../lib/api'
+import type { I18nKey } from '../../i18n/context'
+import { useI18n } from '../../i18n/useI18n'
 import type { CellProps, TableRowData } from '../../types'
 
 // MaterialRow 素材行（对齐 model.KbFeedbackMaterial json 列；human_score/ai_score 指针列可为 null）
@@ -17,18 +19,22 @@ type MaterialRow = {
   human_score: number | null; deal_closed?: boolean
   pack_code?: string; created_at: string
 }
+// ListResp 素材池分页列表接口的响应信封：data 为素材行数组加分页信息。
 type ListResp = { code: number; data?: { list: MaterialRow[]; total: number; page: number; page_size: number } }
+// EvalResp AI 评分接口的响应信封：data 为本次评分（0-5 分）与评语。
 type EvalResp = { code: number; message?: string; data?: { score: number; note: string } }
 
-const STATUS_LABELS: Record<string, { label: string; theme: 'warning' | 'success' | 'danger' }> = {
-  pending: { label: '待处理', theme: 'warning' },
-  approved: { label: '已通过', theme: 'success' },
-  rejected: { label: '已拒绝', theme: 'danger' },
+// 状态 → 中文/配色（pending 待处理、approved 已通过、rejected 已拒绝）。
+// 模块级拿不到 t()，只存「后端值 → I18nKey」，渲染时再 t()。
+const STATUS_KEYS: Record<string, { label: I18nKey; theme: 'warning' | 'success' | 'danger' }> = {
+  pending: { label: 'super.material.stPending', theme: 'warning' },
+  approved: { label: 'super.material.stApproved', theme: 'success' },
+  rejected: { label: 'super.material.stRejected', theme: 'danger' },
 }
-const SCORE_OPTS = [1, 2, 3, 4, 5].map((n) => ({ label: String(n) + ' 分', value: n }))
 
 /** 素材审核：跨租户 KB 反馈素材池，人工评审（通过/拒绝/待处理 + 1-5 分）与 AI 评分触发。 */
 export function MaterialsTab() {
+  const { t } = useI18n()
   const [rows, setRows] = useState<MaterialRow[]>([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -37,6 +43,9 @@ export function MaterialsTab() {
   const [loading, setLoading] = useState(false)
   // 正在评审/评分的素材 id（按钮置灰防连点；AI 评分要等大模型返回）
   const [busyId, setBusyId] = useState<number | null>(null)
+
+  // 人工分下拉选项（label 需 t()，模块级常量无法调用 t，故在渲染期构建）
+  const scoreOpts = [1, 2, 3, 4, 5].map((n) => ({ label: t('super.material.scoreUnit', { n }), value: n }))
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -54,7 +63,7 @@ export function MaterialsTab() {
     setBusyId(r.id)
     const j = await AUTH<{ code: number; message?: string }>(`/api/v1/super/materials/${r.id}/review`, { method: 'POST', body })
     setBusyId(null)
-    if (j?.code === 0) { MessagePlugin.success(j.message || '已更新'); load() }
+    if (j?.code === 0) { MessagePlugin.success(j.message || t('super.material.updated')); load() }
   }
   // AI 评分：调 evals 阶段模型打 0-5 分并回写，成功后直接展示本次返回分/理由
   async function evals(r: MaterialRow) {
@@ -62,37 +71,37 @@ export function MaterialsTab() {
     const j = await AUTH<EvalResp>(`/api/v1/super/materials/${r.id}/evals`, { method: 'POST', timeoutMs: 60000 })
     setBusyId(null)
     if (j?.code === 0) {
-      MessagePlugin.success(`AI 评分 ${j.data?.score ?? '-'} 分：${j.data?.note || ''}`)
+      MessagePlugin.success(t('super.material.aiScoreNote', { score: j.data?.score ?? '-', note: j.data?.note || '' }))
       load()
     }
   }
 
   const cols = [
     { colKey: 'id', title: 'ID', width: 70 },
-    { colKey: 'tenant_id', title: '租户', width: 80, cell: (p: CellProps) => '#' + p.row.tenant_id },
-    { colKey: 'source', title: '来源', width: 80, cell: (p: CellProps) => <Tag variant="light">{p.row.source === 'human' ? '人工' : p.row.source === 'ai' ? 'AI' : p.row.source}</Tag> },
-    { colKey: 'content', title: '素材内容', width: 320, ellipsis: true },
-    { colKey: 'ai_score', title: 'AI分', width: 80, cell: (p: CellProps) => p.row.ai_score == null ? '-' : String(p.row.ai_score) },
-    { colKey: 'ai_eval_note', title: 'AI理由', width: 200, ellipsis: true, cell: (p: CellProps) => p.row.ai_eval_note || '-' },
+    { colKey: 'tenant_id', title: t('common.tenant'), width: 80, cell: (p: CellProps) => '#' + p.row.tenant_id },
+    { colKey: 'source', title: t('common.source'), width: 80, cell: (p: CellProps) => <Tag variant="light">{p.row.source === 'human' ? t('super.material.srcHuman') : p.row.source === 'ai' ? t('super.material.srcAi') : p.row.source}</Tag> },
+    { colKey: 'content', title: t('super.material.colContent'), width: 320, ellipsis: true },
+    { colKey: 'ai_score', title: t('super.material.colAiScore'), width: 80, cell: (p: CellProps) => p.row.ai_score == null ? '-' : String(p.row.ai_score) },
+    { colKey: 'ai_eval_note', title: t('super.material.colAiReason'), width: 200, ellipsis: true, cell: (p: CellProps) => p.row.ai_eval_note || '-' },
     {
-      colKey: 'human_score', title: '人工分', width: 120, cell: (p: CellProps) => (
+      colKey: 'human_score', title: t('super.material.colHumanScore'), width: 120, cell: (p: CellProps) => (
         // review 端点只在 human_score 非空时更新该列（无清除语义），故 clearable 置空时不发请求
-        <Select size="small" value={p.row.human_score ?? undefined} options={SCORE_OPTS}
-          placeholder="未评" style={{ width: 100 }}
+        <Select size="small" value={p.row.human_score ?? undefined} options={scoreOpts}
+          placeholder={t('super.material.scorePlaceholder')} style={{ width: 100 }}
           onChange={(v) => { const r = p.row as MaterialRow; if (v != null) review(r, { status: r.status, human_score: v }) }} />
       ),
     },
-    { colKey: 'status', title: '状态', width: 90, cell: (p: CellProps) => { const m = STATUS_LABELS[String(p.row.status)] || { label: p.row.status as string, theme: 'warning' as const }; return <Tag theme={m.theme}>{m.label}</Tag> } },
-    { colKey: 'created_at', title: '采集时间', width: 160, cell: (p: CellProps) => String(p.row.created_at || '').slice(0, 19).replace('T', ' ') || '-' },
+    { colKey: 'status', title: t('common.status'), width: 90, cell: (p: CellProps) => { const m = STATUS_KEYS[String(p.row.status)] || { label: p.row.status as I18nKey, theme: 'warning' as const }; return <Tag theme={m.theme}>{t(m.label)}</Tag> } },
+    { colKey: 'created_at', title: t('super.material.colCollected'), width: 160, cell: (p: CellProps) => String(p.row.created_at || '').slice(0, 19).replace('T', ' ') || '-' },
     {
-      colKey: 'op', title: '操作', width: 230, cell: (p: CellProps) => {
+      colKey: 'op', title: t('super.material.colOp'), width: 230, cell: (p: CellProps) => {
         const r = p.row as MaterialRow
         return (
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            <Button size="small" theme="success" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'approved' })}>通过</Button>
-            <Button size="small" theme="danger" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'rejected' })}>拒绝</Button>
-            <Button size="small" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'pending' })}>待处理</Button>
-            <Button size="small" theme="primary" loading={busyId === r.id} disabled={busyId !== null && busyId !== r.id} onClick={() => evals(r)}>AI评分</Button>
+            <Button size="small" theme="success" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'approved' })}>{t('super.material.approve')}</Button>
+            <Button size="small" theme="danger" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'rejected' })}>{t('super.material.reject')}</Button>
+            <Button size="small" variant="outline" disabled={busyId !== null} onClick={() => review(r, { status: 'pending' })}>{t('super.material.stPending')}</Button>
+            <Button size="small" theme="primary" loading={busyId === r.id} disabled={busyId !== null && busyId !== r.id} onClick={() => evals(r)}>{t('super.material.aiScore')}</Button>
           </div>
         )
       },
@@ -102,19 +111,19 @@ export function MaterialsTab() {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0 }}>素材审核</h2>
+        <h2 style={{ margin: 0 }}>{t('super.material.title')}</h2>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Select value={status} options={[{ label: '全部状态', value: '' }, ...Object.entries(STATUS_LABELS).map(([k, v]) => ({ label: v.label, value: k }))]} onChange={(v) => { setStatus(v as string); setPage(1) }} style={{ width: 130 }} />
-          <Select value={source} options={[{ label: '全部来源', value: '' }, { label: 'AI 回复', value: 'ai' }, { label: '人工回复', value: 'human' }]} onChange={(v) => { setSource(v as string); setPage(1) }} style={{ width: 130 }} />
-          <Button theme="primary" variant="outline" onClick={load} loading={loading}>刷新</Button>
+          <Select value={status} options={[{ label: t('super.material.allStatus'), value: '' }, ...Object.entries(STATUS_KEYS).map(([k, v]) => ({ label: t(v.label), value: k }))]} onChange={(v) => { setStatus(v as string); setPage(1) }} style={{ width: 130 }} />
+          <Select value={source} options={[{ label: t('super.material.allSource'), value: '' }, { label: t('super.material.srcAiReply'), value: 'ai' }, { label: t('super.material.srcHumanReply'), value: 'human' }]} onChange={(v) => { setSource(v as string); setPage(1) }} style={{ width: 130 }} />
+          <Button theme="primary" variant="outline" onClick={load} loading={loading}>{t('super.material.refresh')}</Button>
         </div>
       </div>
       <div className="overflow-x-auto">
         <Table rowKey="id" data={rows as unknown as TableRowData[]} columns={cols} size="small" loading={loading}
-          empty="暂无素材" pagination={{ current: page, pageSize: 20, total, onChange: (p: { current?: number }) => setPage(p.current || 1) }} />
+          empty={t('super.material.empty')} pagination={{ current: page, pageSize: 20, total, onChange: (p: { current?: number }) => setPage(p.current || 1) }} />
       </div>
       <p style={{ fontSize: 12, color: '#718096', marginTop: 12 }}>
-        素材池来自对话链路自动采集（AI 高钩子回复/人工优秀回复）。通过=进 KB 候选，拒绝=淘汰；AI 评分调 evals 阶段模型按口语自然度/需求针对性/推进有效性打 0-5 分，人工分（1-5）覆盖评审口径。
+        {t('super.material.footNote')}
       </p>
     </div>
   )

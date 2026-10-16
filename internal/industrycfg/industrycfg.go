@@ -215,6 +215,7 @@ func BoundPackCodes(tenantID uint) []string {
 // packBindCache 租户绑定包 code 短TTL缓存（P2-51）
 const packBindCacheTTL = 30 * time.Second
 
+// packBindCacheEntry 租户绑定包缓存项：包 code 列表 + 过期时刻（TTL 见 packBindCacheTTL）。
 type packBindCacheEntry struct {
 	codes    []string
 	expireAt time.Time

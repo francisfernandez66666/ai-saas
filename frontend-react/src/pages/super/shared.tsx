@@ -2,31 +2,32 @@
 // 背景：原 pages/SuperAdmin.tsx 单文件 40,276 字节（14 个菜单视图挤在一个组件里），
 // 拆成 per-view Tab 组件后，常量、行类型与通用容器被多方共用，抽到此处避免子组件互引成环。
 import { Input } from 'tdesign-react'
+import type { I18nKey } from '../../i18n/context'
 
-// FB_TYPES 反馈类型码 → 中文名（反馈列表列渲染）
-export const FB_TYPES: Record<string, string> = { ai_reply: 'AI话术', feature: '功能建议', rating: '满意度', other: '其他', client_error: '前端异常' }
-// TYPE_NAMES 商业包类型码 → 中文名（包管理列表列渲染）
-export const TYPE_NAMES: Record<string, string> = { free: '试用', paid: '包月', increment: '增量买断' }
-// AG_TYPES 协议类型码 → 中文名（协议签署列表列渲染）
-export const AG_TYPES: Record<string, string> = { user: '用户协议', privacy: '隐私政策' }
+// FB_TYPES 反馈类型码 → i18n 键（反馈列表列渲染，渲染层再 t()）
+export const FB_TYPES: Record<string, I18nKey> = { ai_reply: 'super.shared.fbAiReply', feature: 'super.shared.fbFeature', rating: 'super.shared.fbRating', other: 'super.shared.fbOther', client_error: 'super.shared.fbClientError' }
+// TYPE_NAMES 商业包类型码 → i18n 键（包管理列表列渲染）
+export const TYPE_NAMES: Record<string, I18nKey> = { free: 'super.shared.typeFree', paid: 'super.shared.typePaid', increment: 'super.shared.typeIncrement' }
+// AG_TYPES 协议类型码 → i18n 键（协议签署列表列渲染）
+export const AG_TYPES: Record<string, I18nKey> = { user: 'super.shared.agUser', privacy: 'super.shared.agPrivacy' }
 
 // P1-10(2026-09-20)：平台管理菜单单一数据源——桌面 Aside Menu 与窄屏顶栏下拉共用，防两处漂移
-export const SUPER_MENUS: { k: string; label: string }[] = [
-  { k: 'tenants', label: '租户管理' },
-  { k: 'packages', label: 'AI 商业包' },
-  { k: 'industry_packs', label: '行业包管理' }, // 区别于 AI 商业包 packages，此处是行业包 .aipack 目录
-  { k: 'pack_quality', label: '包质量' },
-  { k: 'cost', label: '模型成本核算' },
-  { k: 'feedbacks', label: '用户反馈' },
-  { k: 'materials', label: '素材审核' }, // P1-9：KB 素材池人工评审（通过/拒绝/AI评分）
-  { k: 'pending', label: '待确认收款' },
-  { k: 'invoices', label: '发票受理' }, // requested→issued/voided 人工闭环
-  { k: 'refunds', label: '退款受理' }, // B7 退款平台审批位（执行/驳回）
-  { k: 'dunning', label: '欠费催缴' }, // D3 dunning：到期催缴序列队列（再催/关闭）
-  { k: 'audit', label: '审计日志' },
-  { k: 'agreements', label: '协议签署' },
-  { k: 'branding', label: '品牌定制（白标）' },
-  { k: 'monitor', label: '平台健康监控' },
+export const SUPER_MENUS: { k: string; label: I18nKey }[] = [
+  { k: 'tenants', label: 'super.shared.menuTenants' },
+  { k: 'packages', label: 'super.shared.menuPackages' },
+  { k: 'industry_packs', label: 'super.shared.menuIndustryPacks' }, // 区别于 AI 商业包 packages，此处是行业包 .aipack 目录
+  { k: 'pack_quality', label: 'super.shared.menuPackQuality' },
+  { k: 'cost', label: 'super.shared.menuCost' },
+  { k: 'feedbacks', label: 'super.shared.menuFeedbacks' },
+  { k: 'materials', label: 'super.shared.menuMaterials' }, // P1-9：KB 素材池人工评审（通过/拒绝/AI评分）
+  { k: 'pending', label: 'super.shared.menuPending' },
+  { k: 'invoices', label: 'super.shared.menuInvoices' }, // requested→issued/voided 人工闭环
+  { k: 'refunds', label: 'super.shared.menuRefunds' }, // B7 退款平台审批位（执行/驳回）
+  { k: 'dunning', label: 'super.shared.menuDunning' }, // D3 dunning：到期催缴序列队列（再催/关闭）
+  { k: 'audit', label: 'super.shared.menuAudit' },
+  { k: 'agreements', label: 'super.shared.menuAgreements' },
+  { k: 'branding', label: 'super.shared.menuBranding' },
+  { k: 'monitor', label: 'super.shared.menuMonitor' },
 ]
 
 // 租户摘要行（超管租户列表）

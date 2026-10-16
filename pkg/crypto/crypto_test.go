@@ -9,6 +9,7 @@ import (
 
 const testKey = "unit-test-secret-key-32-chars!!!!!" // 仅测试用（≥16 字符门槛）
 
+// setKey 临时改 JWT_SECRET 环境变量并在用例结束恢复原值，供密钥相关用例控密。
 func setKey(t *testing.T, v string) {
 	t.Helper()
 	old, had := os.LookupEnv("JWT_SECRET")

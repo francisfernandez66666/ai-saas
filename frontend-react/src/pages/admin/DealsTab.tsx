@@ -9,6 +9,8 @@
 //  3. **金额只在输入框里是元，中间步骤全是分**。报价是钱，任何一次浮点往返都可能
 //     让 0.1+0.2 变成 0.30000000000000004 落进库；合计更是**只读服务端返回值**，
 //     前端算的那份不作数（后端按明细重算，两边不一致时以库为准）。
+//  P2-14：界面文案走 t()（deals.* 命名空间），后端口径字符串（drill_filter / stage_name /
+//  filter_labels / lost_reasons / quote_statuses / sources / note / label 等）是数据，不在此迁移。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Input, MessagePlugin, Select, Table, Tag, Textarea } from 'tdesign-react'
 // 金额换算与原因码文案都在 lib 里（见 ../../lib/money、../../lib/dealReasons）：
@@ -16,11 +18,13 @@ import { Button, Dialog, Input, MessagePlugin, Select, Table, Tag, Textarea } fr
 import { AUTH } from '../../lib/api'
 import { fenToYuan, fenToYuanInput, yuanToFen } from '../../lib/money'
 import { dealReasonText } from '../../lib/dealReasons'
+import { useI18n } from '../../i18n/useI18n'
 import type {
   DealBoardResp, DealConfig, DealDetailResp, DealDrillResp, DealQuoteDetail,
   DealQuoteResp, DealRow,
 } from '../../types'
 
+// ApiResp 本文件接口调用的标准信封：code/message 为状态位，reason 为稳定原因码，data 为业务负载。
 type ApiResp<T> = { code: number; message?: string; reason?: string; data?: T }
 
 /** 一个可下钻的格子：filter 直接用后端下发的 drill_filter，label 用后端下发的中文名。 */
@@ -29,10 +33,9 @@ type Cell = { filter: string; label: string; count: number; amount_cents: number
 /** 打开商机详情的入口参数（从看板格子或列表行都能触发）。 */
 type OpenDeal = { id: number; title: string }
 
-const DAYS_OPTIONS = [7, 30, 90, 365].map((d) => ({ label: `近 ${d} 天`, value: String(d) }))
-
 /** 商机管道 Tab 主体：看板格子 → 下钻名单 → 建单 / 推进 / 报价。 */
 export function DealsTab() {
+  const { t } = useI18n()
   const [board, setBoard] = useState<DealBoardResp | null>(null)
   const [days, setDays] = useState('30')
   const [stuckDays, setStuckDays] = useState('7')
@@ -46,12 +49,15 @@ export function DealsTab() {
   // 阶段名/分组名/流失原因/报价状态全部从这份 config 取，前端不另写枚举
   const cfg: DealConfig | null = board?.config ?? null
 
+  const daysOptions = [7, 30, 90, 365].map((d) => ({ label: t('deals.daysOption', { d }), value: String(d) }))
+  const stuckOptions = [3, 7, 14, 30].map((d) => ({ label: t('deals.stuckOption', { d }), value: String(d) }))
+
   const load = useCallback(async () => {
     const j = (await AUTH(`/api/v1/admin/deals/board?days=${days}&stuck_days=${stuckDays}`)) as ApiResp<DealBoardResp> | null
     if (j?.code === 0) setBoard(j.data ?? null)
-    else MessagePlugin.error(j?.message || '商机看板加载失败')
+    else MessagePlugin.error(j?.message || t('deals.boardLoadFailed'))
     setLoading(false)
-  }, [days, stuckDays])
+  }, [days, stuckDays, t])
 
   useEffect(() => { void (async () => { await load() })() }, [load])
 
@@ -60,10 +66,10 @@ export function DealsTab() {
 
   /** 看板 4 个分组格（在途/停滞/赢单/输单），filter 与金额都由后端算好直出。 */
   const groupCells: Cell[] = board ? [
-    { filter: 'open', label: cfg?.filter_labels?.open || '在途', count: board.open_count, amount_cents: board.open_amount_cents },
-    { filter: 'stuck', label: cfg?.filter_labels?.stuck || '停滞', count: board.stuck_count, amount_cents: board.stuck_amount_cents },
-    { filter: 'won', label: cfg?.filter_labels?.won || '赢单', count: board.won_count, amount_cents: board.won_amount_cents },
-    { filter: 'lost', label: cfg?.filter_labels?.lost || '输单', count: board.lost_count, amount_cents: 0 },
+    { filter: 'open', label: cfg?.filter_labels?.open || t('deals.groupOpen'), count: board.open_count, amount_cents: board.open_amount_cents },
+    { filter: 'stuck', label: cfg?.filter_labels?.stuck || t('deals.groupStuck'), count: board.stuck_count, amount_cents: board.stuck_amount_cents },
+    { filter: 'won', label: cfg?.filter_labels?.won || t('deals.groupWon'), count: board.won_count, amount_cents: board.won_amount_cents },
+    { filter: 'lost', label: cfg?.filter_labels?.lost || t('deals.groupLost'), count: board.lost_count, amount_cents: 0 },
   ] : []
 
   /** 看板 6 个阶段格：后端已把 won/lost 排在阶段序列末尾，drill_filter 原样带。 */
@@ -75,28 +81,25 @@ export function DealsTab() {
     <div className="space-y-4">
       <div className="bg-white rounded-lg shadow-sm p-4 space-y-3">
         <div className="text-[13px] text-gray-500">
-          一个客户同时只能有一张在途商机；<strong>成交或流失后这单就定版</strong>，
-          再跟是开新单，不改历史。报价发出去即锁死，要调价就出新版——报价单是客户手里的承诺凭证，
-          改已发出的那张等于伪造。
+          {t('deals.boardHintA')}<strong>{t('deals.boardHintStrong')}</strong>{t('deals.boardHintB')}
         </div>
         <div className="flex flex-wrap gap-2 items-center">
-          <Select value={days} onChange={(v) => { setDays(String(v)); setCell(null) }} options={DAYS_OPTIONS} style={{ width: 120 }} size="small" />
-          <span className="text-xs text-gray-500">停滞阈值</span>
+          <Select value={days} onChange={(v) => { setDays(String(v)); setCell(null) }} options={daysOptions} style={{ width: 120 }} size="small" />
+          <span className="text-xs text-gray-500">{t('deals.lblStuckThreshold')}</span>
           <Select value={stuckDays} onChange={(v) => { setStuckDays(String(v)); setCell(null) }}
-            options={[3, 7, 14, 30].map((d) => ({ label: `${d} 天未动`, value: String(d) }))} style={{ width: 130 }} size="small" />
-          <Button theme="default" variant="outline" onClick={reload} disabled={loading}>{loading ? '加载中…' : '刷新'}</Button>
-          <Button theme="primary" onClick={() => setCreateOpen(true)}>+ 新建商机</Button>
+            options={stuckOptions} style={{ width: 130 }} size="small" />
+          <Button theme="default" variant="outline" onClick={reload} disabled={loading}>{loading ? t('deals.loading') : t('crud.refresh')}</Button>
+          <Button theme="primary" onClick={() => setCreateOpen(true)}>{t('deals.newDealButton')}</Button>
           {board && (
             <span className="text-xs text-gray-500">
-              赢单率 <strong>{board.win_rate_pct}%</strong>
-              <span className="text-gray-400">（分母只算已终局的 {board.won_count + board.lost_count} 单）</span>
+              {t('deals.winRate')} <strong>{board.win_rate_pct}%</strong>
+              <span className="text-gray-400">{t('deals.winRateDenominator', { n: board.won_count + board.lost_count })}</span>
             </span>
           )}
         </div>
         {board?.truncated && (
           <div className="text-[13px] text-orange-700 bg-orange-50 border border-orange-200 rounded px-3 py-2">
-            单量超出一次扫描上限，<strong>下面的数字比真实值小</strong>（后端如实标注，不静默少算）。
-            请缩小时间窗再看，或走「导出」拿全量。
+            {t('deals.truncatedHintA')}<strong>{t('deals.truncatedHintStrong')}</strong>{t('deals.truncatedHintB')}
           </div>
         )}
         {board?.note && <div className="text-xs text-gray-400">{board.note}</div>}
@@ -104,11 +107,11 @@ export function DealsTab() {
 
       {board && (
         <div className="bg-white rounded-lg shadow-sm p-4 space-y-3">
-          <div className="text-[13px] text-gray-500">分组（点一格看是哪些客户，名单条数与格子数字必然相同）</div>
+          <div className="text-[13px] text-gray-500">{t('deals.groupHint')}</div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             {groupCells.map((c) => <BoardCell key={c.filter} cell={c} active={cell?.filter === c.filter} onPick={setCell} />)}
           </div>
-          <div className="text-[13px] text-gray-500 pt-2">按阶段</div>
+          <div className="text-[13px] text-gray-500 pt-2">{t('deals.byStage')}</div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             {stageCells.map((c) => <BoardCell key={c.filter} cell={c} active={cell?.filter === c.filter} onPick={setCell} />)}
           </div>
@@ -120,7 +123,7 @@ export function DealsTab() {
             onBack={() => setCell(null)} onOpen={(d) => setOpenDeal(d)} />
         : (
           <div className="bg-white rounded-lg shadow-sm p-6 text-[13px] text-gray-400">
-            点上面任意一格，这里就展开对应的客户名单。
+            {t('deals.pickCellHint')}
           </div>
         )}
 
@@ -150,6 +153,7 @@ function BoardCell({ cell, active, onPick }: { cell: Cell; active: boolean; onPi
 function DealDrill({ cell, days, stuckDays, onBack, onOpen }: {
   cell: Cell; days: number; stuckDays: number; onBack: () => void; onOpen: (d: OpenDeal) => void
 }) {
+  const { t } = useI18n()
   const [data, setData] = useState<DealDrillResp | null>(null)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
@@ -159,10 +163,10 @@ function DealDrill({ cell, days, stuckDays, onBack, onOpen }: {
     void (async () => {
       const j = (await AUTH(`/api/v1/admin/deals?filter=${encodeURIComponent(cell.filter)}&days=${days}&stuck_days=${stuckDays}&page=${page}&page_size=20`)) as ApiResp<DealDrillResp> | null
       if (j?.code === 0) setData(j.data ?? null)
-      else MessagePlugin.error(j?.message || '商机名单读取失败')
+      else MessagePlugin.error(j?.message || t('deals.drillLoadFailed'))
       setLoading(false)
     })()
-  }, [cell.filter, days, stuckDays, page])
+  }, [cell.filter, days, stuckDays, page, t])
 
   const goto = (p: number) => { setLoading(true); setPage(p) }
 
@@ -173,19 +177,19 @@ function DealDrill({ cell, days, stuckDays, onBack, onOpen }: {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="text-[13px]">
           <strong>{cell.label}</strong>
-          <span className="text-gray-500"> · 近 {days} 天 · 停滞阈值 {stuckDays} 天 </span>
-          {data ? <>共 <strong data-testid="deal-drill-total">{data.total}</strong> 张商机（{data.label}）</> : <span className="text-gray-400">加载中…</span>}
+          <span className="text-gray-500"> {t('deals.drillMeta', { days, stuckDays })} </span>
+          {data ? <>{t('deals.totalLabel')} <strong data-testid="deal-drill-total">{data.total}</strong>{t('deals.drillTotal', { label: data.label })}</> : <span className="text-gray-400">{t('deals.loading')}</span>}
         </div>
-        <Button size="small" variant="outline" onClick={onBack}>返回看板</Button>
+        <Button size="small" variant="outline" onClick={onBack}>{t('deals.backToBoard')}</Button>
       </div>
-      {data?.truncated && <div className="text-xs text-orange-700">单量超出扫描上限，此处数字偏小（后端如实标注）。</div>}
+      {data?.truncated && <div className="text-xs text-orange-700">{t('deals.drillTruncated')}</div>}
       {data?.note && <div className="text-xs text-gray-400">{data.note}</div>}
-      <Table rowKey="id" data={data?.list || []} columns={cols} size="small" loading={loading} empty="这一格还没有商机" />
+      <Table rowKey="id" data={data?.list || []} columns={cols} size="small" loading={loading} empty={t('deals.emptyCell')} />
       {data && (
         <div className="flex items-center gap-3 text-xs text-gray-500">
-          <Button size="small" variant="text" disabled={page <= 1} onClick={() => goto(page - 1)}>上一页</Button>
-          <span>第 {page} 页 / 共 {Math.max(1, Math.ceil(data.total / data.page_size))} 页</span>
-          <Button size="small" variant="text" disabled={page * data.page_size >= data.total} onClick={() => goto(page + 1)}>下一页</Button>
+          <Button size="small" variant="text" disabled={page <= 1} onClick={() => goto(page - 1)}>{t('deals.prevPage')}</Button>
+          <span>{t('deals.pageMeta', { page, total: Math.max(1, Math.ceil(data.total / data.page_size)) })}</span>
+          <Button size="small" variant="text" disabled={page * data.page_size >= data.total} onClick={() => goto(page + 1)}>{t('deals.nextPage')}</Button>
         </div>
       )}
     </div>
@@ -194,32 +198,33 @@ function DealDrill({ cell, days, stuckDays, onBack, onOpen }: {
 
 /** 商机列表列定义（看板下钻名单与建单后的回读共用一套，避免两处表头漂移）。 */
 function DealListColumns(onOpen: (d: OpenDeal) => void) {
+  const { t } = useI18n()
   return [
-    { colKey: 'customer_name', title: '客户', width: 150, cell: (p: { row: DealRow }) => (
+    { colKey: 'customer_name', title: t('deals.colCustomer'), width: 150, cell: (p: { row: DealRow }) => (
       <div>
-        <div className="text-[13px]">{p.row.customer_name || `客户 #${p.row.customer_id}`}</div>
+        <div className="text-[13px]">{p.row.customer_name || t('deals.customerFallback', { id: p.row.customer_id })}</div>
         <div className="text-[11px] text-gray-400">{p.row.customer_phone || p.row.source_code || ''}</div>
       </div>
     ) },
-    { colKey: 'title', title: '商机', width: 170, cell: (p: { row: DealRow }) => (
+    { colKey: 'title', title: t('deals.colDeal'), width: 170, cell: (p: { row: DealRow }) => (
       <Button variant="text" size="small" className="!px-0 text-left" onClick={() => onOpen({ id: p.row.id, title: p.row.title })}>{p.row.title}</Button>
     ) },
-    { colKey: 'stage_name', title: '阶段', width: 100, cell: (p: { row: DealRow }) => (
+    { colKey: 'stage_name', title: t('deals.colStage'), width: 100, cell: (p: { row: DealRow }) => (
       <Tag variant="light" theme={p.row.stage === 'won' ? 'success' : p.row.stage === 'lost' ? 'danger' : 'primary'}>{p.row.stage_name}</Tag>
     ) },
-    { colKey: 'amount_cents', title: '金额(元)', width: 120, cell: (p: { row: DealRow }) => (
+    { colKey: 'amount_cents', title: t('deals.colAmount'), width: 120, cell: (p: { row: DealRow }) => (
       <span className="text-[13px] tabular-nums">{fenToYuan(p.row.amount_cents)}</span>
     ) },
-    { colKey: 'stalled_days', title: '停滞', width: 80, cell: (p: { row: DealRow }) => (
+    { colKey: 'stalled_days', title: t('deals.colStalled'), width: 80, cell: (p: { row: DealRow }) => (
       p.row.stage === 'won' || p.row.stage === 'lost' ? <span className="text-[12px] text-gray-400">—</span>
-        : <span className={`text-[13px] ${p.row.stalled_days >= 7 ? 'text-orange-600' : ''}`}>{p.row.stalled_days} 天</span>
+        : <span className={`text-[13px] ${p.row.stalled_days >= 7 ? 'text-orange-600' : ''}`}>{t('deals.dayUnit', { n: p.row.stalled_days })}</span>
     ) },
-    { colKey: 'quote_count', title: '报价', width: 90, cell: (p: { row: DealRow }) => (
-      <span className="text-[13px]">{p.row.quote_count} 版{p.row.open_quote ? <span className="text-gray-400">（{p.row.open_quote.status_name}）</span> : null}</span>
+    { colKey: 'quote_count', title: t('deals.colQuote'), width: 90, cell: (p: { row: DealRow }) => (
+      <span className="text-[13px]">{p.row.quote_count} {t('deals.quoteVersionUnit')}{p.row.open_quote ? <span className="text-gray-400">（{p.row.open_quote.status_name}）</span> : null}</span>
     ) },
-    { colKey: 'owner_name', title: '归属', width: 100, cell: (p: { row: DealRow }) => p.row.owner_name || <span className="text-gray-400">未分配</span> },
-    { colKey: 'op', title: '操作', width: 90, cell: (p: { row: DealRow }) => (
-      <Button size="small" variant="text" onClick={() => onOpen({ id: p.row.id, title: p.row.title })}>详情</Button>
+    { colKey: 'owner_name', title: t('deals.colOwner'), width: 100, cell: (p: { row: DealRow }) => p.row.owner_name || <span className="text-gray-400">{t('deals.unassigned')}</span> },
+    { colKey: 'op', title: t('deals.colActions'), width: 90, cell: (p: { row: DealRow }) => (
+      <Button size="small" variant="text" onClick={() => onOpen({ id: p.row.id, title: p.row.title })}>{t('deals.detail')}</Button>
     ) },
   ]
 }
@@ -233,6 +238,7 @@ function emptyDealForm() {
 function CreateDealDialog({ cfg, onClose, onDone, onOpen }: {
   cfg: DealConfig; onClose: () => void; onDone: () => void; onOpen: (d: OpenDeal) => void
 }) {
+  const { t } = useI18n()
   const [form, setForm] = useState(emptyDealForm())
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -242,10 +248,10 @@ function CreateDealDialog({ cfg, onClose, onDone, onOpen }: {
 
   async function submit() {
     const cid = Number(form.customer_id.trim())
-    if (!Number.isInteger(cid) || cid <= 0) { setErr('请填写正确的客户 ID（正整数）'); return }
+    if (!Number.isInteger(cid) || cid <= 0) { setErr(t('deals.errCustomerId')); return }
     const amount = form.amount_yuan.trim() === '' ? 0 : yuanToFen(form.amount_yuan)
-    if (amount === null) { setErr('金额格式不对：最多两位小数，别带单位'); return }
-    if (amount > cfg.max_amount_cents) { setErr(`金额超出允许上限（¥ ${fenToYuan(cfg.max_amount_cents)}）`); return }
+    if (amount === null) { setErr(t('deals.errAmountFmt')); return }
+    if (amount > cfg.max_amount_cents) { setErr(t('deals.errAmountOver', { max: fenToYuan(cfg.max_amount_cents) })); return }
     setBusy(true)
     setErr('')
     const j = (await AUTH('/api/v1/admin/deals', {
@@ -257,56 +263,56 @@ function CreateDealDialog({ cfg, onClose, onDone, onOpen }: {
     })) as ApiResp<{ deal: DealRow }> | null
     setBusy(false)
     if (j?.code !== 0) {
-      const text = dealReasonText(j?.reason, j?.message || '建单失败')
+      const text = dealReasonText(j?.reason, j?.message || t('deals.createFailed'))
       // 已有在途单不该让用户再撞一次：直接把原单开出来
       if (j?.reason === 'deal_already_open') { MessagePlugin.warning(text); onDone(); return }
       setErr(text)
       return
     }
-    MessagePlugin.success('商机已创建')
+    MessagePlugin.success(t('deals.created'))
     const d = j.data?.deal
     onDone()
     if (d) onOpen({ id: d.id, title: d.title })
   }
 
   return (
-    <Dialog header="新建商机" visible onClose={onClose} onConfirm={() => void submit()}
-      confirmBtn={busy ? '提交中…' : '创建'} width="560px">
+    <Dialog header={t('deals.newDeal')} visible onClose={onClose} onConfirm={() => void submit()}
+      confirmBtn={busy ? t('deals.submitting') : t('deals.create')} width="560px">
       <div className="space-y-3">
         <div>
-          <label className="block text-xs text-gray-500 mb-1">客户 ID（必填，一个客户同时只能有一张在途单）</label>
-          <Input value={form.customer_id} onChange={(v) => setForm({ ...form, customer_id: String(v) })} placeholder="如 1024" />
+          <label className="block text-xs text-gray-500 mb-1">{t('deals.lblCustomerId')}</label>
+          <Input value={form.customer_id} onChange={(v) => setForm({ ...form, customer_id: String(v) })} placeholder={t('deals.phCustomerId')} />
         </div>
         <div>
-          <label className="block text-xs text-gray-500 mb-1">商机标题（如「极石 01 四驱版 · 置换」）</label>
-          <Input value={form.title} onChange={(v) => setForm({ ...form, title: String(v) })} maxlength={80} placeholder="给复盘时看的名字" />
+          <label className="block text-xs text-gray-500 mb-1">{t('deals.lblDealTitle')}</label>
+          <Input value={form.title} onChange={(v) => setForm({ ...form, title: String(v) })} maxlength={80} placeholder={t('deals.phDealTitle')} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">起始阶段</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblStartStage')}</label>
             <Select value={form.stage} onChange={(v) => setForm({ ...form, stage: String(v) })} style={{ width: '100%' }}
               options={openStages.map((s) => ({ label: cfg.stage_names[s] || s, value: s }))} />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">金额（元，可留空）</label>
-            <Input value={form.amount_yuan} onChange={(v) => setForm({ ...form, amount_yuan: String(v) })} placeholder="还没谈到钱就空着" />
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblAmount')}</label>
+            <Input value={form.amount_yuan} onChange={(v) => setForm({ ...form, amount_yuan: String(v) })} placeholder={t('deals.phAmount')} />
           </div>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">来源</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblSource')}</label>
             <Select value={form.source} onChange={(v) => setForm({ ...form, source: String(v) })} style={{ width: '100%' }}
               options={cfg.sources.map((s) => ({ label: s, value: s }))} />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">预计成交日（可选）</label>
-            <input type="date" aria-label="预计成交日" value={form.expected_close_at} className="w-full px-3 py-2 border rounded-lg text-sm"
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblExpectedClose')}</label>
+            <input type="date" aria-label={t('deals.lblExpectedClose')} value={form.expected_close_at} className="w-full px-3 py-2 border rounded-lg text-sm"
               onChange={(e) => setForm({ ...form, expected_close_at: e.target.value })} />
           </div>
         </div>
         {err && <div className="text-[13px] text-red-600">{err}</div>}
         <p className="text-xs text-gray-400">
-          成交与流失只能在单子上「推进」得出：标成交必须带金额，标流失必须选原因——不然月底这张表说不清钱从哪来、单为什么丢。
+          {t('deals.createHint')}
         </p>
       </div>
     </Dialog>
@@ -322,6 +328,7 @@ function CreateDealDialog({ cfg, onClose, onDone, onOpen }: {
 function DealDetailDialog({ id, title, cfg, onClose, onChanged }: {
   id: number; title: string; cfg: DealConfig; onClose: () => void; onChanged: () => void
 }) {
+  const { t } = useI18n()
   const [detail, setDetail] = useState<DealDetailResp | null>(null)
   const [loading, setLoading] = useState(true)
   const [err, setErr] = useState('')
@@ -332,9 +339,9 @@ function DealDetailDialog({ id, title, cfg, onClose, onChanged }: {
   const reload = useCallback(async () => {
     const j = (await AUTH(`/api/v1/admin/deals/${id}`)) as ApiResp<DealDetailResp> | null
     if (j?.code === 0) setDetail(j.data ?? null)
-    else setErr(dealReasonText(j?.reason, j?.message || '商机详情读取失败'))
+    else setErr(dealReasonText(j?.reason, j?.message || t('deals.detailLoadFailed')))
     setLoading(false)
-  }, [id])
+  }, [id, t])
 
   useEffect(() => { void (async () => { setLoading(true); setErr(''); await reload() })() }, [reload])
 
@@ -345,7 +352,7 @@ function DealDetailDialog({ id, title, cfg, onClose, onChanged }: {
   async function act(path: string, init: Parameters<typeof AUTH>[1], okText: string): Promise<boolean> {
     setErr('')
     const j = (await AUTH(path, init)) as ApiResp<unknown> | null
-    if (j?.code !== 0) { setErr(dealReasonText(j?.reason, j?.message || '操作未完成')); return false }
+    if (j?.code !== 0) { setErr(dealReasonText(j?.reason, j?.message || t('deals.opIncomplete'))); return false }
     MessagePlugin.success(okText)
     await reload()
     onChanged()
@@ -353,68 +360,67 @@ function DealDetailDialog({ id, title, cfg, onClose, onChanged }: {
   }
 
   return (
-    <Dialog header={`商机详情 · ${deal?.title || title}`} visible onClose={onClose} footer={
-      <div className="flex justify-end"><Button theme="default" variant="outline" onClick={onClose}>关闭</Button></div>
+    <Dialog header={t('deals.detailTitle', { title: deal?.title || title })} visible onClose={onClose} footer={
+      <div className="flex justify-end"><Button theme="default" variant="outline" onClick={onClose}>{t('deals.close')}</Button></div>
     } width="860px">
-      {loading && <div className="py-10 text-center text-[13px] text-gray-400">加载中…</div>}
-      {!loading && !deal && <div className="py-10 text-center text-[13px] text-red-600">{err || '商机不存在或无权查看'}</div>}
+      {loading && <div className="py-10 text-center text-[13px] text-gray-400">{t('deals.loading')}</div>}
+      {!loading && !deal && <div className="py-10 text-center text-[13px] text-red-600">{err || t('deals.notFoundOrForbidden')}</div>}
       {deal && (
         <div className="space-y-4">
           {err && <div className="text-[13px] text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{err}</div>}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-[13px]">
-            <Field label="客户" value={deal.customer_name || `#${deal.customer_id}`} />
-            <Field label="归属顾问" value={deal.owner_name || '未分配'} />
-            <Field label="当前阶段" value={`${deal.stage_name}${closed ? '（已定版）' : ` · 停滞 ${deal.stalled_days} 天`}`} />
-            <Field label="金额" value={`¥ ${fenToYuan(deal.amount_cents)}`} />
-            <Field label="来源" value={deal.source || '—'} />
-            <Field label="预计成交" value={deal.expected_close_at || '未定'} />
-            <Field label="建档" value={deal.created_at} />
-            <Field label={deal.stage === 'lost' ? '流失原因' : '成交时间'} value={deal.stage === 'lost' ? (deal.lost_reason_name || deal.lost_reason) : (deal.won_at || '—')} />
+            <Field label={t('deals.fieldCustomer')} value={deal.customer_name || t('deals.customerFallback', { id: deal.customer_id })} />
+            <Field label={t('deals.fieldOwnerAdvisor')} value={deal.owner_name || t('deals.unassigned')} />
+            <Field label={t('deals.fieldCurrentStage')} value={`${deal.stage_name}${closed ? t('deals.fieldClosed') : t('deals.fieldStalled', { n: deal.stalled_days })}`} />
+            <Field label={t('deals.fieldAmount')} value={`¥ ${fenToYuan(deal.amount_cents)}`} />
+            <Field label={t('deals.lblSource')} value={deal.source || '—'} />
+            <Field label={t('deals.fieldExpectedClose')} value={deal.expected_close_at || t('deals.fieldNotSet')} />
+            <Field label={t('deals.fieldCreated')} value={deal.created_at} />
+            <Field label={deal.stage === 'lost' ? t('deals.fieldLostReason') : t('deals.fieldWonAt')} value={deal.stage === 'lost' ? (deal.lost_reason_name || deal.lost_reason) : (deal.won_at || '—')} />
           </div>
 
           {!closed && <MovePanel deal={deal} cfg={cfg} onAct={act} />}
 
           <div>
             <div className="text-[13px] text-gray-600 mb-2 flex items-center justify-between">
-              <span>报价版本链（{deal.quote_count} 版，<strong>已发出的锁死</strong>，调价只能出新版）</span>
+              <span>{t('deals.quoteChainA', { count: deal.quote_count })}<strong>{t('deals.quoteChainStrong')}</strong>{t('deals.quoteChainB')}</span>
               <Button size="small" theme="primary" variant="outline" onClick={() => setQuoteEdit({})}>
-                {deal.open_quote ? '另出一版' : '新建报价'}
+                {deal.open_quote ? t('deals.newVersion') : t('deals.newQuote')}
               </Button>
             </div>
-            <Table rowKey="id" size="small" data={detail?.quotes || []} empty="还没有报价单" columns={[
-              { colKey: 'version', title: '版本', width: 70, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => `v${p.row.version}` },
-              { colKey: 'status_name', title: '状态', width: 100, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
+            <Table rowKey="id" size="small" data={detail?.quotes || []} empty={t('deals.noQuotes')} columns={[
+              { colKey: 'version', title: t('deals.colVersion'), width: 70, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => `v${p.row.version}` },
+              { colKey: 'status_name', title: t('deals.colStatus'), width: 100, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
                 <Tag variant="light" theme={p.row.status === 'accepted' ? 'success' : p.row.status === 'sent' ? 'primary' : p.row.status === 'void' ? 'danger' : 'default'}>
                   {p.row.status_name || cfg.quote_statuses[p.row.status] || p.row.status}
                 </Tag>
               ) },
-              { colKey: 'total_cents', title: '合计(元)', width: 120, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
+              { colKey: 'total_cents', title: t('deals.colTotal'), width: 120, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
                 <span className="tabular-nums">{fenToYuan(p.row.total_cents)}</span>
               ) },
-              { colKey: 'valid_until', title: '有效期至', width: 130, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => p.row.valid_until || '不限' },
-              { colKey: 'sent_at', title: '发出时间', width: 160, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => p.row.sent_at || '—' },
-              { colKey: 'op', title: '操作', width: 150, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
+              { colKey: 'valid_until', title: t('deals.colValidUntil'), width: 130, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => p.row.valid_until || t('deals.unlimited') },
+              { colKey: 'sent_at', title: t('deals.colSentAt'), width: 160, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => p.row.sent_at || t('deals.notSent') },
+              { colKey: 'op', title: t('deals.colActions'), width: 150, cell: (p: { row: NonNullable<DealDetailResp['quotes']>[number] }) => (
                 <div className="flex gap-1">
-                  <Button size="small" variant="text" onClick={() => void openQuote(p.row.id)}>看明细</Button>
+                  <Button size="small" variant="text" onClick={() => void openQuote(p.row.id)}>{t('deals.viewDetail')}</Button>
                   {p.row.status === 'draft' && (
                     <>
-                      <Button size="small" variant="text" onClick={() => setQuoteEdit({ editId: p.row.id })}>编辑</Button>
-                      <Button size="small" variant="text" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/send`, { method: 'POST' }, '报价已发出并锁死')}>发出</Button>
+                      <Button size="small" variant="text" onClick={() => setQuoteEdit({ editId: p.row.id })}>{t('crud.edit')}</Button>
+                      <Button size="small" variant="text" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/send`, { method: 'POST' }, t('deals.quoteSentLocked'))}>{t('deals.send')}</Button>
                     </>
                   )}
                   {p.row.status === 'sent' && (
                     <>
-                      <Button size="small" variant="text" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/accept`, { method: 'POST' }, '已记为接受（记得再把商机推到成交）')}>客户已接受</Button>
-                      <Button size="small" variant="text" theme="warning" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/decline`, { method: 'POST' }, '已记为拒绝')}>拒绝</Button>
-                      <Button size="small" variant="text" theme="danger" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/void`, { method: 'POST' }, '该版已作废')}>作废</Button>
+                      <Button size="small" variant="text" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/accept`, { method: 'POST' }, t('deals.acceptConfirmed'))}>{t('deals.customerAccepted')}</Button>
+                      <Button size="small" variant="text" theme="warning" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/decline`, { method: 'POST' }, t('deals.declineConfirmed'))}>{t('deals.decline')}</Button>
+                      <Button size="small" variant="text" theme="danger" onClick={() => void act(`/api/v1/admin/quotes/${p.row.id}/void`, { method: 'POST' }, t('deals.voidConfirmed'))}>{t('deals.void')}</Button>
                     </>
                   )}
                 </div>
               ) },
             ]} />
             <div className="text-xs text-gray-400 mt-1">
-              「客户已接受」<strong>不等于成交</strong>：接受只说明对方认了这张单子，
-              钱真正落定要在上面把商机推进到「成交」并填成交金额——两步分开，防止点了接受就当收入入账。
+              {t('deals.acceptNotWonA')}<strong>{t('deals.acceptNotWonStrong')}</strong>{t('deals.acceptNotWonB')}
             </div>
           </div>
         </div>
@@ -432,7 +438,7 @@ function DealDetailDialog({ id, title, cfg, onClose, onChanged }: {
   async function openQuote(qid: number) {
     const j = (await AUTH(`/api/v1/admin/quotes/${qid}`)) as ApiResp<DealQuoteResp> | null
     if (j?.code === 0 && j.data?.quote) setQuoteView(j.data.quote)
-    else MessagePlugin.error(j?.message || '报价明细读取失败')
+    else MessagePlugin.error(j?.message || t('deals.quoteDetailLoadFailed'))
   }
 }
 
@@ -455,6 +461,7 @@ function Field({ label, value }: { label: string; value: string }) {
 function MovePanel({ deal, cfg, onAct }: {
   deal: DealRow; cfg: DealConfig; onAct: (path: string, init: Parameters<typeof AUTH>[1], okText: string) => Promise<boolean>
 }) {
+  const { t } = useI18n()
   const [to, setTo] = useState('')
   const [amountYuan, setAmountYuan] = useState('')
   const [changeAmount, setChangeAmount] = useState(false)
@@ -464,16 +471,16 @@ function MovePanel({ deal, cfg, onAct }: {
   const candidates = cfg.stages.filter((s) => s !== deal.stage)
 
   async function move() {
-    if (!to) { MessagePlugin.warning('先选一个目标阶段'); return }
+    if (!to) { MessagePlugin.warning(t('deals.pickStageFirst')); return }
     let amount = 0
     if (to === 'won') {
       const v = yuanToFen(amountYuan)
-      if (v === null || v <= 0) { MessagePlugin.error('标记成交必须填成交金额（元，最多两位小数，且大于 0）'); return }
+      if (v === null || v <= 0) { MessagePlugin.error(t('deals.wonNeedAmount')); return }
       amount = v
     }
-    if (to === 'lost' && !lostReason) { MessagePlugin.error('标记流失必须选一个原因'); return }
+    if (to === 'lost' && !lostReason) { MessagePlugin.error(t('deals.lostNeedReason')); return }
     setBusy(true)
-    const okText = to === 'won' ? '已记为成交' : to === 'lost' ? '已记为流失' : `已推进到「${cfg.stage_names[to] || to}」`
+    const okText = to === 'won' ? t('deals.markedWon') : to === 'lost' ? t('deals.markedLost') : t('deals.advancedTo', { stage: cfg.stage_names[to] || to })
     const ok = await onAct(`/api/v1/admin/deals/${deal.id}/move`, {
       method: 'POST',
       body: { to, amount_cents: amount, change_amount: changeAmount || to === 'won', lost_reason: lostReason },
@@ -484,39 +491,39 @@ function MovePanel({ deal, cfg, onAct }: {
 
   return (
     <div className="border border-gray-200 rounded-lg p-3 space-y-3">
-      <div className="text-[13px] text-gray-600">推进这张单（往回退不允许，重开请先定版再建新单）</div>
+      <div className="text-[13px] text-gray-600">{t('deals.advanceHint')}</div>
       <div className="flex flex-wrap gap-2 items-end">
         <div style={{ minWidth: 160 }}>
-          <label className="block text-xs text-gray-500 mb-1">推进到</label>
-          <Select value={to} onChange={(v) => setTo(String(v ?? ''))} style={{ width: '100%' }} placeholder="选择目标阶段"
+          <label className="block text-xs text-gray-500 mb-1">{t('deals.lblMoveTo')}</label>
+          <Select value={to} onChange={(v) => setTo(String(v ?? ''))} style={{ width: '100%' }} placeholder={t('deals.phPickStage')}
             options={candidates.map((s) => ({ label: cfg.stage_names[s] || s, value: s }))} />
         </div>
         {to === 'won' && (
           <div style={{ minWidth: 180 }}>
-            <label className="block text-xs text-gray-500 mb-1">成交金额（元）</label>
-            <Input value={amountYuan} onChange={(v) => setAmountYuan(String(v))} placeholder="必填" />
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblWonAmount')}</label>
+            <Input value={amountYuan} onChange={(v) => setAmountYuan(String(v))} placeholder={t('deals.phRequired')} />
           </div>
         )}
         {to === 'lost' && (
           <div style={{ minWidth: 180 }}>
-            <label className="block text-xs text-gray-500 mb-1">流失原因</label>
-            <Select value={lostReason} onChange={(v) => setLostReason(String(v ?? ''))} style={{ width: '100%' }} placeholder="必选"
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblLostReason')}</label>
+            <Select value={lostReason} onChange={(v) => setLostReason(String(v ?? ''))} style={{ width: '100%' }} placeholder={t('deals.phRequiredSelect')}
               options={Object.entries(cfg.lost_reasons).map(([k, label]) => ({ label: String(label), value: k }))} />
           </div>
         )}
         {to && to !== 'won' && to !== 'lost' && (
           <label className="text-xs text-gray-500 flex items-center gap-1 pb-2">
             <input type="checkbox" checked={changeAmount} onChange={(e) => setChangeAmount(e.target.checked)} />
-            顺带改金额
+            {t('deals.chkChangeAmount')}
           </label>
         )}
         {to && to !== 'won' && changeAmount && (
           <div style={{ minWidth: 160 }}>
-            <label className="block text-xs text-gray-500 mb-1">新金额（元）</label>
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblNewAmount')}</label>
             <Input value={amountYuan} onChange={(v) => setAmountYuan(String(v))} />
           </div>
         )}
-        <Button theme="primary" loading={busy} onClick={() => void move()}>推进</Button>
+        <Button theme="primary" loading={busy} onClick={() => void move()}>{t('deals.advance')}</Button>
       </div>
     </div>
   )
@@ -524,19 +531,20 @@ function MovePanel({ deal, cfg, onAct }: {
 
 /** 报价明细只读视图（合计读服务端算的那份，前端不做二次求和）。 */
 function QuoteViewDialog({ quote, cfg, onClose }: { quote: DealQuoteDetail; cfg: DealConfig; onClose: () => void }) {
+  const { t } = useI18n()
   return (
-    <Dialog header={`报价单 v${quote.version} · ${cfg.quote_statuses[quote.status] || quote.status_name || quote.status}`}
-      visible onClose={onClose} footer={<div className="flex justify-end"><Button theme="default" variant="outline" onClick={onClose}>关闭</Button></div>} width="640px">
+    <Dialog header={t('deals.quoteTitle', { version: quote.version, status: cfg.quote_statuses[quote.status] || quote.status_name || quote.status })}
+      visible onClose={onClose} footer={<div className="flex justify-end"><Button theme="default" variant="outline" onClick={onClose}>{t('deals.close')}</Button></div>} width="640px">
       <div className="space-y-3">
-        <Table rowKey="name" size="small" data={quote.lines || []} empty="这张报价没有明细行" columns={[
-          { colKey: 'name', title: '项目', width: 220 },
-          { colKey: 'qty', title: '数量', width: 80, cell: (p: { row: DealQuoteDetail['lines'][number] }) => p.row.qty },
-          { colKey: 'unit_cents', title: '单价(元)', width: 120, cell: (p: { row: DealQuoteDetail['lines'][number] }) => <span className="tabular-nums">{fenToYuan(p.row.unit_cents)}</span> },
-          { colKey: 'total_cents', title: '小计(元)', width: 120, cell: (p: { row: DealQuoteDetail['lines'][number] }) => <span className="tabular-nums">{fenToYuan(p.row.total_cents)}</span> },
+        <Table rowKey="name" size="small" data={quote.lines || []} empty={t('deals.quoteNoLines')} columns={[
+          { colKey: 'name', title: t('deals.colItem'), width: 220 },
+          { colKey: 'qty', title: t('deals.colQty'), width: 80, cell: (p: { row: DealQuoteDetail['lines'][number] }) => p.row.qty },
+          { colKey: 'unit_cents', title: t('deals.colUnit'), width: 120, cell: (p: { row: DealQuoteDetail['lines'][number] }) => <span className="tabular-nums">{fenToYuan(p.row.unit_cents)}</span> },
+          { colKey: 'total_cents', title: t('deals.colSubtotal'), width: 120, cell: (p: { row: DealQuoteDetail['lines'][number] }) => <span className="tabular-nums">{fenToYuan(p.row.total_cents)}</span> },
         ]} />
         <div className="flex items-center justify-between text-[13px]">
-          <span className="text-gray-500">有效期至 {quote.valid_until || '不限'} · 发出 {quote.sent_at || '未发出'}</span>
-          <span>合计 <strong className="tabular-nums">¥ {fenToYuan(quote.total_cents)}</strong>（服务端按明细算）</span>
+          <span className="text-gray-500">{t('deals.quoteViewMeta', { valid: quote.valid_until || t('deals.unlimited'), sent: quote.sent_at || t('deals.notSent') })}</span>
+          <span>{t('deals.quoteTotal', { total: fenToYuan(quote.total_cents) })}</span>
         </div>
         {quote.note && <div className="text-[13px] text-gray-600 bg-gray-50 rounded p-2 whitespace-pre-wrap">{quote.note}</div>}
       </div>
@@ -549,6 +557,7 @@ type QuoteEditArgs = { dealId: number; quoteId?: number; cfg: DealConfig; onClos
 
 /** 报价单编辑器：明细行增删 + 有效期 + 「存草稿 / 存并发出」两个出口。 */
 function QuoteEditDialog({ dealId, quoteId, cfg, onClose, onDone }: QuoteEditArgs) {
+  const { t } = useI18n()
   const [lines, setLines] = useState<{ name: string; qty: string; unit_yuan: string }[]>([
     { name: '', qty: '1', unit_yuan: '' },
   ])
@@ -567,9 +576,9 @@ function QuoteEditDialog({ dealId, quoteId, cfg, onClose, onDone }: QuoteEditArg
         setLines((q.lines || []).map((l) => ({ name: l.name, qty: String(l.qty), unit_yuan: fenToYuanInput(l.unit_cents) })))
         setNote(q.note || '')
         setValidUntil((q.valid_until || '').slice(0, 10))
-      } else MessagePlugin.error(j?.message || '草稿读取失败')
+      } else MessagePlugin.error(j?.message || t('deals.draftLoadFailed'))
     })()
-  }, [quoteId])
+  }, [quoteId, t])
 
   // 实时合计用分累加：每行先各自换算成分，再整数相加，不做浮点求和
   const totalFen = lines.reduce((sum, l) => {
@@ -590,13 +599,13 @@ function QuoteEditDialog({ dealId, quoteId, cfg, onClose, onDone }: QuoteEditArg
       const qty = Number(l.qty)
       const unit = yuanToFen(l.unit_yuan)
       if (!name && (l.qty.trim() === '' || l.unit_yuan.trim() === '')) continue // 空行忽略
-      if (!name) return fail('每一行都要有项目名称')
-      if (!Number.isInteger(qty) || qty <= 0) return fail(`「${name}」数量得是正整数`)
-      if (unit === null || unit < 0) return fail(`「${name}」单价格式不对（元，最多两位小数）`)
+      if (!name) return fail(t('deals.errLineName'))
+      if (!Number.isInteger(qty) || qty <= 0) return fail(t('deals.errLineQty', { name }))
+      if (unit === null || unit < 0) return fail(t('deals.errLineUnit', { name }))
       built.push({ name, qty, unit_cents: unit })
     }
-    if (built.length === 0) return fail('报价至少要有明细行')
-    if (built.length > cfg.max_quote_lines) return fail(`明细行数超出上限 ${cfg.max_quote_lines} 行`)
+    if (built.length === 0) return fail(t('deals.errNoLines'))
+    if (built.length > cfg.max_quote_lines) return fail(t('deals.errTooManyLines', { max: cfg.max_quote_lines }))
     return {
       err: '',
       // set_valid 显式声明"要不要写有效期"：留空=不限，而不是"这次不改动它"
@@ -612,53 +621,53 @@ function QuoteEditDialog({ dealId, quoteId, cfg, onClose, onDone }: QuoteEditArg
     const path = quoteId ? `/api/v1/admin/quotes/${quoteId}` : `/api/v1/admin/deals/${dealId}/quotes`
     const j = (await AUTH(path, { method: quoteId ? 'PUT' : 'POST', body: built.body })) as ApiResp<DealQuoteResp> | null
     setBusy(false)
-    if (j?.code !== 0) { setErr(dealReasonText(j?.reason, j?.message || '报价保存失败')); return }
-    MessagePlugin.success(send ? '报价已发出并锁死' : '草稿已保存')
+    if (j?.code !== 0) { setErr(dealReasonText(j?.reason, j?.message || t('deals.quoteSaveFailed'))); return }
+    MessagePlugin.success(send ? t('deals.quoteSentLocked') : t('deals.draftSaved'))
     onDone()
   }
 
   return (
-    <Dialog header={quoteId ? '编辑报价草稿' : '新建报价'} visible onClose={onClose} width="720px"
+    <Dialog header={quoteId ? t('deals.editDraft') : t('deals.newQuote')} visible onClose={onClose} width="720px"
       footer={
         <div className="flex items-center justify-between w-full">
-          <span className="text-[13px] text-gray-500">合计 <strong className="tabular-nums">¥ {fenToYuan(totalFen)}</strong>（保存后以服务端按明细重算的为准）</span>
+          <span className="text-[13px] text-gray-500">{t('deals.quoteEditTotal', { total: fenToYuan(totalFen) })}</span>
           <div className="flex gap-2">
-            <Button theme="default" variant="outline" onClick={onClose}>取消</Button>
-            <Button theme="default" loading={busy} onClick={() => void submit(false)}>存草稿</Button>
-            <Button theme="primary" loading={busy} onClick={() => void submit(true)}>保存并发出</Button>
+            <Button theme="default" variant="outline" onClick={onClose}>{t('deals.cancel')}</Button>
+            <Button theme="default" loading={busy} onClick={() => void submit(false)}>{t('deals.saveDraft')}</Button>
+            <Button theme="primary" loading={busy} onClick={() => void submit(true)}>{t('deals.saveAndSend')}</Button>
           </div>
         </div>
       }>
       <div className="space-y-3">
         <div className="text-[13px] text-gray-500">
-          明细行<strong>一旦发出就锁死</strong>：要改价请在此商机下另出一版，旧版会自动标为「已被新版取代」。
+          {t('deals.quoteEditHintA')}<strong>{t('deals.quoteEditHintStrong')}</strong>{t('deals.quoteEditHintB')}
         </div>
         <div className="space-y-2">
           <div className="grid gap-2 text-xs text-gray-500" style={{ gridTemplateColumns: '1fr 90px 130px 60px' }}>
-            <span>项目</span><span>数量</span><span>单价（元）</span><span></span>
+            <span>{t('deals.colItem')}</span><span>{t('deals.colQty')}</span><span>{t('deals.colUnit')}</span><span></span>
           </div>
           {lines.map((l, i) => (
             <div key={i} className="grid gap-2" style={{ gridTemplateColumns: '1fr 90px 130px 60px' }}>
-              <Input value={l.name} placeholder="如 极石 01 四驱版"
+              <Input value={l.name} placeholder={t('deals.phQuoteItem')}
                 onChange={(v) => setLines(lines.map((x, k) => (k === i ? { ...x, name: String(v) } : x)))} />
               <Input value={l.qty} onChange={(v) => setLines(lines.map((x, k) => (k === i ? { ...x, qty: String(v) } : x)))} />
               <Input value={l.unit_yuan} onChange={(v) => setLines(lines.map((x, k) => (k === i ? { ...x, unit_yuan: String(v) } : x)))} />
               <Button size="small" variant="text" theme="danger" disabled={lines.length <= 1}
-                onClick={() => setLines(lines.length <= 1 ? lines : lines.filter((_, k) => k !== i))}>删</Button>
+                onClick={() => setLines(lines.length <= 1 ? lines : lines.filter((_, k) => k !== i))}>{t('deals.removeRow')}</Button>
             </div>
           ))}
           <Button size="small" variant="outline" disabled={lines.length >= cfg.max_quote_lines}
-            onClick={() => setLines([...lines, { name: '', qty: '1', unit_yuan: '' }])}>+ 加一行</Button>
+            onClick={() => setLines([...lines, { name: '', qty: '1', unit_yuan: '' }])}>{t('deals.addRow')}</Button>
         </div>
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="block text-xs text-gray-500 mb-1">有效期至（可选）</label>
-            <input type="date" aria-label="报价有效期" value={validUntil} className="w-full px-3 py-2 border rounded-lg text-sm"
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblValidUntil')}</label>
+            <input type="date" aria-label={t('deals.lblValidUntil')} value={validUntil} className="w-full px-3 py-2 border rounded-lg text-sm"
               onChange={(e) => setValidUntil(e.target.value)} />
           </div>
           <div>
-            <label className="block text-xs text-gray-500 mb-1">备注 / 条款</label>
-            <Textarea value={note} onChange={(v) => setNote(String(v))} rows={1} placeholder="如 含三年质保，不含上牌" />
+            <label className="block text-xs text-gray-500 mb-1">{t('deals.lblNote')}</label>
+            <Textarea value={note} onChange={(v) => setNote(String(v))} rows={1} placeholder={t('deals.phNote')} />
           </div>
         </div>
         {err && <div className="text-[13px] text-red-600">{err}</div>}

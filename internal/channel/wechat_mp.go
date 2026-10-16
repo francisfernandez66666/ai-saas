@@ -25,6 +25,7 @@ import (
 // init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wechatMPAdapter{}) }
 
+// wechatMPAdapter 微信公众号通道适配器（空结构体：全部行为走方法，无自有状态）。
 type wechatMPAdapter struct{}
 
 // Type 返回微信公众号通道适配器类型。

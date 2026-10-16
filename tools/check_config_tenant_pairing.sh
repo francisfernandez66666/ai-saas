@@ -78,7 +78,7 @@ EOF
   hits=$(scan_hits "$tmp/internal/x/sample.go" | sed -E 's#^[^:]+:[0-9]+:##; s/^[[:space:]]+//' | grep -v '^$' || true)
   n=$(printf '%s\n' "$hits" | grep -c . || true)
   if [ "${n:-0}" -ne 3 ]; then
-    echo "SELFTEST FAIL 样本应恰抓 3 红（GetInt/SafeCfgInt/GetInterval 各一），实抓 $n："
+    echo "SELFTEST FAIL 样本应恰抓 3 红（GetInt/SafeCfgInt/GetInterval 各一），实抓 ${n}："
     printf '%s\n' "$hits"
     exit 1
   fi

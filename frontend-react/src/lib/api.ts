@@ -76,10 +76,15 @@ export const ERROR_CODE_MESSAGES: Record<string, { text?: string; level: ErrLeve
  * @param json - 后端返回的 JSON 响应体
  * @returns 是否业务失败（code !== 0 表示失败）
  */
+/** 后端错误信封的最小结构面：toastError 只消费这三个字段。
+ *  P2-10(2026-10-14)：替代此前的 `json: any`——调用方传入的信封本就只用到
+ *  code/error_code/message，收敛成结构面后 any 不再必要；ApiResp<T> 天然可赋值。 */
+export type ErrEnvelope = { code?: number; error_code?: string; message?: string }
+
 /** 按后端 code/message 弹出错误提示，返回是否已处理。 */
-export function toastError(json: any): boolean {
+export function toastError(json: ErrEnvelope | null | undefined): boolean {
   if (!json || json.code === 0 || json.code === undefined) return false
-  const code = json.error_code as string
+  const code = json.error_code
   const entry = code ? ERROR_CODE_MESSAGES[code] : undefined
   const msg = (entry && entry.text) || json.message || '操作没成功'
   // 未登记的码按 warning 走：新码先能看清后端说了什么，再决定要不要升级成分级
@@ -271,6 +276,9 @@ export async function apiFetch(url: string, opts: ApiRequestInit = {}): Promise<
 // P1-6 修复(2026-09-20 审计批)：网络层失败（断网/DNS/abort）不再向上 reject——
 // 统一返回 {res:null, json:null} 口径（同 AUTH 的 E6 网络兜底语义），
 // 调用方 setLoading(false)/判错逻辑单线化，不再因 unhandled rejection 卡死在 loading。
+// P2-10：默认泛型 T=any 有意保留——未标注契约的调用点（AUTH(url) 裸调）依赖
+// `j.code/j.data` 直接访问；默认改 unknown 会让全站数百处裸调编译报错，
+// 而收益仅是字样。要精确类型的调用点按 ApiEnvelope<P> 显式标注（P2-8c）。
 export async function apiJSON<T = any>(
   url: string,
   opts: ApiRequestInit = {},
@@ -308,9 +316,14 @@ export function redirectByRole(role: string) {
  * @returns 后端返回的 JSON 响应体（已调用 toastError 处理业务错误）
  */
 /** 调用需要鉴权的后台接口，并复用统一错误和登录态处理。 */
+// P2-10：默认泛型 T=any 有意保留，判据同 apiJSON——裸调 AUTH(url) 后直接读
+// `j.code/j.data/j.message` 是本站主流写法；默认 unknown 会把这些全部变成编译错误。
+// 精确类型走 AUTH<ApiEnvelope<'/api/v1/...'>>(url)（P2-8c 契约泛型）。
 export async function AUTH<T = any>(
   url: string,
-  opts: { method?: string; body?: any; headers?: Record<string, string>; timeoutMs?: number } = {},
+  // P2-10：body 只被 JSON.stringify 消费，unknown 足够；此前 any 会让任意形态
+  // 的请求体在编译期失去检查（拼错字段名/传函数都不报错）。
+  opts: { method?: string; body?: unknown; headers?: Record<string, string>; timeoutMs?: number } = {},
 ): Promise<T> {
   // E6 修复(2026-09-14)：网络异常/超时不再让 AUTH reject——旧行为下调用方
   // `const j = await AUTH(...); j.code` 直接踩 unhandled rejection → 白屏。
@@ -323,11 +336,14 @@ export async function AUTH<T = any>(
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     timeoutMs: opts.timeoutMs, // P1-13：长任务可显式放宽/关闭超时
   })
-  let json: T = parsed
-  if (!json || typeof (json as any).code !== 'number') {
+  let json: T
+  // P2-10：`(parsed as any).code` → 具名窄化面；泛型 T 未约束时单重断言合法（已探针验证）。
+  if (!parsed || typeof (parsed as { code?: unknown }).code !== 'number') {
     json = { code: -1, message: res ? '响应解析失败' : '网络异常，请稍后重试' } as unknown as T
+  } else {
+    json = parsed
   }
-  toastError(json) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
+  toastError(json as ErrEnvelope) // P1-4：业务失败按 error_code 统一轻提示（不阻断调用方读取 json）
   return json
 }
 

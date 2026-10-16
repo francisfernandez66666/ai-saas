@@ -31,7 +31,7 @@ function listCalls() {
 /** 取某行的显示 input（TDesign 单选把选中 label 落在它身上）。 */
 function rowInput(container: HTMLElement, rowText: string): HTMLInputElement | undefined {
   const row = Array.from(container.querySelectorAll('tr')).find((tr) => (tr.textContent || '').includes(rowText))
-  return row?.querySelector<HTMLInputElement>('input.t-input__inner')
+  return row?.querySelector<HTMLInputElement>('input.t-input__inner') ?? undefined
 }
 
 /** 点开某行的「可绑档位」下拉（选项浮层挂在 body，不在行内）。 */
@@ -45,6 +45,7 @@ async function openTierPanel(container: HTMLElement, rowText: string) {
   await waitFor(() => expect(document.querySelectorAll('.t-select-option').length).toBeGreaterThan(0))
 }
 
+// optionByText 在 TDesign 下拉浮层里按文案精确找一项（浮层挂 body，需从 document 查）。
 function optionByText(text: string) {
   return Array.from(document.querySelectorAll<HTMLElement>('.t-select-option')).find((o) => (o.textContent || '').trim() === text)
 }

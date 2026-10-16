@@ -28,6 +28,7 @@ type agentMock struct {
 	mu        sync.Mutex
 }
 
+// handler 搭出同时供 corp 票与应用票的模拟企微端点，并记录两端命中次数。
 func (m *agentMock) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/cgi-bin/gettoken", func(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +55,7 @@ func (m *agentMock) handler() http.Handler {
 	return mux
 }
 
+// newAgentMock 起模拟企微端点并在用例结束自动关闭，供各签名单测替换 BaseURL。
 func newAgentMock(t *testing.T) *agentMock {
 	t.Helper()
 	m := &agentMock{}

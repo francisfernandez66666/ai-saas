@@ -80,6 +80,7 @@ func TestEmptyText(t *testing.T) {
 	}
 }
 
+// fakeReviewer 假内容审核器：按预设 violation/err 返回，供 SetReviewer 注入点单测。
 type fakeReviewer struct {
 	violation bool
 	err       error

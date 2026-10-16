@@ -58,6 +58,7 @@ func newTenant(t *testing.T, semantic string) uint {
 	return testutil.CreateTenantCode(t, semantic)
 }
 
+// mustCreate 建一枚活码（失败即 Fatal）并挂好清理，供建码/归因/漏斗各用例铺数据。
 func mustCreate(t *testing.T, tid uint, name, channel string) *model.AcquisitionCode {
 	t.Helper()
 	row, err := CreateCode(db.DB, CreateInput{TenantID: tid, Name: name, Channel: channel})

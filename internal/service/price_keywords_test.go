@@ -17,6 +17,8 @@ import (
 // autoOnlyWords 汽车交易专属词（中立词表必须剔除）
 var autoOnlyWords = []string{"落地价", "车价", "多少钱一辆", "多少钱一台", "售价多少"}
 
+// containsAny 返回 words 中第一个出现在 list 里的词（都没有则空串），
+// 供"中立词表不得含汽车专属词"这类断言定位是哪个词漏剔。
 func containsAny(list []string, words []string) string {
 	for _, w := range words {
 		for _, l := range list {

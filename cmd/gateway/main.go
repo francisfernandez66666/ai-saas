@@ -3,17 +3,19 @@
 // 业务实例配 LLM_GATEWAY_URL 指向本进程即可把出网与计费上收网关。
 package main
 
-import "ai-scrm/internal/billing"
-
 import (
+	"context"
+
 	"ai-scrm/config"
 	"ai-scrm/internal/ai"
+	"ai-scrm/internal/billing"
 	"ai-scrm/internal/cache"
 	"ai-scrm/internal/db"
 	"ai-scrm/internal/gateway"
 	"ai-scrm/internal/redisclient"
 	"ai-scrm/internal/runtimecfg"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/telemetry"
 
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
@@ -33,6 +35,14 @@ func main() {
 
 	cfg := config.LoadConfig()
 	gin.SetMode(cfg.Server.Mode)
+
+	// 0.5 OpenTelemetry（P2-7）：全局 TracerProvider + stdout exporter（本地/网关可见 span 时序）。
+	// 初始化失败降级为 no-op tracer，不影响服务；进程退出时 flush。
+	if shutdown, err := telemetry.Init(context.Background(), "ai-gateway"); err != nil {
+		log.Printf("[otel] 初始化失败（降级 no-op，不影响服务）: %v", err)
+	} else {
+		defer shutdown(context.Background())
+	}
 
 	// 1. Redis（分布式锁/看门狗选主；计费闸 CheckTokenAvailability 已收敛到 token 三桶，不依赖 Redis）
 	redisclient.Init(cfg.Redis)

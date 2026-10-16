@@ -121,6 +121,9 @@ func SweepDunning() int { return sweepDunning(nil) }
 // 测试绝不允许拿到那个权力。
 func SweepDunningForTenants(tenantIDs []uint) int { return sweepDunning(tenantIDs) }
 
+// sweepDunning 推进 scope 内已过期租户的催缴序列：先回收"已不欠费"的序列，再把在催租户按逾期天数
+// 推到对应档位（发信提醒，超宽限阈值停用），返回本轮动作数。scope 为空=全平台巡检（Redis 选主，
+// 拿不到锁本轮让路）；非空=定向巡检指定租户，不抢锁。dunning_enabled 关闭时直接返回 0。
 func sweepDunning(scope []uint) int {
 	if !runtimecfg.SafeCfgBool("dunning_enabled", false) {
 		return 0

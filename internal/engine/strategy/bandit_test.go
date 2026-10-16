@@ -48,6 +48,7 @@ func stubStats(stats map[string]BanditArmStat, err error) BanditStatsLoader {
 	}
 }
 
+// idsInOrder 取召回结果的模板 ID 序列（保持召回顺序），供断言排序口径。
 func idsInOrder(rs []RecalledTemplate) []string {
 	out := make([]string, 0, len(rs))
 	for _, r := range rs {
@@ -56,6 +57,7 @@ func idsInOrder(rs []RecalledTemplate) []string {
 	return out
 }
 
+// idsSet 统计各模板 ID 在召回结果里的出现次数，供断言曝光配额/去重口径。
 func idsSet(rs []RecalledTemplate) map[string]int {
 	out := map[string]int{}
 	for _, r := range rs {

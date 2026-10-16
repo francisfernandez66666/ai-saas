@@ -3,35 +3,44 @@
 // /stats/ai-contribution/customers 只展示那个数字背后的客户。
 // 下钻态刻意隐藏阶段筛选与"新建线索/导出客户"——名单是后端按同一谓词算出的归因结果，
 // 再叠一层前端筛选就会和卡片上的数字对不上，而"对不上"正是这张看板最不能出现的形态。
+// P2-14：阶段名/来源名/状态名等界面文案落成 I18nKey，中文原文进词典；
+// 后端口径字符串（journey_stage 码、drillResp.note、sender_type 等）是数据，不做翻译。
 import { useCallback, useEffect, useState } from 'react'
 import { Button, Dialog, Drawer, Input, InputNumber, MessagePlugin, Select, Tag, Textarea } from 'tdesign-react'
 import { apiFetch, AUTH, type ApiEnvelope } from '../../lib/api'
 import { confirmDialog } from '../../lib/confirm'
+import { isVisitorName } from '../../lib/visitor'
+import { useI18n } from '../../i18n/useI18n'
+import type { I18nKey } from '../../i18n/context'
 import type { CrudRow } from '../../hooks/useCrud'
 import type { AIContributionDrillResp, ContributionDrill, TableRowData } from '../../types'
 
-const STAGE_LABELS: Record<string, string> = { ai_connected: 'AI建联', human_connected: '人工建联', lead_captured: '已留资', arrived: '已到店', ordered: '已下单', delivered: '已交车', lost: '已战败' }
+/** 阶段码 → 文案键（界面显示名随语言走，码本身是后端口径不翻译）。 */
+const STAGE_KEYS: Record<string, I18nKey> = {
+  ai_connected: 'customers.stageAiConnected', human_connected: 'customers.stageHumanConnected', lead_captured: 'customers.stageLeadCaptured',
+  arrived: 'customers.stageArrived', ordered: 'customers.stageOrdered', delivered: 'customers.stageDelivered', lost: 'customers.stageLost',
+}
+const STAGE_CODES = ['ai_connected', 'human_connected', 'lead_captured', 'arrived', 'ordered', 'delivered', 'lost']
 const STAGE_COLORS: Record<string, string> = { ai_connected: 'bg-gray-100 text-gray-600', human_connected: 'bg-blue-100 text-blue-600', lead_captured: 'bg-cyan-100 text-cyan-600', arrived: 'bg-green-100 text-green-600', ordered: 'bg-orange-100 text-orange-600', delivered: 'bg-red-100 text-red-600', lost: 'bg-gray-200 text-gray-600' }
 const STATUS_OPTS = ['', 'ai_connected', 'human_connected', 'lead_captured', 'arrived', 'ordered', 'delivered', 'lost']
-const STAGE_OPTS = [
-  { label: 'AI建联', value: 'ai_connected' }, { label: '人工建联', value: 'human_connected' }, { label: '已留资', value: 'lead_captured' },
-  { label: '已到店', value: 'arrived' }, { label: '已下单', value: 'ordered' }, { label: '已交车', value: 'delivered' }, { label: '已战败', value: 'lost' },
-]
-const USER_OPTS = [{ label: '未分配', value: 0 }]
 /** D4 下钻名单页大小：与后端默认一致，后端硬上限 100（下钻是核对用，不是导数用）。 */
 const DRILL_PAGE_SIZE = 20
-const STATUS_EDIT_OPTS = [{ label: '有效', value: 1 }, { label: '停用', value: 0 }]
-const SOURCE_OPTS = [{ label: '手工录入', value: 'manual' }, { label: '广告投放', value: 'ad' }, { label: '老客推荐', value: 'referral' }, { label: '到店自然', value: 'walkin' }, { label: '线上咨询', value: 'online' }]
+const STATUS_EDIT_KEYS: { key: I18nKey; value: number }[] = [{ key: 'common.valid', value: 1 }, { key: 'common.disable', value: 0 }]
+const SOURCE_KEYS: { key: I18nKey; value: string }[] = [
+  { key: 'customers.sourceManual', value: 'manual' }, { key: 'customers.sourceAd', value: 'ad' },
+  { key: 'customers.sourceReferral', value: 'referral' }, { key: 'customers.sourceWalkin', value: 'walkin' },
+  { key: 'customers.sourceOnline', value: 'online' },
+]
 
 /** 清洗客户展示名，访客占位名统一显示为客户。 */
-function nameOf(v?: string) { return !v || v.startsWith('访客_') ? '客户' : v }
+function nameOf(v: string | undefined, fallback: string) { return isVisitorName(v) ? fallback : (v as string) }
 /** 取客户名首字作为头像占位符。 */
-function initialOf(v?: string) { return !v || v.startsWith('访客_') ? '客' : (v?.[0] || '?') }
+function initialOf(v: string | undefined, fallback: string) { return isVisitorName(v) ? fallback : ((v as string)?.[0] || '?') }
 
 /** 触发浏览器下载后台导出的 CSV 文件。 */
-async function downloadCsv(url: string, filename: string) {
+async function downloadCsv(url: string, filename: string, failMsg: string, okMsg: string) {
   const res = await apiFetch(url)
-  if (!res.ok) { MessagePlugin.error('导出失败'); return }
+  if (!res.ok) { MessagePlugin.error(failMsg); return }
   const blob = await res.blob()
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)
@@ -40,11 +49,12 @@ async function downloadCsv(url: string, filename: string) {
   a.click()
   a.remove()
   URL.revokeObjectURL(a.href)
-  MessagePlugin.success('已开始下载')
+  MessagePlugin.success(okMsg)
 }
 
 /** 客户列表 Tab：支持筛选、标签、阶段和 CSV 导出；带 drill 时进入 AI 贡献度下钻名单态。 */
 export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill | null; onExitDrill?: () => void }) {
+  const { t } = useI18n()
   const [filter, setFilter] = useState('')
   const [page, setPage] = useState(1)
   const [total, setTotal] = useState(0)
@@ -60,6 +70,8 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
   const [showChat, setShowChat] = useState(false)
   const [editVisible, setEditVisible] = useState(false)
   const [tagVisible, setTagVisible] = useState(false)
+  // P2-10：表单态两袋（编辑/新建）值要直填 TDesign 受控输入框（string/number 混排），
+  // 与 useCrud.CrudRow 同款判据保留 Record<string, any>；写入入口 setField 已收敛为 unknown
   const [form, setForm] = useState<Record<string, any>>({})
   const [tagForm, setTagForm] = useState<string[]>([])
   const [tagOptions, setTagOptions] = useState<{ label: string; value: string }[]>([])
@@ -70,13 +82,13 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
   const [showConvs, setShowConvs] = useState(false)
   const [openConv, setOpenConv] = useState<number | null>(null)
   const [convMsgs, setConvMsgs] = useState<TableRowData[]>([])
-  const [users, setUsers] = useState<{ label: string; value: number }[]>(USER_OPTS)
+  const [users, setUsers] = useState<{ label: string; value: number }[]>([])
   const [saving, setSaving] = useState(false)
   const [createVisible, setCreateVisible] = useState(false)
   const [create, setCreate] = useState<Record<string, any>>({ name: '', phone: '', city: '', interest_model: '', budget: 0, source: 'manual', assigned_user_id: 0, remark: '' })
 
-  const H = nameOf
-  const HI = initialOf
+  const H = (v?: string) => nameOf(v, t('common.customer'))
+  const HI = (v?: string) => initialOf(v, t('customers.initialGuest'))
 
   // 拉取客户线索列表（阶段筛选 + 分页 + 归属=all），useCallback 随筛选/页码重建。
   // drill 在位时走另一条真相源：/stats/ai-contribution/customers，只传 metric + days，
@@ -116,13 +128,14 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
       // FIX-4(2026-09-27)：打标弹窗要的是**全量字典**不是"第一页"，改 ?all=1（上限 1000，只回 id/name/code）。
       // 旧写法 page_size=200 被服务端硬顶 100 静默截断：标签多于 100 个时，界面里的可选标签就是缺的，
       // 而且提交时后端按 tag_ids 认，用户根本不知道自己少打了哪几个。
-      const [t, u] = await Promise.all([AUTH<ApiEnvelope<'/api/v1/admin/tags', 'GET'>>('/api/v1/admin/tags?all=1'), AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')])
+      const [t2, u] = await Promise.all([AUTH<ApiEnvelope<'/api/v1/admin/tags', 'GET'>>('/api/v1/admin/tags?all=1'), AUTH<ApiEnvelope<'/api/v1/org/users'>>('/api/v1/org/users')])
       // P1-9(2026-09-20)：选项 value 从标签名改为标签 ID——POST /customers/:id/tags 契约是 tag_ids，
       // 名称仍留在 label 里展示；旧的 PUT /advisor/customer/:id/tags（按名覆盖）保留给移动端工作台
-      if (t?.code === 0) setTagOptions((t.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.id) })))
-      if (u?.code === 0) setUsers([...USER_OPTS, ...(u.data || []).map((x: CrudRow) => ({ label: x.real_name || x.username || `用户${x.id}`, value: Number(x.id) }))])
+      if (t2?.code === 0) setTagOptions((t2.data?.list || []).map((x: CrudRow) => ({ label: `${x.name}（${x.code || x.id}）`, value: String(x.id) })))
+      if (u?.code === 0) setUsers([{ label: t('common.unassigned'), value: 0 }, ...(u.data || []).map((x: CrudRow) => ({ label: x.real_name || x.username || t('customers.userFallback', { id: x.id }), value: Number(x.id) }))])
+      else setUsers([{ label: t('common.unassigned'), value: 0 }])
     })()
-  }, [])
+  }, [t])
 
   // 打开客户详情抽屉，并重置试驾/聊天/会话面板展开态；P1-9 详情成功后拉权威标签（含 tag_id）
   async function openDetail(id: number) {
@@ -133,7 +146,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
       setShowConvs(false); setOpenConv(null); setConvMsgs([])
       const tg = await AUTH(`/api/v1/customers/${id}/tags`)
       setCustTags(tg?.code === 0 ? (tg.data || []) : [])
-    } else MessagePlugin.error('获取详情失败')
+    } else MessagePlugin.error(t('customers.detailLoadFailed'))
   }
 
   // 展开或收起该客户的试驾记录（再次点击收起，不重复拉取）
@@ -219,7 +232,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
     })
     setSaving(false)
     if (info?.code === 0 || cust?.code === 0) {
-      MessagePlugin.success('客户信息已更新')
+      MessagePlugin.success(t('customers.infoUpdated'))
       setEditVisible(false)
       await openDetail(cid)
       await load()
@@ -228,7 +241,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
 
   // 打开标签编辑器：以权威标签（custTags，含 tag_id）预填选中项
   function openTagEditor() {
-    setTagForm(custTags.map((t: CrudRow) => String(t.tag_id)).filter(Boolean))
+    setTagForm(custTags.map((t2: CrudRow) => String(t2.tag_id)).filter(Boolean))
     setTagVisible(true)
   }
 
@@ -238,7 +251,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
     if (!detail?.customer?.id) return
     setSaving(true)
     const cid = Number(detail.customer.id)
-    const cur = custTags.map((t: CrudRow) => String(t.tag_id))
+    const cur = custTags.map((t2: CrudRow) => String(t2.tag_id))
     const adds = tagForm.filter((x) => !cur.includes(x)).map(Number)
     const dels = cur.filter((x) => !tagForm.includes(x))
     let ok = true
@@ -252,7 +265,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
     }
     setSaving(false)
     if (ok) {
-      MessagePlugin.success('标签已更新')
+      MessagePlugin.success(t('customers.tagsUpdated'))
       setTagVisible(false)
       await openDetail(cid)
       await load()
@@ -262,11 +275,11 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
   // P1-9：抽屉标签 chip 直删（DELETE /customers/:id/tags/:tag_id），成功后刷新详情与列表
   async function removeTag(tagId: number) {
     if (!detail?.customer?.id) return
-    if (!(await confirmDialog('确认移除该标签？', '移除标签'))) return
+    if (!(await confirmDialog(t('customers.removeTagConfirm'), t('customers.removeTagTitle')))) return
     const cid = Number(detail.customer.id)
     const j = await AUTH(`/api/v1/customers/${cid}/tags/${tagId}`, { method: 'DELETE' })
     if (j?.code === 0) {
-      MessagePlugin.success('标签已移除')
+      MessagePlugin.success(t('customers.tagRemoved'))
       await openDetail(cid)
       await load()
     }
@@ -274,7 +287,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
 
   // 新建线索（手工建客）：姓名/手机号至少一项，成功后关窗清空并刷新
   async function submitCreate() {
-    if (!String(create.name || '').trim() && !String(create.phone || '').trim()) { MessagePlugin.error('姓名或手机号至少填一项'); return }
+    if (!String(create.name || '').trim() && !String(create.phone || '').trim()) { MessagePlugin.error(t('customers.nameOrPhoneRequired')); return }
     setSaving(true)
     const j = await AUTH<ApiEnvelope<'/api/v1/customers'>>('/api/v1/customers', {
       method: 'POST',
@@ -291,7 +304,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
     })
     setSaving(false)
     if (j?.code === 0) {
-      MessagePlugin.success('线索已创建')
+      MessagePlugin.success(t('customers.leadCreated'))
       setCreateVisible(false)
       setCreate({ name: '', phone: '', city: '', interest_model: '', budget: 0, source: 'manual', assigned_user_id: 0, remark: '' })
       await load()
@@ -301,10 +314,10 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
 
   // 删除客户线索（二次确认；会话历史按合规保留），成功后关抽屉刷新
   async function deleteCustomer(id: number) {
-    if (!(await confirmDialog('删除后该线索及其标签关系将从列表移除（会话历史按合规保留）。确认删除？', '删除客户线索'))) return
+    if (!(await confirmDialog(t('customers.deleteConfirm'), t('customers.deleteTitle')))) return
     const j = await AUTH(`/api/v1/customers/${id}`, { method: 'DELETE' })
     if (j?.code === 0) {
-      MessagePlugin.success('已删除')
+      MessagePlugin.success(t('customers.deleted'))
       setDrawer(false)
       await load()
     }
@@ -316,10 +329,16 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
   const drillLabel = drillResp?.label || drill?.metric || ''
   const drillDays = drillResp?.period_days || drill?.days || 0
   const drillPages = Math.max(1, Math.ceil(total / DRILL_PAGE_SIZE))
-  // 聊天发送方中文名/颜色与编辑表单受控更新的小工具
-  const who = (t: string) => (t === 'customer' ? '客户' : t === 'ai' ? 'AI' : t === 'human' ? '人工' : '系统')
-  const wcolor = (t: string) => (t === 'customer' ? 'text-blue-600' : t === 'ai' ? 'text-green-600' : 'text-orange-600')
-  const setField = (k: string, v: any) => setForm((s) => ({ ...s, [k]: v }))
+  // 聊天发送方展示名（sender_type 是后端口径码，展示名随语言走）
+  const who = (sender: string) => (sender === 'customer' ? t('customers.whoCustomer') : sender === 'ai' ? 'AI' : sender === 'human' ? t('customers.whoHuman') : t('customers.whoSystem'))
+  const wcolor = (sender: string) => (sender === 'customer' ? 'text-blue-600' : sender === 'ai' ? 'text-green-600' : 'text-orange-600')
+  // P2-10：表单值袋按 key 动态写入，v 收敛为 unknown（form 仍为 Record<string, any>：
+  // 其值要直填 TDesign 各受控输入框，string/number 混排，详见 useCrud CrudRow 同款判据）
+  const setField = (k: string, v: unknown) => setForm((s) => ({ ...s, [k]: v }))
+
+  const stageOptions = STAGE_CODES.map((v) => ({ label: t(STAGE_KEYS[v]), value: v }))
+  const statusEditOptions = STATUS_EDIT_KEYS.map((x) => ({ label: t(x.key), value: x.value }))
+  const sourceOptions = SOURCE_KEYS.map((x) => ({ label: t(x.key), value: x.value }))
 
   return (
     <div>
@@ -328,36 +347,36 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
         <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="text-sm font-medium text-gray-800">
-              AI 贡献度下钻：<span className="text-indigo-600">{drillLabel}</span> · 近 {drillDays} 天 · 共 {total} 位客户
+              {t('customers.drillPrefix')}<span className="text-indigo-600">{drillLabel}</span>{t('customers.drillMeta', { days: drillDays, total })}
             </p>
-            <p className="text-xs text-gray-400 mt-1">{drillResp?.note || '名单与看板同一判据：登录者数据范围 ∩ 窗口内有消息往来的会话所涉客户。'}</p>
+            <p className="text-xs text-gray-400 mt-1">{drillResp?.note || t('customers.drillNoteFallback')}</p>
             {drillResp && (
               <p className="text-[10px] text-gray-300 mt-0.5">
-                窗口 {drillResp.since?.slice(0, 10)} ~ {drillResp.until?.slice(0, 10)}
-                {drillPages > 1 ? ` · 第 ${page}/${drillPages} 页` : ''}
+                {t('customers.drillWindow', { since: drillResp.since?.slice(0, 10) ?? '', until: drillResp.until?.slice(0, 10) ?? '' })}
+                {drillPages > 1 ? t('customers.drillPage', { page, pages: drillPages }) : ''}
               </p>
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            <Button variant="outline" onClick={() => { setPage(1); void load() }}>刷新</Button>
-            <Button theme="primary" variant="outline" onClick={() => onExitDrill?.()}>返回看板</Button>
+            <Button variant="outline" onClick={() => { setPage(1); void load() }}>{t('crud.refresh')}</Button>
+            <Button theme="primary" variant="outline" onClick={() => onExitDrill?.()}>{t('customers.backToBoard')}</Button>
           </div>
         </div>
       ) : (
         <div className="bg-white rounded-lg shadow-sm p-4 mb-4 flex flex-wrap items-center gap-3">
-          <span className="text-sm text-gray-500">筛选阶段：</span>
-          <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} aria-label="客户阶段筛选" className="px-3 py-2 border rounded-lg text-sm">
-            {STATUS_OPTS.map((s) => <option key={s} value={s}>{s === '' ? '全部' : (STAGE_LABELS[s] || s)}</option>)}
+          <span className="text-sm text-gray-500">{t('customers.filterStage')}</span>
+          <select value={filter} onChange={(e) => { setFilter((e.target as HTMLSelectElement).value); setPage(1) }} aria-label={t('customers.filterStageAria')} className="px-3 py-2 border rounded-lg text-sm">
+            {STATUS_OPTS.map((s) => <option key={s} value={s}>{s === '' ? t('common.all') : (STAGE_KEYS[s] ? t(STAGE_KEYS[s]) : s)}</option>)}
           </select>
-          <Button theme="primary" onClick={() => setCreateVisible(true)}>+ 新建线索</Button>
-          <Button variant="outline" onClick={() => { setPage(1); void load() }}>刷新</Button>
-          <Button variant="outline" theme="success" onClick={() => void downloadCsv('/api/v1/admin/export/customers.csv', 'customers.csv')}>导出客户</Button>
-          <span className="text-xs text-gray-400">共 {total || leads.length} 条</span>
+          <Button theme="primary" onClick={() => setCreateVisible(true)}>{t('customers.newLead')}</Button>
+          <Button variant="outline" onClick={() => { setPage(1); void load() }}>{t('crud.refresh')}</Button>
+          <Button variant="outline" theme="success" onClick={() => void downloadCsv('/api/v1/admin/export/customers.csv', 'customers.csv', t('customers.exportFailed'), t('customers.downloadStarted'))}>{t('customers.exportCustomers')}</Button>
+          <span className="text-xs text-gray-400">{t('crud.total', { count: total || leads.length })}</span>
         </div>
       )}
       <div className="space-y-2">
-        {loading && <div className="text-center text-gray-400 py-6">加载中...</div>}
-        {!loading && leads.length === 0 && <div className="text-center text-gray-400 py-6">{inDrill ? '该窗口内没有命中这个指标的客户' : '暂无客户线索'}</div>}
+        {loading && <div className="text-center text-gray-400 py-6">{t('customers.loadingDots')}</div>}
+        {!loading && leads.length === 0 && <div className="text-center text-gray-400 py-6">{inDrill ? t('customers.emptyDrill') : t('customers.emptyLeads')}</div>}
         {leads.map((l) => (
           <div key={l.id} className="bg-white rounded-lg border border-gray-100 p-3 hover:bg-gray-50 flex items-center justify-between gap-3">
             <div className="flex items-center gap-3 cursor-pointer min-w-0" onClick={() => openDetail(l.id)}>
@@ -365,7 +384,7 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
               <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="text-sm font-medium text-gray-800">{H(l.name)}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${STAGE_COLORS[l.journey_stage] || 'bg-gray-100 text-gray-500'}`}>{STAGE_LABELS[l.journey_stage] || l.journey_stage || '-'}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${STAGE_COLORS[l.journey_stage] || 'bg-gray-100 text-gray-500'}`}>{STAGE_KEYS[l.journey_stage] ? t(STAGE_KEYS[l.journey_stage]) : (l.journey_stage || '-')}</span>
                   {l.assigned_user_name && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-600">{l.assigned_user_name}</span>}
                 </div>
                 <p className="text-xs text-gray-400 truncate">{l.phone || ''} {l.interest_model ? '· ' + l.interest_model : ''}</p>
@@ -375,16 +394,16 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
               {inDrill ? (
                 /* 下钻态右侧给的是"为什么在这个名单里"：接待归属 + 当前意向分 */
                 <div className="text-right hidden md:block">
-                  <p className="text-xs text-gray-500">{l.served_by === 'human' ? '人工参与接待' : 'AI 独立接待'}</p>
-                  <p className="text-[10px] text-gray-300">意向 {((Number(l.intent_score) || 0) * 100).toFixed(0)}%</p>
+                  <p className="text-xs text-gray-500">{l.served_by === 'human' ? t('customers.servedHuman') : t('customers.servedAi')}</p>
+                  <p className="text-[10px] text-gray-300">{t('customers.intentPct', { pct: ((Number(l.intent_score) || 0) * 100).toFixed(0) })}</p>
                 </div>
               ) : (
                 <div className="text-right hidden md:block">
-                  <p className="text-xs text-gray-400 truncate max-w-[240px]">{l.last_message ? l.last_message.slice(0, 30) + '...' : '暂无消息'}</p>
+                  <p className="text-xs text-gray-400 truncate max-w-[240px]">{l.last_message ? l.last_message.slice(0, 30) + '...' : t('common.noMessages')}</p>
                   <p className="text-[10px] text-gray-300">{l.updated_at ? new Date(l.updated_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''}</p>
                 </div>
               )}
-              <Button size="small" variant="text" onClick={() => openDetail(l.id)}>详情</Button>
+              <Button size="small" variant="text" onClick={() => openDetail(l.id)}>{t('common.detail')}</Button>
             </div>
           </div>
         ))}
@@ -392,68 +411,68 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
       {/* D4：下钻名单可超过一页（后端页大小上限 100），核对完一个指标还要能翻完 */}
       {inDrill && drillPages > 1 && (
         <div className="flex items-center justify-center gap-3 mt-3">
-          <Button size="small" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>上一页</Button>
-          <span className="text-xs text-gray-500">第 {page} / {drillPages} 页</span>
-          <Button size="small" variant="outline" disabled={page >= drillPages} onClick={() => setPage(page + 1)}>下一页</Button>
+          <Button size="small" variant="outline" disabled={page <= 1} onClick={() => setPage(page - 1)}>{t('deals.prevPage')}</Button>
+          <span className="text-xs text-gray-500">{t('customers.pageMeta', { page, pages: drillPages })}</span>
+          <Button size="small" variant="outline" disabled={page >= drillPages} onClick={() => setPage(page + 1)}>{t('deals.nextPage')}</Button>
         </div>
       )}
 
-      <Drawer visible={drawer} onClose={() => setDrawer(false)} size="560px" header="客户线索详情">
+      <Drawer visible={drawer} onClose={() => setDrawer(false)} size="560px" header={t('customers.drawerTitle')}>
         {c && (
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
-              <Button size="small" theme="primary" onClick={openEdit}>编辑资料</Button>
-              <Button size="small" theme="success" variant="outline" onClick={openTagEditor}>管理标签</Button>
-              <Button size="small" variant="outline" onClick={() => void downloadCsv(`/api/v1/admin/export/conversations.csv?customer_id=${c.id}`, `customer_${c.id}_conversations.csv`)}>导出会话</Button>
-              <Button size="small" theme="danger" variant="outline" onClick={() => void deleteCustomer(Number(c.id))}>删除线索</Button>
+              <Button size="small" theme="primary" onClick={openEdit}>{t('customers.editInfo')}</Button>
+              <Button size="small" theme="success" variant="outline" onClick={openTagEditor}>{t('customers.manageTags')}</Button>
+              <Button size="small" variant="outline" onClick={() => void downloadCsv(`/api/v1/admin/export/conversations.csv?customer_id=${c.id}`, `customer_${c.id}_conversations.csv`, t('customers.exportFailed'), t('customers.downloadStarted'))}>{t('customers.exportConv')}</Button>
+              <Button size="small" theme="danger" variant="outline" onClick={() => void deleteCustomer(Number(c.id))}>{t('customers.deleteLead')}</Button>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <div><span className="text-xs text-gray-400">姓名</span><p className="text-sm font-medium">{H(c.name)}</p></div>
-              <div><span className="text-xs text-gray-400">手机</span><p className="text-sm font-medium">{c.phone || '-'}</p></div>
-              <div><span className="text-xs text-gray-400">兴趣产品</span><p className="text-sm">{c.interest_model || '-'}</p></div>
-              <div><span className="text-xs text-gray-400">预算</span><p className="text-sm">{c.budget > 0 ? c.budget + '万' : '-'}</p></div>
-              <div><span className="text-xs text-gray-400">意向分</span><p className="text-sm">{((c.intent_score || 0) * 100).toFixed(0)}%</p></div>
-              <div><span className="text-xs text-gray-400">城市</span><p className="text-sm">{c.city || '-'}</p></div>
-              <div><span className="text-xs text-gray-400">阶段</span><p className="text-sm">{STAGE_LABELS[c.journey_stage] || c.journey_stage || '-'}</p></div>
-              <div><span className="text-xs text-gray-400">顾问</span><p className="text-sm">{detail.assigned_user_name || (c.assigned_user_id > 0 ? '顾问' + c.assigned_user_id : '未分配')}</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.fullName')}</span><p className="text-sm font-medium">{H(c.name)}</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.phoneShort')}</span><p className="text-sm font-medium">{c.phone || '-'}</p></div>
+              <div><span className="text-xs text-gray-400">{t('customers.fieldInterest')}</span><p className="text-sm">{c.interest_model || '-'}</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.budget')}</span><p className="text-sm">{c.budget > 0 ? c.budget + t('customers.wan') : '-'}</p></div>
+              <div><span className="text-xs text-gray-400">{t('customers.fieldIntent')}</span><p className="text-sm">{((c.intent_score || 0) * 100).toFixed(0)}%</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.city')}</span><p className="text-sm">{c.city || '-'}</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.stage')}</span><p className="text-sm">{STAGE_KEYS[c.journey_stage] ? t(STAGE_KEYS[c.journey_stage]) : (c.journey_stage || '-')}</p></div>
+              <div><span className="text-xs text-gray-400">{t('common.advisor')}</span><p className="text-sm">{detail.assigned_user_name || (c.assigned_user_id > 0 ? t('common.advisor') + c.assigned_user_id : t('common.unassigned'))}</p></div>
             </div>
             {/* P1-9：标签改用权威 custTags（GET /customers/:id/tags），chip 带 × 直删 */}
-            <div><span className="text-xs text-gray-400">标签</span><div className="mt-1 flex flex-wrap gap-1">{(custTags.length ? custTags : (detail.tags || [])).map((t: TableRowData, i: number) => <Tag key={i} theme="primary" variant="light" closable={custTags.length > 0 && !!t.tag_id} onClose={() => t.tag_id && void removeTag(Number(t.tag_id))}>{t.tag_name}</Tag>)} {(custTags.length ? custTags : (detail.tags || [])).length === 0 && <span className="text-xs text-gray-300">暂无</span>}</div></div>
-            <div><span className="text-xs text-gray-400">备注</span><p className="text-sm text-gray-600 mt-1">{c.remark || '-'}</p></div>
+            <div><span className="text-xs text-gray-400">{t('common.tags')}</span><div className="mt-1 flex flex-wrap gap-1">{(custTags.length ? custTags : (detail.tags || [])).map((t2: TableRowData, i: number) => <Tag key={i} theme="primary" variant="light" closable={custTags.length > 0 && !!t2.tag_id} onClose={() => t2.tag_id && void removeTag(Number(t2.tag_id))}>{t2.tag_name}</Tag>)} {(custTags.length ? custTags : (detail.tags || [])).length === 0 && <span className="text-xs text-gray-300">{t('customers.none')}</span>}</div></div>
+            <div><span className="text-xs text-gray-400">{t('common.remark')}</span><p className="text-sm text-gray-600 mt-1">{c.remark || '-'}</p></div>
             <div className="pt-2 border-t border-gray-100">
-              <Button size="small" theme="success" variant="outline" onClick={() => void loadTd()}>{showTd ? '🚗 隐藏试驾单' : '🚗 查看试驾单'}</Button>
+              <Button size="small" theme="success" variant="outline" onClick={() => void loadTd()}>{showTd ? t('customers.hideTestDrive') : t('customers.showTestDrive')}</Button>
               <div className="mt-2 space-y-2">
-                {showTd && testDrives.length === 0 && <div className="text-gray-400 text-xs">暂无试驾记录</div>}
+                {showTd && testDrives.length === 0 && <div className="text-gray-400 text-xs">{t('customers.noTestDrive')}</div>}
                 {testDrives.map((td, i) => (
                   <div key={i} className="bg-gray-50 rounded-lg p-2 border border-gray-100">
-                    <div className="flex items-center justify-between"><span className="text-xs font-medium text-gray-700">{td.model_name || '试驾'}</span><span className="text-[10px] text-gray-500">{td.status === 'pending' ? '待试驾' : td.status === 'completed' ? '已完成' : td.status === 'cancelled' ? '已取消' : td.status}</span></div>
+                    <div className="flex items-center justify-between"><span className="text-xs font-medium text-gray-700">{td.model_name || t('customers.testDrive')}</span><span className="text-[10px] text-gray-500">{td.status === 'pending' ? t('customers.tdPending') : td.status === 'completed' ? t('customers.tdCompleted') : td.status === 'cancelled' ? t('customers.tdCancelled') : td.status}</span></div>
                     <p className="text-xs text-gray-400 mt-0.5">{td.scheduled_at ? new Date(td.scheduled_at).toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : ''} {td.location ? '· ' + td.location : ''}</p>
                   </div>
                 ))}
               </div>
             </div>
             <div className="pt-2 border-t border-gray-100">
-              <Button size="small" theme="primary" variant="outline" onClick={() => void loadChat()}>{showChat ? '💬 隐藏聊天记录' : '💬 查看聊天记录'}</Button>
+              <Button size="small" theme="primary" variant="outline" onClick={() => void loadChat()}>{showChat ? t('customers.hideChat') : t('customers.showChat')}</Button>
               <div className="mt-2 max-h-48 overflow-y-auto bg-gray-50 rounded-lg p-3 text-xs space-y-1">
-                {showChat && chat.length === 0 && <div className="text-gray-400">暂无聊天记录</div>}
+                {showChat && chat.length === 0 && <div className="text-gray-400">{t('customers.noChat')}</div>}
                 {chat.map((m, i) => <div key={i}><span className={`${wcolor(m.sender_type)} font-medium`}>[{who(m.sender_type)}]</span> {m.content}</div>)}
               </div>
             </div>
             {/* P1-9：历史会话时间线——会话列表（GET /customers/:id/conversations）+ 点开单会话消息（GET /conversations/:id/messages） */}
             <div className="pt-2 border-t border-gray-100">
-              <Button size="small" theme="primary" variant="outline" onClick={() => void loadConvs()}>{showConvs ? '🗂 隐藏历史会话' : '🗂 查看历史会话'}</Button>
+              <Button size="small" theme="primary" variant="outline" onClick={() => void loadConvs()}>{showConvs ? t('customers.hideConvs') : t('customers.showConvs')}</Button>
               {showConvs && (
                 <div className="mt-2 space-y-1">
-                  {convs.length === 0 && <div className="text-gray-400 text-xs">暂无历史会话</div>}
+                  {convs.length === 0 && <div className="text-gray-400 text-xs">{t('customers.noConvs')}</div>}
                   {convs.map((cv) => (
                     <div key={cv.id} className="bg-gray-50 rounded-lg border border-gray-100">
                       <div className="flex items-center justify-between px-2 py-1.5 cursor-pointer" onClick={() => void toggleConv(Number(cv.id))}>
-                        <span className="text-xs text-gray-600">会话 #{cv.id} · {cv.channel || 'web'} · {cv.status === 'active' ? '进行中' : cv.status === 'closed' ? '已关闭' : cv.status || '-'}</span>
-                        <span className="text-[10px] text-gray-400">{openConv === cv.id ? '收起' : '展开'}</span>
+                        <span className="text-xs text-gray-600">{t('customers.convMeta', { id: cv.id, channel: cv.channel || 'web', status: cv.status === 'active' ? t('common.active') : cv.status === 'closed' ? t('common.closed') : (cv.status || '-') })}</span>
+                        <span className="text-[10px] text-gray-400">{openConv === cv.id ? t('common.collapse') : t('common.expand')}</span>
                       </div>
                       {openConv === cv.id && (
                         <div className="max-h-40 overflow-y-auto px-2 pb-2 text-xs space-y-1">
-                          {convMsgs.length === 0 && <div className="text-gray-400">暂无消息</div>}
+                          {convMsgs.length === 0 && <div className="text-gray-400">{t('common.noMessages')}</div>}
                           {convMsgs.map((m, i) => <div key={i}><span className={`${wcolor(m.sender_type)} font-medium`}>[{who(m.sender_type)}]</span> {m.content}</div>)}
                         </div>
                       )}
@@ -466,22 +485,22 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
         )}
       </Drawer>
 
-      <Dialog header="编辑客户资料" visible={editVisible} onClose={() => setEditVisible(false)} onConfirm={() => void submitEdit()} confirmBtn={saving ? '保存中…' : '保存'} width="680px">
+      <Dialog header={t('customers.editTitle')} visible={editVisible} onClose={() => setEditVisible(false)} onConfirm={() => void submitEdit()} confirmBtn={saving ? t('crud.saving') : t('crud.save')} width="680px">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div><label className="block text-xs text-gray-500 mb-1">姓名</label><Input value={form.name} onChange={(v) => setField('name', v)} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">手机</label><Input value={form.phone} onChange={(v) => setField('phone', v)} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">城市</label><Input value={form.city} onChange={(v) => setField('city', v)} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">兴趣产品</label><Input value={form.interest_model} onChange={(v) => setField('interest_model', v)} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">预算（万元）</label><InputNumber value={Number(form.budget || 0)} onChange={(v) => setField('budget', v)} style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">意向分（0-1）</label><InputNumber value={Number(form.intent_score || 0)} onChange={(v) => setField('intent_score', v)} style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">阶段</label><Select value={form.journey_stage} onChange={(v) => setField('journey_stage', v)} options={STAGE_OPTS} style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">归属顾问</label><Select value={Number(form.assigned_user_id || 0)} onChange={(v) => setField('assigned_user_id', v)} options={users} filterable style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">状态</label><Select value={Number(form.status)} onChange={(v) => setField('status', v)} options={STATUS_EDIT_OPTS} style={{ width: '100%' }} /></div>
-          <div className="md:col-span-2"><label className="block text-xs text-gray-500 mb-1">备注</label><Textarea value={form.remark} onChange={(v) => setField('remark', v)} autosize={{ minRows: 2, maxRows: 5 }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.fullName')}</label><Input value={form.name} onChange={(v) => setField('name', v)} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.phoneShort')}</label><Input value={form.phone} onChange={(v) => setField('phone', v)} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.city')}</label><Input value={form.city} onChange={(v) => setField('city', v)} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.fieldInterest')}</label><Input value={form.interest_model} onChange={(v) => setField('interest_model', v)} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.budgetWan')}</label><InputNumber value={Number(form.budget || 0)} onChange={(v) => setField('budget', v)} style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.intentRange')}</label><InputNumber value={Number(form.intent_score || 0)} onChange={(v) => setField('intent_score', v)} style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.stage')}</label><Select value={form.journey_stage} onChange={(v) => setField('journey_stage', v)} options={stageOptions} style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.fieldOwner')}</label><Select value={Number(form.assigned_user_id || 0)} onChange={(v) => setField('assigned_user_id', v)} options={users} filterable style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.status')}</label><Select value={Number(form.status)} onChange={(v) => setField('status', v)} options={statusEditOptions} style={{ width: '100%' }} /></div>
+          <div className="md:col-span-2"><label className="block text-xs text-gray-500 mb-1">{t('common.remark')}</label><Textarea value={form.remark} onChange={(v) => setField('remark', v)} autosize={{ minRows: 2, maxRows: 5 }} /></div>
         </div>
       </Dialog>
 
-      <Dialog header="管理标签" visible={tagVisible} onClose={() => setTagVisible(false)} onConfirm={() => void submitTags()} confirmBtn={saving ? '保存中…' : '保存'} width="620px">
+      <Dialog header={t('customers.manageTags')} visible={tagVisible} onClose={() => setTagVisible(false)} onConfirm={() => void submitTags()} confirmBtn={saving ? t('crud.saving') : t('crud.save')} width="620px">
         <Select
           value={tagForm}
           onChange={(v) => setTagForm(Array.isArray(v) ? v.map(String) : [])}
@@ -489,23 +508,23 @@ export function CustomersTab({ drill, onExitDrill }: { drill?: ContributionDrill
           multiple
           filterable
           clearable
-          placeholder="选择标签"
+          placeholder={t('customers.tagPlaceholder')}
           style={{ width: '100%' }}
         />
-        <p className="text-xs text-gray-400 mt-2">保存后会覆盖当前客户标签；如需删除某个标签，取消勾选即可。</p>
+        <p className="text-xs text-gray-400 mt-2">{t('customers.tagOverwriteHint')}</p>
       </Dialog>
-      <Dialog header="新建客户线索" visible={createVisible} onClose={() => setCreateVisible(false)} onConfirm={() => void submitCreate()} confirmBtn={saving ? '提交中…' : '创建'} width="620px">
+      <Dialog header={t('customers.createTitle')} visible={createVisible} onClose={() => setCreateVisible(false)} onConfirm={() => void submitCreate()} confirmBtn={saving ? t('deals.submitting') : t('deals.create')} width="620px">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div><label className="block text-xs text-gray-500 mb-1">姓名</label><Input value={create.name} onChange={(v) => setCreate((s) => ({ ...s, name: v }))} placeholder="访客/客户姓名" /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">手机号</label><Input value={create.phone} onChange={(v) => setCreate((s) => ({ ...s, phone: v }))} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">城市</label><Input value={create.city} onChange={(v) => setCreate((s) => ({ ...s, city: v }))} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">兴趣产品</label><Input value={create.interest_model} onChange={(v) => setCreate((s) => ({ ...s, interest_model: v }))} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">预算（万元）</label><InputNumber value={Number(create.budget || 0)} onChange={(v) => setCreate((s) => ({ ...s, budget: v }))} style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">来源</label><Select value={create.source} onChange={(v) => setCreate((s) => ({ ...s, source: v }))} options={SOURCE_OPTS} style={{ width: '100%' }} /></div>
-          <div><label className="block text-xs text-gray-500 mb-1">归属顾问</label><Select value={Number(create.assigned_user_id || 0)} onChange={(v) => setCreate((s) => ({ ...s, assigned_user_id: v }))} options={users} filterable style={{ width: '100%' }} /></div>
-          <div className="md:col-span-2"><label className="block text-xs text-gray-500 mb-1">备注</label><Textarea value={create.remark} onChange={(v) => setCreate((s) => ({ ...s, remark: v }))} autosize={{ minRows: 2, maxRows: 4 }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.fullName')}</label><Input value={create.name} onChange={(v) => setCreate((s) => ({ ...s, name: v }))} placeholder={t('customers.phVisitorName')} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.mobilePhone')}</label><Input value={create.phone} onChange={(v) => setCreate((s) => ({ ...s, phone: v }))} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.city')}</label><Input value={create.city} onChange={(v) => setCreate((s) => ({ ...s, city: v }))} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.fieldInterest')}</label><Input value={create.interest_model} onChange={(v) => setCreate((s) => ({ ...s, interest_model: v }))} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.budgetWan')}</label><InputNumber value={Number(create.budget || 0)} onChange={(v) => setCreate((s) => ({ ...s, budget: v }))} style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('common.source')}</label><Select value={create.source} onChange={(v) => setCreate((s) => ({ ...s, source: v }))} options={sourceOptions} style={{ width: '100%' }} /></div>
+          <div><label className="block text-xs text-gray-500 mb-1">{t('customers.fieldOwner')}</label><Select value={Number(create.assigned_user_id || 0)} onChange={(v) => setCreate((s) => ({ ...s, assigned_user_id: v }))} options={users} filterable style={{ width: '100%' }} /></div>
+          <div className="md:col-span-2"><label className="block text-xs text-gray-500 mb-1">{t('common.remark')}</label><Textarea value={create.remark} onChange={(v) => setCreate((s) => ({ ...s, remark: v }))} autosize={{ minRows: 2, maxRows: 4 }} /></div>
         </div>
-        <p className="text-xs text-gray-400 mt-2">手工录入的线索默认意向分 0.2，可随后在详情中编辑；创建受租户客户数配额约束（超限将被拒绝）。</p>
+        <p className="text-xs text-gray-400 mt-2">{t('customers.createHint')}</p>
       </Dialog>
     </div>
   )

@@ -3,12 +3,13 @@
  * 部门树（增删改/移动）与成员列表（启停/新增），按当前角色展示可操作按钮
  * 依赖接口：/api/v1/org/departments/*、/api/v1/org/users
  */
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect } from 'react'
 import { confirmDialog } from '../lib/confirm'
-import { Dialog, Input, Select, Button, Tag, MessagePlugin } from 'tdesign-react'
-import { useBrand } from '../lib/branding'
+import { Dialog, Input, Select, Button, MessagePlugin } from 'tdesign-react'
 import { AUTH, getToken, type ApiEnvelope } from '../lib/api'
 import { USER_OP_ROLES, DEPT_MOVE_ROLES } from '../lib/roles'
+import { useI18n } from '../i18n/useI18n'
+import type { I18nKey } from '../i18n/context'
 
 // 部门树节点类型（含子节点，递归结构）
 type Dept = { id: number; name: string; depth: number; path: string; user_count: number; children?: Dept[] }
@@ -20,7 +21,7 @@ type User = { id: number; username: string; real_name?: string; role: string; de
 // 自动注入鉴权与代管租户头（P2-15/X-Tenant-ID 语义不变），失败经 toastError 轻提示。
 // 角色中文映射
 // P2-16 修复(2026-09-20 批三)：补 sales/admin 两角色中文名——成员列此前直出英文原值
-const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_admin: '租户管理员', dept_admin: '部门管理员', admin: '管理员', sales: '销售顾问', user: '成员', readonly: '只读' }
+const ROLE_NAME_KEYS: Record<string, I18nKey> = { super_admin: 'org.roleSuperAdmin', tenant_admin: 'org.roleTenantAdmin', dept_admin: 'org.roleDeptAdmin', admin: 'org.roleAdmin', sales: 'org.roleSales', user: 'org.roleUser', readonly: 'org.roleReadonly' }
 
 /**
  * 组织架构管理页组件
@@ -30,7 +31,7 @@ const ROLE_CN: Record<string, string> = { super_admin: '平台超管', tenant_ad
  * 操作按钮按当前用户角色显示/隐藏
  */
 export default function Org() {
-  const brand = useBrand()
+  const { t } = useI18n()
   // P1-8 修复(2026-09-20 审计批)：角色原在模块顶层一次性读 localStorage——SPA 内换账号
   // 不重新加载模块、verifySession 服务端纠偏回写后也不生效，按钮按旧角色显隐。
   // 改在组件渲染时读取（当前用户角色，决定可执行的部门/成员操作），路由重进即拿最新值
@@ -44,7 +45,7 @@ export default function Org() {
   // 当前选中的部门 ID
   const [sel, setSel] = useState<number | null>(null)
   // 当前选中部门名称（用于标题展示）
-  const [curDeptName, setCurDeptName] = useState('全部')
+  const [curDeptName, setCurDeptName] = useState(t('common.all'))
   // 部门操作弹窗状态
   const [dlg, setDlg] = useState<{ mode: string; id?: number | null; title: string } | null>(null)
   // 部门表单：名称和父部门 ID
@@ -61,13 +62,13 @@ export default function Org() {
    */
   async function loadTree() {
     const j = await AUTH<ApiEnvelope<'/api/v1/org/departments/tree'>>('/api/v1/org/departments/tree')
-    const t = j?.data || []
-    setTree(t)
+    const nodes = j?.data || []
+    setTree(nodes)
     // 递归展平部门树
     const flat: Dept[] = []
     // 递归遍历部门树，把所有节点压平到 flat 数组（供下拉选择/列表展示）
     const walk = (ns: Dept[]) => ns.forEach((n) => { flat.push(n); if (n.children) walk(n.children) })
-    walk(t)
+    walk(nodes)
     setDepts(flat)
   }
 
@@ -103,7 +104,7 @@ export default function Org() {
    * @param name - 部门名称（重命名时传当前名称）
    */
   function openDept(mode: string, id?: number | null, name?: string) {
-    setDlg({ mode, id, title: mode === 'add' ? (id ? '新建子部门' : '新建根部门') : mode === 'rename' ? '重命名部门' : '移动部门到…' })
+    setDlg({ mode, id, title: mode === 'add' ? (id ? t('org.addSubTitle') : t('org.addRootTitle')) : mode === 'rename' ? t('org.renameTitle') : t('org.moveTitle') })
     setFName(name || '')
     // P0-2 修复(2026-09-20)：原 `id ? null : null` 恒为 null——"＋子"新建子部门时
     // 父级下拉不预置来源部门，用户需手动重选。仅 add 模式预置 id 为父级；
@@ -131,10 +132,10 @@ export default function Org() {
    * 成功后刷新部门树
    */
   async function delDept(id: number) {
-    if (!(await confirmDialog('删除该空部门？'))) return
+    if (!(await confirmDialog(t('org.delDeptConfirm')))) return
     // 业务失败由 AUTH 内 toastError 提示，此处只在成功时补成功提示
     const j = await AUTH('/api/v1/org/departments/' + id, { method: 'DELETE' })
-    if (j?.code === 0) { MessagePlugin.success(j.message || '已删除'); loadTree() }
+    if (j?.code === 0) { MessagePlugin.success(j.message || t('crud.deleted')); loadTree() }
   }
 
   /**
@@ -157,7 +158,7 @@ export default function Org() {
   async function submitUser() {
     // 失败提示由 AUTH 的 toastError 统一处理，此处只在成功时补成功提示并刷新
     const j = await AUTH('/api/v1/org/users', { method: 'POST', body: u })
-    if (j?.code === 0) { MessagePlugin.success(j.message || '新增成功'); setUserDlg(false); loadUsers(); loadTree() }
+    if (j?.code === 0) { MessagePlugin.success(j.message || t('org.userCreated')); setUserDlg(false); loadUsers(); loadTree() }
   }
 
   // 未登录时不渲染
@@ -169,24 +170,24 @@ export default function Org() {
       <div className="grid grid-cols-1 gap-[18px] max-w-[1200px] mx-auto lg:grid-cols-[minmax(280px,38%)_1fr]">
         {/* 左侧：部门树面板 */}
         <div style={panel}>
-          <div style={top}><h3>部门树</h3><div><Button size="small" theme="primary" onClick={() => openDept('add')}>＋新建根部门</Button>　<button onClick={() => location.href = '/'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--pri)' }}>首页</button></div></div>
+          <div style={top}><h3>{t('org.deptTree')}</h3><div><Button size="small" theme="primary" onClick={() => openDept('add')}>{t('org.createRootBtn')}</Button>　<button onClick={() => location.href = '/'} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--pri)' }}>{t('org.home')}</button></div></div>
           <div>{renderNodes(tree, 0)}</div>
         </div>
         {/* 右侧：成员列表面板 */}
         <div style={panel}>
-          <div style={top}><h3>成员 · <span>{curDeptName}</span></h3><Button size="small" theme="primary" onClick={openUser}>＋添加成员</Button></div>
+          <div style={top}><h3>{t('org.membersTitle', { name: curDeptName })}</h3><Button size="small" theme="primary" onClick={openUser}>{t('org.addMemberBtn')}</Button></div>
           {/* 移动端表格横向滚动，避免 5 列挤压溢出视口 */}
           <div className="overflow-x-auto">
           <table style={{ width: '100%', borderCollapse: 'collapse' }} className="min-w-[560px]">
-            <thead><tr style={{ borderBottom: '1px solid #edf2f7' }}><th style={th}>账号</th><th style={th}>姓名</th><th style={th}>角色</th><th style={th}>部门</th><th style={th}>状态</th></tr></thead>
+            <thead><tr style={{ borderBottom: '1px solid #edf2f7' }}><th style={th}>{t('org.colUsername')}</th><th style={th}>{t('org.colRealName')}</th><th style={th}>{t('org.colRole')}</th><th style={th}>{t('org.colDept')}</th><th style={th}>{t('org.colStatus')}</th></tr></thead>
             <tbody>
-              {users.length === 0 && <tr><td colSpan={5} style={{ ...td, color: '#a0aec0' }}>暂无成员</td></tr>}
+              {users.length === 0 && <tr><td colSpan={5} style={{ ...td, color: '#a0aec0' }}>{t('org.emptyMembers')}</td></tr>}
               {users.map((x) => (
                 <tr key={x.id}>
-                  <td style={td}>{x.username}</td><td style={td}>{x.real_name || '-'}</td><td style={td}>{ROLE_CN[x.role] || x.role}</td><td style={td}>{x.dept_name || '-'}</td>
-                  <td style={td}>{x.status === 1 ? '正常' : <span style={{ color: '#e53e3e' }}>禁用</span>}
+                  <td style={td}>{x.username}</td><td style={td}>{x.real_name || '-'}</td><td style={td}>{ROLE_NAME_KEYS[x.role] ? t(ROLE_NAME_KEYS[x.role]) : x.role}</td><td style={td}>{x.dept_name || '-'}</td>
+                  <td style={td}>{x.status === 1 ? t('org.statusNormal') : <span style={{ color: '#e53e3e' }}>{t('org.statusDisabled')}</span>}
                     {/* 仅管理员/超管/部门管理员可见启停按钮，普通成员与只读无此权限 */}
-                    {(USER_OP_ROLES.includes(ROLE)) && <button style={miniBtn} onClick={() => toggleU(x.id, x.status)}>{x.status === 1 ? '停用' : '启用'}</button>}
+                    {(USER_OP_ROLES.includes(ROLE)) && <button style={miniBtn} onClick={() => toggleU(x.id, x.status)}>{x.status === 1 ? t('common.disable') : t('common.enable')}</button>}
                   </td>
                 </tr>
               ))}
@@ -197,21 +198,21 @@ export default function Org() {
       </div>
 
       {/* 部门操作弹窗：新建/重命名/移动 */}
-      <Dialog header={dlg?.title} visible={!!dlg} onClose={() => setDlg(null)} onConfirm={submitDept} confirmBtn="确 定">
+      <Dialog header={dlg?.title} visible={!!dlg} onClose={() => setDlg(null)} onConfirm={submitDept} confirmBtn={t('org.confirmBtn')}>
         {dlg?.mode === 'move'
-          ? <><label style={lab}>目标父部门</label><Select value={fParent ?? undefined} options={deptOptions(dlg.id ?? undefined)} onChange={(v) => setFParent(v as number)} placeholder="选择父部门" /></>
-          : <><label style={lab}>部门名称</label><Input value={fName} onChange={(v) => setFName(v)} placeholder="部门名称" />
-            {dlg?.mode === 'add' && !ROLE.includes('dept_admin') && <><label style={lab}>父部门（留空=根）</label><Select value={fParent ?? undefined} options={[{ label: '— 根 —', value: 0 }, ...deptOptions()]} onChange={(v) => setFParent(v === 0 ? null : (v as number))} placeholder="根部门" /></>}</>}
+          ? <><label style={lab}>{t('org.targetParentLabel')}</label><Select value={fParent ?? undefined} options={deptOptions(dlg.id ?? undefined)} onChange={(v) => setFParent(v as number)} placeholder={t('org.pickParentPh')} /></>
+          : <><label style={lab}>{t('org.deptNameLabel')}</label><Input value={fName} onChange={(v) => setFName(v)} placeholder={t('org.deptNameLabel')} />
+            {dlg?.mode === 'add' && !ROLE.includes('dept_admin') && <><label style={lab}>{t('org.parentLabel')}</label><Select value={fParent ?? undefined} options={[{ label: t('org.rootOption'), value: 0 }, ...deptOptions()]} onChange={(v) => setFParent(v === 0 ? null : (v as number))} placeholder={t('org.rootPh')} /></>}</>}
       </Dialog>
 
       {/* 新增成员弹窗 */}
-      <Dialog header="添加成员" visible={userDlg} onClose={() => setUserDlg(false)} onConfirm={submitUser} confirmBtn="创 建">
+      <Dialog header={t("org.addMemberTitle")} visible={userDlg} onClose={() => setUserDlg(false)} onConfirm={submitUser} confirmBtn={t("org.createBtn")}>
         <div style={{ display: 'grid', gap: 10 }}>
-          <Input label="用户名" value={u.username} onChange={(v) => setU({ ...u, username: v })} />
-          <Input label="初始密码" type="password" value={u.password} onChange={(v) => setU({ ...u, password: v })} />
-          <Input label="姓名" value={u.real_name} onChange={(v) => setU({ ...u, real_name: v })} />
-          <Select label="角色" value={u.role} options={[{ label: '普通成员', value: 'user' }, { label: '部门管理员', value: 'dept_admin' }, ...(ROLE !== 'dept_admin' ? [{ label: '只读', value: 'readonly' }] : [])]} onChange={(v) => setU({ ...u, role: v as string })} />
-          <Select label="所属部门" value={u.department_id || undefined} options={[{ label: '未分配', value: 0 }, ...depts.map((d) => ({ label: d.name, value: d.id }))]} onChange={(v) => setU({ ...u, department_id: v as number })} />
+          <Input label={t("org.usernameLabel")} value={u.username} onChange={(v) => setU({ ...u, username: v })} />
+          <Input label={t("org.passwordLabel")} type="password" value={u.password} onChange={(v) => setU({ ...u, password: v })} />
+          <Input label={t("org.realNameLabel")} value={u.real_name} onChange={(v) => setU({ ...u, real_name: v })} />
+          <Select label={t("org.roleLabel")} value={u.role} options={[{ label: t('org.roleOptionUser'), value: 'user' }, { label: t('org.roleDeptAdmin'), value: 'dept_admin' }, ...(ROLE !== 'dept_admin' ? [{ label: t('org.roleReadonly'), value: 'readonly' }] : [])]} onChange={(v) => setU({ ...u, role: v as string })} />
+          <Select label={t("org.deptLabel")} value={u.department_id || undefined} options={[{ label: t('common.unassigned'), value: 0 }, ...depts.map((d) => ({ label: d.name, value: d.id }))]} onChange={(v) => setU({ ...u, department_id: v as number })} />
         </div>
       </Dialog>
     </div>
@@ -228,13 +229,13 @@ export default function Org() {
       <div key={n.id}>
         <div onClick={() => { setSel(n.id); setCurDeptName(n.name); }} style={{ padding: '6px 8px', borderRadius: 6, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer', marginLeft: depth * 20, background: sel === n.id ? '#e6ecff' : undefined }}>
           <span style={{ flex: 1 }}>{n.name}{depth === 0 && ' 🏠'}</span>
-          <span style={{ color: '#718096', fontSize: 12 }}>{n.user_count}人</span>
+          <span style={{ color: '#718096', fontSize: 12 }}>{t('org.userCount', { count: n.user_count })}</span>
           <span style={{ display: 'flex', gap: 4 }}>
-            <button style={op} title="添加子部门" onClick={(e) => { e.stopPropagation(); openDept('add', n.id) }}>＋子</button>
-            <button style={op} title="重命名" onClick={(e) => { e.stopPropagation(); openDept('rename', n.id, n.name) }}>✎</button>
+            <button style={op} title={t('org.tipAddSub')} onClick={(e) => { e.stopPropagation(); openDept('add', n.id) }}>{t('org.addSubBtn')}</button>
+            <button style={op} title={t('org.tipRename')} onClick={(e) => { e.stopPropagation(); openDept('rename', n.id, n.name) }}>✎</button>
             {/* 移动按钮仅超管和租户管理员可见 */}
-            {(DEPT_MOVE_ROLES.includes(ROLE)) && <button style={op} title="移动" onClick={(e) => { e.stopPropagation(); openDept('move', n.id) }}>⇄</button>}
-            <button style={op} title="删除" onClick={(e) => { e.stopPropagation(); delDept(n.id) }}>🗑</button>
+            {(DEPT_MOVE_ROLES.includes(ROLE)) && <button style={op} title={t('org.tipMove')} onClick={(e) => { e.stopPropagation(); openDept('move', n.id) }}>⇄</button>}
+            <button style={op} title={t('org.tipDelete')} onClick={(e) => { e.stopPropagation(); delDept(n.id) }}>🗑</button>
           </span>
         </div>
         {/* 递归渲染子部门 */}

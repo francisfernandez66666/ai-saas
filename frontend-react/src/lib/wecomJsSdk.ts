@@ -12,6 +12,7 @@ declare global {
 
 // jsconfig 响应 data 形态（对齐 channel.JSCfgResult json tag：corpid/timestamp/noncestr/signature）
 type WecomJsCfg = { corpid: string; timestamp: string; noncestr: string; signature: string }
+// JsCfgResp jsconfig 接口的标准信封：code/message 为状态位，data 为企业签名配置（失败时为 null）。
 type JsCfgResp = { code?: number; message?: string; data?: WecomJsCfg | null }
 
 // jweixin 官方 CDN（CSP script-src 已定点放行 https://res.wx.qq.com，见 cmd/server/main.go）

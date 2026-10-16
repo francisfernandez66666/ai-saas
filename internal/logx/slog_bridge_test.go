@@ -54,7 +54,7 @@ func TestInitStructuredLoggingSetsFlags(t *testing.T) {
 	defer log.SetOutput(out)
 	defer log.SetFlags(flags)
 
-	InitStructuredLogging("text")
+	InitStructuredLogging("text", "")
 	if log.Flags() != log.Lshortfile {
 		t.Fatalf("桥接后 std log 仅应保留 Lshortfile（时间戳由 slog 提供），got %d", log.Flags())
 	}

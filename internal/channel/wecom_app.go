@@ -44,6 +44,7 @@ type wxPlainMessage struct {
 // init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wecomAppAdapter{}) }
 
+// wecomAppAdapter 企微自建应用通道适配器（空结构体：全部行为走方法，无自有状态）。
 type wecomAppAdapter struct{}
 
 // Type 返回企微自建应用通道适配器类型。

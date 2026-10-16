@@ -49,6 +49,8 @@ type fakePSP struct {
 	closed bool
 }
 
+// newFakePSP 起假支付网关（通用 HMAC 渠道）并按到达顺序记录每次退款单号，
+// 供幂等用例断言"同一单号只发出一笔"。
 func newFakePSP() *fakePSP {
 	f := &fakePSP{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -69,12 +71,14 @@ func newFakePSP() *fakePSP {
 	return f
 }
 
+// requests 取已记录退款单号的副本（加锁读），供断言实际外发了几笔、单号是什么。
 func (f *fakePSP) requests() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]string(nil), f.got...)
 }
 
+// close 幂等关闭假网关（重复调用不重复 Close），供多路径用例收尾。
 func (f *fakePSP) close() {
 	if !f.closed {
 		f.closed = true
@@ -91,6 +95,7 @@ type alertSink struct {
 	msgs []string
 }
 
+// newAlertSink 起假企微群端点并记录收到的告警正文，让"必须告警"这类断言可数。
 func newAlertSink() *alertSink {
 	a := &alertSink{}
 	a.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +135,7 @@ func (a *alertSink) waitContaining(t *testing.T, want string) {
 	t.Fatalf("3s 内未收到含「%s」的群告警", want)
 }
 
+// close 关闭假告警端点（用例收尾）。
 func (a *alertSink) close() { a.srv.Close() }
 
 // confWith 把通用网关渠道与群通知装配到两个假端点（pay_gateway_* 走 providerForChannel 回落分支）

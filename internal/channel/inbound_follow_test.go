@@ -63,6 +63,7 @@ func useCaptureCenter(t *testing.T) *captureCenter {
 	return cen
 }
 
+// countCustomers 数某租户的客户行数，供断言关注事件链路不得顺手建客户。
 func countCustomers(tid uint) int64 {
 	var n int64
 	db.DB.Model(&model.Customer{}).Where("tenant_id = ?", tid).Count(&n)

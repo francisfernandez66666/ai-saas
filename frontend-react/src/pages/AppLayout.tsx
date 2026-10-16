@@ -3,10 +3,11 @@
  * 提供顶栏导航 + Outlet 子路由渲染
  * 对受保护子路由做登录态守卫（无 token 跳登录并带 redirect 回跳）
  */
-import { ReactNode } from 'react'
 import { Link, Outlet, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { clearToken, getToken } from '../lib/api'
 import { isStaff } from '../lib/roles'
+import { useI18n } from '../i18n/useI18n'
+import { LanguageSwitcher } from '../components/LanguageSwitcher'
 
 // 需要登录态的 /app 子路由（原 Vue main.js 的 meta.auth 守卫）
 const PROTECTED = ['/app/advisor', '/app/billing', '/app/referral', '/app/settings']
@@ -21,6 +22,8 @@ export default function AppLayout() {
   const token = getToken()
   const loc = useLocation()
   const nav = useNavigate()
+  // P2-14：顶栏导航/登录/退出文案走 t()；语言切换器同栏（出海工作台可随时切回）
+  const { t } = useI18n()
 
   // 路由守卫：受保护页无 token → 跳登录（带 redirect 回跳）
   if (PROTECTED.includes(loc.pathname) && !token) {
@@ -62,18 +65,20 @@ export default function AppLayout() {
       {/* 顶栏：Logo + 导航链接 + 退出按钮 */}
       <div style={{ position: 'sticky', top: 0, zIndex: 9, background: 'rgba(255,255,255,.85)', backdropFilter: 'blur(8px)', display: 'flex', alignItems: 'center', gap: 14, padding: '12px 16px', borderBottom: '1px solid #e8eaf0', flexWrap: 'wrap' }}>
         <b onClick={() => nav('/app')} style={{ cursor: 'pointer', color: '#4f46e5', fontSize: 16 }}>AI-SCRM</b>
-        {link('/app/chat', '对话')}
+        {link('/app/chat', t('app.nav.chat'))}
         {/* G-23：基于角色的导航菜单过滤 */}
         {/* 条件渲染：必须同时满足"已登录"且"管理员角色"才显示以下菜单项 */}
         {/* 成员角色（sales/user/readonly）登录后只能看到"对话"和"设置"，不暴露管理功能入口 */}
-        {token && link('/app/advisor', '顾问台')}
-        {token && isAdmin && link('/app/billing', '收银台')}
-        {token && link('/app/referral', '邀请')}
-        {token && link('/app/settings', '设置')}
+        {token && link('/app/advisor', t('app.nav.advisor'))}
+        {token && isAdmin && link('/app/billing', t('app.nav.billing'))}
+        {token && link('/app/referral', t('app.nav.referral'))}
+        {token && link('/app/settings', t('app.nav.settings'))}
         <span style={{ flex: 1 }} />
+        {/* 语言切换：所有访客可见（含未登录），出海入口不该藏在登录后 */}
+        <LanguageSwitcher />
         {/* 未登录显示登录链接，已登录显示退出按钮 */}
-        {!token && link('/app/login', '登录')}
-        {token && <a href="#" onClick={(e) => { e.preventDefault(); logout() }} style={{ fontSize: 14, color: '#ea580c', textDecoration: 'none' }}>退出</a>}
+        {!token && link('/app/login', t('app.nav.login'))}
+        {token && <a href="#" onClick={(e) => { e.preventDefault(); logout() }} style={{ fontSize: 14, color: '#ea580c', textDecoration: 'none' }}>{t('app.nav.logout')}</a>}
       </div>
       {/* 子路由渲染区域 */}
       <div style={{ paddingBottom: 24 }}><Outlet /></div>

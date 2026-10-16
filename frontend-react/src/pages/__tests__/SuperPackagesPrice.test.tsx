@@ -47,7 +47,8 @@ describe('SuperAdmin AI 商业包新建〔售价元→分单点换算〕', () =>
     // MessagePlugin 真实现要挂 DOM 容器，jsdom 里全部桩成 no-op——
     // warning 那条留给用例断言（拦截文案是真判据，不许只看不发请求）
     for (const k of ['success', 'error', 'info', 'warning'] as const) {
-      vi.spyOn(MessagePlugin, k).mockImplementation(() => ({ close: () => {} }) as any)
+      // P2-10：`as any` → 具名返回面（MessagePlugin 各方法返回同一形态的实例句柄）
+      vi.spyOn(MessagePlugin, k).mockImplementation(() => ({ close: () => {} }) as unknown as ReturnType<typeof MessagePlugin.warning>)
     }
     vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url, init })

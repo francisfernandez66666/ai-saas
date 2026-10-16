@@ -8,9 +8,12 @@
 package logx
 
 import (
+	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -39,15 +42,52 @@ func (slogBridge) Write(p []byte) (int, error) {
 // InitStructuredLogging 初始化 slog 默认 logger 并接管 std log 输出。
 // format=json（推荐，release 默认）单行可解析；format=text（debug 默认）人类可读。
 // 时间戳由 slog 统一提供，故 std log 侧关掉日期标志、仅保留 Lshortfile（file:line 进 msg）。
-func InitStructuredLogging(format string) {
+//
+// logFile != "" 时启用日志轮转（P2-6）：handler 挂在 RotatingWriter 上而非 os.Stderr。
+// 这修掉了"日志经 shell 重定向落盘但永不轮转、单文件可达数百 MB"的缺陷。
+// 注意：启用后**不要再用 >> 重定向同一个文件**，否则会出现两个写入方互相抢写同一 inode。
+func InitStructuredLogging(format string, logFile string) {
 	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	var sink io.Writer = os.Stderr
+
+	// 轮转参数：默认单文件 100 MB、保留 5 份（= 最多占 600 MB），可用环境变量覆盖。
+	const (
+		defaultRotateMaxSize    = 100 << 20 // 100 MB
+		defaultRotateMaxBackups = 5
+	)
+	if logFile != "" {
+		maxSize := envInt64("LOG_ROTATE_MAX_SIZE_MB", defaultRotateMaxSize>>20) << 20
+		maxBackups := int(envInt64("LOG_ROTATE_MAX_BACKUPS", defaultRotateMaxBackups))
+		rw, err := NewRotatingWriter(logFile, maxSize, maxBackups)
+		if err != nil {
+			// 轮转初始化失败不得阻断启动：退回 stderr，保证日志可观测
+			log.SetOutput(os.Stderr)
+			fmt.Fprintf(os.Stderr, "[logx][WARN] 日志轮转初始化失败(%v)，已退回 stderr 输出\n", err)
+		} else {
+			sink = rw
+		}
+	}
+
 	var h slog.Handler
 	if strings.EqualFold(format, "json") {
-		h = slog.NewJSONHandler(os.Stderr, opts)
+		h = slog.NewJSONHandler(sink, opts)
 	} else {
-		h = slog.NewTextHandler(os.Stderr, opts)
+		h = slog.NewTextHandler(sink, opts)
 	}
 	slog.SetDefault(slog.New(h))
 	log.SetFlags(log.Lshortfile)
 	log.SetOutput(slogBridge{})
+}
+
+// envInt64 读环境变量整数，非法/缺省回落 def
+func envInt64(key string, def int64) int64 {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n <= 0 {
+		return def
+	}
+	return n
 }

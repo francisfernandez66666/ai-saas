@@ -6,8 +6,10 @@
  */
 import { useState, useEffect } from 'react'
 import { confirmDialog, toast } from '../lib/confirm'
-import { AUTH, getToken } from '../lib/api'
+import { AUTH } from '../lib/api'
 import { isStaff } from '../lib/roles'
+import { DEFAULT_CATEGORY } from '../lib/tenantKb'
+import { useI18n } from '../i18n/useI18n'
 import type { ApiResp, KbMaterial } from '../types'
 
 // 企业知识库列表分页响应 data 结构（admin/kb/my）
@@ -22,6 +24,7 @@ type KbListResp = { list: KbMaterial[]; total: number; page: number; page_size: 
  * 4. 账号注销：输入密码确认 → 次日零点停用（数据保留）
  */
 export default function AppSettings() {
+  const { t } = useI18n()
   // P1-42(2026-09-09)：企业知识库管理/账号注销接口须管理员权限——
   // 成员角色(sales/user)进入 /app/settings 不应 403 白屏：改密/换绑邮箱全员可用，
   // KB 管理区块仅管理员展示
@@ -63,7 +66,7 @@ export default function AppSettings() {
    */
   async function changePwd() {
     const j: ApiResp<unknown> = await AUTH('/api/v1/auth/change-password', { method: 'POST', body: { old_password: oldPwd, new_password: newPwd } })
-    setPwdMsg(j.code === 0 ? '✓ 已修改' : (j.message || '失败'))
+    setPwdMsg(j.code === 0 ? t('appSettings.pwdChanged') : (j.message || t('common.failed')))
   }
 
   /**
@@ -77,7 +80,8 @@ export default function AppSettings() {
     await AUTH('/api/v1/auth/email/code', { method: 'POST', body: { new_email: newEmail } })
     // 发送后进入 60s 倒计时，禁止重复点击
     setCd(60)
-    const t = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(t); return 0 } return c - 1 }) }, 1000)
+    // 局部变量不叫 t——t 是 useI18n 的翻译函数，遮蔽会让按钮文案变成 key 原文
+    const timer = setInterval(() => { setCd((c) => { if (c <= 1) { clearInterval(timer); return 0 } return c - 1 }) }, 1000)
   }
 
   /**
@@ -102,9 +106,9 @@ export default function AppSettings() {
    * 上传成功后清空表单并刷新列表
    */
   async function uploadKb() {
-    const j: ApiResp<unknown> = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: '企业知识' } })
+    const j: ApiResp<unknown> = await AUTH('/api/v1/admin/kb/upload', { method: 'POST', body: { title: kbTitle, content: kbContent, category: DEFAULT_CATEGORY } })
     if (j.code === 0) { setKbTitle(''); setKbContent(''); loadKb() }
-    toast.info(j.message || '已上传')
+    toast.info(j.message || t('appSettings.uploaded'))
   }
 
   /**
@@ -112,7 +116,7 @@ export default function AppSettings() {
    */
   async function delKb(id: number) {
     // P2-14 修复(2026-09-20 批三)：删除知识切片原一键直删——补二次确认（与注销/PII 删除同口径）
-    if (!(await confirmDialog('删除该知识切片？删除后 AI 问答将不再引用其内容，且不可恢复。', '删除知识切片'))) return
+    if (!(await confirmDialog(t('appSettings.delKbConfirm'), t('appSettings.delKbTitle')))) return
     await AUTH('/api/v1/admin/kb/my/' + id, { method: 'DELETE' })
     loadKb()
   }
@@ -122,7 +126,7 @@ export default function AppSettings() {
    * 需二次确认密码；平台级动作，名下 API Key 同步禁用
    */
   async function cancelAccount() {
-    if (!(await confirmDialog('确认注销？次日零点起账号停用（数据保留）'))) return
+    if (!(await confirmDialog(t('appSettings.cancelConfirm')))) return
     // 注销需二次确认密码；平台级动作，名下 API Key 同步禁用
     const j: ApiResp<unknown> = await AUTH('/api/v1/admin/account/cancel', { method: 'POST', body: { password: cancelPwd } })
     setCMsg(j.message || '')
@@ -133,10 +137,11 @@ export default function AppSettings() {
    * 与账号注销不同：注销只停用，删除申请到期后匿名化账号侧 PII。
    */
   async function requestUserDeletion() {
-    if (!(await confirmDialog('申请删除你的账号个人信息？提交后将在到期前匿名化，账号注销需另行确认。'))) return
+    if (!(await confirmDialog(t('appSettings.userDelConfirm')))) return
     setDelBusy(true)
     const j: ApiResp<{ deadline?: string; duplicated?: boolean }> = await AUTH('/api/v1/privacy/deletion-request', { method: 'POST', body: { scope: 'user' } })
-    setDMsg(j.code === 0 ? `已受理${j.data?.deadline ? '，预计 ' + new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''}` : (j.message || '提交失败'))
+    const deadline = j.data?.deadline ? new Date(j.data.deadline).toLocaleString('zh-CN', { hour12: false }) : ''
+    setDMsg(j.code === 0 ? t('appSettings.accepted', { deadline: deadline ? t('appSettings.deadline', { deadline }) : '' }) : (j.message || t('appSettings.submitFailed')))
     setDelBusy(false)
   }
 
@@ -149,68 +154,68 @@ export default function AppSettings() {
 
   return (
     <div style={{ maxWidth: 680, margin: '0 auto', padding: 16 }}>
-      <h2 style={{ fontSize: 20, margin: '0 0 14px' }}>⚙️ 账号设置</h2>
+      <h2 style={{ fontSize: 20, margin: '0 0 14px' }}>{t('appSettings.title')}</h2>
       {/* 首次登录强制改密提示 */}
-      {must && <div style={{ ...card, border: '1px solid #fde68a', background: '#fffbeb' }}><p style={{ color: '#b45309', margin: 0 }}>⚠️ 首次登录请先修改密码后再使用其他功能</p></div>}
+      {must && <div style={{ ...card, border: '1px solid #fde68a', background: '#fffbeb' }}><p style={{ color: '#b45309', margin: 0 }}>{t('appSettings.mustChangePwd')}</p></div>}
 
       {/* 修改密码模块 */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>修改密码</h3>
-        <label style={labelStyle}>旧密码</label><input type="password" value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} style={inputStyle} />
-        <label style={labelStyle}>新密码（≥8位含字母数字）</label><input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} style={inputStyle} />
-        <button onClick={changePwd} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>修改</button>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{t('appSettings.changePwdTitle')}</h3>
+        <label style={labelStyle}>{t('appSettings.oldPwd')}</label><input type="password" value={oldPwd} onChange={(e) => setOldPwd(e.target.value)} style={inputStyle} />
+        <label style={labelStyle}>{t('appSettings.newPwd')}</label><input type="password" value={newPwd} onChange={(e) => setNewPwd(e.target.value)} style={inputStyle} />
+        <button onClick={changePwd} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>{t('appSettings.changeBtn')}</button>
         {pwdMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{pwdMsg}</p>}
       </div>
 
       {/* 换绑邮箱模块 */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>换绑邮箱</h3>
-        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>新邮箱曾参与奖励领取时不可用于换绑</p>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{t('appSettings.changeEmailTitle')}</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>{t('appSettings.emailRewardWarn')}</p>
         <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-          <input placeholder="新邮箱" value={newEmail} onChange={(e) => setNewEmail(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: 1 }} />
-          <button disabled={cd > 0} onClick={sendCode} style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>{cd > 0 ? cd + 's' : '发验证码'}</button>
+          <input placeholder={t('appSettings.newEmailPh')} value={newEmail} onChange={(e) => setNewEmail(e.target.value)} style={{ ...inputStyle, marginBottom: 0, flex: 1 }} />
+          <button disabled={cd > 0} onClick={sendCode} style={{ padding: '9px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', cursor: 'pointer', whiteSpace: 'nowrap' }}>{cd > 0 ? cd + 's' : t('appSettings.sendCode')}</button>
         </div>
-        <label style={labelStyle}>验证码</label><input value={emailCode} onChange={(e) => setEmailCode(e.target.value)} style={inputStyle} />
-        <button onClick={bindEmail} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>换绑</button>
+        <label style={labelStyle}>{t('appSettings.codeLabel')}</label><input value={emailCode} onChange={(e) => setEmailCode(e.target.value)} style={inputStyle} />
+        <button onClick={bindEmail} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>{t('appSettings.bindBtn')}</button>
         {emMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{emMsg}</p>}
       </div>
 
       {/* 个人数据删除申请（F13/C2：登录态所有成员可撤回本人账号 PII） */}
       <div style={{ ...card, border: '1px solid #ddd6fe' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>个人信息删除</h3>
-        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>用于行使删除权；提交后 15 天内匿名化账号可识别信息，不等同于注销停用。</p>
-        <button disabled={delBusy} onClick={requestUserDeletion} style={{ padding: '9px 16px', borderRadius: 8, border: '1px solid #7c3aed', background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>{delBusy ? '提交中…' : '申请删除账号信息'}</button>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{t('appSettings.piiTitle')}</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>{t('appSettings.piiDesc')}</p>
+        <button disabled={delBusy} onClick={requestUserDeletion} style={{ padding: '9px 16px', borderRadius: 8, border: '1px solid #7c3aed', background: '#fff', color: '#7c3aed', cursor: 'pointer' }}>{delBusy ? t('appSettings.piiSubmitting') : t('appSettings.piiBtn')}</button>
         {dMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{dMsg}</p>}
       </div>
 
       {/* 企业知识库模块（G-23：全员只读可见，上传/删除仍仅管理员） */}
       <div style={card}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>我的企业知识库</h3>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{t('appSettings.kbTitle')}</h3>
         <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>
-          {isAdmin ? '上传产品/企业资料，AI 对话自动融合检索（租户层优先）' : '本租户已沉淀的资料，AI 对话会自动引用；需要补充或修改请联系管理员'}
+          {isAdmin ? t('appSettings.kbAdminDesc') : t('appSettings.kbMemberDesc')}
         </p>
         {isAdmin && <>
-          <label style={labelStyle}>标题</label><input placeholder="如：售后政策" value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
-          <label style={labelStyle}>内容</label><textarea rows={4} value={kbContent} onChange={(e) => setKbContent(e.target.value)} style={{ ...inputStyle, resize: 'vertical' }} />
-          <button onClick={uploadKb} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>上传切片入库</button>
+          <label style={labelStyle}>{t('common.title')}</label><input placeholder={t('appSettings.kbTitlePh')} value={kbTitle} onChange={(e) => setKbTitle(e.target.value)} style={inputStyle} />
+          <label style={labelStyle}>{t('common.content')}</label><textarea rows={4} value={kbContent} onChange={(e) => setKbContent(e.target.value)} style={{ ...inputStyle, resize: 'vertical' }} />
+          <button onClick={uploadKb} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: 'var(--pri)', color: '#fff', cursor: 'pointer' }}>{t('appSettings.kbUploadBtn')}</button>
         </>}
         {/* 知识库列表：管理员可删，成员只看 */}
         <ul style={{ marginTop: 12, paddingLeft: 18, fontSize: 14 }}>
           {kbList.map((f) => (
             <li key={f.id} style={{ margin: '6px 0' }}>{f.title}
-              {isAdmin && <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>删除</a>}
+              {isAdmin && <a href="#" onClick={(e) => { e.preventDefault(); delKb(f.id) }} style={{ color: '#ef4444', marginLeft: 8 }}>{t('crud.delete')}</a>}
             </li>
           ))}
         </ul>
-        {!isAdmin && kbList.length === 0 && <p style={{ fontSize: 13, color: '#9ca3af', margin: '12px 0 0' }}>管理员还没有上传资料</p>}
+        {!isAdmin && kbList.length === 0 && <p style={{ fontSize: 13, color: '#9ca3af', margin: '12px 0 0' }}>{t('appSettings.kbEmptyMember')}</p>}
       </div>
 
       {/* 账号注销模块（P1-42：仅管理员展示；成员角色无此权限） */}
       {isAdmin && <div style={{ ...card, border: '1px solid #fecaca' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16, color: '#ef4444' }}>⚠️ 账号注销</h3>
-        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>今日内仍可登录，明日零点起停用；数据保留不删除；名下 API Key 同步禁用。</p>
-        <label style={labelStyle}>输入登录密码确认</label><input type="password" value={cancelPwd} onChange={(e) => setCancelPwd(e.target.value)} style={inputStyle} />
-        <button onClick={cancelAccount} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer' }}>申请注销</button>
+        <h3 style={{ margin: '0 0 12px', fontSize: 16, color: '#ef4444' }}>{t('appSettings.cancelTitle')}</h3>
+        <p style={{ fontSize: 13, color: '#6b7280', marginTop: 0 }}>{t('appSettings.cancelDesc')}</p>
+        <label style={labelStyle}>{t('appSettings.cancelPwdLabel')}</label><input type="password" value={cancelPwd} onChange={(e) => setCancelPwd(e.target.value)} style={inputStyle} />
+        <button onClick={cancelAccount} style={{ padding: '9px 16px', borderRadius: 8, border: 'none', background: '#ef4444', color: '#fff', cursor: 'pointer' }}>{t('appSettings.cancelBtn')}</button>
         {cMsg && <p style={{ fontSize: 13, color: '#6b7280', marginTop: 8 }}>{cMsg}</p>}
       </div>}
     </div>

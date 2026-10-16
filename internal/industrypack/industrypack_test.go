@@ -36,6 +36,7 @@ var (
 	packKey2 *rsa.PrivateKey // 仿冒侧密钥对（错误私钥/未授权签名）
 )
 
+// init 预生成整包共享的两份 RSA-2048 测试密钥（平台侧 packKey1 / 仿冒侧 packKey2）。
 func init() {
 	// 生成失败直接 panic：本包全部用例都依赖密钥，早失败比逐个 t.Fatal 更清楚
 	var err error
@@ -47,7 +48,10 @@ func init() {
 	}
 }
 
+// keys1 取平台侧测试密钥对（正常打包/开包路径用）。
 func keys1() *Keys { return &Keys{Private: packKey1, Public: &packKey1.PublicKey} }
+
+// keys2 取仿冒侧测试密钥对（错误私钥/未授权签名路径用）。
 func keys2() *Keys { return &Keys{Private: packKey2, Public: &packKey2.PublicKey} }
 
 // TestValidCodeRejectsInjection 包 code 白名单：非法形态一律拒（方向不可反）

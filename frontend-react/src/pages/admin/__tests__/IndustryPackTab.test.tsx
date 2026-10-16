@@ -18,6 +18,7 @@ const STAT_NEW = { template_id: 'tpl_new', pack_code: 'auto_rox', pack_version: 
 const STAT_HIST = { template_id: 'tpl_compare', pack_code: 'auto_rox', pack_version: '1.0.0', sample_count: 55, hook_rate: 0.4, lead_rate: 0.1, pending_human_rate: 0.08, avg_intent_delta: 0.02, avg_eval_score: 70 }
 // 与组件同款格式化（IndustryPackTab.tsx:152/:表内 delta 表达式）：期望串按夹具重算
 const fmtPct = (v: number) => `${(Number(v) * 100).toFixed(1)}%`
+// fmtDelta 与组件同款的 delta 格式化（带正号、百分比一位小数），期望串按夹具现推不抄读数。
 const fmtDelta = (cur: number, prev: number) => {
   const d = Number(cur || 0) - Number(prev || 0)
   return `${d >= 0 ? '+' : ''}${(d * 100).toFixed(1)}%`

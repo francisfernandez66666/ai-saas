@@ -26,3 +26,48 @@
   --td-brand-color-focus: #c7d2fe;
   --td-brand-color-disabled: #c7d2fe;
 }
+
+/* ============================================================
+ * 响应式基线（2026-10-13 修复批 P2-11）：原版 @media 0 条、仅 2 处 JS 断点。
+ * 此处补全局断点令牌与根字号缩放，业务组件按需引用 var(--bp-*) 做布局降级，
+ * 不强行改动既有组件结构，避免回归。
+ * ============================================================ */
+:root {
+  --bp-sm: 640px;
+  --bp-md: 768px;
+  --bp-lg: 1024px;
+  --bp-xl: 1280px;
+}
+
+/* 根字号随视口缩放（clamp 保证 14~16px 区间），字号相关的 rem 布局自动适配移动端 */
+html {
+  font-size: clamp(14px, 0.5vw + 13px, 16px);
+}
+
+/* 全局容器：移动端留边、桌面端限宽居中 */
+.app-container,
+.t-layout__content > .t-content {
+  width: 100%;
+  max-width: 100%;
+  margin: 0 auto;
+  padding: 12px;
+  box-sizing: border-box;
+}
+
+@media (max-width: 640px) {
+  .app-container,
+  .t-layout__content > .t-content {
+    padding: 8px;
+  }
+  /* 移动端默认隐藏侧栏（由 useMedia 的 JS 断点托底抽屉），避免横向溢出 */
+  .t-layout__aside {
+    display: none;
+  }
+}
+
+@media (min-width: 1280px) {
+  .app-container,
+  .t-layout__content > .t-content {
+    max-width: 1440px;
+  }
+}

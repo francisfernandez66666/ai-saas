@@ -19,6 +19,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,8 +30,11 @@ import (
 	"ai-scrm/internal/ai"
 	"ai-scrm/internal/logx"
 	"ai-scrm/internal/service"
+	"ai-scrm/internal/telemetry"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Server AI 网关 HTTP 服务
@@ -155,16 +159,18 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "messages 不能为空"}})
 		return
 	}
-	// P1-40：Stream 字段原本被静默忽略——SSE 客户端拿 JSON 必挂；显式拒绝更诚实
-	if req.Stream {
-		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"message": "网关暂不支持流式输出（stream=true）"}, "code": "stream_unsupported"})
-		return
-	}
+	// P2-2：stream=true 改为 OpenAI 兼容 SSE 分片输出（移除原 stream_unsupported 拒绝）。
+	// 诚实说明：上游 llm 客户端当前均为非流式（返回完整串），故这是"完整结果分片成 SSE 帧"的
+	// 投递，SSE 客户端可正常增量消费；厂商侧 token 级流式属更大改造（见 FIXPLAN P2-2）。
 	var temp float64
 	if req.Temperature == nil {
 		temp = 0.7 // 省略默认
 	} else {
 		temp = *req.Temperature // 显式传值（含 0）透传
+	}
+	if req.Stream {
+		s.handleChatStream(c, tenantID, stage, req, temp, gatewayTrace(c))
+		return
 	}
 
 	// 1. 计费统一（2026-09-03）：ConsumeAIQuota 已降级为统计旁路（恒 true，仅累计计数），
@@ -183,8 +189,12 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 	// E3(2026-09-19)：续用调用方 X-Trace-ID（调用本网关须持签名 JWT，属内部可信链路；
 	// 仍做字符白名单防日志注入），trace-only ctx 下传供出站客户端串链。
 	start := time.Now()
-	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(logx.ContextWithTrace(context.Background(), gatewayTrace(c)), stage, tenantID, req.Messages, temp)
+	ctx, span := telemetry.Tracer().Start(logx.ContextWithTrace(context.Background(), gatewayTrace(c)), "ai-gateway.chat")
+	defer span.End()
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(ctx, stage, tenantID, req.Messages, temp)
+	setChatSpanAttrs(span, tenantID, stage, provider, modelName, usage.PromptTokens, usage.CompletionTokens)
 	if err != nil || reply == "" {
+		span.RecordError(err)
 		c.JSON(http.StatusBadGateway, gin.H{
 			"error": gin.H{"message": "上游模型全部不可用: " + errStr(err)},
 			"code":  "upstream_unavailable",
@@ -213,6 +223,107 @@ func (s *Server) handleChatCompletions(c *gin.Context) {
 			"total_tokens":      usage.TotalTokens,
 		},
 	})
+}
+
+// handleChatStream OpenAI 兼容 SSE 流式输出（P2-2）。
+// 与 handleChatCompletions 共用计费前置闸 + 多模型降级 + 计量落账链路，仅输出改为 SSE 分片。
+func (s *Server) handleChatStream(c *gin.Context, tenantID uint, stage string, req chatRequest, temp float64, trace string) {
+	billing.ConsumeAIQuota(tenantID)
+	if !billing.CheckTokenAvailability(tenantID) {
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{"message": "AI 额度余额不足，请充值或升级套餐"}, "code": "token_insufficient"})
+		return
+	}
+
+	start := time.Now()
+	ctx, span := telemetry.Tracer().Start(logx.ContextWithTrace(context.Background(), trace), "ai-gateway.chat.stream")
+	defer span.End()
+	reply, provider, modelName, usage, err := ai.Router.GenerateTextForStage(ctx, stage, tenantID, req.Messages, temp)
+	setChatSpanAttrs(span, tenantID, stage, provider, modelName, usage.PromptTokens, usage.CompletionTokens)
+	if err != nil || reply == "" {
+		span.RecordError(err)
+		// 尚未写 SSE 头，回 JSON 错误（客户端可据此区分失败）
+		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": "上游模型全部不可用: " + errStr(err)}, "code": "upstream_unavailable"})
+		return
+	}
+
+	// 计量落账 + 三桶扣减（与非流式同链路）
+	billing.RecordUsage(tenantID, 0, 0, stage, provider, modelName,
+		usage.PromptTokens, usage.CompletionTokens, time.Since(start).Milliseconds())
+	billing.SinkRecordUsage(tenantID, int64(usage.TotalTokens))
+	go s.collectMaterial(tenantID, stage, req.Messages, reply)
+
+	// SSE 响应头（X-Accel-Buffering:no 禁用反代缓冲，确保分片实时到达客户端）
+	id := "gw-" + time.Now().Format("20060102150405")
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Status(http.StatusOK)
+
+	writeSSEChunk(c, id, modelName, gin.H{"role": "assistant"}, "") // 首帧：角色
+	for _, part := range splitForStream(reply, 24) {                // 内容分片
+		writeSSEChunk(c, id, modelName, gin.H{"content": part}, "")
+	}
+	writeSSEChunk(c, id, modelName, gin.H{}, "stop") // 尾帧：finish_reason
+	c.Writer.WriteString("data: [DONE]\n\n")
+	c.Writer.Flush()
+}
+
+// writeSSEChunk 写一帧 OpenAI 兼容 chat.completion.chunk（delta 可为空；finish 空=中间帧发 null）。
+func writeSSEChunk(c *gin.Context, id, model string, delta gin.H, finish string) {
+	frame := gin.H{
+		"id":     id,
+		"object": "chat.completion.chunk",
+		"model":  model,
+		"choices": []gin.H{{
+			"index":         0,
+			"delta":         delta,
+			"finish_reason": finishOrNil(finish),
+		}},
+	}
+	b, err := json.Marshal(frame)
+	if err != nil {
+		return
+	}
+	c.Writer.WriteString("data: " + string(b) + "\n\n")
+	c.Writer.Flush()
+}
+
+// finishOrNil 中间帧 finish_reason 发 null（OpenAI 兼容），终帧发 "stop"。
+func finishOrNil(f string) interface{} {
+	if f == "" {
+		return nil
+	}
+	return f
+}
+
+// splitForStream 把回复按 rune 切成固定步长分片（流式投递用；纯函数，rune 安全，可单测）。
+func splitForStream(s string, step int) []string {
+	if step <= 0 {
+		step = 24
+	}
+	runes := []rune(s)
+	out := make([]string, 0, (len(runes)+step-1)/step)
+	for i := 0; i < len(runes); i += step {
+		end := i + step
+		if end > len(runes) {
+			end = len(runes)
+		}
+		out = append(out, string(runes[i:end]))
+	}
+	return out
+}
+
+// setChatSpanAttrs 给 AI 调用 span 打属性（P2-7）：租户/阶段/供应商/模型/token，供 span 拓扑与成本归因。
+func setChatSpanAttrs(span trace.Span, tenantID uint, stage, provider, model string, promptTok, completionTok int) {
+	span.SetAttributes(
+		attribute.Int("tenant.id", int(tenantID)),
+		attribute.String("ai.stage", stage),
+		attribute.String("ai.provider", provider),
+		attribute.String("ai.model", model),
+		attribute.Int("ai.prompt_tokens", promptTok),
+		attribute.Int("ai.completion_tokens", completionTok),
+	)
 }
 
 // embeddingRequest / embeddingResponse OpenAI 兼容向量化

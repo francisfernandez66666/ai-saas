@@ -73,6 +73,7 @@ const QUOTE_DRAFT = { id: 41, opportunity_id: 12, version: 2, status: 'draft', s
 const QUOTE_SENT = { ...QUOTE_DRAFT, id: 40, version: 1, status: 'sent', status_name: '已发出', sent_at: '2026-09-19T10:00:00Z' }
 const DETAIL = { deal: DEAL, quotes: [QUOTE_DRAFT, QUOTE_SENT], config: CONFIG }
 
+// RouteOpts route() mock 的分流参数：按端点覆盖默认 fixture（未传的项走内置响应）。
 type RouteOpts = { board?: unknown; drill?: unknown; detail?: unknown; create?: unknown }
 
 /** 按 URL 分流，并记录每次调用的 url + body（断言"请求真带上了筛选条件"）。 */

@@ -224,6 +224,7 @@ func setupUsageAlertTenant(t *testing.T, code string, used, max int) uint {
 	return tid
 }
 
+// countUsageAlerts 数某租户的用量预警行，供断言巡检落锚与幂等（重跑不重发）。
 func countUsageAlerts(tenantID uint) int64 {
 	var n int64
 	db.DB.Model(&model.UsageAlert{}).Where("tenant_id = ?", tenantID).Count(&n)

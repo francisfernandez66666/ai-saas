@@ -135,8 +135,10 @@ var DefaultConfigs = []model.SystemConfig{
 	// 故本改动只影响全新部署，不会覆盖存量库已有的 mock——存量需运维在后台显式切换。
 	{Category: "billing", Key: "pay_mode", Value: "\"static_qr\"", ValueType: "string", Description: "收款模式(mock模拟到账/static_qr静态码人工确认)", DefaultValue: "\"static_qr\"", SortOrder: 1},
 	{Category: "billing", Key: "static_qr_image", Value: "\"\"", ValueType: "string", Description: "静态收款码(URL或base64，static_qr模式下单返回给租户)", DefaultValue: "\"\"", SortOrder: 2},
-	// 灰度开关（借翻译助手决策"默认不强制只留痕"）：false=CheckAIQuota 恒放行只记用量（上线初期防误伤）
-	{Category: "billing", Key: "billing_enforced", Value: "false", ValueType: "bool", Description: "计费强制开关(false=超额不停服仅记日志告警)", DefaultValue: "false", SortOrder: 3},
+	// 2026-10-14 用户确认收款渠道已就绪：billing_enforced 出厂 false → true（P1-3 收口）。
+	// 原"默认不强制只留痕"是新装环境无收款路径时的防误伤爬坡；现 token_billing_enabled 已开（见下），
+	// 翻 true 后超额即按三桶顺序硬停 AI 并留痕，符合"token 唯一硬通货"商业模型。应急可由超管平台级改回 false。
+	{Category: "billing", Key: "billing_enforced", Value: "true", ValueType: "bool", Description: "计费强制开关(true=超额按三桶顺序硬停AI并留痕；false=超额不停服仅记日志告警)", DefaultValue: "true", SortOrder: 3},
 	{Category: "billing", Key: "order_timeout_minutes", Value: "15", ValueType: "int", Description: "待支付订单超时自动关闭(分钟)，超时未付转closed防僵尸单堆积", DefaultValue: "15", SortOrder: 4},
 	// ---- M-R 邀请推广（2026-08-25）：全平台统一推广政策，仅超管可调 ----
 	{Category: "billing", Key: "trial_token_amount", Value: "300000", ValueType: "int", Description: "注册赠送免费token数（入③免费体验桶）", DefaultValue: "300000", SortOrder: 5},
@@ -150,10 +152,8 @@ var DefaultConfigs = []model.SystemConfig{
 	// 2026-09-22 复核 P0-2：扣减引擎总闸出厂值 false → true。
 	// 商业模型是"剃刀-刀片"（token 是唯一硬通货），总闸关着等于卖出去也不扣费——
 	// 演示能跑、收款不成。改后按③免费桶→①订阅额度→②余额的顺序真实扣减。
-	// 与方案文档的偏差：文档建议同时把 billing_enforced 也置 true，此处**暂保持 false**。
-	// 理由：billing_enforced=true 是"超额即停服"的硬闸门，而新装环境尚未配收款渠道、
-	// 也还没有真实的 token 补给路径，硬停会把整站 AI 直接打断；扣减先开、硬停缓开，
-	// 是更稳的爬坡顺序（超额仍会落告警日志，运营可见）。
+	// 2026-10-14 更新：收款渠道已就绪（用户确认），billing_enforced 已随之翻 true（见上方该键），
+	// 与方案文档"两闸同开"的既有偏差消除。token_billing_enabled 自 2026-09-22 起已为 true。
 	{Category: "billing", Key: "token_billing_enabled", Value: "true", ValueType: "bool", Description: "Token三桶扣减引擎总闸(false=仅落账不扣费；true=按③免费桶→①订阅额度→②余额扣减)", DefaultValue: "true", SortOrder: 10},
 	// FIX-M(2026-09-28)：模拟模式的虚拟 token 用量，出厂 0＝现网行为逐字节不变。
 	// 为什么要有这个键：mock 模式在真正调模型**之前**就短路返回模板话术，于是整条计量腿
@@ -291,6 +291,20 @@ var DefaultConfigs = []model.SystemConfig{
 	// 不能拿"谁在哪台机器上点的生成"当基址。留空则回落请求 Host（本地开发与已有独立域名的租户够用）。
 	// 与触达四键同理**不进 PlatformLevelKeys**：各家门店的落地域名本来就不同。
 	{Category: "notify", Key: "acquisition_link_base", Value: "\"\"", ValueType: "string", Description: "获客活码链接基址(如 https://acme.example.com；留空=用当前访问域名拼)；只影响新起的物料，已印出去的码不可追溯", DefaultValue: "\"\"", SortOrder: 24},
+	// ---- 状态机（2026-10-13 修复批 P2-1）：断点续跑开关，出厂默认**关闭** ----
+	//
+	// 口径更正（2026-10-13 收尾复核，推翻同批早先的"补播种 true"结论）：
+	// 该键从未播种、全仓仅测试引用，**不构成缺陷**——默认值 false 是有据的止血姿态，
+	// 不是"漏配"。真实证据（flow_state_machines 全表 1021 行 / flow_instances 联查）：
+	//   - 598 行（58.6%）status='running' AND current_node='end'，而其 flow_instances.status
+	//     **早已是 completed**——这是流程跑完、状态机收尾漏标的历史脏数据，不是"卡死"；
+	//   - 巡检每 60s 扫 Limit(100) 行，598 行终态脏数据把配额吃干，真正需要续跑的
+	//     current_node='ai_chat' 实例（超时集里仅 34/100）**永远进不了扫描窗口**。
+	// 此时若把开关默认打开，每分钟会对这批已终结实例发 598 条无意义 flow_requeue，
+	// 正是 2026-08-22「Bug3 止血」要压制的垃圾事件，属**引入回归**而非修复。
+	// 故保持 false。真正该做的是让巡检识别终态脏数据并收口（见 state_machine.SweepOnce
+	// 的 terminalReconcile 分支），而非打开一个语义不成立的续跑开关。
+	{Category: "state_machine", Key: "sm_sweep_requeue_enabled", Value: "false", ValueType: "bool", Description: "状态机断点续跑:true=心跳超时的running实例自动重入队恢复;false=只重置心跳不恢复(默认；终态脏数据由巡检自动收口,不影响此项)", DefaultValue: "false", SortOrder: 1},
 }
 
 // PlatformLevelKeys 平台级配置键（商业化 M1/M5，2026-08-23）

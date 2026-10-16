@@ -16,6 +16,7 @@ import type { DealConfig, DealRow, DealDetailResp, AdvisorDealListResp, DealQuot
 import { yuanToFen } from '../lib/money'
 import { dealReasonText } from '../lib/dealReasons'
 import { API, NAV_TABS, type ChannelContext, type Followup, type Quota, type Recommend, type Stat, type TestDrive } from './advisor/shared'
+import { useI18n } from '../i18n/useI18n'
 import HomeView from './advisor/HomeView'
 import FollowupView from './advisor/FollowupView'
 import MeView from './advisor/MeView'
@@ -32,6 +33,7 @@ type DealResp<T> = { code: number; message?: string; reason?: string; data?: T }
 // Advisor 销售顾问工作台入口：承载首页、客户详情、会话、跟进等视图的路由容器。
 export default function Advisor() {
   const brand = useBrand()
+  const { t } = useI18n()
   const [view, setView] = useState('home')
   const [status, setStatus] = useState('all')
   const [stats, setStats] = useState<Stat[]>([])
@@ -110,7 +112,7 @@ export default function Advisor() {
       setView('home')
       openDetail(Number(j.data.customer_id))
     } else if (j?.code !== 0) {
-      MessagePlugin.warning(j?.message || '未找到该渠道客户')
+      MessagePlugin.warning(j?.message || t('advisorHome.channelCustomerNotFound'))
     }
   }
 
@@ -172,50 +174,50 @@ export default function Advisor() {
   }
   // 开一张商机：**不传 source**（来源由后端按客户身上的活码判定），也不传 customer_id（在路径上）
   async function createDeal(form: DealCreateForm): Promise<DealWriteResult> {
-    if (!detailId) return { ok: false, message: '客户未选定' }
+    if (!detailId) return { ok: false, message: t('advisorHome.customerNotSelected') }
     const amount = form.amount_yuan === '' ? 0 : yuanToFen(form.amount_yuan)
-    if (amount === null) return { ok: false, message: '金额格式不对：最多两位小数' }
+    if (amount === null) return { ok: false, message: t('advisorHome.amountFormatError') }
     const j = await AUTH(API + '/customer/' + detailId + '/deals', {
       method: 'POST',
       body: { title: form.title, stage: form.stage, amount_cents: amount, expected_close_at: form.expected_close_at },
     }) as DealResp<DealDetailResp> | null
     if (j?.code !== 0) {
-      const text = dealReasonText(j?.reason, j?.message || '开单失败')
+      const text = dealReasonText(j?.reason, j?.message || t('advisorHome.createDealFailed'))
       // 已有在途单：不是"用户填错了"，而是这单本来就在——刷列表让他直接看到原单
       if (j?.reason === 'deal_already_open') { MessagePlugin.warning(text); loadDeals(detailId); return { ok: false, message: text, dismiss: true } }
       return { ok: false, message: text }
     }
-    MessagePlugin.success('商机已创建')
+    MessagePlugin.success(t('advisorHome.dealCreated'))
     loadDeals(detailId)
     return { ok: true, message: '' }
   }
   // 推进阶段（成交必带金额、流失必带原因，判据在后端；此处只做元→分与原因码话术翻译）
   async function moveDeal(dealId: number, form: DealMoveForm): Promise<DealWriteResult> {
-    if (!detailId) return { ok: false, message: '客户未选定' }
+    if (!detailId) return { ok: false, message: t('advisorHome.customerNotSelected') }
     let amount = 0
     if (form.to === 'won' || (form.change_amount && form.amount_yuan !== '')) {
       const v = yuanToFen(form.amount_yuan)
-      if (v === null) return { ok: false, message: '金额格式不对：最多两位小数' }
+      if (v === null) return { ok: false, message: t('advisorHome.amountFormatError') }
       amount = v
     }
     const j = await AUTH(API + '/deals/' + dealId + '/move', {
       method: 'POST',
       body: { to: form.to, amount_cents: amount, change_amount: form.change_amount || form.to === 'won', lost_reason: form.lost_reason },
     }) as DealResp<DealDetailResp> | null
-    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || '推进失败') }
-    MessagePlugin.success('已推进')
+    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || t('advisorHome.moveFailed')) }
+    MessagePlugin.success(t('advisorHome.moved'))
     loadDeals(detailId)
     return { ok: true, message: '' }
   }
   // 出一版报价（send=true 存完即发出并锁死）；表单里的单价是元，提交体里全部分
   async function createQuoteDeal(dealId: number, form: DealQuoteForm, send: boolean): Promise<DealWriteResult> {
-    if (!detailId) return { ok: false, message: '客户未选定' }
+    if (!detailId) return { ok: false, message: t('advisorHome.customerNotSelected') }
     const lines = form.lines.map((l) => ({ name: l.name, qty: Number(l.qty), unit_cents: yuanToFen(l.unit_yuan) ?? 0 }))
     const j = await AUTH(API + '/deals/' + dealId + '/quotes', {
       method: 'POST', body: { lines, note: form.note, valid_until: form.valid_until, send },
     }) as DealResp<DealQuoteResp> | null
-    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || '报价保存失败') }
-    MessagePlugin.success(send ? '报价已发出并锁死' : '草稿已保存')
+    if (j?.code !== 0) return { ok: false, message: dealReasonText(j?.reason, j?.message || t('advisorHome.quoteSaveFailed')) }
+    MessagePlugin.success(send ? t('advisorHome.quoteSent') : t('advisorHome.quoteDraftSaved'))
     loadDeals(detailId)
     return { ok: true, message: '' }
   }
@@ -229,9 +231,9 @@ export default function Advisor() {
   // P1-9：提交客户满意度评分（1-5 必选；后端限同人同客户 5 次/天，超限 429 由 AUTH toastError 提示）
   async function submitRating() {
     if (!detailId) return
-    if (rate.score < 1) { MessagePlugin.warning('先选 1-5 分'); return }
+    if (rate.score < 1) { MessagePlugin.warning(t('advisorHome.pickScoreFirst')); return }
     const j = await AUTH('/api/v1/feedback/rating', { method: 'POST', body: { customer_id: detailId, rating: rate.score, comment: rate.comment } })
-    if (j?.code === 0) { MessagePlugin.success('评分已提交'); setRate({ score: 0, comment: '' }) }
+    if (j?.code === 0) { MessagePlugin.success(t('advisorHome.ratingSubmitted')); setRate({ score: 0, comment: '' }) }
   }
   // 人工发送消息：调用顾问端 chat/send 接口，成功后追加到本地消息列表
   async function send() {
@@ -239,11 +241,11 @@ export default function Advisor() {
     const content = input; setInput('')
     const j = await AUTH(API + '/chat/send', { method: 'POST', body: { conversation_id: convId, customer_id: detailId, content } })
     if (j.code === 0) { if (j.data?.conversation_id) setConvId(j.data.conversation_id); setMsgs((m) => [...m, { sender_type: 'human', content, created_at: new Date().toISOString() }]) }
-    else MessagePlugin.error('发送失败')
+    else MessagePlugin.error(t('advisorHome.sendFailed'))
   }
   // 切换AI自动回复开关（需要存在活跃会话）
   async function toggleAI() {
-    if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
+    if (!convId) { MessagePlugin.info(t('advisorHome.noActiveConversation')); return }
     const j = await AUTH(API + '/chat/toggle-ai-reply', { method: 'POST', body: { conversation_id: convId } })
     if (j.code === 0) setAiOn(j.data.is_ai_reply_enabled)
   }
@@ -265,7 +267,7 @@ export default function Advisor() {
   async function saveTags() {
     if (!detailId) return
     const j = await AUTH(API + '/customer/' + detailId + '/tags', { method: 'PUT', body: { tags: checkedTags } })
-    if (j.code === 0) { MessagePlugin.success('标签已更新'); setTagOpen(false); openDetail(detailId) }
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.tagsUpdated')); setTagOpen(false); openDetail(detailId) }
   }
   // E2：拉取策略推荐（进详情即拉，失败静默不打扰顾问）
   // P1-13 修复(2026-09-15)：原实现读闭包里的 convId——openDetail 刚 setConvId 尚未生效，
@@ -282,17 +284,17 @@ export default function Advisor() {
     const body: Record<string, unknown> = { customer_id: detailId, type: 'manual', method: fuForm.method, content: fuForm.content }
     if (fuForm.next_follow_at) body.next_follow_at = new Date(fuForm.next_follow_at).toISOString()
     const j = await AUTH(API + '/customer/' + detailId + '/followup', { method: 'POST', body })
-    if (j.code === 0) { MessagePlugin.success('跟进已记录'); setFuOpen(false); setFuForm({ method: 'phone', content: '', next_follow_at: '' }) }
-    else MessagePlugin.error(j?.message || '保存失败')
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.followupSaved')); setFuOpen(false); setFuForm({ method: 'phone', content: '', next_follow_at: '' }) }
+    else MessagePlugin.error(j?.message || t('common.saveFailed'))
   }
   // E2：调整旅程阶段（journey_stage 必填；仅 arrived 时子状态有效）
   async function saveStage() {
-    if (!detailId || !stageForm.journey_stage) { MessagePlugin.warning('请选择目标阶段'); return }
+    if (!detailId || !stageForm.journey_stage) { MessagePlugin.warning(t('advisorHome.pickTargetStage')); return }
     const body: Record<string, string> = { journey_stage: stageForm.journey_stage }
     if (stageForm.journey_stage === 'arrived' && stageForm.journey_sub_stage) body.journey_sub_stage = stageForm.journey_sub_stage
     const j = await AUTH(API + '/customer/' + detailId + '/stage', { method: 'PUT', body })
-    if (j.code === 0) { MessagePlugin.success('阶段已更新'); setStageOpen(false); openDetail(detailId) }
-    else MessagePlugin.error(j?.message || '更新失败')
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.stageUpdated')); setStageOpen(false); openDetail(detailId) }
+    else MessagePlugin.error(j?.message || t('advisorHome.updateFailed'))
   }
   // E2：打开新建试驾单弹窗（用当前客户资料预填车型/联系人/电话）
   const newTestDriveForm = (): TdForm => ({
@@ -314,65 +316,66 @@ export default function Advisor() {
   // E2：创建/更新试驾单（tdEdit 非空走 PUT，附状态变更）
   async function saveTestDrive() {
     if (!detailId) return
-    if (!tdForm.scheduled_at) { MessagePlugin.warning('请选择预约时间'); return }
+    if (!tdForm.scheduled_at) { MessagePlugin.warning(t('advisorHome.pickScheduleTime')); return }
     let j
     if (tdEdit) {
       j = await AUTH(API + '/test-drive/' + tdEdit.id, { method: 'PUT', body: { ...tdForm, scheduled_at: new Date(tdForm.scheduled_at).toISOString() } })
     } else {
       j = await AUTH(API + '/test-drive', { method: 'POST', body: { customer_id: detailId, ...tdForm, scheduled_at: new Date(tdForm.scheduled_at).toISOString() } })
     }
-    if (j?.code === 0) { MessagePlugin.success(tdEdit ? '试驾单已更新' : '试驾单已创建'); setTdOpen(false); loadTestDrives(detailId) }
-    else MessagePlugin.error(j?.message || '保存失败')
+    if (j?.code === 0) { MessagePlugin.success(tdEdit ? t('advisorHome.tdUpdated') : t('advisorHome.tdCreated')); setTdOpen(false); loadTestDrives(detailId) }
+    else MessagePlugin.error(j?.message || t('common.saveFailed'))
   }
   // E2：快捷改试驾单状态（已完成/已取消）
   async function setTDStatus(td: TestDrive, status: string) {
     const j = await AUTH(API + '/test-drive/' + td.id, { method: 'PUT', body: { status } })
-    if (j?.code === 0) { MessagePlugin.success('已更新'); loadTestDrives(detailId!) }
-    else MessagePlugin.error(j?.message || '更新失败')
+    if (j?.code === 0) { MessagePlugin.success(t('crud.updated')); loadTestDrives(detailId!) }
+    else MessagePlugin.error(j?.message || t('advisorHome.updateFailed'))
   }
   // E2：一键接管对话（mode=human，AI 暂停自动回复）
   async function takeover() {
-    if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
+    if (!convId) { MessagePlugin.info(t('advisorHome.noActiveConversation')); return }
     const j = await AUTH(API + '/chat/takeover', { method: 'POST', body: { conversation_id: convId } })
-    if (j.code === 0) { MessagePlugin.success('已接管，AI 暂停自动回复'); setAiOn(false); setConvMode('human') }
-    else MessagePlugin.error(j?.message || '接管失败')
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.takeoverDone')); setAiOn(false); setConvMode('human') }
+    else MessagePlugin.error(j?.message || t('advisorHome.takeoverFailed'))
   }
   // §八-6 C 块：转回 AI（仅人工态显示）——成功后恢复自动回复并刷新聊天；
   // 无会话/失败的提示约定参照 takeover
   async function transferBackAI() {
-    if (!convId) { MessagePlugin.info('暂无活跃会话'); return }
+    if (!convId) { MessagePlugin.info(t('advisorHome.noActiveConversation')); return }
     const j = await AUTH('/api/v1/chat/transfer/ai', { method: 'POST', body: { conversation_id: convId } })
     if (j.code === 0) {
-      MessagePlugin.success('已转回 AI，自动回复恢复')
+      MessagePlugin.success(t('advisorHome.transferBackDone'))
       setAiOn(true); setConvMode('ai')
       if (detailId) loadChat(detailId)
-    } else MessagePlugin.error(j?.message || '转回失败')
+    } else MessagePlugin.error(j?.message || t('advisorHome.transferBackFailed'))
   }
   // §八-6 C 块：立即回复（解除合并窗口延迟）——后端入参是 customer_id（非 conversation_id）
   async function clearDelay() {
     if (!detailId) return
     const j = await AUTH('/api/v1/chat/clear-delay', { method: 'POST', body: { customer_id: detailId } })
-    if (j.code === 0) MessagePlugin.success('已解除延迟，消息将立即发出')
-    else MessagePlugin.error(j?.message || '操作失败')
+    if (j.code === 0) MessagePlugin.success(t('advisorHome.delayCleared'))
+    else MessagePlugin.error(j?.message || t('advisorHome.operationFailed'))
   }
   // 提交用户反馈（产品建议/吐槽），走 /api/v1/feedback
   async function submitFeedback() {
     if (!fbText.trim()) return
     const j = await AUTH('/api/v1/feedback', { method: 'POST', body: { content: fbText, target_type: 'feature' } })
-    if (j.code === 0) { MessagePlugin.success('已提交'); setFbOpen(false); setFbText('') } else MessagePlugin.error(j.message || '提交失败')
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.submitted')); setFbOpen(false); setFbText('') } else MessagePlugin.error(j.message || t('advisorHome.submitFailed'))
   }
   // 详情轮询新消息：打开某客户后每 5s 拉一次聊天记录，保持与 AI/客户消息同步
   // P2-84 修复：只追加新消息（collectFreshMessages 按 ID 去重），不再 setMsgs 全量替换
   useEffect(() => {
     if (detailId == null) return
-    const t = setInterval(async () => {
+    // 局部变量不叫 t——t 已让位给翻译函数（useI18n），遮蔽会让整页文案变成 key 原文
+    const timer = setInterval(async () => {
       const j = await AUTH('/api/v1/chat/history?customer_id=' + detailId + '&limit=50')
       if (j.code === 0) {
         const fresh = collectFreshMessages((j.data || []) as Msg[], localIds.current)
         if (fresh.length > 0) setMsgs((m) => [...m, ...fresh])
       }
     }, 5000)
-    return () => clearInterval(t)
+    return () => clearInterval(timer)
   }, [detailId])
 
   // P1-2 实时推送：收到新消息信号即触发即时拉取（5s 轮询保留兜底）
@@ -393,9 +396,9 @@ export default function Advisor() {
   return (
     <div style={{ maxWidth: 480, margin: '0 auto', minHeight: '100vh', background: '#f5f7fa', color: '#2d3748' }}>
       <header style={{ background: 'var(--pri)', color: '#fff', padding: '14px 16px', fontSize: 16, fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-        <span>{brand.brandName} · 顾问工作台</span>
+        <span>{t('advisorHome.headerTitle', { brand: brand.brandName })}</span>
         {/* G-20：aria-label 标注退出按钮，辅助技术可识别操作意图 */}
-        <button onClick={logoutAndRedirect} aria-label="退出登录" style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>退出</button>
+        <button onClick={logoutAndRedirect} aria-label={t('common.logout')} style={{ background: 'rgba(255,255,255,.2)', border: 'none', color: '#fff', borderRadius: 6, padding: '4px 10px', fontSize: 12 }}>{t('advisorHome.logout')}</button>
       </header>
 
       {view === 'home' && <HomeView stats={stats} list={list} status={status} onStatus={setStatus} onOpen={openDetail} />}
@@ -423,8 +426,9 @@ export default function Advisor() {
       )}
 
       {/* G-20：底部导航栏 aria-label 标注导航用途，aria-current 标记当前激活页签 */}
-      <nav aria-label="顾问工作台导航" style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
-        {NAV_TABS.map((t) => <button key={t.k} onClick={() => { setView(t.k); detailIdRef.current = null; setDetailId(null) }} aria-current={view === t.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === t.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === t.k ? 600 : 400 }}>{t.t}</button>)}
+      <nav aria-label={t('advisorHome.navAria')} style={{ position: 'fixed', bottom: 0, left: '50%', transform: 'translateX(-50%)', width: '100%', maxWidth: 480, background: '#fff', borderTop: '1px solid #e5e7eb', display: 'flex' }}>
+        {/* 形参改名 nv：原 `t` 会遮蔽 useI18n 的翻译函数 */}
+        {NAV_TABS.map((nv) => <button key={nv.k} onClick={() => { setView(nv.k); detailIdRef.current = null; setDetailId(null) }} aria-current={view === nv.k ? 'page' : undefined} style={{ flex: 1, padding: '10px 0', border: 'none', background: 'none', color: view === nv.k ? 'var(--pri)' : '#a0aec0', fontWeight: view === nv.k ? 600 : 400 }}>{nv.t}</button>)}
       </nav>
 
       <EditDialog visible={editOpen} customer={detail?.customer} onClose={() => setEditOpen(false)} onConfirm={() => saveEdit()} />
@@ -450,6 +454,6 @@ export default function Advisor() {
     if (name) body.name = name; if (phone) body.phone = phone; if (model) body.interest_model = model
     if (budget > 0) body.budget = budget; if (remark) body.remark = remark
     const j = await AUTH(API + '/customer/' + detailId + '/info', { method: 'PUT', body })
-    if (j.code === 0) { MessagePlugin.success('保存成功'); setEditOpen(false); openDetail(detailId) } else MessagePlugin.error('保存失败')
+    if (j.code === 0) { MessagePlugin.success(t('advisorHome.saveSuccess')); setEditOpen(false); openDetail(detailId) } else MessagePlugin.error(t('common.saveFailed'))
   }
 }

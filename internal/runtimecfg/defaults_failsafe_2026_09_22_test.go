@@ -40,17 +40,19 @@ func TestDefaultTokenBillingEnabled(t *testing.T) {
 	}
 }
 
-// TestDefaultBillingEnforcedSoftly 硬停服闸门出厂仍为关——这是与方案文档的有意偏差。
+// TestDefaultBillingEnforcedOn 硬停服闸门出厂为 true（P1-3 收口，2026-10-14）。
 //
-// 方案建议 token_billing_enabled 与 billing_enforced 同时置 true；这里保持 false，
-// 理由见 config_defaults.go 中该键的注释：新装环境尚无真实补给路径，硬停会打断整站 AI。
-// 本断言的作用是把这个"决定"钉住，防止有人在不知情时把它拨成 true 而无人知晓。
-func TestDefaultBillingEnforcedSoftly(t *testing.T) {
+// 历史：方案初期因新装环境无收款路径，刻意保持 false（"扣减先开、硬停缓开"的防误伤爬坡），
+// 并由旧 TestDefaultBillingEnforcedSoftly 把这个"缓开"决定钉住。2026-10-14 用户确认收款渠道
+// 已就绪，billing_enforced 翻 true（与 token_billing_enabled 同开，符合"token 唯一硬通货"模型）。
+// 本断言现在钉住相反的决定：出厂必须为 true，防止不知情时被拨回 false 导致"卖出去不硬停"。
+// 改动前请先看 config_defaults.go 该键注释；存量库需超管平台级同步（seed 仅对缺失键生效）。
+func TestDefaultBillingEnforcedOn(t *testing.T) {
 	found, v := findDefault("billing", "billing_enforced")
 	if !found {
 		t.Fatal("DefaultConfigs 里找不到 billing.billing_enforced")
 	}
-	if v != "false" {
-		t.Errorf("billing_enforced 出厂应保持 false（有意偏差，改动前请先看 config_defaults.go 注释），实际=%s", v)
+	if v != "true" {
+		t.Errorf("billing_enforced 出厂应为 true（收款渠道已就绪，应急才平台级改回 false），实际=%s", v)
 	}
 }

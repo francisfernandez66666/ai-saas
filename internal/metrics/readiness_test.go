@@ -11,6 +11,7 @@ import (
 	"ai-scrm/internal/runtimecfg"
 )
 
+// findCheck 在就绪探针返回的检查项清单里按名字找一项，供断言就绪状态使用。
 func findCheck(checks []HealthCheck, name string) *HealthCheck {
 	for i := range checks {
 		if checks[i].Name == name {

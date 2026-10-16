@@ -39,6 +39,16 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      // P2-10(2026-10-14)：no-explicit-any 从 61 处收紧到 10 处，lint:ci 配额
+      // （package.json --max-warnings）同步 138→88。剩余 10 处为**逐点论证后有意保留**：
+      //   useCrud.ts CrudRow / types.ts TableRowData+CellProps —— 与 tdesign-react 自身
+      //     TableRowData（底层 Record<string, any>）对齐；any 行泛型是 P2-8 strict 下
+      //     cell 回调双向可赋值的前提，改 unknown 全站表格渲染报错；
+      //   api.ts ApiEnvelope 退化×2 / AUTH<T=any> / apiJSON<T=any> —— 未标注契约的调用点
+      //     依赖 `j.code/j.data` 直读，默认 unknown 会让数百处裸调编译报错；精确类型走
+      //     ApiEnvelope<P>（P2-8c 契约泛型）；
+      //   CustomersTab form/create 两袋 —— 值直填 TDesign 受控输入框（string/number 混排）。
+      // 新增 any 会顶破 88 配额使 lint:ci 变红（配额即棘轮：只许降不许升）。
       '@typescript-eslint/no-explicit-any': 'warn',
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }],
       // G3 收口(2026-09-14)：

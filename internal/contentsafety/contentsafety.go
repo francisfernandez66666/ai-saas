@@ -37,6 +37,7 @@ type Result struct {
 // DFA 词库（trie + fail 指针的简化版：短词库用逐位置匹配足够，≤千级词无压力）
 // ============================================================
 
+// wordSet 内容安全词库的内存形态：mask 表命中后打码续跑，block 表命中即拦。
 type wordSet struct {
 	mask  []string
 	block []string

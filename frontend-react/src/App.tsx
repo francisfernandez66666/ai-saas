@@ -5,6 +5,7 @@ import { lazy, Suspense, useEffect, useState } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { logoutAndRedirect, verifySession, type SessionCheck } from './lib/api'
 import { RequireRole } from './components/RequireRole'
+import { useI18n } from './i18n/useI18n'
 import { ADMIN_ROLES, ROLES } from './lib/roles'
 /** 导航落地页懒加载入口。 */
 const Index = lazy(() => import('./pages/Index'))
@@ -61,6 +62,7 @@ const AppLayout = lazy(() => import('./pages/AppLayout'))
 // /login?mcp=1"，这是守卫本身的分支逻辑，不该为了测它把整棵路由树搬进用例；导出后
 // `src/pages/__tests__/ProtectedRoute.test.tsx` 直接挂进 MemoryRouter 断言落点。
 export function ProtectedRoute({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n()
   const location = useLocation()
   // 校验结论**连同它属于哪条路径**一起存：`checking` 由"结论没落地 / 结论是别的路径留下的"派生，
   // 不再在 effect 里同步 setChecking(true)（react-hooks/set-state-in-effect 会把这条刷成 warning，
@@ -93,8 +95,8 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
       <div style={{ padding: 24, maxWidth: 420, margin: '80px auto', textAlign: 'center' }}>
         <div style={{ fontSize: 15, marginBottom: 12 }}>
           {st === 'network_error'
-            ? '网络异常，暂时连不上服务器。你的登录状态没有丢，恢复网络后点重试即可。'
-            : '当前账号暂时无法访问该页面（可能是租户已停用、配额用尽或权限变更）。'}
+            ? t('route.networkError')
+            : t('route.forbidden')}
         </div>
         {st === 'network_error' && (
           <button
@@ -102,11 +104,11 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
             onClick={() => setAttempt((a) => a + 1)}
             style={{ marginRight: 8, padding: '6px 14px' }}
           >
-            重试
+            {t('common.retry')}
           </button>
         )}
         <button type="button" onClick={() => logoutAndRedirect()} style={{ padding: '6px 14px' }}>
-          退出登录
+          {t('common.logout')}
         </button>
       </div>
     )
@@ -182,9 +184,10 @@ export default function App() {
 
 /** 路由懒加载占位组件，避免大页面切换时白屏。 */
 function RouteLoading() {
+  const { t } = useI18n()
   return (
     <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f7fa' }}>
-      <div style={{ color: '#6b7280', fontSize: 14 }}>加载中…</div>
+      <div style={{ color: '#6b7280', fontSize: 14 }}>{t('common.loading')}</div>
     </div>
   )
 }

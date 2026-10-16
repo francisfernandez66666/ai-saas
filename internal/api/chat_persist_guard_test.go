@@ -272,6 +272,7 @@ func TestFix5_GuardKindNamesAreStable(t *testing.T) {
 	}
 }
 
+// readOrFatal 读入仓内源文件（失败即 Fatal），供"口径表登记核对"类用例读取被测源码。
 func readOrFatal(t *testing.T, name string) string {
 	t.Helper()
 	b, err := os.ReadFile(name)

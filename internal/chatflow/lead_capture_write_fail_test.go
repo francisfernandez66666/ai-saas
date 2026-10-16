@@ -60,6 +60,7 @@ func installLeadWriteFault(t *testing.T) {
 	})
 }
 
+// leadUpdates 造留资画像的更新映射（含 assignment_reason 独有键），供留资写失败/成功两路用例作输入。
 func leadUpdates() map[string]interface{} {
 	return map[string]interface{}{
 		"phone":             "13800001111",
@@ -69,6 +70,7 @@ func leadUpdates() map[string]interface{} {
 	}
 }
 
+// deliveriesCount 数某租户的 webhook 投递行，供断言失败路径零外发、成功路径恰两条入队。
 func deliveriesCount(t *testing.T, tid uint) int64 {
 	t.Helper()
 	var n int64

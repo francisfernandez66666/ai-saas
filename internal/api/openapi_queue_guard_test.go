@@ -82,6 +82,7 @@ func TestOpenAPIProcessorReleasesBatch(t *testing.T) {
 	}
 }
 
+// max 返回两整数较大者，供回溯源码片段时兜住切片下界（start 与 i-8 取大，防负索引）。
 func max(a, b int) int {
 	if a > b {
 		return a

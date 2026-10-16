@@ -77,6 +77,7 @@ func mkReferralPair(t *testing.T) (inviterID, invitedID uint) {
 	return inviterID, invitedID
 }
 
+// refBalance 直读租户 token_balance（COALESCE 兜 0），绕过服务层以隔离断言账本写入。
 func refBalance(t *testing.T, tid uint) int64 {
 	t.Helper()
 	var bal int64
@@ -87,6 +88,7 @@ func refBalance(t *testing.T, tid uint) int64 {
 	return bal
 }
 
+// refGate 直读租户的 referral_paid_rewarded 闸位，供断言"奖励只发一次"。
 func refGate(t *testing.T, tid uint) bool {
 	t.Helper()
 	var g bool
@@ -97,6 +99,7 @@ func refGate(t *testing.T, tid uint) bool {
 	return g
 }
 
+// refClaims 数某被邀租户的 referral_paid 台账行数，供断言发奖条数恰为一。
 func refClaims(t *testing.T, invitedID uint) int64 {
 	t.Helper()
 	var n int64

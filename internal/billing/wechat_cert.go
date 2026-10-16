@@ -74,6 +74,7 @@ type wechatCertStore struct {
 	fetchFunc func(context.Context, *WechatPayProvider) ([]wechatPlatformCert, error)
 }
 
+// wechatCertBucket 单个商户号的平台证书桶：证书表 + 抓取时刻（过期判定在 store 侧）。
 type wechatCertBucket struct {
 	certs     map[string]wechatPlatformCert
 	fetchedAt time.Time

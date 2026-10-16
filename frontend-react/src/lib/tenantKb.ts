@@ -4,7 +4,8 @@
 // KBUpsertPayload 租户知识库条目新增/更新的请求体形状（标题、正文、可选分类）。
 export type KBUpsertPayload = { title: string; content: string; category?: string }
 
-const DEFAULT_CATEGORY = '企业知识'
+// DEFAULT_CATEGORY 知识库默认分类（提交给后端的枚举值，非界面文案，故留在数据层不翻译）
+export const DEFAULT_CATEGORY = '企业知识'
 const MAX_UPLOAD_RUNES = 20000
 
 /** 把未知字段清洗成可展示的字符串。 */
@@ -34,20 +35,24 @@ function splitLongContent(content: string): string[] {
   return chunks
 }
 
-/** 规范化单条知识库片段，补齐标题/内容/标签等字段。 */
-function normalize(item: any, fallbackTitle: string): KBUpsertPayload | null {
+/** 规范化单条知识库片段，补齐标题/内容/标签等字段。
+ *  P2-10：入参从 any 改 unknown——上传内容可能是任意 JSON，先收窄成记录再取字段。 */
+function normalize(item: unknown, fallbackTitle: string): KBUpsertPayload | null {
   if (!item || typeof item !== 'object') return null
-  const content = item.content ?? item.text ?? item.body ?? item.value
+  const o = item as Record<string, unknown>
+  const content = o.content ?? o.text ?? o.body ?? o.value
   if (content === undefined || content === null || String(content).trim() === '') return null
   return {
-    title: clean(item.title ?? item.name, fallbackTitle),
+    title: clean(o.title ?? o.name, fallbackTitle),
     content: String(content),
-    category: clean(item.category ?? item.type ?? item.group, DEFAULT_CATEGORY),
+    category: clean(o.category ?? o.type ?? o.group, DEFAULT_CATEGORY),
   }
 }
 
-/** 解析 Markdown front matter，返回元数据和正文。 */
-function parseFrontMatter(text: string, fallbackTitle: string): { meta: Record<string, string>; body: string } {
+/** 解析 Markdown front matter，返回元数据和正文。
+ *  _fallbackTitle：调用方仍按统一签名传入文件名词根，但 front matter 内的标题优先
+ *  （解析结果由调用方用 clean() 兜底），本函数内不消费，故加下划线前缀标注未用。 */
+function parseFrontMatter(text: string, _fallbackTitle: string): { meta: Record<string, string>; body: string } {
   const m = /^---\s*\n([\s\S]*?)\n---\s*\n?/.exec(text)
   if (!m) return { meta: {}, body: text }
   const meta: Record<string, string> = {}

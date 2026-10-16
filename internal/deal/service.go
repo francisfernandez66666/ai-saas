@@ -161,6 +161,9 @@ func EnsureOpenDeal(gdb *gorm.DB, in CreateInput) (*CreateResult, error) {
 	return createDeal(gdb, in, true)
 }
 
+// createDeal 建单共用内核：入参校验、客户存在性检查、"一客户一在途"复查后落库。
+// reuseExisting 决定命中既有在途单的去向：true 直接返回它（EnsureOpenDeal 的幂等语义），
+// false 只回 Existing=true 交上层拒（CreateDeal 的人工建单语义）；并发撞唯一索引时同样回读既有单兜底，不把约束错误露给调用方。
 func createDeal(gdb *gorm.DB, in CreateInput, reuseExisting bool) (*CreateResult, error) {
 	if in.TenantID == 0 {
 		return nil, &ErrReject{Reason: ReasonTenantRequired, Msg: "无租户语境"}

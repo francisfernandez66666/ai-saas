@@ -131,6 +131,7 @@ func init() {
 
 // ---- P2-7 附属实现（2026-09-15）----
 
+// deptEntry 顾问端 WS 部门可见性缓存项：可见位、判定时刻与刷新正在进行位。
 type deptEntry struct {
 	visible    bool
 	at         time.Time

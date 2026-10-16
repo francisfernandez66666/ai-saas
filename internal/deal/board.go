@@ -77,6 +77,8 @@ func scanFacts(gdb *gorm.DB, sc Scope, days int) ([]dealFact, bool, error) {
 	return rows, truncated, nil
 }
 
+// since 统计窗口起点：当前时刻往前推 days 天（按 24 小时/天折算，不是自然日）。
+// days 由调用方先过 ClampDays，这里不再校验取值范围。
 func since(days int) time.Time {
 	return time.Now().Add(-time.Duration(days) * 24 * time.Hour)
 }
@@ -485,6 +487,8 @@ func DealsByCustomer(gdb *gorm.DB, sc Scope, customerID uint) ([]DealListItem, e
 	return loadDealRows(isolate(gdb), sc.TenantID, ids)
 }
 
+// fmtTime 商机/报价时间字段的统一序列化格式（"2006-01-02 15:04:05"）；
+// 零值时间一律回空串——API 语义里"没有这个时间"用空串表示，而不是 0001-01-01 00:00:00。
 func fmtTime(t time.Time) string {
 	if t.IsZero() {
 		return ""
@@ -492,6 +496,8 @@ func fmtTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05")
 }
 
+// fmtTimePtr 可空时间字段的序列化：指针为 nil 或指向零值都回空串，其余走 fmtTime 的同一格式
+// （期望成交日、成交/流失日这类"可以不填"的列，靠空串与具体值区分"未填"与"已填"）。
 func fmtTimePtr(t *time.Time) string {
 	if t == nil {
 		return ""

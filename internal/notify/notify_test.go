@@ -172,6 +172,7 @@ type postSink struct {
 	calls chan string
 }
 
+// newPostSink 起假接收端并把指定 webhook 配置键指向它，供群通知文案用例捕获推送 body。
 func newPostSink(t *testing.T, key string) *postSink {
 	t.Helper()
 	calls := make(chan string, 8)

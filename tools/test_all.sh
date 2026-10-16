@@ -279,11 +279,19 @@ verdict "AI 黄金问答集门禁（D1）" $GOLDEN_RC
 # ---------- 阶段零：导出面中文文档注释棘轮（2026-09-21 新增，注释全量化配套）----------
 # 为什么放在阶段零：它是纯静态扫描（不依赖服务/DB），秒级出结果，失败时定位到具体文件+成员名。
 # 棘轮口径（只降不升）而非"必须为 0"，与 check_api_contract.sh 的 any 基线同思路；
-# 当前基线已清零，故等价于"任何新增导出成员都必须带中文文档注释"。
+# 当前基线已清零，故等价于"任何新增导出成员/新包都必须带中文文档注释"。
+# 2026-10-16 加固：旧版只查"有没有注释"，纯英文注释（// TODO: refactor、抄来的英文 doc）
+# 会静默通过，门禁名字里的"中文"当时没有任何断言在守。现注释块内含 CJK 才放行，
+# 并新增"Go 包注释"维度（整包口径：任一文件的 package 行上方带中文注释即算有）。
+# 检查器自带 --selftest（英文/无注释/空行隔断必拦截、中文必放行、正则认全导出形态），
+# 因为它一旦与语言形态失配就会**静默返回空清单**、门禁恒绿——比没有门禁更坏。
 step "静态门禁：导出面中文文档注释（tools/check_doc_comments.py）"
+python3 tools/check_doc_comments.py --selftest
+DC_SELFTEST=$?
 python3 tools/check_doc_comments.py >/tmp/test_all_doccom.log 2>&1
 DOCCOM_RC=$?
 tail -3 /tmp/test_all_doccom.log
+verdict "导出面中文文档注释检查器自证" $DC_SELFTEST
 verdict "导出面中文文档注释棘轮" $DOCCOM_RC
 
 # ---------- 阶段零：超长函数棘轮（FIX-G，2026-09-28 审计复核批）----------
@@ -308,6 +316,38 @@ step "静态门禁：显式 DB ctx 透传棘轮（tools/check_withcontext_ratche
 bash tools/check_withcontext_ratchet.sh
 CTX_RC=$?
 verdict "显式 DB ctx 透传棘轮" $CTX_RC
+
+# ---------- 阶段零：前端契约泛型覆盖率棘轮（P2-9，2026-10-14）----------
+# 口径：frontend-react 请求层 AUTH/apiFetch/PUBLIC/OPEN 调用点中，带 `<泛型>` 的
+# 个数只升不降（基线 .api_generic_baseline）。删泛型=响应信封退回 any=契约保护回退，棘轮拦截。
+# 自带 --selftest：已知 typed/untyped 样本必须被正确计数（双向自证，防永远通过）。
+step "静态门禁：前端契约泛型覆盖率棘轮（tools/check_api_generic_coverage.py，P2-9）"
+python3 tools/check_api_generic_coverage.py --selftest
+GEN_SELFTEST=$?
+python3 tools/check_api_generic_coverage.py
+GEN_RC=$?
+verdict "契约泛型覆盖率自证" $GEN_SELFTEST
+verdict "前端契约泛型覆盖率棘轮（typed 只升不降）" $GEN_RC
+
+# ---------- 阶段零：i18n 硬编码中文棘轮（P2-14，2026-10-14）----------
+# 口径：frontend-react/src/**\/*.tsx 里字符串/模板字面量与 JSX 文本节点中的 CJK
+# 表意文字计数只降不升（基线 .i18n_cjk_baseline）。全站文案中文化是存量工程，
+# 每迁移一个界面下调基线；新增硬编码中文（回归）立即红灯。
+# 自带 selftest：注释/URL/纯标点/正则不得计入，字面量与 JSX 文本必须计入（双向自证）。
+step "静态门禁：i18n 硬编码中文棘轮（tools/check_i18n_coverage.py，P2-14）"
+python3 tools/check_i18n_coverage.py
+I18N_RC=$?
+verdict "i18n 硬编码中文棘轮（只降不升）" $I18N_RC
+
+# ---------- 阶段零：i18n 词典重复键（P2-14，2026-10-15）----------
+# 补的是 CJK 棘轮与 dictionaries.test.ts 都够不到的盲区：对象字面量重复键 JS/TS 不报错、
+# 语义是"后者覆盖前者"，而 Object.keys() 天生去重 —— 迁移中新增 common.search 与既有键
+# 重名，把全站"搜索"静默改成"查询"，四项对齐断言却全绿。故回到源码层扫重复键，
+# 自带"应命中/应放行"双向自证（注释与嵌套同名字段不得误伤）。
+step "静态门禁：i18n 词典重复键（tools/check_i18n_dict_dup.py，P2-14）"
+python3 tools/check_i18n_dict_dup.py
+I18N_DUP_RC=$?
+verdict "i18n 词典重复键（源码层扫描）" $I18N_DUP_RC
 
 # ---------- 阶段零：吞写库错误静态门禁（FIX-16，2026-09-29 审计批）----------
 # 钉的是本轮两起实锤事故的共同形态：写库结果被丢弃（`_ = tx.Create(...)` / 裸
@@ -404,7 +444,7 @@ verdict "backup.sh 守卫反证用例（FIX-A 后续）" $BGS_RC
 # 阶段零跑完即可收工的模式（--static）：不碰数据库、不编译、不起服务，专给"改门禁验门禁"用。
 if [ "$MODE" = "static" ]; then
   echo ""
-  echo "==== 阶段零静态门禁总账: PASS=$PASS FAIL=$FAIL（--static：未跑单测/构建/契约/E2E）===="
+  echo "==== 阶段零静态门禁总账: PASS=$PASS FAIL=${FAIL}（--static：未跑单测/构建/契约/E2E）===="
   if [ "$FAIL" -ne 0 ]; then exit 1; fi
   exit 0
 fi

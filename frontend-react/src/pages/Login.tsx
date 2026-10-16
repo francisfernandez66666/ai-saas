@@ -8,6 +8,8 @@ import { useEffect, useState } from 'react'
 import { Button, Input, MessagePlugin } from 'tdesign-react'
 import { apiJSON, setToken, redirectByRole } from '../lib/api'
 import { useBrand } from '../lib/branding'
+import { useI18n } from '../i18n/useI18n'
+import { LanguageSwitcher } from '../components/LanguageSwitcher'
 import type { ApiResp, AuthResult } from '../types'
 
 // 登录模式类型：login=登录、change=强制改密、resetReq=找回密码（发送验证码）、resetConfirm=找回密码（确认重置）
@@ -20,6 +22,8 @@ type Mode = 'login' | 'change' | 'resetReq' | 'resetConfirm'
  */
 export default function Login() {
   const brand = useBrand()
+  // P2-14：全站文案经 t() 下发（键类型以中文词典为源真相，写错编译期报错）
+  const { t } = useI18n()
   // 后端 MustChangePasswordGuard 拦截后由 api.ts 跳转 /login?mcp=1，直接进入改密表单
   const [mode, setMode] = useState<Mode>(
     new URLSearchParams(location.search).get('mcp') === '1' ? 'change' : 'login',
@@ -71,11 +75,11 @@ export default function Login() {
       setLoading(false)
     }
     if (!res) {
-      MessagePlugin.error('网络异常，登录请求未发出，请检查网络后重试')
+      MessagePlugin.error(t('login.networkError'))
       return
     }
     if (json?.code !== 0) {
-      MessagePlugin.error(json?.message || '登录失败')
+      MessagePlugin.error(json?.message || t('login.failed'))
       return
     }
     // 存储 token 和用户信息到 localStorage
@@ -115,7 +119,7 @@ export default function Login() {
   async function doForceChange(e: React.FormEvent) {
     e.preventDefault()
     if (change.new_password !== change.confirm) {
-      MessagePlugin.error('两次输入不一致')
+      MessagePlugin.error(t('login.mismatch'))
       return
     }
     setLoading(true)
@@ -129,10 +133,10 @@ export default function Login() {
       setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
     }
     if (json?.code !== 0) {
-      MessagePlugin.error(json?.message || '修改失败')
+      MessagePlugin.error(json?.message || t('login.updateFailed'))
       return
     }
-    MessagePlugin.success('密码已更新，请重新登录')
+    MessagePlugin.success(t('login.passwordUpdated'))
     // 延迟 800ms 让用户看到成功提示后再跳登录页
     setTimeout(() => (location.href = location.pathname.startsWith('/app') ? '/app/login' : '/login'), 800)
   }
@@ -153,7 +157,7 @@ export default function Login() {
     } finally {
       setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
     }
-    MessagePlugin.info(json?.message || (json ? '' : '网络异常，发送失败'))
+    MessagePlugin.info(json?.message || (json ? '' : t('login.resetSendFailed')))
     if (json?.code === 0) {
       setMode('resetConfirm')
     }
@@ -175,30 +179,34 @@ export default function Login() {
     } finally {
       setLoading(false) // P1-6(2026-09-20)：同 doLogin，防抛错卡死 loading
     }
-    MessagePlugin.info(json?.message || (json ? '' : '网络异常，提交失败'))
+    MessagePlugin.info(json?.message || (json ? '' : t('login.resetSubmitFailed')))
     if (json?.code === 0) setTimeout(() => (location.href = '/login'), 900)
   }
 
   return (
     <div style={wrap}>
       <div style={card}>
-        <h2 style={{ marginBottom: 6 }}>登录工作台</h2>
-        <div style={sub}>销售/管理员/平台超管统一入口</div>
+        {/* 语言切换：右上角窄位，登录前即可切（出海首屏） */}
+        <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 4 }}>
+          <LanguageSwitcher />
+        </div>
+        <h2 style={{ marginBottom: 6 }}>{t('login.title')}</h2>
+        <div style={sub}>{t('login.subtitle')}</div>
 
         {/* 登录表单模式 */}
         {mode === 'login' && (
           <form onSubmit={doLogin}>
-            <Label>企业码（租户用户必填）</Label>
-            <Input value={login.tenant_code} onChange={(v) => setLogin({ ...login, tenant_code: v })} placeholder="如 acme" />
-            <Label>用户名</Label>
-            <Input value={login.username} onChange={(v) => setLogin({ ...login, username: v })} placeholder="用户名" />
-            <Label>密码</Label>
-            <Input type="password" value={login.password} onChange={(v) => setLogin({ ...login, password: v })} placeholder="密码" />
+            <Label>{t('login.tenantCode')}</Label>
+            <Input value={login.tenant_code} onChange={(v) => setLogin({ ...login, tenant_code: v })} placeholder={t('login.tenantCodePlaceholder')} />
+            <Label>{t('login.username')}</Label>
+            <Input value={login.username} onChange={(v) => setLogin({ ...login, username: v })} placeholder={t('login.usernamePlaceholder')} />
+            <Label>{t('login.password')}</Label>
+            <Input type="password" value={login.password} onChange={(v) => setLogin({ ...login, password: v })} placeholder={t('login.passwordPlaceholder')} />
             <Button theme="primary" type="submit" loading={loading} style={{ width: '100%', marginTop: 22 }}>
-              登 录
+              {t('login.submit')}
             </Button>
             <div style={tip}>
-              没有账号？<a href="/register">免费开通</a>　<a href="/">返回首页</a>　<a href="#" onClick={(e) => { e.preventDefault(); setMode('resetReq') }}>忘记密码</a>
+              {t('login.noAccount')}<a href="/register">{t('login.freeSignup')}</a>　<a href="/">{t('login.backHome')}</a>　<a href="#" onClick={(e) => { e.preventDefault(); setMode('resetReq') }}>{t('login.forgotPassword')}</a>
             </div>
           </form>
         )}
@@ -207,16 +215,16 @@ export default function Login() {
         {mode === 'change' && (
           <form onSubmit={doForceChange}>
             <div style={{ background: '#fef3c7', color: '#92400e', padding: 10, borderRadius: 8, fontSize: 13, marginBottom: 6 }}>
-              首次登录（或密码为出厂默认），请先设置新密码。要求：≥8位，含字母和数字。
+              {t('login.mcpNotice')}
             </div>
-            <Label>当前密码</Label>
+            <Label>{t('login.currentPassword')}</Label>
             <Input type="password" value={change.old_password} onChange={(v) => setChange({ ...change, old_password: v })} />
-            <Label>新密码</Label>
+            <Label>{t('login.newPassword')}</Label>
             <Input type="password" value={change.new_password} onChange={(v) => setChange({ ...change, new_password: v })} />
-            <Label>确认新密码</Label>
+            <Label>{t('login.confirmPassword')}</Label>
             <Input type="password" value={change.confirm} onChange={(v) => setChange({ ...change, confirm: v })} />
             <Button theme="primary" type="submit" loading={loading} style={{ width: '100%', marginTop: 22 }}>
-              确认修改
+              {t('login.confirmSubmit')}
             </Button>
           </form>
         )}
@@ -224,20 +232,20 @@ export default function Login() {
         {/* 找回密码第一步：输入用户名和联系方式，发送验证码 */}
         {mode === 'resetReq' && (
           <form onSubmit={doResetRequest}>
-            <Label>用户名</Label>
+            <Label>{t('login.username')}</Label>
             <Input value={reset.username} onChange={(v) => setReset({ ...reset, username: v })} />
-            <Label>注册手机号或邮箱</Label>
+            <Label>{t('login.resetContact')}</Label>
             <Input value={reset.contact} onChange={(v) => setReset({ ...reset, contact: v })} />
             <Button theme="primary" type="submit" loading={loading} style={{ width: '100%', marginTop: 22 }}>
-              发送验证码
+              {t('login.sendCode')}
             </Button>
             {/* S2：文案按后端实际生效通道渲染，不再向最终用户暴露"服务端日志"这一内部实现 */}
             <div style={{ fontSize: 12, color: '#718096', marginTop: 6 }}>
               {resetChannel === 'smtp'
-                ? '验证码将发送至账号绑定的邮箱，10分钟内有效'
+                ? t('login.resetHintSmtp')
                 : resetChannel === 'log'
-                  ? '当前未开通邮件自助通道，请联系管理员协助重置'
-                  : '验证码 10 分钟内有效'}
+                  ? t('login.resetHintLog')
+                  : t('login.resetHintDefault')}
             </div>
           </form>
         )}
@@ -246,20 +254,20 @@ export default function Login() {
         {mode === 'resetConfirm' && (
           <form onSubmit={doResetConfirm}>
             {/* S2：不再提示"查看服务端日志"——smtp 态应看邮箱，log 态该找管理员，两者都不该看到内部实现 */}
-            <Label>{resetChannel === 'log' ? '验证码（管理员提供）' : '邮箱验证码'}</Label>
+            <Label>{resetChannel === 'log' ? t('login.codeFromAdmin') : t('login.codeFromEmail')}</Label>
             <Input value={reset.code} onChange={(v) => setReset({ ...reset, code: v })} />
-            <Label>新密码</Label>
+            <Label>{t('login.newPassword')}</Label>
             <Input type="password" value={reset.new_password} onChange={(v) => setReset({ ...reset, new_password: v })} />
             <Button theme="primary" type="submit" loading={loading} style={{ width: '100%', marginTop: 22 }}>
-              重置密码
+              {t('login.resetSubmit')}
             </Button>
           </form>
         )}
 
         {/* 页脚：法律链接与品牌名 */}
         <div className="footer-legal">
-          <a href="/user-agreement">用户协议</a> ·{' '}
-          <a href="/privacy-policy">隐私政策</a> · {brand.brandName} AI-SCRM 平台
+          <a href="/user-agreement">{t('login.userAgreement')}</a> ·{' '}
+          <a href="/privacy-policy">{t('login.privacyPolicy')}</a> · {t('login.footer', { brand: brand.brandName })}
         </div>
       </div>
     </div>

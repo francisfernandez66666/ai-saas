@@ -173,6 +173,7 @@ func TestThreeBucketConcurrentDeduction(t *testing.T) {
 
 // ---- G-7-3: epoch fencing 验证 ----
 
+// mockEpochQueue 带 epoch 栅栏的假队列：stale epoch 的回复一律拒绝，供 fencing 用例验旧主写不生效。
 type mockEpochQueue struct {
 	mu         sync.Mutex
 	epoch      uint64
@@ -326,6 +327,7 @@ func TestProcessLocallyConcurrentMerge(t *testing.T) {
 
 // ---- G-7-5: refund vs deduction 竞态 ----
 
+// mockRefundable 可扣可退的假账本：分别累计扣款/退款次数与金额，供 refund vs deduction 竞态用例对账。
 type mockRefundable struct {
 	mu          sync.Mutex
 	balance     int

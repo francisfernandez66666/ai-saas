@@ -2,6 +2,7 @@
 // 从原 Advisor.tsx 原样搬迁（C2 拆分）
 // P2-84：消息由父组件按「已展示 ID 集合」增量追加后整体下发，此处只负责渲染
 import type { RefObject } from 'react'
+import { useI18n } from '../../i18n/useI18n'
 import type { Msg } from '../../types'
 
 // ChatCard 顾问工作台「会话」卡片：渲染消息流并提供 AI 开关、接管、转回 AI 等操作。
@@ -16,19 +17,20 @@ export default function ChatCard({ msgs, chatRef, convId, convMode, aiOn, onClea
   onTransferBackAI: () => void
   onToggleAI: () => void
 }) {
+  const { t } = useI18n()
   return (
     <div style={{ background: '#fff', borderRadius: 10, padding: 12, marginBottom: 12 }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
-        <b style={{ fontSize: 13 }}>聊天记录</b>
+        <b style={{ fontSize: 13 }}>{t('advisor.chatHistory')}</b>
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           {/* §八-6 C 块：立即回复——解除合并窗口延迟，积压消息马上发出（有会话时常驻的轻量按钮） */}
-          {convId != null && <button onClick={onClearDelay} title="解除等待，让积压消息立即发出" style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568' }}>立即回复</button>}
+          {convId != null && <button onClick={onClearDelay} title={t('advisor.chatRelease')} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid #e2e8f0', background: '#fff', color: '#4a5568' }}>{t('advisor.chatReplyNow')}</button>}
           {/* E2：一键接管对话（AI 暂停），与自动回复开关联动 */}
-          <button onClick={onTakeover} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: '#fff', color: 'var(--pri)' }}>接管</button>
+          <button onClick={onTakeover} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: '#fff', color: 'var(--pri)' }}>{t('advisor.chatTakeover')}</button>
           {/* §八-6 C 块：转回 AI——仅人工接管态显示，恢复自动回复并刷新聊天 */}
-          {convMode === 'human' && <button onClick={onTransferBackAI} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: 'var(--pri)', color: '#fff' }}>转回 AI</button>}
+          {convMode === 'human' && <button onClick={onTransferBackAI} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', border: '1px solid var(--pri)', background: 'var(--pri)', color: '#fff' }}>{t('advisor.chatBackToAi')}</button>}
           {/* G-20：AI回复开关 aria-label 动态切换文案，role="button" + tabIndex + onKeyDown 支持键盘操作 */}
-          <span onClick={onToggleAI} role="button" tabIndex={0} aria-label={aiOn ? '关闭自动回复' : '开启自动回复'} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>自动回复{aiOn ? '开' : '关'}</span>
+          <span onClick={onToggleAI} role="button" tabIndex={0} aria-label={aiOn ? t('advisor.chatAutoReplyOff') : t('advisor.chatAutoReplyOn')} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onToggleAI() }} style={{ fontSize: 12, padding: '4px 10px', borderRadius: 8, cursor: 'pointer', background: aiOn ? '#d1fae5' : '#f3f4f6', color: aiOn ? '#047857' : '#6b7280' }}>{aiOn ? t('advisor.chatAutoReplyOff') : t('advisor.chatAutoReplyOn')}</span>
         </div>
       </div>
       <div ref={chatRef} style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8 }}>

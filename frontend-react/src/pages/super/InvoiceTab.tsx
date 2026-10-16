@@ -9,6 +9,8 @@ import { AUTH } from '../../lib/api'
 // FIX-8(2026-09-27)：发票金额与退款金额是同一笔钱的两个视图，必须走同一个换算口径。
 import { fenToYuan } from '../../lib/money'
 import { confirmDialog } from '../../lib/confirm'
+import type { I18nKey } from '../../i18n/context'
+import { useI18n } from '../../i18n/useI18n'
 import type { CellProps, TableRowData } from '../../types'
 
 // InvoiceRow 申请行（对齐 billing.go SuperListInvoices 的 gin.H 字段；tenant_id 为指针列可为 null）
@@ -27,12 +29,14 @@ type InvoiceListData = { list: InvoiceRow[]; total: number }
 // Envelope AUTH 响应信封（发票接口沿用统一 code/message/data）
 type InvoiceResp = { code: number; message?: string; data?: InvoiceListData }
 
-// 状态码 → 中文/配色（requested 为待开具工作队列，默认筛选）
-const STATUS_LABELS: Record<string, string> = { requested: '待开具', issued: '已开具', voided: '已作废' }
+// 状态码 → 中文/配色（requested 为待开具工作队列，默认筛选）。
+// 模块级拿不到 t()，只存「后端值 → I18nKey」，渲染时再 t()。
+const STATUS_KEYS: Record<string, I18nKey> = { requested: 'super.invoice.stRequested', issued: 'super.invoice.stIssued', voided: 'super.invoice.stVoided' }
 const STATUS_THEME: Record<string, 'warning' | 'success' | 'default'> = { requested: 'warning', issued: 'success', voided: 'default' }
 
 /** 发票受理：状态筛选 + 表格 + 行内开具（弹窗回录发票号）/作废。 */
 export function InvoiceTab() {
+  const { t } = useI18n()
   // 状态筛选（''=全部），默认 requested 工作队列
   const [status, setStatus] = useState('requested')
   const [rows, setRows] = useState<InvoiceRow[]>([])
@@ -55,72 +59,75 @@ export function InvoiceTab() {
   async function doIssue() {
     const no = issueNo.trim()
     if (!issueRow) return
-    if (!no) { MessagePlugin.warning('发票号不能为空'); return }
+    if (!no) { MessagePlugin.warning(t('super.invoice.noEmpty')); return }
     setSaving(true)
     // 单行模板串：method 与路径同表达式就近内联（契约 METHOD 判定 + 避免尾段字面量误配）
     const j = await AUTH(`/api/v1/super/invoices/${issueRow.order_id}/issue`, { method: 'POST', body: { invoice_no: no } })
     setSaving(false)
-    if (j?.code === 0) { MessagePlugin.success(j.message || '发票已开具'); setIssueRow(null); setIssueNo(''); load() }
+    if (j?.code === 0) { MessagePlugin.success(j.message || t('super.invoice.issued')); setIssueRow(null); setIssueNo(''); load() }
   }
   // 作废：开错/退票场景置 voided，租户侧可重新申请（带二次确认）
   async function doVoid(r: InvoiceRow) {
-    if (!(await confirmDialog(`确认作废订单 #${r.order_id} 的发票申请？作废后该租户可重新提交申请。`, '作废发票'))) return
+    if (!(await confirmDialog(t('super.invoice.voidBody', { order: r.order_id }), t('super.invoice.voidTitle')))) return
     const j = await AUTH(`/api/v1/super/invoices/${r.order_id}/void`, { method: 'POST' })
-    if (j?.code === 0) { MessagePlugin.success(j.message || '发票已作废'); load() }
+    if (j?.code === 0) { MessagePlugin.success(j.message || t('super.invoice.voided')); load() }
   }
 
   const cols = [
-    { colKey: 'tenant_id', title: '租户ID', width: 90, cell: (p: CellProps) => p.row.tenant_id == null ? '-' : '#' + p.row.tenant_id },
-    { colKey: 'order_id', title: '订单ID', width: 90 },
-    { colKey: 'amount_cents', title: '金额(元)', width: 110, cell: (p: CellProps) => '¥' + fenToYuan(Number(p.row.amount_cents || 0)) },
-    { colKey: 'invoice_title', title: '发票抬头', width: 180, ellipsis: true },
-    { colKey: 'invoice_tax_no', title: '税号', width: 160, cell: (p: CellProps) => p.row.invoice_tax_no || '-' },
-    { colKey: 'invoice_email', title: '接收邮箱', width: 160, cell: (p: CellProps) => p.row.invoice_email || '-' },
-    { colKey: 'invoice_status', title: '状态', width: 90, cell: (p: CellProps) => <Tag theme={STATUS_THEME[p.row.invoice_status] || 'default'}>{STATUS_LABELS[p.row.invoice_status] || p.row.invoice_status}</Tag> },
-    { colKey: 'invoice_no', title: '发票号', width: 140, cell: (p: CellProps) => p.row.invoice_no || '-' },
-    { colKey: 'op', title: '操作', width: 150, cell: (p: CellProps) => (
+    { colKey: 'tenant_id', title: t('super.invoice.colTenantId'), width: 90, cell: (p: CellProps) => p.row.tenant_id == null ? '-' : '#' + p.row.tenant_id },
+    { colKey: 'order_id', title: t('super.invoice.colOrderId'), width: 90 },
+    { colKey: 'amount_cents', title: t('super.invoice.colAmount'), width: 110, cell: (p: CellProps) => '¥' + fenToYuan(Number(p.row.amount_cents || 0)) },
+    { colKey: 'invoice_title', title: t('super.invoice.colTitle'), width: 180, ellipsis: true },
+    { colKey: 'invoice_tax_no', title: t('super.invoice.colTaxNo'), width: 160, cell: (p: CellProps) => p.row.invoice_tax_no || '-' },
+    { colKey: 'invoice_email', title: t('super.invoice.colEmail'), width: 160, cell: (p: CellProps) => p.row.invoice_email || '-' },
+    { colKey: 'invoice_status', title: t('common.status'), width: 90, cell: (p: CellProps) => <Tag theme={STATUS_THEME[p.row.invoice_status] || 'default'}>{t(STATUS_KEYS[p.row.invoice_status] || p.row.invoice_status as I18nKey)}</Tag> },
+    { colKey: 'invoice_no', title: t('super.invoice.colNo'), width: 140, cell: (p: CellProps) => p.row.invoice_no || '-' },
+    { colKey: 'op', title: t('super.invoice.colOp'), width: 150, cell: (p: CellProps) => (
       <div style={{ display: 'flex', gap: 6 }}>
         {/* 开具仅待开具状态可点（后端仅允许 requested→issued） */}
         {p.row.invoice_status === 'requested' && (
-          <Button size="small" theme="primary" onClick={() => { setIssueRow(p.row as InvoiceRow); setIssueNo('') }}>开具</Button>
+          <Button size="small" theme="primary" onClick={() => { setIssueRow(p.row as InvoiceRow); setIssueNo('') }}>{t('super.invoice.issueBtn')}</Button>
         )}
         {/* 作废对 requested/issued 有意义；voided 终态不再展示 */}
         {p.row.invoice_status !== 'voided' && (
-          <Button size="small" theme="danger" variant="outline" onClick={() => doVoid(p.row as InvoiceRow)}>作废</Button>
+          <Button size="small" theme="danger" variant="outline" onClick={() => doVoid(p.row as InvoiceRow)}>{t('super.invoice.voidBtn')}</Button>
         )}
-      </div>
-    ) },
+      </div>) },
   ]
 
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 10, flexWrap: 'wrap' }}>
-        <h2 style={{ margin: 0 }}>发票受理</h2>
+        <h2 style={{ margin: 0 }}>{t('super.invoice.title')}</h2>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <Select value={status} onChange={(v) => setStatus(String(v))} options={[
-            { label: '待开具', value: 'requested' }, { label: '已开具', value: 'issued' },
-            { label: '已作废', value: 'voided' }, { label: '全部', value: '' },
+            { label: t('super.invoice.stRequested'), value: 'requested' }, { label: t('super.invoice.stIssued'), value: 'issued' },
+            { label: t('super.invoice.stVoided'), value: 'voided' }, { label: t('common.all'), value: '' },
           ]} style={{ width: 140 }} />
-          <Button theme="primary" variant="outline" onClick={load} loading={loading}>刷新</Button>
+          <Button theme="primary" variant="outline" onClick={load} loading={loading}>{t('super.invoice.refresh')}</Button>
         </div>
       </div>
       <Table rowKey="order_id" data={rows as unknown as TableRowData[]} columns={cols} size="small" loading={loading}
-        empty="暂无发票申请" pagination={{ defaultPageSize: 20 }} />
-      <p style={{ fontSize: 12, color: '#718096', marginTop: 12 }}>资质未到位前走人工闭环：租户申请（requested）→ 线下开票后回录发票号（issued）→ 开错可作废重提（voided）。列表上限 200 条。</p>
+        empty={t('super.invoice.empty')} pagination={{ defaultPageSize: 20 }} />
+      <p style={{ fontSize: 12, color: '#718096', marginTop: 12 }}>{t('super.invoice.footNote')}</p>
 
       {/* 开具弹窗：输入发票号回录（必填，非空前端先校验） */}
       <Dialog
         visible={!!issueRow}
-        header={issueRow ? `开具发票 · 订单 #${issueRow.order_id}` : '开具发票'}
+        header={issueRow ? t('super.invoice.issueHeader', { order: issueRow.order_id }) : t('super.invoice.issueTitle')}
         onClose={() => setIssueRow(null)}
         onConfirm={doIssue}
-        confirmBtn={{ content: '确认开具', loading: saving }}
+        confirmBtn={{ content: t('super.invoice.confirmIssue'), loading: saving }}
         width={420}
       >
         <div style={{ fontSize: 13, color: '#475569', marginBottom: 8 }}>
-          抬头：{issueRow?.invoice_title || '-'}{issueRow?.invoice_tax_no ? ` · 税号 ${issueRow.invoice_tax_no}` : ''}{issueRow ? ` · 金额 ¥${fenToYuan(issueRow.amount_cents)}` : ''}
+          {t('super.invoice.issueBody', {
+            title: issueRow?.invoice_title || '-',
+            tax: issueRow?.invoice_tax_no || '',
+            amount: issueRow ? fenToYuan(issueRow.amount_cents) : '',
+          })}
         </div>
-        <Input value={issueNo} onChange={(v) => setIssueNo(String(v))} placeholder="发票号（必填）" aria-label="发票号" />
+        <Input value={issueNo} onChange={(v) => setIssueNo(String(v))} placeholder={t('super.invoice.noPlaceholder')} aria-label={t('super.invoice.noAria')} />
       </Dialog>
     </div>
   )

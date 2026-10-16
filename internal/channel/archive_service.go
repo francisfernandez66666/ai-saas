@@ -58,6 +58,9 @@ type ArchiveFetchFunc func(ctx context.Context, ch *model.Channel, archiveSecret
 // ArchiveFetcher 当前生效的取数实现（nil=未接入，见 ErrArchiveSDKNotBuilt）。
 var ArchiveFetcher ArchiveFetchFunc
 
+// archiveFetcherNilWarned 保证"未接入"告警每次进程生命周期只打一次（P2-3 缓解）。
+var archiveFetcherNilWarned sync.Once
+
 // ArchiveIngestResult 一轮入库的计数（接口回显、日志、冒烟断言共用同一份真相）。
 type ArchiveIngestResult struct {
 	Fetched       int   `json:"fetched"`        // 信封条数
@@ -403,6 +406,11 @@ func SyncAllArchiveChannels(ctx context.Context) ArchiveSyncSummary {
 	// 后者是"功能开了却没接调度"，只有记时间戳才看得出来。
 	defer func() { recordArchiveSyncRound(sum) }()
 	if ArchiveFetcher == nil {
+		// 2026-10-13 修复批 P2-3 缓解：官方 C SDK 未编入时，开局只告警一次，
+		// 避免每轮 ticker 刷满日志；"开了但没接"由 readiness 的 fetcher_ready=false 观测位说明。
+		archiveFetcherNilWarned.Do(func() {
+			log.Printf("[会话存档][WARN] ArchiveFetcher 未接入（官方 C SDK 未编入）：已开启存档的通道本轮不会拉取任何数据，属预期降级；接入 SDK 后会自动恢复")
+		})
 		return sum
 	}
 	var list []model.Channel

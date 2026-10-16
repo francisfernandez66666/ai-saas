@@ -44,7 +44,7 @@ func RegisterRoutes(r *gin.Engine) {
 	registerChannelCallbacks(v1) // 渠道回调（公开，须在下方 v1.Use(JWTAuth) 之前注册，靠签名验证）
 
 	// 以下注册在鉴权链之后：登录 + 租户一致性 + 组织上下文 + 首登强改密
-	v1.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(), middleware.MustChangePasswordGuard())
+	v1.Use(middleware.JWTAuth(), middleware.TenantConsistency(), middleware.OrgResolve(), middleware.MustChangePasswordGuard(), middleware.AuditMiddleware())
 	registerTenantAuthenticated(v1)
 	registerChannelAuthed(v1) // 通道侧边栏 JS 配置/上下文（W7，鉴态）
 }

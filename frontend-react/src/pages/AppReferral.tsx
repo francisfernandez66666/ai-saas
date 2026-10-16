@@ -4,10 +4,9 @@
  * 依赖接口：/api/v1/advisor/referral/info、/records、/qrcode
  */
 import { useState, useEffect } from 'react'
-import { AUTH, getToken } from '../lib/api'
-import { apiFetch } from '../lib/api'
-import { useBrand } from '../lib/branding'
+import { AUTH, apiFetch } from '../lib/api'
 import type { ApiResp, ReferralInfo, ReferralRecord } from '../types'
+import { useI18n } from '../i18n/useI18n'
 
 // 邀请信息响应 data 类型（advisor/referral/info）
 type RefInfoResp = { referral: ReferralInfo; invite_url?: string }
@@ -22,7 +21,8 @@ type RecListResp = { list: ReferralRecord[] }
  * 4. 展示邀请记录列表（企业、邮箱、奖励状态）
  */
 export default function AppReferral() {
-  const brand = useBrand()
+  // 翻译函数（P2-14）
+  const { t } = useI18n()
   // 邀请信息（邀请码、邀请人数等）
   const [info, setInfo] = useState<ReferralInfo | null>(null)
   // 邀请链接
@@ -71,33 +71,33 @@ export default function AppReferral() {
 
   return (
     <div style={{ maxWidth: 760, margin: '0 auto', padding: 16 }}>
-      <h2 style={{ fontSize: 20, margin: '0 0 14px' }}>🎁 邀请推广</h2>
+      <h2 style={{ fontSize: 20, margin: '0 0 14px' }}>{t('appReferral.title')}</h2>
       {/* 邀请码与链接卡片 */}
       <div className="bg-white rounded-lg shadow-sm p-5" style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)', marginBottom: 16 }}>
-        <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>我的邀请码</h3>
-        <p style={{ fontSize: 14, color: '#475569' }}>邀请码：<b style={{ fontSize: 18, color: '#4f46e5' }}>{info?.invite_code || '—'}</b></p>
+        <h3 style={{ margin: '0 0 10px', fontSize: 16 }}>{t('appReferral.myCode')}</h3>
+        <p style={{ fontSize: 14, color: '#475569' }}>{t('appReferral.codeLabel')}<b style={{ fontSize: 18, color: '#4f46e5' }}>{info?.invite_code || '—'}</b></p>
         {/* FIX-12：invite_url 缺失时不给空 href 锚点——href='' 点击等于跳回当前页，
             看起来"有链接"其实哪也去不了；空态如实说"生成中"（与复制按钮 disabled 同口径） */}
-        <p style={{ fontSize: 13, color: '#475569', wordBreak: 'break-all' }}>邀请链接：{inviteUrl
+        <p style={{ fontSize: 13, color: '#475569', wordBreak: 'break-all' }}>{t('appReferral.linkLabel')}{inviteUrl
           ? <a href={inviteUrl} target="_blank" rel="noreferrer">{inviteUrl}</a>
-          : <span style={{ color: '#9ca3af' }}>生成中…</span>}</p>
-        <button onClick={copy} disabled={!inviteUrl} style={{ marginTop: 8, padding: '8px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', fontSize: 13, cursor: inviteUrl ? 'pointer' : 'not-allowed', opacity: inviteUrl ? 1 : 0.5 }}>复制邀请链接</button>
+          : <span style={{ color: '#9ca3af' }}>{t('appReferral.generating')}</span>}</p>
+        <button onClick={copy} disabled={!inviteUrl} style={{ marginTop: 8, padding: '8px 14px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', fontSize: 13, cursor: inviteUrl ? 'pointer' : 'not-allowed', opacity: inviteUrl ? 1 : 0.5 }}>{t('appReferral.copyLink')}</button>
         {/* 邀请二维码：扫码直达注册页，自动携带邀请码 */}
-        {qr && <div style={{ marginTop: 14 }}><img src={qr} alt="邀请二维码" style={{ width: 180, height: 180, border: '1px solid #e2e8f0', borderRadius: 8 }} /><p style={{ fontSize: 12, color: '#9ca3af', marginTop: 6 }}>扫码直达注册页（自动携带邀请码）</p></div>}
+        {qr && <div style={{ marginTop: 14 }}><img src={qr} alt={t('admin.referral.qrAlt')} style={{ width: 180, height: 180, border: '1px solid #e2e8f0', borderRadius: 8 }} /><p style={{ fontSize: 12, color: '#9ca3af', marginTop: 6 }}>{t('appReferral.qrCaption')}</p></div>}
       </div>
 
       {/* 统计卡片：已邀请人数 + 已付费好友数 */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 12, marginBottom: 16 }}>
-        <div style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 4px 18px rgba(0,0,0,.06)' }}><p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>已成功邀请</p><b style={{ fontSize: 20, color: '#4f46e5' }}>{info?.invited_count ?? 0} 人</b></div>
-        <div style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 4px 18px rgba(0,0,0,.06)' }}><p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>已付费好友</p><b style={{ fontSize: 20, color: '#16a34a' }}>{info?.paid_count ?? 0} 人</b></div>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 4px 18px rgba(0,0,0,.06)' }}><p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>{t('admin.referral.invitedLabel')}</p><b style={{ fontSize: 20, color: '#4f46e5' }}>{t('appReferral.personCount', { n: info?.invited_count ?? 0 })}</b></div>
+        <div style={{ background: '#fff', borderRadius: 12, padding: 16, boxShadow: '0 4px 18px rgba(0,0,0,.06)' }}><p style={{ fontSize: 12, color: '#9ca3af', margin: 0 }}>{t('admin.referral.paidLabel')}</p><b style={{ fontSize: 20, color: '#16a34a' }}>{t('appReferral.personCount', { n: info?.paid_count ?? 0 })}</b></div>
       </div>
 
       {/* 邀请记录列表 */}
       <div className="bg-white rounded-lg shadow-sm p-5" style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 4px 18px rgba(0,0,0,.07)' }}>
-        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>邀请记录</h3>
-        {recs.length === 0 && <p style={{ fontSize: 13, color: '#9ca3af' }}>暂无邀请记录</p>}
+        <h3 style={{ margin: '0 0 12px', fontSize: 16 }}>{t('appReferral.recordsTitle')}</h3>
+        {recs.length === 0 && <p style={{ fontSize: 13, color: '#9ca3af' }}>{t('appReferral.recordsEmpty')}</p>}
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-          <thead><tr style={{ textAlign: 'left', color: '#9ca3af' }}><th style={{ padding: '6px 4px' }}>企业</th><th>邮箱</th><th>注册奖励</th><th>付费奖励</th></tr></thead>
+          <thead><tr style={{ textAlign: 'left', color: '#9ca3af' }}><th style={{ padding: '6px 4px' }}>{t('appReferral.colCompany')}</th><th>{t('appReferral.colEmail')}</th><th>{t('appReferral.colSignupReward')}</th><th>{t('appReferral.colPaidReward')}</th></tr></thead>
           <tbody>
             {recs.map((r) => (
               <tr key={r.tenant_id} style={{ borderTop: '1px solid #f1f5f9' }}>

@@ -44,7 +44,8 @@ describe('error sampling', () => {
 
 describe('payload', () => {
   beforeEach(() => {
-    delete (window as any).location
+    // P2-10：`(window as any).location` → 具名可选面（delete 的运行时行为不变）
+    delete (window as { location?: Location }).location
     Object.defineProperty(window, 'location', {
       configurable: true,
       value: { pathname: '/admin', href: 'https://example.com/admin?tab=channels' },

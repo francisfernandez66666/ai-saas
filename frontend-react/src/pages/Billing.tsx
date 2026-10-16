@@ -11,7 +11,9 @@ import { fenToYuan, fenToYuanCompact } from '../lib/money'
 import { ConfirmDialog } from '../lib/ui'
 import { getToken, apiFetch } from '../lib/api'
 import { isStaff } from '../lib/roles'
-import type { TableRowData } from '../types'
+import { useI18n } from '../i18n/useI18n'
+import type { I18nKey } from '../i18n/context'
+
 
 // 当前租户套餐用量类型（收银台顶部展示）
 type Quota = { tenant_name: string; status: string; used_ai_calls: number; max_ai_calls: number; ai_call_balance: number; expired_at?: string; pay_mode?: string }
@@ -33,8 +35,11 @@ async function BFETCH(url: string, opts: RequestInit & { headers?: Record<string
   delete h.Authorization
   return apiFetch(url, { ...opts, headers: h })
 }
-// 支付渠道中文映射
-const CH = { mock: '模拟', manual: '静态码人工', wechat: '微信', alipay: '支付宝' }
+// P2-14：支付渠道展示名映射。key 是后端契约值（不翻译），value 是 I18nKey，
+// 真正翻译发生在组件渲染时——模块级常量拿不到 t()。
+const CHANNEL_KEYS: Record<string, I18nKey> = {
+  mock: 'billing.chMock', manual: 'billing.chManual', wechat: 'billing.chWechat', alipay: 'billing.chAlipay',
+}
 
 /**
  * 订阅收银台组件
@@ -45,7 +50,13 @@ const CH = { mock: '模拟', manual: '静态码人工', wechat: '微信', alipay
  * 4. 支付弹窗：支持模拟支付（测试）和人工确认（静态码）
  */
 export default function Billing() {
+  const { t } = useI18n()
   const brand = useBrand()
+  /** 渠道码 → 展示名；未登记码原样带出（后端加了新渠道也要看得见）。 */
+  const channelName = (c?: string) => {
+    const k = c ? CHANNEL_KEYS[c] : undefined
+    return k ? t(k) : (c || '-')
+  }
   // P1-42(2026-09-09)：订单订阅/支付接口须管理员权限——成员角色(sales/user)看/
   // /app/billing 不应 403 白屏：只展示额度与套餐信息（订阅/支付/订单区隐藏）
   const isAdmin = isStaff(localStorage.getItem('role') || '')
@@ -118,25 +129,34 @@ export default function Billing() {
     })()
     setNowMs(Date.now())
     // 每 15s 轮询订单与套餐，自动刷新待支付/已到账状态
-    const t = setInterval(() => { loadOrders(); loadQuota(); setNowMs(Date.now()) }, 15000)
-    return () => clearInterval(t)
+    // 局部变量名避开 t：t 是 i18n 翻译函数（useI18n），被局部同名变量遮蔽后
+    // 同一作用域内调用 t('...') 会拿到 interval id 而类型报错
+    const timer = setInterval(() => { loadOrders(); loadQuota(); setNowMs(Date.now()) }, 15000)
+    return () => clearInterval(timer)
+    // 挂载一次即注册 15s 轮询是刻意设计：loadAll/loadOrders/loadQuota 均为普通函数
+    // 声明（每次渲染重建、引用不稳定），补进依赖数组会令本 effect 每渲染重建，
+    // 轮询被反复 clear/重设乃至死循环。函数内部只 set state，不读外部可变值。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // E1 修复：sdk 模式支付弹窗内 5s 轮询到账状态，paid 即自动关闭并刷新
   useEffect(() => {
     if (!modal || !cur || payMode !== 'sdk') return
-    const t = setInterval(async () => {
+    const timer = setInterval(async () => {
       try {
         const r = await BFETCH(`/api/v1/billing/orders/${cur.id}`, AUTH())
         const j = await r.json()
         if (j.code === 0 && j.data?.status === 'paid') {
-          MessagePlugin.success('支付已到账')
+          MessagePlugin.success(t('billing.paidArrived'))
           setModal(false); loadOrders(); loadQuota()
         }
       } catch { /* 轮询失败静默重试 */ }
     }, 5000)
-    return () => clearInterval(t)
-  }, [modal, cur, payMode])
+    return () => clearInterval(timer)
+    // 同上：loadOrders 为普通函数声明、引用不稳定，补依赖会让弹窗内 5s 到账轮询
+    // 每渲染重建；该函数只触发 set state 与请求，不捕获渲染期可变值。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [modal, cur, payMode, t])
 
   /**
    * 订阅商业包：调用 /api/v1/billing/subscribe 接口
@@ -145,8 +165,8 @@ export default function Billing() {
   async function subscribe(id: number) {
     const r = await BFETCH('/api/v1/billing/subscribe', { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify({ package_id: id }) })
     const j = await r.json()
-    if (j.code !== 0) { MessagePlugin.error(j.message || '订阅失败'); return }
-    if (j.data.granted) { MessagePlugin.success('试用包已发放'); loadAll(); return }
+    if (j.code !== 0) { MessagePlugin.error(j.message || t('billing.subscribeFailed')); return }
+    if (j.data.granted) { MessagePlugin.success(t('billing.trialGranted')); loadAll(); return }
     openPay(j.data.order, j.data.pay_mode)
   }
   /** 打开支付弹窗 */
@@ -171,11 +191,11 @@ export default function Billing() {
   /** E9：提交发票申请（抬头必填；专票填税号；邮箱用于接收电子发票） */
   async function submitInvoice() {
     if (!invOrder) return
-    if (!invForm.title.trim()) { MessagePlugin.warning('请填写发票抬头'); return }
+    if (!invForm.title.trim()) { MessagePlugin.warning(t('billing.invoiceTitleRequired')); return }
     const r = await BFETCH(`/api/v1/billing/orders/${invOrder.id}/invoice`, { method: 'POST', headers: { ...AUTH().headers, 'Content-Type': 'application/json' }, body: JSON.stringify(invForm) })
     const j = await r.json()
-    if (j.code === 0) { MessagePlugin.success('发票申请已提交，开具后将发送至邮箱'); setInvOpen(false); loadOrders() }
-    else MessagePlugin.error(j.message || '发票申请失败')
+    if (j.code === 0) { MessagePlugin.success(t('billing.invoiceSubmitted')); setInvOpen(false); loadOrders() }
+    else MessagePlugin.error(j.message || t('billing.invoiceFailed'))
   }
 
   // 未登录时不渲染
@@ -185,8 +205,8 @@ export default function Billing() {
     <div className="px-4 py-4 lg:px-6" style={{ background: '#f5f7fa', minHeight: '100vh', color: '#2d3748' }}>
       {/* 顶栏：标题 + 支付方式说明；移动端允许换行避免挤出视口 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, gap: 10, flexWrap: 'wrap' }}>
-        <div><h2 style={{ marginBottom: 4 }}>订阅与收银台</h2><div style={{ color: '#718096', fontSize: 13 }}>AI 调用按"次"计费 · 增量包买断不过期</div></div>
-        <div><span style={{ fontSize: 12, color: '#718096' }}>{payMode === 'static_qr' ? '收款方式：扫码转账+平台人工确认' : payMode === 'sdk' ? '收款方式：在线支付' : '测试环境：支持模拟支付'}</span>　<a href="/" style={{ color: 'var(--pri)' }}>首页</a></div>
+        <div><h2 style={{ marginBottom: 4 }}>{t('billing.title')}</h2><div style={{ color: '#718096', fontSize: 13 }}>{t('billing.subtitle')}</div></div>
+        <div><span style={{ fontSize: 12, color: '#718096' }}>{payMode === 'static_qr' ? t('billing.payModeStaticQr') : payMode === 'sdk' ? t('billing.payModeSdk') : t('billing.payModeMock')}</span>　<a href="/" style={{ color: 'var(--pri)' }}>{t('billing.home')}</a></div>
       </div>
 
       {/* 续费触达 banner（商业缺口批 2026-09-16）：到期/临期/待支付订单三态，此前租户侧对到期零感知 */}
@@ -195,91 +215,91 @@ export default function Billing() {
         const pending = isAdmin ? orders.filter((o) => o.status === 'pending').length : 0
         let banner: { bg: string; bd: string; tx: string } | null = null
         if (quota.status === 'expired') {
-          banner = { bg: '#fff5f5', bd: '#feb2b2', tx: '企业空间已到期，AI 会话与新登录已暂停，数据保留——续费到账后立即恢复。' }
+          banner = { bg: '#fff5f5', bd: '#feb2b2', tx: t('billing.bannerExpired') }
         } else if (quota.status === 'trial' && !isNaN(days) && days <= 7) {
-          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: `试用将于 ${days} 天后到期，到期后需订阅商业包继续使用。` }
+          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: t('billing.bannerTrial', { days }) }
         } else if (!isNaN(days) && days <= 7 && days >= 0) {
-          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: `套餐将于 ${days} 天后到期，请及时续费以免影响使用。` }
+          banner = { bg: '#fffaf0', bd: '#fbd38d', tx: t('billing.bannerPlan', { days }) }
         }
-        if (!banner && pending > 0) banner = { bg: '#ebf8ff', bd: '#90cdf4', tx: `您有 ${pending} 笔订单待支付，在下方订单区点击"继续支付"完成。` }
+        if (!banner && pending > 0) banner = { bg: '#ebf8ff', bd: '#90cdf4', tx: t('billing.bannerPending', { n: pending }) }
         if (!banner) return null
         return (
           <div style={{ background: banner.bg, border: `1px solid ${banner.bd}`, borderRadius: 10, padding: '10px 16px', marginBottom: 16, fontSize: 13, color: '#2d3748' }}>
             {banner.tx}
-            {quota.status === 'expired' && !isAdmin && <span style={{ color: '#718096' }}>（请联系管理员处理）</span>}
+            {quota.status === 'expired' && !isAdmin && <span style={{ color: '#718096' }}>{t('billing.contactAdmin')}</span>}
           </div>
         )
       })()}
 
       {/* 当前套餐用量展示区 */}
       <div style={{ background: '#fff', borderRadius: 12, padding: '16px 22px', boxShadow: '0 3px 14px rgba(0,0,0,.06)', display: 'flex', gap: 34, flexWrap: 'wrap', marginBottom: 26 }}>
-        {!quota && <span style={{ color: '#718096' }}>加载中...</span>}
+        {!quota && <span style={{ color: '#718096' }}>{t('billing.loading')}</span>}
         {quota && (<>
-          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.tenant_name}</b><span style={{ fontSize: 12, color: '#718096' }}>{quota.status === 'trial' ? '试用中' : quota.status}</span></div>
-          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.used_ai_calls} / {quota.max_ai_calls || '∞'}</b><span style={{ fontSize: 12, color: '#718096' }}>本月AI调用(次)</span></div>
-          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.ai_call_balance}</b><span style={{ fontSize: 12, color: '#718096' }}>增量余额(买断)</span></div>
-          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.expired_at ? new Date(quota.expired_at).toLocaleDateString() : '-'}</b><span style={{ fontSize: 12, color: '#718096' }}>套餐到期日</span></div>
+          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.tenant_name}</b><span style={{ fontSize: 12, color: '#718096' }}>{quota.status === 'trial' ? t('billing.trialing') : quota.status}</span></div>
+          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.used_ai_calls} / {quota.max_ai_calls || '∞'}</b><span style={{ fontSize: 12, color: '#718096' }}>{t('billing.aiCallsMonth')}</span></div>
+          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.ai_call_balance}</b><span style={{ fontSize: 12, color: '#718096' }}>{t('billing.balance')}</span></div>
+          <div style={{ textAlign: 'center' }}><b style={{ fontSize: 22, display: 'block', color: '#4c51bf' }}>{quota.expired_at ? new Date(quota.expired_at).toLocaleDateString() : '-'}</b><span style={{ fontSize: 12, color: '#718096' }}>{t('billing.expireDay')}</span></div>
         </>)}
       </div>
 
       {/* 商业包列表 */}
-      <h2 style={{ fontSize: 17 }}>商业包</h2>
-      <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>试用包注册自动发放；包月包到期顺延；加油包入余额池</p>
+      <h2 style={{ fontSize: 17 }}>{t('billing.packages')}</h2>
+      <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>{t('billing.packagesDesc')}</p>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 16, marginBottom: 28 }}>
         {pkgs.map((p) => (
           <div key={p.id} style={{ background: '#fff', borderRadius: 12, padding: 20, boxShadow: '0 3px 14px rgba(0,0,0,.06)', position: 'relative', display: 'flex', flexDirection: 'column' }}>
-            {p.p_type === 'increment' && <span style={{ position: 'absolute', top: -8, right: 10, background: 'var(--pri)', color: '#fff', fontSize: 11, padding: '2px 9px', borderRadius: 10 }}>热卖</span>}
+            {p.p_type === 'increment' && <span style={{ position: 'absolute', top: -8, right: 10, background: 'var(--pri)', color: '#fff', fontSize: 11, padding: '2px 9px', borderRadius: 10 }}>{t('billing.hot')}</span>}
             <b>{p.name}</b>
-            <div style={{ fontSize: 24, fontWeight: 800, margin: '8px 0' }}>{p.price_cents > 0 ? '¥' + fenToYuanCompact(p.price_cents) : '免费'}<small style={{ fontSize: 12, color: '#718096', fontWeight: 400 }}>{p.p_type === 'paid' ? '/月' : ''}</small></div>
-            <p style={{ fontSize: 13, color: '#718096', margin: '8px 0 14px', flex: 1 }}>{p.description || ''}<br />含 {p.ai_calls} 次AI调用{p.duration_days ? ` · ${p.duration_days}天有效期` : ' · 永不过期'}</p>
-            <button onClick={() => isAdmin ? subscribe(p.id) : undefined} disabled={!isAdmin} aria-label={'订阅' + p.name} style={{ background: 'linear-gradient(135deg,var(--pri),#764ba2)', color: '#fff', width: '100%', padding: '9px 14px', border: 'none', borderRadius: 8, cursor: isAdmin ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: isAdmin ? 1 : .6 }}>{isAdmin ? '立即订阅' : '订阅需管理员账号'}</button>
+            <div style={{ fontSize: 24, fontWeight: 800, margin: '8px 0' }}>{p.price_cents > 0 ? '¥' + fenToYuanCompact(p.price_cents) : t('billing.free')}<small style={{ fontSize: 12, color: '#718096', fontWeight: 400 }}>{p.p_type === 'paid' ? t('billing.perMonth') : ''}</small></div>
+            <p style={{ fontSize: 13, color: '#718096', margin: '8px 0 14px', flex: 1 }}>{p.description || ''}<br />{t('billing.pkgIncludes', { n: p.ai_calls })}{p.duration_days ? t('billing.pkgDuration', { days: p.duration_days }) : t('billing.pkgForever')}</p>
+            <button onClick={() => isAdmin ? subscribe(p.id) : undefined} disabled={!isAdmin} aria-label={t('billing.subscribeAria') + p.name} style={{ background: 'linear-gradient(135deg,var(--pri),#764ba2)', color: '#fff', width: '100%', padding: '9px 14px', border: 'none', borderRadius: 8, cursor: isAdmin ? 'pointer' : 'not-allowed', fontWeight: 600, opacity: isAdmin ? 1 : .6 }}>{isAdmin ? t('billing.subscribeNow') : t('billing.subscribeNeedAdmin')}</button>
           </div>
         ))}
       </div>
 
       {/* 订单列表（P1-42：仅管理员可见，成员角色只读额度与套餐信息） */}
       {isAdmin && <>
-      <h2 style={{ fontSize: 17 }}>我的订单</h2>
-      <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>待支付订单可继续操作；已到账订单权益即时发放</p>
+      <h2 style={{ fontSize: 17 }}>{t('billing.myOrders')}</h2>
+      <p style={{ color: '#718096', fontSize: 13, marginBottom: 20 }}>{t('billing.ordersDesc')}</p>
       <div className="overflow-x-auto">
       <table style={{ width: '100%', background: '#fff', borderRadius: 10, borderCollapse: 'collapse', overflow: 'hidden', boxShadow: '0 3px 14px rgba(0,0,0,.06)' }} className="min-w-[620px]">
-        <thead><tr style={{ background: '#fafafa', color: '#4a5568' }}><th style={th}>订单号</th><th style={th}>金额</th><th style={th}>渠道</th><th style={th}>状态</th><th style={th}>创建时间</th><th style={th}>操作</th></tr></thead>
+        <thead><tr style={{ background: '#fafafa', color: '#4a5568' }}><th style={th}>{t('billing.colOrderNo')}</th><th style={th}>{t('billing.colAmount')}</th><th style={th}>{t('billing.colChannel')}</th><th style={th}>{t('billing.colStatus')}</th><th style={th}>{t('billing.colCreatedAt')}</th><th style={th}>{t('crud.actions')}</th></tr></thead>
         <tbody>
-          {orders.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: '#718096' }}>暂无订单，订阅商业包后生成</td></tr>}
+          {orders.length === 0 && <tr><td colSpan={6} style={{ ...td, textAlign: 'center', color: '#718096' }}>{t('billing.ordersEmpty')}</td></tr>}
           {orders.map((o) => (
             <tr key={o.id}>
               <td style={td}>{o.order_no}</td>
               <td style={td}>¥{fenToYuan(o.amount_cents)}<br /><span style={{ fontSize: 11, color: '#718096' }}>{o.package_name || ''}</span></td>
-              <td style={td}>{CH[o.channel as keyof typeof CH] || o.channel || '-'}</td>
+              <td style={td}>{channelName(o.channel)}</td>
               {/* F1(2026-09-15)：后端列表接口已补退款字段——已退款单显示中文态与实际退款金额，
                   旧版直接显示英文原值"refunded"且看不到退了多少钱 */}
-              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : o.status === 'refunded' ? '#fed7d7' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : o.status === 'refunded' ? '#9b2c2c' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? '待平台确认' : '待支付') : o.status === 'refunded' ? `已退款${o.refund_amount_cents ? ' ¥' + fenToYuan(o.refund_amount_cents) : ''}` : o.status}</span></td>
+              <td style={td}><span style={{ ...st, background: o.status === 'pending' ? '#feebc8' : o.status === 'refunded' ? '#fed7d7' : '#c6f6d5', color: o.status === 'pending' ? '#975a16' : o.status === 'refunded' ? '#9b2c2c' : '#276749' }}>{o.status === 'pending' ? (o.manual_confirm ? t('billing.statusPendingConfirm') : t('billing.statusPending')) : o.status === 'refunded' ? t('billing.statusRefunded', { amount: o.refund_amount_cents ? ' ¥' + fenToYuan(o.refund_amount_cents) : '' }) : o.status}</span></td>
               <td style={td}>{new Date(o.created_at).toLocaleString()}</td>
-              <td style={td}>{o.status === 'pending' ? <button aria-label={'继续支付订单' + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>继续支付</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
-                <span style={{ color: '#718096', fontSize: 12 }}>已完成</span>
+              <td style={td}>{o.status === 'pending' ? <button aria-label={t('billing.payContinueAria') + o.order_no} style={{ background: 'var(--pri)', color: '#fff', border: 'none', padding: '4px 10px', borderRadius: 6, cursor: 'pointer' }} onClick={() => openPay(o, payMode)}>{t('billing.payContinue')}</button> : <span style={{ display: 'inline-flex', gap: 4 }}>
+                <span style={{ color: '#718096', fontSize: 12 }}>{t('billing.completed')}</span>
                 {/* G-16：退款按钮——仅已完成订单可操作，弹出 ConfirmDialog 二次确认后调用 refund 接口 */}
                 {/* B7 双轨：mock 即时退；static_qr/sdk 仅受理申请，超管审批后执行 */}
                 {/* P2-12 修复(2026-09-20 批三)：status=refunded 的行旧版仍渲染退款/发票按钮——
                     再点必然 409/误申请，资金动作入口对终态单直接隐藏 */}
-                {o.status !== 'refunded' && o.refund_requested && <span style={{ ...st, background: '#feebc8', color: '#975a16' }}>退款审批中</span>}
-                {o.status !== 'refunded' && !o.refund_requested && <button aria-label={'申请退款订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
-                  setConfirmTitle('申请退款')
-                  setConfirmMsg(payMode === 'mock' ? '确认申请退款？退款将按比例计算并即时到账。' : '确认提交退款申请？平台审核后按比例退款（已消耗部分不可退）。')
+                {o.status !== 'refunded' && o.refund_requested && <span style={{ ...st, background: '#feebc8', color: '#975a16' }}>{t('billing.refundApproving')}</span>}
+                {o.status !== 'refunded' && !o.refund_requested && <button aria-label={t('billing.refundAria') + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                  setConfirmTitle(t('billing.refundTitle'))
+                  setConfirmMsg(payMode === 'mock' ? t('billing.refundConfirmMock') : t('billing.refundConfirmManual'))
                   setConfirmFn(async () => {
                     const r = await BFETCH(`/api/v1/billing/orders/${o.id}/refund`, { ...AUTH(), method: 'POST' })
                     const j = await r.json()
-                    if (j.code === 0) { MessagePlugin.success(j.message || '退款已提交'); loadOrders() } else MessagePlugin.error(j.message || '退款失败')
+                    if (j.code === 0) { MessagePlugin.success(j.message || t('billing.refundSubmitted')); loadOrders() } else MessagePlugin.error(j.message || t('billing.refundFailed'))
                   })
                   setConfirmOpen(true)
-                }}>退款</button>}
+                }}>{t('billing.refund')}</button>}
                 {/* E9：发票按钮——弹表单收集抬头/税号/邮箱（旧版硬编码"AI-SCRM服务费"且无税号位） */}
                 {o.invoice_status === 'issued'
-                  ? <span style={{ color: '#276749', fontSize: 12 }}>发票已开具{o.invoice_no ? `（${o.invoice_no}）` : ''}</span>
+                  ? <span style={{ color: '#276749', fontSize: 12 }}>{t('billing.invoiceIssued')}{o.invoice_no ? `（${o.invoice_no}）` : ''}</span>
                   : o.invoice_status === 'requested'
-                    ? <span style={{ color: '#975a16', fontSize: 12 }}>发票开具中</span>
-                    : o.status !== 'refunded' && <button aria-label={'申请发票订单' + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
+                    ? <span style={{ color: '#975a16', fontSize: 12 }}>{t('billing.invoiceRequested')}</span>
+                    : o.status !== 'refunded' && <button aria-label={t('billing.invoiceAria') + o.order_no} style={{ background: 'none', border: '1px solid #e2e8f0', padding: '2px 8px', borderRadius: 4, cursor: 'pointer', fontSize: 11 }} onClick={() => {
                       setInvOrder(o); setInvForm({ title: '', tax_no: '', email: meEmail }); setInvOpen(true)
-                    }}>发票</button>}
+                    }}>{t('billing.invoice')}</button>}
               </span>}</td>
             </tr>
           ))}
@@ -289,45 +309,45 @@ export default function Billing() {
       </>}
 
       {/* 支付弹窗：展示订单信息与支付操作（仅管理员可用） */}
-      <Dialog header="订单支付" visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>
+      <Dialog header={t('billing.payTitle')} visible={modal} onClose={() => { setModal(false); loadOrders(); loadQuota() }} footer={false}>
         {cur && <>
-          <p style={{ fontSize: 13, color: '#718096' }}>订单 {cur.order_no} · 应付 ¥{fenToYuan(cur.amount_cents)}{cur.amount_cents !== cur.original_amount_cents && cur.original_amount_cents ? `（原价 ¥{fenToYuan(cur.original_amount_cents)}，升级抵扣优惠）` : ''}</p>
+          <p style={{ fontSize: 13, color: '#718096' }}>{t('billing.payOrderLine', { no: cur.order_no, amount: fenToYuan(cur.amount_cents) })}{cur.amount_cents !== cur.original_amount_cents && cur.original_amount_cents ? t('billing.payOriginal', { amount: fenToYuan(cur.original_amount_cents) }) : ''}</p>
           {/* E1 修复(2026-09-14)：渲染后端已下发的 qr_content 收款码——旧版只有一行提示文案，
               static_qr 模式下用户拿不到码只能"盲付"。图片 URL/data URI 直接 <img>，其它当链接给 */}
           <div style={{ background: '#f6f8ff', border: '1px dashed #b794f4', borderRadius: 10, padding: 18, textAlign: 'center', margin: '14px 0', fontSize: 13, wordBreak: 'break-all' }}>
             {(() => {
               const qr = (cur.qr_content || '').trim()
               const isImg = qr.startsWith('data:image') || /^https?:\/\/.+/i.test(qr) && /\.(png|jpe?g|gif|webp|svg)(\?|$)/i.test(qr)
-              if (!qr) return <>请于平台收款码完成支付后点击「我已付费」</>
-              if (isImg) return <img src={qr} alt="平台收款码" style={{ maxWidth: 220, maxHeight: 220, margin: '0 auto', display: 'block', borderRadius: 8 }} />
-              return <><a href={qr.startsWith('http') ? qr : undefined} target="_blank" rel="noreferrer" style={{ color: 'var(--pri)', fontWeight: 600 }}>点此打开收款页/收款码</a>
-                <div style={{ marginTop: 8, color: '#718096' }}>完成支付后点击「我已付费」，平台确认后权益即时发放</div></>
+              if (!qr) return <>{t('billing.payQrHint')}</>
+              if (isImg) return <img src={qr} alt={t('billing.qrAlt')} style={{ maxWidth: 220, maxHeight: 220, margin: '0 auto', display: 'block', borderRadius: 8 }} />
+              return <><a href={qr.startsWith('http') ? qr : undefined} target="_blank" rel="noreferrer" style={{ color: 'var(--pri)', fontWeight: 600 }}>{t('billing.payOpenQr')}</a>
+                <div style={{ marginTop: 8, color: '#718096' }}>{t('billing.payAfterQr')}</div></>
             })()}
           </div>
           <p style={{ fontSize: 13, minHeight: 16 }}>{msg}</p>
           <div style={{ display: 'flex', gap: 10 }}>
-            <Button theme="default" variant="outline" style={{ flex: 1 }} aria-label="取消支付" onClick={() => { setModal(false); loadOrders(); loadQuota() }}>取消</Button>
+            <Button theme="default" variant="outline" style={{ flex: 1 }} aria-label={t('billing.payCancelAria')} onClick={() => { setModal(false); loadOrders(); loadQuota() }}>{t('common.cancel')}</Button>
             {payMode === 'sdk'
-              ? <span style={{ flex: 1, textAlign: 'center', alignSelf: 'center', fontSize: 12, color: '#718096' }}>支付完成后自动到账（每 5s 轮询）</span>
-              : <Button theme="warning" variant="outline" style={{ flex: 1 }} onClick={manualConfirm}>我已付费</Button>}
-            {payMode === 'mock' && <Button theme="success" style={{ flex: 1 }} onClick={mockPay}>模拟支付(测试)</Button>}
+              ? <span style={{ flex: 1, textAlign: 'center', alignSelf: 'center', fontSize: 12, color: '#718096' }}>{t('billing.payAutoArrive')}</span>
+              : <Button theme="warning" variant="outline" style={{ flex: 1 }} onClick={manualConfirm}>{t('billing.paidBtn')}</Button>}
+            {payMode === 'mock' && <Button theme="success" style={{ flex: 1 }} onClick={mockPay}>{t('billing.mockPayBtn')}</Button>}
           </div>
         </>}
       </Dialog>
 
       {/* 页脚：法律链接与品牌名 */}
       <footer style={{ textAlign: 'center', padding: 16, color: '#94a3b8', fontSize: 12, borderTop: '1px solid #e5e7eb', marginTop: 28, lineHeight: 2 }}>
-        <a href="/user-agreement" aria-label="查看用户协议" style={{ color: 'var(--pri)' }}>用户协议</a> · <a href="/privacy-policy" aria-label="查看隐私政策" style={{ color: 'var(--pri)' }}>隐私政策</a> · {brand.brandName} AI-SCRM 平台
+        <a href="/user-agreement" aria-label={t('billing.viewAgreement')} style={{ color: 'var(--pri)' }}>{t('login.userAgreement')}</a> · <a href="/privacy-policy" aria-label={t('billing.viewPrivacy')} style={{ color: 'var(--pri)' }}>{t('login.privacyPolicy')}</a> · {t('billing.footer', { brand: brand.brandName })}
       </footer>
       <ConfirmDialog open={confirmOpen} title={confirmTitle} message={confirmMsg} onConfirm={() => { setConfirmOpen(false); confirmFn() }} onCancel={() => setConfirmOpen(false)} />
 
       {/* E9：发票申请表单弹窗（抬头/税号/邮箱 → 后端落单，超管人工开具回录发票号） */}
-      <Dialog header="申请电子发票" visible={invOpen} onClose={() => setInvOpen(false)} onConfirm={submitInvoice} confirmBtn="提交申请" cancelBtn="取消">
+      <Dialog header={t('billing.invDialogTitle')} visible={invOpen} onClose={() => setInvOpen(false)} onConfirm={submitInvoice} confirmBtn={t('billing.invSubmit')} cancelBtn={t('common.cancel')}>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <Input style={formInput} placeholder="发票抬头（公司全称/个人姓名）*" value={invForm.title} onChange={(v) => setInvForm({ ...invForm, title: v })} />
-          <Input style={formInput} placeholder="纳税人识别号（专票必填）" value={invForm.tax_no} onChange={(v) => setInvForm({ ...invForm, tax_no: v })} />
-          <Input style={formInput} placeholder="接收邮箱" value={invForm.email} onChange={(v) => setInvForm({ ...invForm, email: v })} />
-          <div style={{ fontSize: 12, color: '#718096' }}>电子发票将于 3 个工作日内开具并发送至上述邮箱</div>
+          <Input style={formInput} placeholder={t('billing.invTitlePh')} value={invForm.title} onChange={(v) => setInvForm({ ...invForm, title: v })} />
+          <Input style={formInput} placeholder={t('billing.invTaxPh')} value={invForm.tax_no} onChange={(v) => setInvForm({ ...invForm, tax_no: v })} />
+          <Input style={formInput} placeholder={t('billing.invEmailPh')} value={invForm.email} onChange={(v) => setInvForm({ ...invForm, email: v })} />
+          <div style={{ fontSize: 12, color: '#718096' }}>{t('billing.invNote')}</div>
         </div>
       </Dialog>
     </div>

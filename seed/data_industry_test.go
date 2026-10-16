@@ -67,6 +67,7 @@ func loadPackTable(t *testing.T) []packTableRow {
 	return rows
 }
 
+// packRowByCode 在发布清单里按 code 找一行，供 TestDemoPackDeclarationMatchesBuildTable 核对声明的行业包/企业包是否真在参数表中。
 func packRowByCode(rows []packTableRow, code string) (packTableRow, bool) {
 	for _, r := range rows {
 		if r.code == code {

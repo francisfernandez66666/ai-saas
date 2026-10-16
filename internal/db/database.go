@@ -313,6 +313,7 @@ func autoMigrate() error {
 		&model.EventLog{},
 		&model.IdMapping{},
 		&model.CdpTagDefinition{},
+		&model.CdpComputedTagRule{}, // P2-4 计算标签规则（配置驱动，建表真源见 migrations/033，AutoMigrate 幂等共存）
 		// ---- 流程状态机（SAAS_PLAN §十七）
 		&model.FlowStateMachine{},
 		// ---- 四级组织架构（P2 组织树）
@@ -333,6 +334,8 @@ func autoMigrate() error {
 		&model.CustomerIdentity{},
 		// ---- 协议签署台账（注册即同意《用户协议》《隐私政策》，超管审计）
 		&model.AgreementSignature{},
+		// ---- 请求级审计（P1-2，2026-10-13；建表真源见 migrations/032，AutoMigrate 幂等共存）
+		&model.RequestAuditLog{},
 		// ---- 企微/微信通道接入（W2/W6，2026-09-12；建表真源见 migrations/003、004，AutoMigrate 幂等共存）
 		&model.Channel{},
 		&model.ChannelOutbound{},

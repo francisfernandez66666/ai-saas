@@ -7,6 +7,8 @@ import { confirmDialog } from '../lib/confirm'
 import { Layout, Menu, Button, MessagePlugin } from 'tdesign-react'
 import { useIsMobile } from '../hooks/useMedia'
 import { AUTH, logoutAndRedirect } from '../lib/api'
+import { PLATFORM_DEFAULT_BRAND } from '../lib/platform'
+import { useI18n } from '../i18n/useI18n'
 // FIX-11(2026-09-29)：商业包售价改「界面是元、提交体是分」——换算走 lib/money 单点，勿在本页再写一份 ×100
 import { yuanToFen } from '../lib/money'
 // C2 拆分新增的视图组件的数据契约类型 + 共享菜单数据源（SUPER_MENUS 是左栏/下拉菜单本体，
@@ -42,7 +44,10 @@ const { MenuItem, MenuGroup } = Menu
 // 平台超管后台：租户管理/商业包/模型成本/反馈/待确认收款/审计/协议/白标
 // 依赖 /api/v1/super/* 系列接口；仅 role=super_admin 可访问（前端双重守卫 + 后端鉴权）
 export default function SuperAdmin() {
+  const { t } = useI18n()
   // 当前超管用户名（来自 localStorage）
+  // setMe 目前无调用点（改名/切换账号入口未接入），me 供展示读取，同上属正常模式，勿删。
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [me, setMe] = useState(localStorage.getItem('username') || '-')
   // P1-10(2026-09-20)：窄屏折叠左侧 Aside 为顶栏下拉
   const isMobile = useIsMobile(900)
@@ -133,13 +138,13 @@ export default function SuperAdmin() {
   async function loadBdTenant() {
     if (bdTenant === '') return
     const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding'); const b = j.data || {}
-    setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== '跨山 LexCross') ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '', custom_css: b.custom_css || '', custom_js: b.custom_js || '' })
+    setBd({ custom_domain: b.custom_domain || '', brand_name: (b.brand_name && b.brand_name !== PLATFORM_DEFAULT_BRAND) ? b.brand_name : '', brand_link: b.brand_link || '', logo_url: b.logo_url || '', favicon_url: b.favicon_url || '', primary_color: b.primary_color || '', secondary_color: b.secondary_color || '', custom_css: b.custom_css || '', custom_js: b.custom_js || '' })
   }
   // 保存选中租户的白标配置
   async function saveBd() {
     if (bdTenant === '') return
-    setBdMsg('保存中...')
-    const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding', { method: 'PUT', body: { ...bd, custom_domain: bd.custom_domain.trim() || null, brand_name: bd.brand_name.trim() } }); setBdMsg(j.code === 0 ? '✅ 已保存' : '❌ ' + (j.message || '失败'))
+    setBdMsg(t('super.saving'))
+    const j = await AUTH('/api/v1/super/tenants/' + bdTenant + '/branding', { method: 'PUT', body: { ...bd, custom_domain: bd.custom_domain.trim() || null, brand_name: bd.brand_name.trim() } }); setBdMsg(j.code === 0 ? t('super.saved') : '❌ ' + (j.message || t('super.failShort')))
   }
 
   // 超管守卫：非 super_admin 直接跳登录；加载各模块并每 30s 刷新待确认收款
@@ -173,13 +178,13 @@ export default function SuperAdmin() {
 
   // 给租户发放一次性试用额度（幂等，已发放过的后端拒绝）
   async function grantTrial(id: number) {
-    if (!(await confirmDialog('将为该租户发放一次性试用额度（幂等，已发放过的租户会被拒绝）。确认？', '发放试用额度'))) return
+    if (!(await confirmDialog(t('super.grantTrialBody'), t('super.grantTrialTitle')))) return
     const j = await AUTH(`/api/v1/super/tenants/${id}/grant-trial`, { method: 'POST' })
-    MessagePlugin[j?.code === 0 ? 'success' : 'warning'](j?.message || (j?.code === 0 ? '已发放' : '发放失败'))
+    MessagePlugin[j?.code === 0 ? 'success' : 'warning'](j?.message || (j?.code === 0 ? t('super.granted') : t('super.grantFail')))
   }
   // 停用/恢复租户（带二次确认），成功后刷新租户列表
   async function setStatus(id: number, st: string) {
-    if (!(await confirmDialog('确认将租户 #' + id + ' 置为 ' + st + ' ?'))) return
+    if (!(await confirmDialog(t('super.setStatusConfirm', { id: String(id), status: st })))) return
     await AUTH(`/api/v1/super/tenants/${id}/status`, { method: 'PUT', body: { status: st } })
     load()
   }
@@ -194,12 +199,12 @@ export default function SuperAdmin() {
     const el = document.getElementById('spPlan') as HTMLSelectElement | null
     if (!planDlg || !el || !el.value) return
     const j = await AUTH(`/api/v1/super/tenants/${planDlg.id}/plan`, { method: 'PUT', body: { plan_id: parseInt(el.value) || 0 } })
-    MessagePlugin[j?.code === 0 ? 'success' : 'error'](j?.message || (j?.code === 0 ? '套餐已更新' : '操作失败'))
+    MessagePlugin[j?.code === 0 ? 'success' : 'error'](j?.message || (j?.code === 0 ? t('super.planUpdated') : t('super.opFail')))
     if (j?.code === 0) { setPlanDlg(null); load() }
   }
   // 上架/下架商业包
   async function togglePkg(id: number, enabled: boolean) {
-    const j = await AUTH(`/api/v1/super/packages/${id}`, { method: 'PUT', body: { enabled } }); if (j.code !== 0) MessagePlugin.error(j.message || '操作失败'); loadPkgs()
+    const j = await AUTH(`/api/v1/super/packages/${id}`, { method: 'PUT', body: { enabled } }); if (j.code !== 0) MessagePlugin.error(j.message || t('super.opFail')); loadPkgs()
   }
   // 新增商业包（读取弹窗表单字段后提交，成功后清空并刷新）
   async function createPkg() {
@@ -215,25 +220,25 @@ export default function SuperAdmin() {
     // 0.29 元得 29 分而不是 28.999…（浮点往返是 money.ts 头注释点名的事故形态）。
     const priceRaw = ((document.getElementById('pPrice') as HTMLInputElement).value || '').trim()
     if (priceRaw !== '' && !/^\d+(\.\d{1,2})?$/.test(priceRaw)) {
-      MessagePlugin.warning('售价请填写元，最多两位小数')
+      MessagePlugin.warning(t('super.priceFormat'))
       return
     }
     const price_cents = priceRaw === '' ? 0 : (yuanToFen(priceRaw) ?? 0)
     let duration_days = parseInt((document.getElementById('pDays') as HTMLInputElement).value) || 0
-    if (!code || !name) { MessagePlugin.warning('标识和名称必填'); return }
+    if (!code || !name) { MessagePlugin.warning(t('super.codeNameRequired')); return }
     if (p_type === 'free') duration_days = 0
-    const j = await AUTH('/api/v1/super/packages', { method: 'POST', body: { code, name, p_type, ai_calls, price_cents, duration_days } }); if (j.code !== 0) { MessagePlugin.error(j.message || '创建失败'); return }
+    const j = await AUTH('/api/v1/super/packages', { method: 'POST', body: { code, name, p_type, ai_calls, price_cents, duration_days } }); if (j.code !== 0) { MessagePlugin.error(j.message || t('super.createFail')); return }
     ;['pCode', 'pName', 'pCalls', 'pPrice', 'pDays'].forEach((id) => { const el = document.getElementById(id) as HTMLInputElement; if (el) el.value = '' })
     loadPkgs()
   }
   // 人工确认收款：核实到账后发放权益，接口幂等（重复确认自动跳过）
   async function confirmOrder(id: number) {
-    if (!(await confirmDialog('确认已收到该笔款项？确认后立即发放对应权益。'))) return
-    const j = await AUTH(`/api/v1/super/orders/${id}/confirm`, { method: 'POST' }); MessagePlugin.info(j.message || '操作完成'); loadPending()
+    if (!(await confirmDialog(t('super.confirmReceived')))) return
+    const j = await AUTH(`/api/v1/super/orders/${id}/confirm`, { method: 'POST' }); MessagePlugin.info(j.message || t('super.opDone')); loadPending()
   }
   // 标记反馈为已处理（可填处理备注）
   async function resolveFb(id: number) {
-    const note = prompt('处理备注（可空）：'); if (note === null) return
+    const note = prompt(t('super.resolveNote')); if (note === null) return
     await AUTH('/api/v1/super/feedbacks/resolve', { method: 'POST', body: { id, note } })
     loadFeedbacks()
   }
@@ -242,31 +247,31 @@ export default function SuperAdmin() {
     <Layout style={{ minHeight: '100vh', background: '#f5f7fa' }}>
       <Header style={{ background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '12px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>平台超管中心</span>
+          <span style={{ fontSize: 18, fontWeight: 700, color: '#1f2937' }}>{t('super.shellTitle')}</span>
           <span style={{ fontSize: 12, color: '#9ca3af', background: '#f3f4f6', padding: '2px 8px', borderRadius: 10 }}>super_admin</span>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
           <span style={{ fontSize: 13, color: '#6b7280' }}>{me}</span>
-          <a href="/admin" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>租户后台</a>
-          <Button size="small" variant="outline" onClick={logoutAndRedirect}>退出</Button>
+          <a href="/admin" style={{ fontSize: 13, color: '#4f46e5', textDecoration: 'none' }}>{t('super.tenantConsole')}</a>
+          <Button size="small" variant="outline" onClick={logoutAndRedirect}>{t('common.logout')}</Button>
         </div>
       </Header>
       <Layout>
         {isMobile ? (
           /* P1-10(2026-09-20)：窄屏（≤900px）折叠左栏为顶栏下拉，与桌面菜单同一数据源 SUPER_MENUS */
           <div style={{ width: '100%', background: '#fff', borderBottom: '1px solid #e5e7eb', padding: '8px 12px' }}>
-            <select value={view} onChange={(e) => setView((e.target as HTMLSelectElement).value)} aria-label="平台管理菜单" style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
-              <optgroup label="平台管理">
-                {SUPER_MENUS.map((m) => <option key={m.k} value={m.k}>{m.label}</option>)}
+              <select value={view} onChange={(e) => setView((e.target as HTMLSelectElement).value)} aria-label={t('super.menuAria')} style={{ width: '100%', padding: '8px 10px', borderRadius: 8, border: '1px solid #e2e8f0', fontSize: 14, background: '#fff' }}>
+              <optgroup label={t('super.menuGroup')}>
+                {SUPER_MENUS.map((m) => <option key={m.k} value={m.k}>{t(m.label)}</option>)}
               </optgroup>
             </select>
           </div>
         ) : (
         <Aside width="200" style={{ background: '#fff', borderRight: '1px solid #e5e7eb' }}>
           <Menu value={view} onChange={(v) => setView(v as string)} style={{ borderRight: 'none' }}>
-            <MenuGroup title="平台管理">
+            <MenuGroup title={t('super.menuGroup')}>
               {SUPER_MENUS.map((m) => (
-                <MenuItem key={m.k} value={m.k}>{m.label}</MenuItem>
+                <MenuItem key={m.k} value={m.k}>{t(m.label)}</MenuItem>
               ))}
             </MenuGroup>
           </Menu>
@@ -324,9 +329,10 @@ export default function SuperAdmin() {
 
 /** 超管台 Tab 按需加载的骨架态（FIX-D lazy 化配套，与 Admin.tsx 同名组件同形态，避免切 Tab 白屏）。 */
 function TabLoading() {
+  const { t } = useI18n()
   return (
     <div className="bg-white rounded-lg border border-gray-200 p-10 text-center">
-      <p style={{ color: '#9ca3af' }}>模块加载中…</p>
+      <p style={{ color: '#9ca3af' }}>{t('super.tabLoading')}</p>
     </div>
   )
 }

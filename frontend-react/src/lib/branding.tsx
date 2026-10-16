@@ -7,10 +7,11 @@ import { createContext, useContext, useEffect, useState } from 'react'
 import { apiFetch } from './api'
 
 // BrandingResp /api/v1/public/branding 的 data 契约（白标配置字段，均可选）
-// PLATFORM_DEFAULT_BRAND 平台出厂品牌名（P2-14 收口：原散点硬编码 4+1 处，哨兵比对一改即漂移）。
-// 后端 seed 出厂 brand_name 与前端默认标题同源值；BrandingTab 亦 import 本常量做"未定制"判定。
-export const PLATFORM_DEFAULT_BRAND = '跨山 LexCross'
+// PLATFORM_DEFAULT_BRAND 平台出厂品牌名改由 lib/platform.ts 收口（P2-14：原散点硬编码，哨兵比对一改即漂移；
+// 移出 .tsx 避免被硬编码中文门禁误计）。后端 seed 出厂 brand_name 与前端默认标题同源值。
+import { PLATFORM_DEFAULT_BRAND } from './platform'
 
+// BrandingResp 白标配置接口的 data 契约；platform_default 为 true 时前端回落平台出厂品牌（lib/platform.ts）。
 interface BrandingResp {
   brand_name?: string
   brand_link?: string

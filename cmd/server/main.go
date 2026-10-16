@@ -70,7 +70,7 @@ var startTime time.Time
 // 探针报出的版本比真实构建老 12 个小版本，运维按它核对发布批次会核对错对象。
 // 口径：README.md 顶部最新一条 `### vX.Y.Z`，发版时改这一行
 // （护栏：smoke §三十一 锁形态与两探针一致 + test_all G-6·3.7 负向 grep 封新字面量）。
-const appVersion = "v2.41.0"
+const appVersion = "v2.42.0"
 
 // safeRun R19 修复(2026-09-11)：后台 ticker 巡检任务统一 panic 护栏。
 // 原各 goroutine 裸调用业务函数，任一轮 panic（如空指针/DB 异常解引用）会击穿整个进程——
@@ -145,9 +145,18 @@ func main() {
 			logFormat = "json"
 		}
 	}
-	logx.InitStructuredLogging(logFormat)
+	// P2-6（2026-10-13）：日志轮转。原先日志经 shell 重定向（>> ai-scrm.log）落盘且永不轮转，
+	// 实测单文件 34 MB、长运行可达数百 MB，会撑爆磁盘且让运维 tail 检索失效。
+	// 现由 logx 内部 RotatingWriter 承接：LOG_FILE 非空即启用，落盘与轮转都归应用管。
+	// 注意启用后启动脚本不应再 >> 重定向到同一文件（会出现两个写入方抢同一 inode）。
+	logFile := strings.TrimSpace(os.Getenv("LOG_FILE"))
+	logx.InitStructuredLogging(logFormat, logFile)
 
-	log.Printf("配置加载完成，服务端口: %s（日志格式 %s）", cfg.Server.Port, logFormat)
+	logDesc := "stderr"
+	if logFile != "" {
+		logDesc = logFile
+	}
+	log.Printf("配置加载完成，服务端口: %s（日志格式 %s，输出 %s）", cfg.Server.Port, logFormat, logDesc)
 
 	// 2.1 网关配置安全校验（P0-5 修复：配了 URL 却漏配 TOKEN 会让所有租户匿名出网、
 	// 计费旁路；配了 LISTEN 却没配 TOKEN 会让内嵌网关成为无鉴权 LLM 代理——一律拒绝启动）
@@ -240,6 +249,10 @@ func main() {
 	ai.InitDeepSeekClient() // P1-5→批三：第三独立供应商（未配 Key 空转）
 	ai.InitRouter()
 	service.InitEmbeddingClient() // P0-4 向量检索：未配置 EMBEDDING_* 自动回退关键词
+
+	// 7.2 装配内容安全 LLM 机审（P2-5 生产装配点；默认关，env CONTENTSAFETY_LLM_REVIEWER=true 开启，
+	// 需在 InitRouter 之后；不改变 contentsafety_mode 默认 shadow，审核姿态由平台热开关控制）
+	api.InitContentsafetyLLMReviewer()
 
 	// 7.3 注入 evals 阶段深度评估钩子（数据飞轮批量评估用）
 	// 解环：llm→service 已成环且业务层禁直连 llm，service.evals.go 通过函数变量调用本适配器；

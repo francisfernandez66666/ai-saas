@@ -40,6 +40,7 @@ const DUNNING_RUNNING = {
   config: { enabled: true, steps: [1, 5, 15], suspend_after_days: 15 },
 }
 
+// OK 包一层成功信封（code=0 + data），供端点 mock 返回业务负载。
 const OK = (d: unknown) => ({ code: 0, data: d })
 
 // 展示期望串统一由夹具字段现推（fmtNum 与组件私有的千分位格式化同式，

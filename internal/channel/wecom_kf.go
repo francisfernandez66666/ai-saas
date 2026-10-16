@@ -24,6 +24,7 @@ import (
 // init 初始化当前包的注册表、客户端或默认配置。
 func init() { Register(&wecomKfAdapter{}) }
 
+// wecomKfAdapter 微信客服通道适配器（空结构体：与 wecom_app 共用加解密信封）。
 type wecomKfAdapter struct{}
 
 // Type 返回微信客服通道适配器类型。

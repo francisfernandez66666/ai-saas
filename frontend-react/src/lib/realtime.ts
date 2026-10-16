@@ -14,8 +14,13 @@ function wsURL(path: string): string {
   return `${proto}//${location.host}${path}`
 }
 
-// WS 事件处理函数类型：收到消息后回调
-type EvHandler = (ev: any) => void
+// WS 事件处理函数类型：收到消息后回调。
+// P2-10(2026-10-14)：此前 EvHandler=(ev: any)。后端 WS 只推"有新消息"信号，
+// 前端唯一消费的字段是 customer_id（顾问端按客户刷新会话）；声明成具名事件面，
+// 既去掉 any，也让"读错字段名"在编译期报错。未知字段经索引签名透传不读。
+type WsEvent = { customer_id?: number } & Record<string, unknown>
+// EvHandler WS 事件回调签名：入参即 WsEvent（前端唯一消费的字段是 customer_id）。
+type EvHandler = (ev: WsEvent) => void
 
 /**
  * P2-7(2026-09-19 审计批三)：统一重连内核——旧版注释称"自动重连"但全文件无实现
@@ -94,7 +99,7 @@ export function useAdvisorWS(onEvent: EvHandler) {
     if (!token) return
     return connectWS(
       () => wsURL(`/api/v1/ws/advisor?token=${encodeURIComponent(token)}`),
-      (data) => ref.current(data),
+      (data) => ref.current(data as WsEvent),
     )
   }, [])
 }
@@ -115,7 +120,7 @@ export function useClientWS(customerId: number | null, visitorKey: string | null
     if (!customerId || !visitorKey) return
     return connectWS(
       () => wsURL(`/api/v1/ws/client?customer_id=${customerId}&visitor_key=${encodeURIComponent(visitorKey)}`),
-      (data) => ref.current(data),
+      (data) => ref.current(data as WsEvent),
     )
   }, [customerId, visitorKey])
 }

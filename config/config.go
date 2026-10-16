@@ -345,7 +345,7 @@ func LoadConfig() *Config {
 			TypingJitter:   getEnvFloat("AI_TYPING_JITTER", 0.2),    // 20%随机波动
 		},
 		RLS: RLSConfig{
-			Enabled: getEnvBool("RLS_ENABLED", false), // 默认关闭；运维显式开启方激活 DB 层强隔离
+			Enabled: getEnvBool("RLS_ENABLED", true), // 默认开启 DB 层强隔离（休眠式策略：未设 app.current_tenant 时全表可见，与应用层 db.T 零行为变更；运维显式 false 才回落单腿）
 		},
 		Strategy: StrategyConfig{
 			// Step2: softmax温度

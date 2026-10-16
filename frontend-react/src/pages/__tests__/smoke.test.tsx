@@ -74,6 +74,7 @@ export const SMOKE_DEPT_NAME = '销售一部'
 // SMOKE_CUSTOMER_NAME 渲染冒烟用例中用于断言的客户名。
 export const SMOKE_CUSTOMER_NAME = '王小明'
 
+// installFetch 打桩 globalThis.fetch：按 URL 子系统返回固定信封并记录请求日志，role 可切登录态。
 function installFetch(role = 'tenant_admin') {
   fetchLog = []
   const fn = vi.fn(async (input: RequestInfo | URL) => {
@@ -118,6 +119,7 @@ async function smoke(label: string, ui: React.ReactElement, assert: () => void) 
   errSpy.mockRestore()
 }
 
+// R 把待渲染元素包进 MemoryRouter，供依赖路由上下文的页面冒烟。
 const R = (el: React.ReactNode) => <MemoryRouter>{el}</MemoryRouter>
 
 describe('核心页面冒烟（无后端可渲染）', () => {
