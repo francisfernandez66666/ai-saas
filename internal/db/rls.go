@@ -33,9 +33,10 @@ import (
 // 3. 表清单完整性：启动时与 information_schema 比对，表名不匹配即 Fatal
 //
 // P1-5 修复(2026-09-09)：修正错误表名（followups→follow_ups、feedback→feedbacks），
-// 补齐 usage_ledger / cdp_tag_assignments / cdp_tag_definitions / event_logs / id_mappings /
+// 补齐 usage_ledger / cdp_tag_assignments / event_logs / id_mappings /
 // inbox_events / flow_state_machines / templates / features——此前 RLS_ENABLED=true 时这些
-// 核心表静默无策略保护。
+// 核心表静默无策略保护（同批登记的 cdp_tag_definitions 已于 2026-10-16 移入豁免集，
+// 理由见 rlsExemptTables：字典双层表被等值策略掐断系统层读腿，比不加 RLS 更危险）。
 //
 // G-14 补全(2026-09-11)：补齐遗漏表（组织/身份/API/流程/标签/行业包相关），
 // 确保 RLS_ENABLED=true 时所有含 tenant_id 的表都有策略保护
@@ -54,8 +55,11 @@ var rlsTenantTables = []string{
 	"reward_claims",         // 邀请奖励领取表
 
 	// ---- CDP 客户数据平台表 ----
+	// 注意 cdp_tag_definitions 不在此清单：它是"builtin 行 tenant_id=0 全租户共用 + 租户
+	// 自定义行"双层字典（ListTagDefinitions 按 tenant_id IN (0,tid) 读），与 system_configs
+	// 同型，已按设计移入 rlsExemptTables——激活 RLS 会把系统层读腿掐断，摄入事务内
+	// ApplyTagTx 查不到 builtin 字典即静默丢弃全部内置标签（uat_advisor G-19 实锤）。
 	"cdp_profiles",        // CDP 客户档案表
-	"cdp_tag_definitions", // CDP 标签定义表
 	"cdp_tag_assignments", // CDP 标签分配表（客户←→标签关联）
 	// 2026-10 工作流补登记（P2-4，迁移033）：计算标签规则按租户唯一
 	// （idx_cdp_rule_tenant_name），JSON 条件承载"本租户的派生标签口径"——
@@ -225,12 +229,18 @@ func RLSPolicyFace() RLSPolicyFaceInfo {
 // DB 级收敛，必须在此写明理由并由 rls_coverage_test.go 的封闭性断言放行（测试里同时
 // 钉死"豁免集必须恰为这些键"，避免有人图省事往里塞一张真表蒙过门禁）。
 //
-// system_configs 为什么必须豁免：它是"系统层默认值(tenant_id=0) + 租户覆盖行(tenant_id=N)"
-// 双层同表设计，读路径靠 `tenant_id IN (0, N)` 取并集回落。RLS 策略是单值等值
-// （tenant_id = current_setting(...)），一旦激活，租户运行时读系统层默认值这条腿会被 DB
-// 直接掐断——表现为配置读不回默认、走零值，比不加 RLS 更危险。
+// 双层表为什么必须豁免（system_configs 与 cdp_tag_definitions 同型）：这两张都是
+// "系统层 tenant_id=0 + 租户覆盖/自定义行"双层同表设计，读路径靠 `tenant_id IN (0, N)`
+// 取并集回落。RLS 策略是单值等值（tenant_id = current_setting(...)），一旦激活，
+// 租户运行时读系统层那一腿会被 DB 直接掐断——system_configs 表现为配置读不回默认、
+// 走零值；cdp_tag_definitions 表现为摄入事务内查不到 builtin 字典、静默丢标签
+// （2026-10-16 RLS 本机激活后 uat_advisor G-19 beh_* 四条实锤）。两者都比不加 RLS 更危险。
 var rlsExemptTables = map[string]string{
 	"system_configs": "平台双层配置表：系统层 tenant_id=0 与租户覆盖同表，RLS 等值策略会切断回落默认值那条读腿",
+	"cdp_tag_definitions": "CDP 标签字典双层表：builtin 原子标签行 tenant_id=0 由 StartIngestConsumer 启动播种、全租户共用（字典无租户隐私），" +
+		"ListTagDefinitions 按 tenant_id IN (0,tid) 读；RLS 等值策略会切断系统层读腿——摄入事务（SetTenantRLS 激活）内 " +
+		"ApplyTagTx 按 code 查字典将查不到 builtin 行，WARN 后静默丢弃全部内置标签" +
+		"（2026-10-16 uat_advisor G-19 beh_booked/beh_testdrive/beh_visit/beh_complained 四条期望=y 实际=n 实锤）",
 }
 
 // rlsCoverageCheck 对账"库内全部含 tenant_id 的基表"与"RLS 清单 + 豁免集"，是清单完整性的

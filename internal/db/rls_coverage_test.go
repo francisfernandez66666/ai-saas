@@ -67,7 +67,10 @@ func TestRLSExemptSetIsClosed(t *testing.T) {
 	}
 	sort.Strings(keys)
 	got := strings.Join(keys, ",")
-	want := "system_configs" // 目前唯一设计内豁免：平台双层配置表（理由见 rls.go 注释）
+	// 2026-10-16 新增 cdp_tag_definitions：RLS 本机激活后摄入事务内 builtin 字典（tenant_id=0 行）
+	// 被等值策略过滤，ApplyTagTx 只 WARN 不中断，全部内置标签静默丢失——uat_advisor G-19
+	// beh_* 四条期望=y 实际=n 实锤。与 system_configs 同型（双层表，读路径靠 IN (0,tid) 并集）。
+	want := "cdp_tag_definitions,system_configs"
 	if got != want {
 		t.Errorf("豁免集已变化\n得到: %s\n期望: %s\n若确属新增平台表：改本断言并在 rlsExemptTables 补理由；若那是租户业务表：加进 rlsTenantTables，不要走豁免", got, want)
 	}

@@ -58,11 +58,12 @@ func TestReadinessDebugDowngraded(t *testing.T) {
 	}
 }
 
-// TestReadinessReleaseLevels 覆盖 release 级就绪评估：registration_review=false 记 crit，contentsafety shadow 与 pay_mode=mock 记 warn。
+// TestReadinessReleaseLevels 覆盖 release 级就绪评估：registration_review=false 记 crit，contentsafety 与 pay_mode=mock 记 warn。
 func TestReadinessReleaseLevels(t *testing.T) {
 	SetDeploymentContext(1, true)
 	defer SetDeploymentContext(1, false)
-	// 无配置服务时走各默认值：registration_review=false→crit、contentsafety shadow→warn、
+	// 无配置服务时走各默认值：registration_review=false→crit、
+	// contentsafety 兜底 enforce（2026-10-16 出厂默认已翻，readiness.go nil 兜底同步对齐）→ok；
 	// pay_mode 兜底为 static_qr（非 sdk）→warn；环境变量组合验证 crit 项
 	t.Setenv("ALLOW_MOCK_PAY", "true")
 	t.Setenv("AI_MOCK_MODE", "true")
@@ -77,8 +78,16 @@ func TestReadinessReleaseLevels(t *testing.T) {
 	if findCheck(checks, "ai_real_call").Status != StatusCrit {
 		t.Fatalf("release+AI_MOCK_MODE=true 应为 crit")
 	}
-	if findCheck(checks, "contentsafety").Status != StatusWarn {
-		t.Fatalf("shadow 模式应为 warn")
+	if findCheck(checks, "contentsafety").Status != StatusOK {
+		t.Fatalf("无配置服务时 contentsafety 兜底应为 enforce（2026-10-16 出厂默认已翻）→ok")
+	}
+	// shadow→warn 判级仍须在（显式注入 shadow 配置服务验证）：出厂翻 enforce 不等于删了演练态
+	// 判级——平台级回退 shadow 时探针必须继续 Warn 提醒，这是"防止悄悄回退"的那格。
+	restoreShadow := runtimecfg.SetDefaultForTest(runtimecfg.NewStaticService(map[string]string{"contentsafety_mode": "shadow"}, nil))
+	shadowCheck := findCheck(ComputeReadiness(), "contentsafety")
+	restoreShadow()
+	if shadowCheck == nil || shadowCheck.Status != StatusWarn || shadowCheck.Value != "shadow" {
+		t.Fatalf("显式 shadow 模式应为 warn（判级逻辑须保留，防平台级悄悄回退），实际 %+v", shadowCheck)
 	}
 	if findCheck(checks, "trusted_proxies").Status != StatusWarn {
 		t.Fatalf("TRUSTED_PROXIES 未配应为 warn")

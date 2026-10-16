@@ -2313,6 +2313,23 @@ export const zhCN = {
   'apiDocs.footerBrand': '{brand} AI-SCRM 开放平台',
   'admin.branding.saveFailed': '保存失败',
   'super.tenant.confirmChange': '确认变更',
+  // —— api.*：请求层错误码文案（P2-14 收尾，2026-10-16）。消费方 src/lib/api.ts 的
+  // ERROR_CODE_MESSAGES 只留 textKey，域码（deal_rejected 等）故意不建键——后端 message
+  // 本身就是精确文案，通用话会把它覆盖掉。文案原文迁自该表的 text 字段，一字未改。——
+  'api.param_error': '参数填错了，麻烦核对一下',
+  'api.unauthorized': '账号或密码不对',
+  'api.forbidden': '没有权限操作',
+  'api.not_found': '没找到对应的内容',
+  'api.rate_limited': '操作太频繁，稍后再试',
+  'api.biz_error': '操作没成功',
+  'api.internal_error': '服务开小差了，稍后再试',
+  'api.token_revoked': '这个登录已经过期了，重新登录一次',
+  'api.must_change_password': '请先修改初始密码',
+  'api.invalid_api_key': 'API Key 无效或已停用',
+  'api.channel_config_incomplete': '通道配置还缺几项，补齐后再试',
+  'api.pack_tier_denied': '这个包还没对你的套餐开放，升级后才能绑',
+  'api.parse_failed': '响应解析失败',
+  'api.network_error': '网络异常，请稍后重试',
 } as const satisfies Dictionary
 
 export default zhCN

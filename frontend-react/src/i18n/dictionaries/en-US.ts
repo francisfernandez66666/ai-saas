@@ -2310,6 +2310,24 @@ export const enUS = {
   'apiDocs.footerBrand': '{brand} AI-SCRM open platform',
   'admin.branding.saveFailed': 'Save failed',
   'super.tenant.confirmChange': 'Confirm change',
+  // —— api.*: request-layer error copy (P2-14 wrap-up, 2026-10-16). Consumers:
+  // src/lib/api.ts ERROR_CODE_MESSAGES keeps only textKey; domain codes
+  // (deal_rejected etc.) intentionally have no key — the backend message is
+  // already precise and a generic line would override it. ——
+  'api.param_error': 'Some fields look off, please double-check',
+  'api.unauthorized': 'Wrong username or password',
+  'api.forbidden': 'You do not have permission for this',
+  'api.not_found': 'Nothing found for that',
+  'api.rate_limited': 'Too many attempts, try again in a moment',
+  'api.biz_error': 'That did not go through',
+  'api.internal_error': 'Something went wrong on our side, try again later',
+  'api.token_revoked': 'This session has expired, please sign in again',
+  'api.must_change_password': 'Please change your initial password first',
+  'api.invalid_api_key': 'API key is invalid or disabled',
+  'api.channel_config_incomplete': 'Channel setup is incomplete, fill in the rest and retry',
+  'api.pack_tier_denied': 'This pack is not available on your plan yet, upgrade to bind it',
+  'api.parse_failed': 'Failed to parse the response',
+  'api.network_error': 'Network error, please retry',
 } satisfies Dictionary
 
 export default enUS

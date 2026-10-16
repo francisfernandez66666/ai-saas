@@ -226,7 +226,10 @@ var DefaultConfigs = []model.SystemConfig{
 	{Category: "notify", Key: "email_verify_enabled", Value: "true", ValueType: "bool", Description: "注册邮箱验证开关(注册/换绑邮箱需验证码)", DefaultValue: "true", SortOrder: 7},
 	// ---- C1 内容安全闸门（2026-09-12，商用合规前置）----
 	{Category: "notify", Key: "contentsafety_enabled", Value: "true", ValueType: "bool", Description: "AI出站回复内容安全闸门开关", DefaultValue: "true", SortOrder: 8},
-	{Category: "notify", Key: "contentsafety_mode", Value: "\"shadow\"", ValueType: "string", Description: "内容安全模式:shadow=只告警计数不改写|enforce=MASK替换+BLOCK转人工(首周shadow演练误杀率后切enforce)", DefaultValue: "\"shadow\"", SortOrder: 9},
+	// 2026-10-16 用户拍板切 enforce：shadow 演练期已过（P2-5 LLM 机审装配就位、
+	// fail-open 语义有 6 例单测背书），出站违规回复必须真拦（MASK 改写/BLOCK 转人工），
+	// 不再"只观察不拦截"。回退 shadow 属应急动作，需平台级显式改并记录原因。
+	{Category: "notify", Key: "contentsafety_mode", Value: "\"enforce\"", ValueType: "string", Description: "内容安全模式:shadow=只告警计数不改写|enforce=MASK替换+BLOCK转人工(首周shadow演练误杀率后切enforce)", DefaultValue: "\"enforce\"", SortOrder: 9},
 	{Category: "notify", Key: "dingtalk_webhook_url", Value: "\"\"", ValueType: "string", Description: "钉钉群机器人webhook(双通道触达,与企微同时投递)", DefaultValue: "\"\"", SortOrder: 6},
 	{Category: "notify", Key: "turnstile_enabled", Value: "false", ValueType: "bool", Description: "Turnstile人机验证开关(挂C端guest/test防刷)", DefaultValue: "false", SortOrder: 3},
 	{Category: "notify", Key: "turnstile_site_key", Value: "\"\"", ValueType: "string", Description: "Turnstile站点键(前端渲染用,可公开)", DefaultValue: "\"\"", SortOrder: 4},

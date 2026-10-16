@@ -56,3 +56,21 @@ func TestDefaultBillingEnforcedOn(t *testing.T) {
 		t.Errorf("billing_enforced 出厂应为 true（收款渠道已就绪，应急才平台级改回 false），实际=%s", v)
 	}
 }
+
+// TestDefaultContentsafetyEnforce 内容安全闸门出厂为 enforce（P2-5 收口，2026-10-16）。
+//
+// 历史：C1 闸门 2026-09-12 上线时出厂 shadow（"首周演练误杀率后切 enforce"的爬坡口径），
+// readiness 探针对 shadow 恒 Warn 提醒收口。2026-10-16 用户拍板切 enforce：LLM 机审装配
+// （contentsafety_llm_reviewer.go，fail-open 有 6 例单测背书）已就位，演练期目的达成，
+// 出站违规回复必须真拦（MASK 改写/BLOCK 转人工），不再"只观察不拦截"。
+// 本断言钉住该决定：防止不知情时被拨回 shadow，让 PIPL/广告法风险重新退回只计数态。
+// 回退 shadow 属应急动作，需平台级显式改并记录原因（见 config_defaults.go 同键注释）。
+func TestDefaultContentsafetyEnforce(t *testing.T) {
+	found, v := findDefault("notify", "contentsafety_mode")
+	if !found {
+		t.Fatal("DefaultConfigs 里找不到 notify.contentsafety_mode：键被改名或删除，本断言失去意义")
+	}
+	if v != "\"enforce\"" && v != "enforce" {
+		t.Errorf("contentsafety_mode 出厂应为 enforce（2026-10-16 用户拍板，shadow 演练期已过；回退属需记录原因的应急），实际=%s", v)
+	}
+}

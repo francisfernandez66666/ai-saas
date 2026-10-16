@@ -13,9 +13,15 @@ import {
 } from '../translator'
 
 describe('normalizeLanguage', () => {
-  it('zh 系全部归一到 zh-CN（含繁体/地区/大小写变体）', () => {
-    for (const raw of ['zh-CN', 'zh', 'zh-TW', 'zh-Hans', 'ZH-cn']) {
+  it('zh 简体系归一到 zh-CN（含地区/大小写变体）', () => {
+    for (const raw of ['zh-CN', 'zh', 'zh-Hans', 'ZH-cn']) {
       expect(normalizeLanguage(raw), raw).toBe('zh-CN')
+    }
+  })
+
+  it('zh 繁体变体归一到 zh-TW（台湾/香港/澳门/Hant）', () => {
+    for (const raw of ['zh-TW', 'zh-Hant', 'zh-HK', 'zh-MO']) {
+      expect(normalizeLanguage(raw), raw).toBe('zh-TW')
     }
   })
 
@@ -42,7 +48,8 @@ describe('detectLanguage 决策链', () => {
   })
 
   it('存储值非法 → 回落 navigator，再缺 → 出厂中文', () => {
-    expect(detectLanguage('ja', 'zh-TW')).toBe('zh-CN')
+    expect(detectLanguage('ja', 'zh-Hans')).toBe('zh-CN') // 非法存储 → 回落 navigator（zh-Hans 归 zh-CN）
+    expect(detectLanguage(null, 'zh-TW')).toBe('zh-TW') // navigator 为受支持的繁体 → 直接采用
     expect(detectLanguage(null, null)).toBe(DEFAULT_LANGUAGE)
     expect(detectLanguage(undefined, undefined)).toBe('zh-CN')
   })

@@ -17,13 +17,36 @@ const BASE = 'http://localhost:9090';
 // 随即对除 change-password/auth/me 外的全部路径返回 403——旧 spec 的 [200,400] 期望在"重启后的干净环境"
 // 必挂（实测 strategy test 用例 403）。这里做 API 回环自适应：检测到强改密标记 → 改密（服务端清标记，
 // B4 同时 bump token_version 故需重登）→ 再改回 admin123 恢复出厂凭据。change-password 无"新旧相同拒绝"
-// 限制（auth_password.go:89-96 仅验旧密码+强度），回环不污染任何账号密码，smoke/uat 脚本继续用 admin123。
-// 登录态在进程内缓存一份：二十一项各登一次就是 21 发 /auth/login，而它的 IP 桶是 20/分钟，
-// 且窗口是「首请求 + TTL」而非自然分钟——本轮 playwright 就是被自己顶进限流的：
+// 限制（auth_password.go:89-96 仅验旧密码+强度），smoke/uat 脚本继续用 admin123。
+// 登录态在进程内缓存一份：二十二项各登一次就是 22 发 /auth/login，而它的 IP 桶是 20/分钟，
+// 且窗口是「首请求 + TTL」而非自然分钟——多 worker 并行会把彼此顶进限流：
 // 登录被 429 → token 是空串 → 后续接口 401 → 响应体读成「空列表」，报错长得像"数据不对"，
-// 真因却是"我们根本没问到"。缓存后用 /auth/me 复核（不计入登录桶）；若某个用例改过密码
-// 把 token_version bump 掉（B4 吊销），这里会拿到非 2xx 并自动重登，不会把脏 token 传下去。
+// 真因却是"我们根本没问到"。故 loginAdmin 内置 429 退避重试；缓存后用 /auth/me 复核
+// （不计入登录桶）；若某个用例改过密码把 token_version bump 掉（B4 吊销），这里拿到非 2xx 自动重登。
+// 2026-10-16 修复：旧回环在限流竞态下可能停在临时口令（admin 被永久改成 E2eTemp2026Pass、dev 库污染），
+// 故回环每步都校验恢复、结尾用 admin123 登录复核，并加 test.afterAll 兜底把口令拨回出厂 admin123。
+const ADMIN_USER = 'admin';
+const ADMIN_PW = 'admin123';
+const ADMIN_TMP = 'E2eTemp2026Pass';
+
 let cachedAdminToken = '';
+
+/**
+ * 登录 admin（带 429 退避重试）。IP 桶 20/分钟，Playwright 多 worker 并行易顶满；
+ * 顶满时重试而非把 token 留空（留空会让后续断言把 401 读成"数据为空"）。
+ */
+async function loginAdmin(request: APIRequestContext, password: string, tries = 6): Promise<{ token: string; mustChange: boolean }> {
+  for (let attempt = 0; attempt < tries; attempt++) {
+    const r = await request.post(`${BASE}/api/v1/auth/login`, { data: { username: ADMIN_USER, password } });
+    if (r.status() === 429) {
+      await new Promise((s) => setTimeout(s, 1200 * (attempt + 1)));
+      continue;
+    }
+    const j = (await r.json()) as { data?: { token?: string; user?: { must_change_password?: boolean } } };
+    return { token: j.data?.token || '', mustChange: !!j.data?.user?.must_change_password };
+  }
+  return { token: '', mustChange: false };
+}
 
 async function adminToken(request: APIRequestContext): Promise<string> {
   if (cachedAdminToken) {
@@ -31,31 +54,42 @@ async function adminToken(request: APIRequestContext): Promise<string> {
     if (check.ok()) return cachedAdminToken;
     cachedAdminToken = '';
   }
-  const login = (password: string) =>
-    request
-      .post(`${BASE}/api/v1/auth/login`, { data: { username: 'admin', password } })
-      .then(r => r.json());
-  let j = await login('admin123');
-  let token = (j.data?.token || '') as string;
-  if (token && j.data?.user?.must_change_password) {
-    const tmp = 'E2eTemp2026Pass';
-    await request.post(`${BASE}/api/v1/auth/change-password`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data: { old_password: 'admin123', new_password: tmp },
+  let res = await loginAdmin(request, ADMIN_PW);
+  let token = res.token;
+  // 命中首登强改密标记 → 改密回环：admin123 → 临时态（服务端清标记、bump token_version）→ 改回 admin123。
+  // 每步都校验：任一步失败即抛错（而非静默留脏），结尾再以 admin123 登录复核恢复。
+  if (token && res.mustChange) {
+    const step1 = await request.post(`${BASE}/api/v1/auth/change-password`, {
+      headers: { Authorization: `Bearer ${token}` }, data: { old_password: ADMIN_PW, new_password: ADMIN_TMP },
     });
-    j = await login(tmp);
-    token = j.data?.token || '';
-    await request.post(`${BASE}/api/v1/auth/change-password`, {
-      headers: { Authorization: `Bearer ${token}` },
-      data: { old_password: tmp, new_password: 'admin123' },
+    if (!step1.ok()) throw new Error(`改密回环(admin123→tmp)失败，admin 口令可能已卡在临时态`);
+    const after1 = await loginAdmin(request, ADMIN_TMP);
+    if (!after1.token) throw new Error(`改密回环(admin123→tmp)后临时口令登录失败，admin 口令可能已卡在临时态`);
+    const step2 = await request.post(`${BASE}/api/v1/auth/change-password`, {
+      headers: { Authorization: `Bearer ${after1.token}` }, data: { old_password: ADMIN_TMP, new_password: ADMIN_PW },
     });
-    j = await login('admin123');
-    token = j.data?.token || '';
+    if (!step2.ok()) throw new Error(`改密回环(tmp→admin123)失败，afterAll 会兜底拨回出厂口令`);
+    const after2 = await loginAdmin(request, ADMIN_PW);
+    if (!after2.token) throw new Error(`改密回环(tmp→admin123)后 admin123 登录失败，admin 口令卡在临时态——afterAll 兜底`);
+    token = after2.token;
   }
-  if (!token) throw new Error(`admin 登录未拿到 token（响应：${JSON.stringify(j).slice(0, 160)}）——空 token 会让后面的断言把 401 读成"数据为空"`);
+  if (!token) throw new Error(`admin 登录未拿到 token——空 token 会让后面的断言把 401 读成"数据为空"`);
   cachedAdminToken = token;
   return token;
 }
+
+// 兜底（2026-10-16）：无论用例成败，退出前确认 admin 口令已恢复出厂 admin123，
+// 避免改密回环在限流竞态下把 dev 库 admin 永久留在临时口令（旧实现污染根因）。
+// 仅在口令确实偏离 admin123 时才动手，避免每次运行无谓 bump token_version、扰动出厂态。
+test.afterAll(async ({ request }) => {
+  const factory = await loginAdmin(request, ADMIN_PW);
+  if (factory.token) return; // 已是出厂态，无需处理
+  const tmp = await loginAdmin(request, ADMIN_TMP);
+  if (!tmp.token) return; // 既不是 admin123 也不是临时态，交给人工/seed 复位
+  await request.post(`${BASE}/api/v1/auth/change-password`, {
+    headers: { Authorization: `Bearer ${tmp.token}` }, data: { old_password: ADMIN_TMP, new_password: ADMIN_PW },
+  });
+});
 
 // 1. Landing page loads
 test('landing page loads with hero', async ({ page }) => {

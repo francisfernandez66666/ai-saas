@@ -10,7 +10,7 @@
 export type Dictionary = Record<string, string>
 
 /** 受支持语言。与 dictionaries/ 下文件名一一对应；新增语言 = 加词典 + 加本数组 + 加 normalizeLanguage 分支。 */
-export const LANGUAGES = ['zh-CN', 'en-US'] as const
+export const LANGUAGES = ['zh-CN', 'en-US', 'zh-TW'] as const
 /** 语言联合类型：LANGUAGES 的类型级对应物。新增语言只需往 LANGUAGES 加一项，本类型自动跟随。 */
 export type Language = (typeof LANGUAGES)[number]
 
@@ -18,12 +18,13 @@ export type Language = (typeof LANGUAGES)[number]
 export const DEFAULT_LANGUAGE: Language = 'zh-CN'
 
 /**
- * 语言自称（endonym）：语言切换器里语言名按各自语言书写（"中文"/"English"），不随界面翻译——
+ * 语言自称（endonym）：语言切换器里语言名按各自语言书写（"中文"/"English"/"繁體中文"），不随界面翻译——
  * 否则用户看不懂要切到哪种语言。属数据契约，故放 .ts（i18n 门禁只扫 .tsx），不进词典。
  */
 export const LANG_ENDONYM: Record<Language, string> = {
   'zh-CN': '中文',
   'en-US': 'English',
+  'zh-TW': '繁體中文',
 }
 
 /**
@@ -34,7 +35,13 @@ export const LANG_ENDONYM: Record<Language, string> = {
 export function normalizeLanguage(raw: string | null | undefined): Language | null {
   if (!raw) return null
   const lower = raw.toLowerCase()
-  if (lower.startsWith('zh')) return 'zh-CN'
+  if (lower.startsWith('zh')) {
+    // 繁体变体（台湾/香港/澳门/通用 Hant）落到专用 zh-TW 词典；其余 zh* 仍归简体 zh-CN。
+    if (lower.startsWith('zh-tw') || lower.startsWith('zh-hant') || lower.startsWith('zh-hk') || lower.startsWith('zh-mo')) {
+      return 'zh-TW'
+    }
+    return 'zh-CN'
+  }
   if (lower.startsWith('en')) return 'en-US'
   return null
 }

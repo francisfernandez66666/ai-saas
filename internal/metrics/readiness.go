@@ -183,11 +183,13 @@ func appendComplianceGateChecks(checks []HealthCheck, cfg *runtimecfg.SystemConf
 	// R2 内容安全模式：enabled=false 直接 crit（闸门全关）；shadow 属演练期，warn 提醒收口。
 	// FIX-E(2026-09-28)：判级核实——release 态 mode!="enforce" 恒 warn（本表 Warn 不受
 	// debug 降档影响，两态同判），正合"生产必切 enforce、shadow 只观察不拦截"的口径，不改判级只收口文案。
+	// 2026-10-16 出厂默认已翻 enforce（用户拍板），nil 兜底同步对齐——兜底值与出厂默认
+	// 不一致会让"配置未初始化"的探针把健康态误报成演练态。
 	csEnabled := true
-	csMode := "shadow"
+	csMode := "enforce"
 	if cfg != nil {
 		csEnabled = cfg.GetBoolForTenant(0, "contentsafety_enabled", true)
-		csMode = cfg.GetStringForTenant(0, "contentsafety_mode", "shadow")
+		csMode = cfg.GetStringForTenant(0, "contentsafety_mode", "enforce")
 	}
 	if !csEnabled {
 		checks = append(checks, readinessCheck("contentsafety", false, "disabled", StatusCrit,

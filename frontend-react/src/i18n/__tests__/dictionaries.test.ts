@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest'
 import enUS from '../dictionaries/en-US'
 import zhCN from '../dictionaries/zh-CN'
+import zhTW from '../dictionaries/zh-TW'
 import { LANGUAGES } from '../translator'
 
 const zhKeys = Object.keys(zhCN).sort()
@@ -17,9 +18,22 @@ function placeholders(s: string): string[] {
 
 describe('词典对齐门禁', () => {
   it('LANGUAGES 声明的每一种语言都有词典', () => {
-    expect(LANGUAGES).toEqual(['zh-CN', 'en-US'])
+    expect(LANGUAGES).toEqual(['zh-CN', 'en-US', 'zh-TW'])
     expect(typeof zhCN).toBe('object')
     expect(typeof enUS).toBe('object')
+    expect(typeof zhTW).toBe('object')
+  })
+
+  it('LANGUAGES 中每种语言的键集/占位符都与 zh-CN 对齐', () => {
+    const dicts: Record<string, Record<string, string>> = { 'zh-CN': zhCN, 'en-US': enUS, 'zh-TW': zhTW }
+    for (const lang of LANGUAGES) {
+      const keys = Object.keys(dicts[lang]).sort()
+      expect(keys, `${lang} 键集与 zh-CN 不一致（缺: ${zhKeys.filter((k) => !keys.includes(k)).join(', ')}）`).toEqual(zhKeys)
+      for (const k of zhKeys) {
+        const p = placeholders(dicts[lang][k])
+        expect(p, `${lang} 占位符不一致: ${k}`).toEqual(placeholders(zhCN[k as keyof typeof zhCN]))
+      }
+    }
   })
 
   it('en-US 与 zh-CN 键集合完全一致（缺键/多键皆红）', () => {

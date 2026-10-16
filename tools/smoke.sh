@@ -91,7 +91,7 @@ PSQL="psql ${TEST_DB_URL:-postgresql://ai_scrm:dev123@localhost/ai_scrm} -tAc"
 #         喂绿、**策略表达式两条休眠腿逐腿核**（IS NULL + 空串：030 点亮后 PG 把跑过 SET LOCAL
 #         的连接上自定义 GUC 复位成 ''而非 NULL，只看 IS NULL 会让未激活查询筛成空集/写 42501，
 #         本轮 billing 九例红即此形态；配"旧两腿写法必被点名/三腿写法判合格"双向自证）、
-#         readiness 的 rls_policy_face 观测位恰一条、迁移账本 31 笔与 030/031 up/down 成对；
+#         readiness 的 rls_policy_face 观测位恰一条、迁移账本 35 笔与 030/031/034/035 up/down 成对；
 #         数据层全部 psql 直查不走 HTTP）
 #       / 2026-09-28 外部凭据面 14 断言（四十八：.env 被误删重建后，"凭据没回填"与"JWT_SECRET 变了、
 #         库里密文全解不开"两件事都必须当场看得见——/status/detail 的 credential_placeholders 与
@@ -3596,9 +3596,23 @@ RLS_SYS_POL=$($PSQL "SELECT count(*) FROM pg_policies WHERE schemaname='public' 
 check "对照前提：system_configs 确属「含 tenant_id 但无 tenant_isolation 策略」的设计内豁免表" 0 "${RLS_SYS_POL:-0}"
 RLS_SYS_RLS=$($PSQL "SELECT relrowsecurity::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='system_configs'" 2>/dev/null | tr -d '[:space:]')
 check "system_configs 未被 ENABLE（修复口径是按策略表逐张通电，不是把全库都 ENABLE——全开即本条翻红）" false "${RLS_SYS_RLS:-missing}"
-# 迁移账本（延续"迁移 0xx 已记账"惯例）：账本现至 031，up/down 必须成对（C4 迁移纪律）。
-# 只查文件不实查 schema_migrations 那行：030/031 由执行器在服务启动时正常记账，
-# 冒烟不重启在线服务，台账行是否已在由部署侧负责——本段钉的是"这一版代码带着成对的 030/031"。
+# 034（2026-10-16）：cdp_tag_definitions 同型豁免。判据与上面 system_configs 完全一致：
+# 标签字典是"builtin 行 tenant_id=0 全租户共用 + 租户自定义行"双层表（ListTagDefinitions
+# 按 IN (0,tid) 读），等值策略会在摄入事务（SetTenantRLS 激活）里把系统层读腿掐断，
+# ApplyTagTx 查不到 builtin 字典只 WARN 不中断——RLS 激活后 uat_advisor G-19
+# beh_booked/beh_testdrive/beh_visit/beh_complained 四条期望=y 实际=n 实锤（事件落库全 PASS，
+# 丢的是标签不是事件）。休眠态策略恒真，故该缺陷只在激活形态现身，按 002 之前形态豁免整表。
+CDP_POL=$($PSQL "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='cdp_tag_definitions' AND policyname='tenant_isolation'" 2>/dev/null | tr -d '[:space:]')
+check "cdp_tag_definitions 无 tenant_isolation 策略（034 已摘：字典双层表，等值策略切断系统层读腿即静默丢标签）" 0 "${CDP_POL:-0}"
+CDP_RLS=$($PSQL "SELECT relrowsecurity::text FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='cdp_tag_definitions'" 2>/dev/null | tr -d '[:space:]')
+check "cdp_tag_definitions 未被 ENABLE（034 DISABLE：回到迁移 002 之前形态，残留 FORCE 旗标此时失效）" false "${CDP_RLS:-missing}"
+# 反证对照：cdp_tag_assignments（同一批 CDP 表里的真租户数据）必须仍有策略——证明上面两条
+# 不是"整个 CDP 域都没策略"的假绿（判据空转的最像真的形态）。
+CDPA_POL=$($PSQL "SELECT count(*) FROM pg_policies WHERE schemaname='public' AND tablename='cdp_tag_assignments' AND policyname='tenant_isolation'" 2>/dev/null | tr -d '[:space:]')
+check "反证对照：cdp_tag_assignments 仍有 tenant_isolation 策略（豁免只摘字典表，不动租户数据表）" 1 "${CDPA_POL:-0}"
+# 迁移账本（延续"迁移 0xx 已记账"惯例）：账本现至 034，up/down 必须成对（C4 迁移纪律）。
+# 只查文件不实查 schema_migrations 那行：030/031/034 由执行器在服务启动时正常记账，
+# 冒烟不重启在线服务，台账行是否已在由部署侧负责——本段钉的是"这一版代码带着成对的 030/031/034"。
 check "030 up/down 成对存在（缺 down 则 MigrateDownFrom 会在回退时中断）" 2 "$(ls "$PROJECT_ROOT/migrations/030_rls_enable.up.sql" "$PROJECT_ROOT/migrations/030_rls_enable.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
 
 # —— 策略「内容」面（FIX-A 落地当天补，2026-09-28）：通电之外还要钉表达式本身 ——
@@ -3630,12 +3644,14 @@ check "反证：只留空串腿（无 IS NULL）的写法也必须被点名（=1
 HT47=$(grep '^HEALTH_TOKEN=' "$(dirname "$0")/../.env" 2>/dev/null | cut -d= -f2 | tr -d '[:space:]')
 RLS_FACE_CNT=$(curl -s -H "X-Health-Token: $HT47" "$B/status/detail" 2>/dev/null | grep -o '"rls_policy_face"' | wc -l | tr -d ' ')
 check "readiness 含 rls_policy_face 观测位且恰一条（通电≠策略内容合格，两件事各有一行）" 1 "${RLS_FACE_CNT:-0}"
-# 迁移 031 账本：与 030 同一纪律（up/down 成对；down 刻意 no-op 并在文件里写清为什么不能回退）
-check "迁移账本：up 脚本共 31 笔（031_rls_policy_guc_empty 已入列）" 31 "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')"
+# 迁移 031/034/035 账本：与 030 同一纪律（up/down 成对；031/035 down 刻意 no-op 并在文件里写清为什么不能回退）
+check "迁移账本：up 脚本共 35 笔（035_rls_policy_three_leg_repair 已入列）" 35 "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')"
 check "031 up/down 成对存在" 2 "$(ls "$PROJECT_ROOT/migrations/031_rls_policy_guc_empty.up.sql" "$PROJECT_ROOT/migrations/031_rls_policy_guc_empty.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
-# 031 已记账（schema_migrations 行）：本机服务重启过一次即由执行器写入；全新库由部署侧首次启动写入。
-# 这里按"账本行数==up 脚本数"整口径断言，不单独为 031 开一条——差额表会连同其它未记账的迁移一起暴露。
-check "迁移账本行数 == up 脚本数（含 031，无未记账迁移）" "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')" \
+check "034 up/down 成对存在（字典豁免：down 恢复三腿策略并警告不得单独执行）" 2 "$(ls "$PROJECT_ROOT/migrations/034_cdp_tag_dict_rls_exempt.up.sql" "$PROJECT_ROOT/migrations/034_cdp_tag_dict_rls_exempt.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
+check "035 up/down 成对存在（两腿污染修复：down 刻意 no-op，回退即重新引入 42501 静默故障）" 2 "$(ls "$PROJECT_ROOT/migrations/035_rls_policy_three_leg_repair.up.sql" "$PROJECT_ROOT/migrations/035_rls_policy_three_leg_repair.down.sql" 2>/dev/null | wc -l | tr -d ' ')"
+# 031/034/035 已记账（schema_migrations 行）：本机服务重启过一次即由执行器写入；全新库由部署侧首次启动写入。
+# 这里按"账本行数==up 脚本数"整口径断言，不单独为 031/034/035 开一条——差额表会连同其它未记账的迁移一起暴露。
+check "迁移账本行数 == up 脚本数（含 031/034/035，无未记账迁移）" "$(ls "$PROJECT_ROOT/migrations/"*.up.sql 2>/dev/null | wc -l | tr -d ' ')" \
   "$($PSQL "SELECT count(*) FROM schema_migrations" 2>/dev/null | tr -d '[:space:]')"
 
 echo "---- 四十八、外部凭据面：回填观测 + 密文可解性 + 密文不进日志（.env 丢失批 2026-09-28）----"

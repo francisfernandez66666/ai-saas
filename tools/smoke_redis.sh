@@ -215,7 +215,16 @@ echo "==== 服务端 Redis 双轨冒烟（A=$PORT_A B=$PORT_B C=${PORT_C}，Redi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "  缺 python3，无法做键位核对（本段依赖 RESP 直连）"; exit 1
 fi
-[ -x "$BIN" ] || go build -o "$BIN" ./cmd/server || { echo "  后端编译失败(bin/ai-scrm-redis)"; exit 1; }
+# **必须每次重新编译，不许复用 bin/ 下的旧二进制**（2026-10-16 事故，别再犯）：
+# 旧写法是 `[ -x "$BIN" ] || go build ...`——bin/ai-scrm-redis 是 2026-09-27 的产物，
+# 早于 FIX-A（2026-09-28 给 rlsPolicyUsing 补空串休眠腿）。本段 start_instance 不覆盖
+# RLS_ENABLED，二进制读 .env（本机已翻 true）→ 旧 EnableRLS 用**两腿模板**把全部 60 张
+# 租户表策略 DROP/CREATE 重建：FIX-A 缺陷在 dev 库复活，internal/db 三条用例当场红
+# （TestRLSMigrationPolicyTextMatchesGoTemplate / TestRLSPolicyFaceObservation /
+# TestCrossTenantSameTagNameAllowed——连接池里 GUC 复位成 '' 后读空集、写 42501）。
+# 冒烟跑在最新代码上是本段全部断言的前提；二进制陈旧不是"省几秒编译"能换的。
+# 连带修复：迁移 035 把被两腿模板污染的库重建成三腿（见 migrations/035_*.up.sql）。
+( cd "$ROOT" && go build -o "$BIN" ./cmd/server ) || { echo "  后端编译失败(bin/ai-scrm-redis)"; exit 1; }
 RUP=$(rcmd ping)
 if [ "$RUP" != "PONG" ]; then
   echo "  Redis $RADDR 不可达（探测回 '$RUP'）"

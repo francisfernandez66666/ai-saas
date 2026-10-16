@@ -6,6 +6,12 @@ import type { ApiResp } from '../types'
 import type { ApiPath, ApiResponse, ApiRoutes } from '../types/api'
 // P2-8a：角色字面量统一引用单一事实源，避免与后端 model.RoleXxx 失配
 import { ROLES } from './roles'
+// P2-14 收尾（2026-10-16）：错误码文案迁 i18n 词典（api.* 命名空间）。本文件是模块作用域
+// （非组件，拿不到 useI18n hook），翻译入口走 standalone 的模块级 t()——与 I18nProvider
+// 共享同一份 DICTS 镜像（单一事实源，见 i18n/standalone.ts 头部注释）。
+// I18nKey 取 zh-CN 词典键的字面量联合：写错键名 tsc 当场报错，不会静默落兜底文案。
+import { t } from '../i18n/standalone'
+import type { I18nKey } from '../i18n/context'
 
 // P2-8c 按路径分发的响应信封：以 api.d.ts 的 ApiRoutes 映射为单一事实源。
 // ApiRoutes 的键为 "METHOD /path"（生成器口径），调用点只写纯路径，这里用模板字面量
@@ -46,30 +52,33 @@ export const TOKEN_KEY = 'scrm_auth_token'
 // 精确的人读文案（"阶段不能往回退…"），而 error_code 只到"哪个域拒的"这一层。
 // 在这里写一句通用话反而会把它覆盖掉——用户看到"这张单暂时不能这么操作"，
 // 却看不到到底哪一格填错了。所以域码只定分级，文案让位给 message。
+//
+// P2-14 收尾（2026-10-16）：文案本体迁去 i18n 词典（api.* 命名空间），本表只留
+// textKey——本文件是模块作用域（非组件），翻译走 i18n/standalone 的模块级 t()。
 type ErrLevel = 'warning' | 'error'
 
 // ERROR_CODE_MESSAGES 导出给单测做"码集对齐"锁：后端新增 error_code 时前端必须同步登记，
 // 否则新码会静默走未登记分支（只回传 message、分级恒为 warning）。
-export const ERROR_CODE_MESSAGES: Record<string, { text?: string; level: ErrLevel }> = {
-  // 与 internal/api/code.go 的 codeName 映射一一对应
-  param_error: { text: '参数填错了，麻烦核对一下', level: 'warning' },
-  unauthorized: { text: '账号或密码不对', level: 'error' },
-  forbidden: { text: '没有权限操作', level: 'error' },
-  not_found: { text: '没找到对应的内容', level: 'warning' },
-  rate_limited: { text: '操作太频繁，稍后再试', level: 'warning' },
-  biz_error: { text: '操作没成功', level: 'warning' },
-  internal_error: { text: '服务开小差了，稍后再试', level: 'error' },
+export const ERROR_CODE_MESSAGES: Record<string, { textKey?: I18nKey; level: ErrLevel }> = {
+  // 与 internal/api/code.go 的 codeName 映射一一对应（textKey 见 i18n 词典 api.* 节）
+  param_error: { textKey: 'api.param_error', level: 'warning' },
+  unauthorized: { textKey: 'api.unauthorized', level: 'error' },
+  forbidden: { textKey: 'api.forbidden', level: 'error' },
+  not_found: { textKey: 'api.not_found', level: 'warning' },
+  rate_limited: { textKey: 'api.rate_limited', level: 'warning' },
+  biz_error: { textKey: 'api.biz_error', level: 'warning' },
+  internal_error: { textKey: 'api.internal_error', level: 'error' },
   // 后端各处显式 error_code 字面量（middleware/auth.go、org.go、openapi_auth.go、各域 handler）
-  token_revoked: { text: '这个登录已经过期了，重新登录一次', level: 'error' },
-  must_change_password: { text: '请先修改初始密码', level: 'error' },
-  invalid_api_key: { text: 'API Key 无效或已停用', level: 'error' },
-  channel_config_incomplete: { text: '通道配置还缺几项，补齐后再试', level: 'warning' },
+  token_revoked: { textKey: 'api.token_revoked', level: 'error' },
+  must_change_password: { textKey: 'api.must_change_password', level: 'error' },
+  invalid_api_key: { textKey: 'api.invalid_api_key', level: 'error' },
+  channel_config_incomplete: { textKey: 'api.channel_config_incomplete', level: 'warning' },
   deal_rejected: { level: 'warning' },
   outreach_rejected: { level: 'warning' },
   acquisition_rejected: { level: 'warning' },
   // G-22c 档位门槛：不是"你操作错了"，是"这个包还没对你的套餐开放"。
   // 后端 message 是一句固定文案，这里给一句带出口的话（warning 级，别弹成红色报错）。
-  pack_tier_denied: { text: '这个包还没对你的套餐开放，升级后才能绑', level: 'warning' },
+  pack_tier_denied: { textKey: 'api.pack_tier_denied', level: 'warning' },
 }
 
 /** 按后端返回体给出友好提示（error_code 优先，其次 message）
@@ -86,7 +95,9 @@ export function toastError(json: ErrEnvelope | null | undefined): boolean {
   if (!json || json.code === 0 || json.code === undefined) return false
   const code = json.error_code
   const entry = code ? ERROR_CODE_MESSAGES[code] : undefined
-  const msg = (entry && entry.text) || json.message || '操作没成功'
+  // textKey 经 i18n standalone 解析（本文件非组件，拿不到 hook）；域码无 textKey，
+  // 让位给后端 message；两层都空才落通用兜底——与原链路同序，只把文案源换成词典。
+  const msg = (entry?.textKey && t(entry.textKey)) || json.message || t('api.biz_error')
   // 未登记的码按 warning 走：新码先能看清后端说了什么，再决定要不要升级成分级
   if ((entry && entry.level) === 'error') MessagePlugin.error(msg)
   else MessagePlugin.warning(msg)
@@ -339,7 +350,8 @@ export async function AUTH<T = any>(
   let json: T
   // P2-10：`(parsed as any).code` → 具名窄化面；泛型 T 未约束时单重断言合法（已探针验证）。
   if (!parsed || typeof (parsed as { code?: unknown }).code !== 'number') {
-    json = { code: -1, message: res ? '响应解析失败' : '网络异常，请稍后重试' } as unknown as T
+    // 兜底文案走 i18n（api.* 命名空间）：本文件非组件，翻译经 standalone 模块级 t()
+    json = { code: -1, message: res ? t('api.parse_failed') : t('api.network_error') } as unknown as T
   } else {
     json = parsed
   }

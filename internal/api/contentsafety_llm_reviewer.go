@@ -9,8 +9,9 @@
 // 关键纪律：
 //   - 默认不装配（env CONTENTSAFETY_LLM_REVIEWER != "true"）——避免每次出站回复
 //     额外一次 LLM 调用带来的成本与延迟；需要 shadow 演练误杀率时再置 env 开启；
-//   - 本装配**不改变 contentsafety_mode**（默认 shadow 恒放行只计数）——审核姿态
-//     由平台热开关 contentsafety_mode 控制，切 enforce 是产品灰度决策，不在此静默翻转。
+//   - 本装配**自身不翻转 contentsafety_mode**——审核姿态由平台热开关控制。
+//     2026-10-16 用户拍板：shadow 演练期已过（本装配 + 6 例 fail-open 单测就位），
+//     出厂默认已切 enforce（config_defaults.go 同键），回退 shadow 属需记录原因的应急动作。
 package api
 
 import (
@@ -96,5 +97,5 @@ func InitContentsafetyLLMReviewer() {
 		return
 	}
 	contentsafety.SetReviewer(&LLMReviewer{})
-	log.Println("[内容安全] 已装配 LLM 机审（fail-open；contentsafety_mode 仍由平台热开关控制，默认 shadow 只计数）")
+	log.Println("[内容安全] 已装配 LLM 机审（fail-open；contentsafety_mode 由平台热开关控制，2026-10-16 起出厂默认 enforce 真拦）")
 }

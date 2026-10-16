@@ -549,9 +549,18 @@ case "$SKIP_TOTAL" in
 esac
 verdict "go test ./...（覆盖率见下方）" $GO_TEST_RC
 
-# ---------- 覆盖率棘轮（P1-5，2026-09-22 新增） ----------
-# 复用上方 -coverprofile 产物，总覆盖率只升不降（基线 .coverage_baseline，2026-09-22 落 22.8）。
+# ---------- 覆盖率棘轮（P1-5 总量 2026-09-22 + P1-4 逐包 2026-10-16） ----------
+# 复用上方 -coverprofile 产物：总覆盖率只升不降（基线 .coverage_baseline）；
+# 2026-10-16 P1-4 收口新增**逐包**底线（.coverage_pkg_baseline）——总量棘轮有结构性漏洞：
+# 纯逻辑包补测可把总量抬上去，同时 internal/api(19.7%)/cmd/server(2.3%) 继续烂而总量不动。
+# 逐包底线让每个包各自只升不降，补测收益落在哪个包、哪个包的底线就收紧。
 step "单元测试层：覆盖率棘轮门禁（tools/check_coverage_ratchet.sh）"
+# 门禁自证先进阶段零口径：判定逻辑一旦改坏（如 profile 解析跳行、底线读错文件），
+# 合成产物上 5 例双向断言先红，再谈真实产物上的判定。
+bash "$ROOT/tools/check_coverage_ratchet.sh" --selftest >/tmp/test_all_cov_selftest.log 2>&1
+COV_SELFTEST_RC=$?
+tail -2 /tmp/test_all_cov_selftest.log
+verdict "覆盖率棘轮门禁自证（合成产物 5 例双向）" $COV_SELFTEST_RC
 # G1-a 修复（2026-09-22 全量审计）：原实现写成
 #   `if GO_TEST_RC==0 && 产物存在 → 判定 else verdict 0`
 # ——单测一红就跳过并直接打 PASS，属于"恒真假绿门禁"（与本轮已改造的裸 db.DB 内联段同族）。
@@ -571,7 +580,7 @@ else
     echo "  ⚠ 覆盖率判定前提不成立：go test 有 FAIL（上方红项），其覆盖率数字可能因包内 panic/中止而偏低"
     verdict "覆盖率棘轮（单测未全绿，判定不可信）" 1
   else
-    verdict "覆盖率棘轮（只升不降）" $COV_RC
+    verdict "覆盖率棘轮（总量+逐包，只升不降）" $COV_RC
   fi
 fi
 grep -E "^(ok|FAIL|---)" /tmp/test_all_go.log | tail -20 || true
